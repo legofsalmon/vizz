@@ -4,12 +4,13 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 2 — Syphon + NDI output.** Renders a procedural particle
+**Status: phase 3 — control panel.** Renders a procedural particle
 field into a fixed-resolution master texture, publishes it over **Syphon**
 on macOS (zero-copy) and **NDI** on the network (async readback, never
 stalls the renderer), previews it aspect-fitted in the window, and takes
-OSC control live — with built-in health monitoring and a headless
-benchmark mode. Both outputs work windowed *and* headless. Spout is next.
+OSC control live — with an on-screen control panel, built-in health
+monitoring and a headless benchmark mode. Both outputs work windowed
+*and* headless. MIDI and Spout are next.
 
 ## Install (macOS, no developer tools)
 
@@ -113,6 +114,33 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+## Control panel
+
+The preview window carries an egui panel (press **Tab** to toggle, or
+start with `--no-gui`) showing:
+
+- **Health at a glance** — fps and average frame time, coloured by whether
+  the 60 fps budget is being held, over a frame-time sparkline with the
+  budget drawn as a reference line, plus p95/p99, worst, over-budget
+  count, RSS and CPU.
+- **Output status** — which of Syphon/NDI actually came up.
+- **A slider for every parameter**, generated from the registry's own
+  metadata. Registering a parameter in `params.rs` gives it a control
+  automatically, so the panel can never drift from the OSC surface, and
+  the labels double as live documentation of the OSC addresses.
+  Right-click a slider to restore its default.
+
+The panel is a control-thread citizen exactly like OSC: it writes targets
+into the same lock-free store and gets no privileged access to the
+renderer. Its draw is one extra render pass inside the frame's existing
+command encoder — no added synchronisation point.
+
+To review the layout without a display (or in CI):
+
+```sh
+cargo run -p vizz-ui --example render_panel -- panel.png
+```
+
 ## OSC control
 
 Send standard OSC messages (float, int, double, or bool args) to the UDP
@@ -153,6 +181,9 @@ crates/
                 ordered on wgpu's Metal queue) and NDI (runtime-loaded
                 library, async readback ring, dedicated send thread).
                 Spout will follow the same trait.
+  vizz-ui       egui control panel + a wgpu 30 paint backend for egui
+                (the published egui-wgpu still targets wgpu 29, and two
+                wgpu versions cannot share a device).
   vizz-app      the `vizz` binary: winit event loop (windowed) and the
                 fixed-timestep headless runner.
 ```

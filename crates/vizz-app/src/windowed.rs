@@ -16,6 +16,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use vizz_ui::{Gui, OutputStatus, PanelState};
+
 use crate::engine::FrameEngine;
 use crate::outputs::{self, OutputOpts};
 use crate::params::AppParams;
@@ -23,6 +25,7 @@ use crate::params::AppParams;
 pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
+    pub show_gui: bool,
     /// Window title; shows OSC port etc. so double-click users can see
     /// where to point a controller without reading logs.
     pub title: String,
@@ -39,12 +42,16 @@ struct RenderState {
     blit: BlitPass,
     blit_bind: wgpu::BindGroup,
     senders: Vec<Box<dyn vizz_io::FrameSender>>,
+    gui: Gui,
 }
 
 struct App {
     engine: FrameEngine,
     opts: WindowedOpts,
     state: Option<RenderState>,
+    /// Shared with OSC; the panel writes targets through it just as the
+    /// OSC listener does.
+    params: Arc<AppParams>,
 }
 
 impl App {
@@ -107,6 +114,8 @@ impl App {
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
+        let mut gui = Gui::new(&window, &ctx.device, config.format);
+        gui.visible = self.opts.show_gui;
 
         Ok(RenderState {
             window,
@@ -118,6 +127,7 @@ impl App {
             blit,
             blit_bind,
             senders,
+            gui,
         })
     }
 
@@ -175,6 +185,33 @@ impl App {
             state.config.width,
             state.config.height,
         );
+        // The panel composites over the preview, inside the same encoder,
+        // so it costs one extra pass and no synchronisation point.
+        let outputs_status: Vec<OutputStatus> = state
+            .senders
+            .iter()
+            .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
+            .collect();
+        let panel_state = PanelState {
+            health: Some(self.engine.health.snapshot()),
+            outputs: outputs_status,
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 1000.0 / 60.0,
+        };
+        if let Err(e) = state.gui.render(
+            &state.window,
+            &state.ctx.device,
+            &state.ctx.queue,
+            &mut encoder,
+            &preview,
+            &self.params.registry,
+            panel_state,
+            [state.config.width, state.config.height],
+        ) {
+            // A GUI failure must never take down the output.
+            log::error!("GUI draw failed: {e:#}");
+        }
+
         state.ctx.queue.submit([encoder.finish()]);
 
         // After submit: senders enqueue work ordered behind this frame.
@@ -188,7 +225,9 @@ impl App {
         state.window.pre_present_notify();
         state.ctx.queue.present(frame);
 
-        if let Some(snap) = self.engine.end_frame(frame_start.elapsed()) {
+        let elapsed = frame_start.elapsed();
+        state.gui.push_frame_time(elapsed.as_secs_f32() * 1e3);
+        if let Some(snap) = self.engine.end_frame(elapsed) {
             log::info!("{}", snap.log_line());
         }
         state.window.request_redraw();
@@ -213,6 +252,15 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // The panel sees events first; if it used one (dragging a slider,
+        // typing in a field) the app must not also act on it.
+        if let Some(state) = &mut self.state {
+            let window = Arc::clone(&state.window);
+            if state.gui.on_window_event(&window, &event) && !matches!(event, WindowEvent::RedrawRequested) {
+                window.request_redraw();
+                return;
+            }
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
@@ -241,7 +289,8 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        engine: FrameEngine::new(params),
+        engine: FrameEngine::new(Arc::clone(&params)),
+        params,
         opts,
         state: None,
     };

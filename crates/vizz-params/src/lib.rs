@@ -123,6 +123,12 @@ impl ParamRegistry {
         self.by_addr.get(addr).copied()
     }
 
+    /// Every parameter with its id. A UI can build itself from this, so
+    /// registering a parameter is all it takes to get a control for it.
+    pub fn iter(&self) -> impl Iterator<Item = (ParamId, &ParamDef)> {
+        self.defs.iter().enumerate().map(|(i, d)| (ParamId(i), d))
+    }
+
     /// Set a target value (clamped to range).
     pub fn set(&self, id: ParamId, value: f32) {
         let def = &self.defs[id.0];

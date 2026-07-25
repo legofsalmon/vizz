@@ -69,6 +69,10 @@ struct Args {
     /// Frame rate advertised to NDI receivers.
     #[arg(long, default_value_t = 60)]
     fps: u32,
+
+    /// Start with the control panel hidden (Tab toggles it at runtime).
+    #[arg(long)]
+    no_gui: bool,
 }
 
 fn main() -> Result<()> {
@@ -127,6 +131,7 @@ fn main() -> Result<()> {
             windowed::WindowedOpts {
                 width: args.width,
                 height: args.height,
+                show_gui: !args.no_gui,
                 title,
                 outputs: output_opts,
             },
