@@ -16,7 +16,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use vizz_ui::{Gui, OutputStatus, PanelState};
+use vizz_midi::{MidiEngine, SharedMidi};
+use vizz_ui::{Gui, MidiView, OutputStatus, PanelState};
 
 use crate::engine::FrameEngine;
 use crate::outputs::{self, OutputOpts};
@@ -26,6 +27,8 @@ pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
     pub show_gui: bool,
+    /// Where MIDI mappings are persisted.
+    pub midi_map_path: std::path::PathBuf,
     /// Window title; shows OSC port etc. so double-click users can see
     /// where to point a controller without reading logs.
     pub title: String,
@@ -52,6 +55,13 @@ struct App {
     /// Shared with OSC; the panel writes targets through it just as the
     /// OSC listener does.
     params: Arc<AppParams>,
+    midi: Option<MidiEngine>,
+    midi_shared: SharedMidi,
+    /// Last MIDI snapshot the panel saw. Refreshed with try_lock so a
+    /// busy MIDI thread can never stall the render thread.
+    midi_view: MidiView,
+    /// Revision last written to disk, so saves happen only on change.
+    saved_revision: u64,
 }
 
 impl App {
@@ -192,13 +202,15 @@ impl App {
             .iter()
             .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
             .collect();
+        refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
         let panel_state = PanelState {
             health: Some(self.engine.health.snapshot()),
             outputs: outputs_status,
             frame_times_ms: Vec::new(),
             frame_budget_ms: 1000.0 / 60.0,
+            midi: self.midi_view.clone(),
         };
-        if let Err(e) = state.gui.render(
+        let actions = state.gui.render(
             &state.window,
             &state.ctx.device,
             &state.ctx.queue,
@@ -207,9 +219,16 @@ impl App {
             &self.params.registry,
             panel_state,
             [state.config.width, state.config.height],
-        ) {
+        );
+        match actions {
+            Ok(actions) => apply_panel_actions(
+                actions,
+                &self.midi_shared,
+                &self.opts.midi_map_path,
+                &mut self.saved_revision,
+            ),
             // A GUI failure must never take down the output.
-            log::error!("GUI draw failed: {e:#}");
+            Err(e) => log::error!("GUI draw failed: {e:#}"),
         }
 
         state.ctx.queue.submit([encoder.finish()]);
@@ -284,7 +303,73 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Copy MIDI state for the panel. Non-blocking by design: if the MIDI
+/// thread holds the lock we reuse the previous snapshot, which is at most
+/// one frame stale — the render thread must never wait on MIDI traffic.
+fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut MidiView) {
+    if midi.is_none() {
+        return;
+    }
+    let Ok(state) = shared.try_lock() else { return };
+    view.available = true;
+    view.connected = state.connected.clone();
+    view.map = state.map.clone();
+    view.learn_target = state.learn_target.clone();
+    view.last_source = state.last_source;
+}
+
+fn apply_panel_actions(
+    actions: vizz_ui::PanelActions,
+    shared: &SharedMidi,
+    map_path: &std::path::Path,
+    saved_revision: &mut u64,
+) {
+    if actions.set_learn_target.is_none() && actions.clear_binding.is_none() {
+        return;
+    }
+    let Ok(mut state) = shared.lock() else { return };
+    if let Some(target) = actions.set_learn_target {
+        state.learn_target = target;
+    }
+    if let Some(param) = actions.clear_binding {
+        state.map.unbind_param(&param);
+        state.revision += 1;
+    }
+    // Persist as soon as a mapping changes: a crash mid-set should not
+    // cost the mappings that were just set up.
+    if state.revision != *saved_revision {
+        let (map, revision) = (state.map.clone(), state.revision);
+        drop(state);
+        match vizz_midi::save_map(map_path, &map) {
+            Ok(()) => *saved_revision = revision,
+            Err(e) => log::error!("could not save MIDI map: {e:#}"),
+        }
+    }
+}
+
 pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
+    // MIDI mappings load before the engine starts so a learned setup is
+    // live from the first frame.
+    let map = match vizz_midi::load_map(&opts.midi_map_path) {
+        Ok(map) => map,
+        Err(e) => {
+            log::error!("could not load MIDI map: {e:#} — starting with none");
+            vizz_midi::MidiMap::default()
+        }
+    };
+    let midi_shared: SharedMidi = Arc::new(std::sync::Mutex::new(vizz_midi::MidiState {
+        map,
+        ..Default::default()
+    }));
+    let midi = match MidiEngine::spawn(Arc::clone(&params.registry), Arc::clone(&midi_shared)) {
+        Ok(engine) => Some(engine),
+        // No MIDI is a degraded mode, not a failure: visuals and OSC run.
+        Err(e) => {
+            log::warn!("MIDI unavailable: {e:#}");
+            None
+        }
+    };
+
     let event_loop = EventLoop::new()?;
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -293,6 +378,10 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
         params,
         opts,
         state: None,
+        midi,
+        midi_shared,
+        midi_view: MidiView::default(),
+        saved_revision: 0,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

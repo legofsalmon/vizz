@@ -22,10 +22,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Ensure Rust
         run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
-      # Runners have no GPU and no Vulkan ICD; lavapipe is a software
-      # rasterizer, enough to exercise the readback ring and NDI data path.
-      - name: Install software Vulkan driver
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers
+      # lavapipe: a software rasterizer, since runners have no GPU or
+      # Vulkan ICD — enough for the readback ring and the NDI data path.
+      # libasound2-dev: midir needs ALSA headers on Linux (macOS and
+      # Windows use CoreMIDI/WinMM and need nothing).
+      - name: Install Linux build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libasound2-dev
       - name: Build
         run: cargo build --workspace
       - name: Test

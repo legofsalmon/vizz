@@ -1,0 +1,13 @@
+[package]
+name = "vizz-midi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vizz-params.workspace = true
+midir = "0.11"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true

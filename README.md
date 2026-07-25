@@ -4,13 +4,13 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 3 — control panel.** Renders a procedural particle
+**Status: phase 3 — control panel and MIDI.** Renders a procedural particle
 field into a fixed-resolution master texture, publishes it over **Syphon**
 on macOS (zero-copy) and **NDI** on the network (async readback, never
 stalls the renderer), previews it aspect-fitted in the window, and takes
-OSC control live — with an on-screen control panel, built-in health
-monitoring and a headless benchmark mode. Both outputs work windowed
-*and* headless. MIDI and Spout are next.
+OSC and MIDI control live — with an on-screen control panel, built-in
+health monitoring and a headless benchmark mode. Both outputs work
+windowed *and* headless. Spout is next.
 
 ## Install (macOS, no developer tools)
 
@@ -125,7 +125,7 @@ start with `--no-gui`) showing:
   count, RSS and CPU.
 - **Output status** — which of Syphon/NDI actually came up.
 - **A slider for every parameter**, generated from the registry's own
-  metadata. Registering a parameter in `params.rs` gives it a control
+  metadata, each with a MIDI **learn** button. Registering a parameter in `params.rs` gives it a control
   automatically, so the panel can never drift from the OSC surface, and
   the labels double as live documentation of the OSC addresses.
   Right-click a slider to restore its default.
@@ -140,6 +140,34 @@ To review the layout without a display (or in CI):
 ```sh
 cargo run -p vizz-ui --example render_panel -- panel.png
 ```
+
+## MIDI control
+
+Any connected controller can drive any parameter. Devices are
+hot-pluggable — ports are rescanned every couple of seconds, so plugging
+a controller in mid-set connects it, and unplugging one disturbs nothing
+else.
+
+**To map a control**: click **learn** next to a parameter in the panel,
+then move the knob or fader. The panel echoes whatever it is hearing
+while learning, so a silent controller is immediately distinguishable
+from a mapping problem. Click the binding label to clear it.
+
+Supported sources:
+
+| Source | Behaviour |
+|--------|-----------|
+| Control change | 0–127, or **14-bit** when the device sends the LSB pair (CC *n* + CC *n*+32) |
+| Note | momentary — velocity while held, 0 on release |
+| Pitch bend | full 14-bit range |
+
+Mappings are saved as JSON to `~/.config/vizz/midi.json` (override with
+`--midi-map`) the moment they change, so a crash mid-set cannot cost the
+mapping you just set up. MIDI failing to start is a degraded mode, not a
+failure: the visuals and OSC keep running.
+
+Building on Linux needs ALSA headers (`libasound2-dev`); macOS and
+Windows use CoreMIDI/WinMM and need nothing extra.
 
 ## OSC control
 
@@ -181,6 +209,9 @@ crates/
                 ordered on wgpu's Metal queue) and NDI (runtime-loaded
                 library, async readback ring, dedicated send thread).
                 Spout will follow the same trait.
+  vizz-midi     MIDI input: wire-format parsing, bindings with 14-bit CC
+                pairing, MIDI-learn, and JSON persistence. Hot-plugs
+                devices; writes into the param store exactly like OSC.
   vizz-ui       egui control panel + a wgpu 30 paint backend for egui
                 (the published egui-wgpu still targets wgpu 29, and two
                 wgpu versions cannot share a device).

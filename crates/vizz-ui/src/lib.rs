@@ -17,7 +17,7 @@ use vizz_params::ParamRegistry;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-pub use panel::{OutputStatus, PanelState};
+pub use panel::{MidiView, OutputStatus, PanelActions, PanelState};
 
 /// How many frame times the sparkline keeps.
 const HISTORY: usize = 240;
@@ -93,9 +93,9 @@ impl Gui {
         registry: &ParamRegistry,
         mut state: PanelState,
         size_px: [u32; 2],
-    ) -> Result<()> {
+    ) -> Result<PanelActions> {
         if !self.visible {
-            return Ok(());
+            return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
 
@@ -103,7 +103,7 @@ impl Gui {
         // begin_pass/end_pass rather than run_ui: the panel builds its own
         // window from the context instead of drawing into a provided Ui.
         self.ctx.begin_pass(input);
-        panel::draw(&self.ctx, registry, &state);
+        let actions = panel::draw(&self.ctx, registry, &state);
         let output = self.ctx.end_pass();
         self.state
             .handle_platform_output(window, output.platform_output);
@@ -118,7 +118,8 @@ impl Gui {
             &primitives,
             size_px,
             output.pixels_per_point,
-        )
+        )?;
+        Ok(actions)
     }
 }
 
@@ -145,6 +146,7 @@ mod tests {
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
             frame_times_ms: vec![16.0, 17.0, 15.5],
             frame_budget_ms: 16.67,
+            midi: MidiView::default(),
         };
 
         let text = run_panel(&ctx, &reg, &state);
@@ -168,10 +170,44 @@ mod tests {
             outputs: vec![],
             frame_times_ms: vec![],
             frame_budget_ms: 16.67,
+            midi: MidiView::default(),
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("Collecting health data"), "got: {text}");
         assert!(text.contains("preview only"), "got: {text}");
+    }
+
+    /// A learned binding must be visible on its slider, and learn mode
+    /// must announce itself — otherwise there is no way to tell whether
+    /// the controller is being heard at all.
+    #[test]
+    fn panel_shows_midi_bindings_and_learn_state() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let mut map = vizz_midi::MidiMap::default();
+        map.bind(
+            vizz_midi::Source::ControlChange { channel: 0, controller: 7 },
+            "/master/dim",
+        );
+        let state = PanelState {
+            health: None,
+            outputs: vec![],
+            frame_times_ms: vec![],
+            frame_budget_ms: 16.67,
+            midi: MidiView {
+                available: true,
+                connected: vec!["Launch Control XL".into()],
+                map,
+                learn_target: Some("/particles/count".into()),
+                last_source: Some(vizz_midi::Source::Note { channel: 9, note: 36 }),
+            },
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("Launch Control XL"), "device missing: {text}");
+        // 1-based channel, matching what controllers display.
+        assert!(text.contains("ch1 cc7"), "binding label missing: {text}");
+        assert!(text.contains("learning /particles/count"), "learn prompt missing: {text}");
+        assert!(text.contains("ch10 note36"), "learn feedback missing: {text}");
     }
 
     /// Drive the panel and return every string it drew.
@@ -192,7 +228,7 @@ mod tests {
         let mut text = String::new();
         for _ in 0..2 {
             ctx.begin_pass(input.clone());
-            panel::draw(ctx, reg, state);
+            let _ = panel::draw(ctx, reg, state);
             text = collect_text(&ctx.end_pass().shapes);
         }
         text

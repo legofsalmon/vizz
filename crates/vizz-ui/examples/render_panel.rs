@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use vizz_health::{HealthConfig, HealthMonitor};
 use vizz_params::{ParamDef, ParamRegistry};
-use vizz_ui::{OutputStatus, PanelState, panel};
+use vizz_ui::{MidiView, OutputStatus, PanelState, panel};
 
 const W: u32 = 460;
 const H: u32 = 560;
@@ -49,6 +49,7 @@ fn main() {
         ],
         frame_times_ms: history,
         frame_budget_ms: 1000.0 / 60.0,
+        midi: midi_view(),
     };
 
     let (device, queue) = gpu();
@@ -103,7 +104,7 @@ fn main() {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
         ctx.begin_pass(input);
-        panel::draw(&ctx, &registry, &state);
+        let _ = panel::draw(&ctx, &registry, &state);
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);
         last = Some(out);
@@ -182,4 +183,19 @@ fn save_png(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, pat
     drop(data);
     buffer.unmap();
     image::RgbaImage::from_raw(W, H, pixels).unwrap().save(path).unwrap();
+}
+
+/// A representative MIDI state for the preview: one device connected and
+/// a couple of controls already learned.
+fn midi_view() -> MidiView {
+    let mut map = vizz_midi::MidiMap::default();
+    map.bind(vizz_midi::Source::ControlChange { channel: 0, controller: 7 }, "/master/dim");
+    map.bind(vizz_midi::Source::ControlChange { channel: 0, controller: 1 }, "/particles/hue");
+    MidiView {
+        available: true,
+        connected: vec!["Launch Control XL".into()],
+        map,
+        learn_target: None,
+        last_source: None,
+    }
 }

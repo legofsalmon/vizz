@@ -14,6 +14,7 @@ vizz-osc.workspace = true
 vizz-health.workspace = true
 vizz-render.workspace = true
 vizz-io.workspace = true
+vizz-midi.workspace = true
 vizz-ui.workspace = true
 
 anyhow.workspace = true

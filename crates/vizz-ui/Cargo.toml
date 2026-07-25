@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 vizz-params.workspace = true
 vizz-health.workspace = true
+vizz-midi.workspace = true
 
 egui.workspace = true
 egui-winit.workspace = true
@@ -19,4 +20,5 @@ log.workspace = true
 [dev-dependencies]
 pollster.workspace = true
 image.workspace = true
+vizz-midi.workspace = true
 vizz-health.workspace = true
