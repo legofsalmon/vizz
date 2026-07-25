@@ -4,10 +4,11 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 1 skeleton.** Renders a procedural particle field at vsync,
-every visual parameter live-controllable over OSC, with built-in health
-monitoring and a headless benchmark mode. Output/input backends (Syphon,
-Spout, NDI) are specified as traits in `vizz-io` and land in phase 2.
+**Status: phase 2 — Syphon output.** Renders a procedural particle field
+into a fixed-resolution master texture, publishes it over **Syphon** on
+macOS (zero-copy, works windowed *and* headless), previews it aspect-fitted
+in the window, and takes OSC control live — with built-in health monitoring
+and a headless benchmark mode. Spout and NDI are next.
 
 ## Running
 
@@ -18,6 +19,33 @@ cargo run --release -- --osc-port 9000 --width 1920 --height 1080
 
 Escape or closing the window quits. Logs (including the 2-second health
 line) go to stderr; tune with `RUST_LOG=debug`.
+
+The scene renders at the fixed `--width`×`--height` output resolution into
+a master texture; the window is only an aspect-fitted preview. Resizing
+the window never changes what receivers see.
+
+### Syphon output (macOS)
+
+The master texture is published as a Syphon server named `vizz` (change
+with `--syphon-name`). It appears automatically in Resolume, VDMX,
+MadMapper, Syphon Simple Client, etc. Flags: `--no-syphon` disables it;
+`--syphon-flip` marks frames vertically flipped if your receiver shows
+the image upside down.
+
+Syphon.framework is loaded at runtime — no link-time dependency — so the
+binary runs without it (the output just reports unavailable). Download
+the framework from <https://github.com/Syphon/Syphon-Framework/releases>
+and put it in any of, in search order:
+
+1. `$VIZZ_SYPHON_FRAMEWORK` (path to `Syphon.framework`)
+2. `<binary dir>/../Frameworks/` (app-bundle layout) or next to the binary
+3. `./vendor/Syphon.framework` or `./Syphon.framework` (working dir)
+4. `~/Library/Frameworks/` or `/Library/Frameworks/`
+
+Publishing is ordered on wgpu's own Metal command queue, directly after
+each frame's submit — no cross-queue synchronization, no added latency,
+and `--headless` publishes too, so vizz can run as a windowless Syphon
+source.
 
 ### Headless / benchmark mode
 
@@ -67,8 +95,9 @@ crates/
                 particle field (all per-particle state derived in the
                 vertex shader — per frame the CPU uploads 32 bytes and
                 issues one draw call, regardless of count).
-  vizz-io       FrameSender / FrameReceiver traits for Syphon, Spout, and
-                NDI backends, with the non-blocking rules they must obey.
+  vizz-io       FrameSender / FrameReceiver traits + the Syphon backend
+                (runtime-loaded framework, objc2 bindings, publish ordered
+                on wgpu's Metal queue). Spout and NDI follow the same trait.
   vizz-app      the `vizz` binary: winit event loop (windowed) and the
                 fixed-timestep headless runner.
 ```
@@ -95,8 +124,8 @@ Planned output/input transports:
 
 ## Roadmap
 
-1. ~~Skeleton: render loop, param store, OSC, health monitoring, headless benchmark~~ ← here
-2. Outputs: Syphon send, Spout send, NDI send (async staging-buffer ring)
+1. ~~Skeleton: render loop, param store, OSC, health monitoring, headless benchmark~~
+2. Outputs: ~~Syphon send~~ ← here; Spout send, NDI send (async staging-buffer ring)
 3. Control depth: MIDI + MIDI-learn, beat clock / Ableton Link, audio FFT
    input, LFO/envelope modulation on any parameter
 4. Content: point-cloud & 3D-model generators, effect chains, external

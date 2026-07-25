@@ -1,6 +1,6 @@
 //! Headless mode: render offscreen at a fixed timestep, then emit a JSON
-//! health report. This is the benchmark/CI entry point — it exercises the
-//! exact frame path of a live set minus the swapchain.
+//! health report. This is the benchmark/CI entry point — and on macOS it
+//! doubles as a windowless Syphon source, since outputs publish here too.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,12 +9,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use vizz_health::HealthSnapshot;
-use vizz_render::{GpuContext, particles::ParticleScene};
+use vizz_render::{GpuContext, output::OutputTarget, particles::ParticleScene};
 
 use crate::engine::FrameEngine;
+use crate::outputs::{self, OutputOpts};
 use crate::params::AppParams;
-
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 #[derive(Serialize)]
 struct BenchReport {
@@ -33,29 +32,15 @@ pub struct HeadlessOpts {
     pub frames: u32,
     pub dump: Option<PathBuf>,
     pub report: Option<PathBuf>,
+    pub outputs: OutputOpts,
 }
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let ctx = pollster::block_on(GpuContext::new(None))?;
-    let scene = ParticleScene::new(&ctx, FORMAT);
+    let scene = ParticleScene::new(&ctx, vizz_render::output::OUTPUT_FORMAT);
     let mut engine = FrameEngine::new(params);
-
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("headless-target"),
-        size: wgpu::Extent3d {
-            width: opts.width,
-            height: opts.height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let aspect = opts.width as f32 / opts.height as f32;
+    let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
+    let mut senders = outputs::build_senders(&ctx.device, &opts.outputs);
     let fixed_dt = Duration::from_nanos(16_666_667);
 
     log::info!(
@@ -67,12 +52,13 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let run_start = Instant::now();
     for _ in 0..opts.frames {
         let frame_start = Instant::now();
-        let inputs = engine.begin_frame(aspect, Some(fixed_dt));
+        let inputs = engine.begin_frame(output.aspect(), Some(fixed_dt));
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        scene.render(&ctx, &mut encoder, &view, &inputs.uniforms, inputs.count);
+        scene.render(&ctx, &mut encoder, &output.view, &inputs.uniforms, inputs.count);
         ctx.queue.submit([encoder.finish()]);
+        outputs::publish_all(&mut senders, &ctx.device, &ctx.queue, &output.texture);
         // Headless has no vsync backpressure: wait for the GPU so frame
         // times measure real work, not queue depth.
         ctx.device
@@ -104,7 +90,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     }
 
     if let Some(path) = &opts.dump {
-        dump_png(&ctx, &texture, opts.width, opts.height, path)?;
+        dump_png(&ctx, &output.texture, opts.width, opts.height, path)?;
         log::info!("wrote last frame to {}", path.display());
     }
     Ok(())
@@ -162,6 +148,11 @@ fn dump_png(ctx: &GpuContext, texture: &wgpu::Texture, width: u32, height: u32, 
     }
     drop(data);
     buffer.unmap();
+
+    // Master texture is BGRA; PNG wants RGBA.
+    for px in pixels.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
 
     image::RgbaImage::from_raw(width, height, pixels)
         .context("readback size mismatch")?

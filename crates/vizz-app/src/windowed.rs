@@ -1,10 +1,14 @@
 //! Windowed mode: winit event loop driving the frame engine at vsync.
+//!
+//! Scenes render into the fixed-resolution master [`OutputTarget`]; the
+//! window only shows an aspect-fitted preview of it. Resizing the window
+//! never changes what receivers (Syphon/Spout/NDI) see.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use vizz_render::{GpuContext, particles::ParticleScene};
+use vizz_render::{GpuContext, blit::BlitPass, output::OutputTarget, particles::ParticleScene};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -13,11 +17,13 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::engine::FrameEngine;
+use crate::outputs::{self, OutputOpts};
 use crate::params::AppParams;
 
 pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
+    pub outputs: OutputOpts,
 }
 
 struct RenderState {
@@ -26,6 +32,10 @@ struct RenderState {
     config: wgpu::SurfaceConfiguration,
     ctx: GpuContext,
     scene: ParticleScene,
+    output: OutputTarget,
+    blit: BlitPass,
+    blit_bind: wgpu::BindGroup,
+    senders: Vec<Box<dyn vizz_io::FrameSender>>,
 }
 
 struct App {
@@ -87,13 +97,24 @@ impl App {
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&ctx.device, &config);
 
-        let scene = ParticleScene::new(&ctx, config.format);
+        // Scenes draw into the master target at the fixed output resolution;
+        // the swapchain only ever sees the preview blit.
+        let output = OutputTarget::new(&ctx.device, self.opts.width, self.opts.height);
+        let scene = ParticleScene::new(&ctx, vizz_render::output::OUTPUT_FORMAT);
+        let blit = BlitPass::new(&ctx.device, config.format);
+        let blit_bind = blit.bind(&ctx.device, &output.view);
+        let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
+
         Ok(RenderState {
             window,
             surface,
             config,
             ctx,
             scene,
+            output,
+            blit,
+            blit_bind,
+            senders,
         })
     }
 
@@ -128,19 +149,38 @@ impl App {
             }
         };
 
-        let aspect = state.config.width as f32 / state.config.height.max(1) as f32;
-        let inputs = self.engine.begin_frame(aspect, None);
-        let view = frame
+        let inputs = self.engine.begin_frame(state.output.aspect(), None);
+        let preview = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = state
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        state
-            .scene
-            .render(&state.ctx, &mut encoder, &view, &inputs.uniforms, inputs.count);
+        state.scene.render(
+            &state.ctx,
+            &mut encoder,
+            &state.output.view,
+            &inputs.uniforms,
+            inputs.count,
+        );
+        state.blit.draw(
+            &mut encoder,
+            &preview,
+            &state.blit_bind,
+            state.output.aspect(),
+            state.config.width,
+            state.config.height,
+        );
         state.ctx.queue.submit([encoder.finish()]);
+
+        // After submit: senders enqueue work ordered behind this frame.
+        outputs::publish_all(
+            &mut state.senders,
+            &state.ctx.device,
+            &state.ctx.queue,
+            &state.output.texture,
+        );
 
         state.window.pre_present_notify();
         state.ctx.queue.present(frame);

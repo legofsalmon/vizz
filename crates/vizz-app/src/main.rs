@@ -1,5 +1,6 @@
 mod engine;
 mod headless;
+mod outputs;
 mod params;
 mod windowed;
 
@@ -42,6 +43,19 @@ struct Args {
     /// Output height in pixels.
     #[arg(long, default_value_t = 720)]
     height: u32,
+
+    /// Disable the Syphon output (macOS).
+    #[arg(long)]
+    no_syphon: bool,
+
+    /// Syphon server name shown to receivers.
+    #[arg(long, default_value = "vizz")]
+    syphon_name: String,
+
+    /// Mark published Syphon frames as vertically flipped. Use this if
+    /// the image is upside down in your receiving app.
+    #[arg(long)]
+    syphon_flip: bool,
 }
 
 fn main() -> Result<()> {
@@ -63,6 +77,12 @@ fn main() -> Result<()> {
         }
     };
 
+    let output_opts = outputs::OutputOpts {
+        syphon: !args.no_syphon,
+        syphon_name: args.syphon_name.clone(),
+        syphon_flip: args.syphon_flip,
+    };
+
     if args.headless {
         headless::run(
             params,
@@ -72,6 +92,7 @@ fn main() -> Result<()> {
                 frames: args.frames,
                 dump: args.dump,
                 report: args.report,
+                outputs: output_opts,
             },
         )
     } else {
@@ -80,6 +101,7 @@ fn main() -> Result<()> {
             windowed::WindowedOpts {
                 width: args.width,
                 height: args.height,
+                outputs: output_opts,
             },
         )
     }

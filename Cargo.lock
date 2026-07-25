@@ -2304,7 +2304,9 @@ name = "vizz-io"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libloading",
  "log",
+ "objc2 0.6.4",
  "wgpu",
 ]
 

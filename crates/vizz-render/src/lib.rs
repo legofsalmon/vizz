@@ -7,6 +7,8 @@
 
 use anyhow::{Context as _, Result};
 
+pub mod blit;
+pub mod output;
 pub mod particles;
 
 /// Owned GPU handles, shared by scenes and (later) I/O backends.
