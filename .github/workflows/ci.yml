@@ -33,6 +33,8 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Fetch Syphon.framework
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-syphon.sh vendor
       - name: Headless run with Syphon on real Metal
         run: |

@@ -7,7 +7,14 @@ dest="${1:-vendor}"
 api="https://api.github.com/repos/Syphon/Syphon-Framework/releases/latest"
 
 echo "Looking up latest Syphon-Framework release..."
-json=$(curl -fsSL "$api")
+# CI runners share anonymous API quota and get 403s; use the token there.
+# (Asset download below stays unauthenticated — curl won't forward the
+# Authorization header across the redirect to the CDN, which is correct.)
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$api")
+else
+    json=$(curl -fsSL "$api")
+fi
 url=$(printf '%s' "$json" \
     | grep -o '"browser_download_url": *"[^"]*\.zip"' \
     | grep -o 'https://[^"]*' \
