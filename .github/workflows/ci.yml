@@ -15,19 +15,30 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    env:
+      # Fail rather than silently skip if the GPU tests find no adapter.
+      VIZZ_REQUIRE_GPU: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Ensure Rust
         run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
+      # Runners have no GPU and no Vulkan ICD; lavapipe is a software
+      # rasterizer, enough to exercise the readback ring and NDI data path.
+      - name: Install software Vulkan driver
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers
       - name: Build
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      - name: Verify NDI ABI against stub
+        run: ./scripts/test-ndi-abi.sh
 
   # Real Apple Silicon with working Metal: this exercises the actual
   # Syphon publish path end-to-end, not just a compile check.
   macos:
     runs-on: macos-latest
+    env:
+      VIZZ_REQUIRE_GPU: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Ensure Rust
@@ -36,6 +47,8 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      - name: Verify NDI ABI against stub
+        run: ./scripts/test-ndi-abi.sh
       - name: Fetch Syphon.framework
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

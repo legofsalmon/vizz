@@ -4,11 +4,12 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 2 — Syphon output.** Renders a procedural particle field
-into a fixed-resolution master texture, publishes it over **Syphon** on
-macOS (zero-copy, works windowed *and* headless), previews it aspect-fitted
-in the window, and takes OSC control live — with built-in health monitoring
-and a headless benchmark mode. Spout and NDI are next.
+**Status: phase 2 — Syphon + NDI output.** Renders a procedural particle
+field into a fixed-resolution master texture, publishes it over **Syphon**
+on macOS (zero-copy) and **NDI** on the network (async readback, never
+stalls the renderer), previews it aspect-fitted in the window, and takes
+OSC control live — with built-in health monitoring and a headless
+benchmark mode. Both outputs work windowed *and* headless. Spout is next.
 
 ## Install (macOS, no developer tools)
 
@@ -19,9 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/insta
 This puts `vizz.app` (with Syphon embedded — nothing else to install) in
 your Applications folder. **First launch: right-click → Open** — the app
 is not notarized with Apple, so a plain double-click is blocked the first
-time. Until the first tagged release exists, download the `vizz.app`
-artifact from the latest [Actions run](https://github.com/legofsalmon/vizz/actions)
-instead, unzip, and drag to Applications.
+time. You can also grab the bundle directly from the
+[latest release](https://github.com/legofsalmon/vizz/releases/latest).
 
 Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
 window title shows the live settings). Flags below need a terminal run.
@@ -90,6 +90,29 @@ optionally the final frame as a PNG. This is the regression benchmark:
 run it before and after a change and diff the reports. It exercises the
 exact frame path of a live set minus the swapchain.
 
+### NDI output (all platforms)
+
+```sh
+cargo run --release -- --ndi --ndi-name vizz --width 1920 --height 1080
+```
+
+Publishes the master texture as an NDI source on the network, so other
+machines running Resolume/TouchDesigner/OBS can pick it up. Requires the
+[NDI Tools/Runtime](https://ndi.video/tools/) redistributable — like
+Syphon it is loaded at runtime, so the binary builds and runs without it
+and the output simply reports itself unavailable. Set `VIZZ_NDI_RUNTIME`
+to point at the library explicitly if it lives somewhere unusual.
+
+Unlike Syphon, NDI cannot be zero-copy: it needs pixels in main memory.
+The render thread still never waits for them —
+`crates/vizz-io/src/readback.rs` keeps a ring of staging buffers, encodes
+each frame's GPU→CPU copy and returns immediately, and a dedicated send
+thread transmits whatever has finished. Rows keep wgpu's 256-byte padded
+stride all the way to the wire (NDI accepts a line stride), so pixels are
+never repacked. If the GPU or the network falls behind, frames are
+**dropped for that output** and counted — never awaited, because losing an
+NDI frame is survivable and missing vsync is not.
+
 ## OSC control
 
 Send standard OSC messages (float, int, double, or bool args) to the UDP
@@ -125,9 +148,11 @@ crates/
                 particle field (all per-particle state derived in the
                 vertex shader — per frame the CPU uploads 32 bytes and
                 issues one draw call, regardless of count).
-  vizz-io       FrameSender / FrameReceiver traits + the Syphon backend
-                (runtime-loaded framework, objc2 bindings, publish ordered
-                on wgpu's Metal queue). Spout and NDI follow the same trait.
+  vizz-io       FrameSender / FrameReceiver traits and the output backends:
+                Syphon (runtime-loaded framework, objc2 bindings, publish
+                ordered on wgpu's Metal queue) and NDI (runtime-loaded
+                library, async readback ring, dedicated send thread).
+                Spout will follow the same trait.
   vizz-app      the `vizz` binary: winit event loop (windowed) and the
                 fixed-timestep headless runner.
 ```
@@ -156,7 +181,10 @@ Planned output/input transports:
 
 Every push runs `.github/workflows/ci.yml`:
 
-- **Linux**: build + full test suite.
+- **Linux**: build, full test suite, and the NDI ABI check
+  (`scripts/test-ndi-abi.sh`) — this runs vizz against a stub library
+  implementing the NDI C ABI, verifying struct layout, FourCC, stride
+  handling, and pixel delivery without needing the proprietary SDK.
 - **macOS (Apple Silicon)**: build + tests, then fetches Syphon.framework
   and does a 120-frame headless run on real Metal, failing if the Syphon
   server doesn't start or a publish errors. The health report
@@ -185,7 +213,7 @@ empty commit).
 ## Roadmap
 
 1. ~~Skeleton: render loop, param store, OSC, health monitoring, headless benchmark~~
-2. Outputs: ~~Syphon send~~ ← here; Spout send, NDI send (async staging-buffer ring)
+2. Outputs: ~~Syphon send~~, ~~NDI send (async staging-buffer ring)~~ ← here; Spout send
 3. Control depth: MIDI + MIDI-learn, beat clock / Ableton Link, audio FFT
    input, LFO/envelope modulation on any parameter
 4. Content: point-cloud & 3D-model generators, effect chains, external

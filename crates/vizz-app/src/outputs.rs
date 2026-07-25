@@ -9,6 +9,13 @@ pub struct OutputOpts {
     pub syphon: bool,
     pub syphon_name: String,
     pub syphon_flip: bool,
+    pub ndi: bool,
+    pub ndi_name: String,
+    /// Master output size and rate, needed by senders that describe the
+    /// stream up front (NDI).
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
 }
 
 /// Build every sender that can come up. A sender failing to start is a
@@ -30,6 +37,23 @@ pub fn build_senders(device: &wgpu::Device, opts: &OutputOpts) -> Vec<Box<dyn Fr
     #[cfg(not(target_os = "macos"))]
     if opts.syphon {
         log::debug!("Syphon is macOS-only; no sender started");
+    }
+
+    if opts.ndi {
+        match vizz_io::ndi::NdiSender::new(
+            device,
+            &opts.ndi_name,
+            opts.width,
+            opts.height,
+            opts.fps,
+            1,
+        ) {
+            Ok(sender) => {
+                log::info!("NDI output '{}' is live", opts.ndi_name);
+                senders.push(Box::new(sender));
+            }
+            Err(e) => log::warn!("NDI output unavailable: {e:#}"),
+        }
     }
 
     if senders.is_empty() {
