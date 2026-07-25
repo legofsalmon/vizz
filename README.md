@@ -115,6 +115,19 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+## Updates
+
+On startup vizz asks GitHub once whether a newer release exists and, if
+so, shows a banner in the panel with a link. It **never downloads or
+replaces itself** — an update landing mid-set is precisely the failure
+live software cannot afford, so a human picks the moment. Updating is
+the same drag-and-drop as installing.
+
+The check runs on a background thread with a short timeout and fails
+silently: no network, an offline venue, a rate-limited API or a changed
+response all end with vizz simply not mentioning it. `--no-update-check`
+disables the request entirely.
+
 ## Geometry
 
 `/shape/mode` sweeps through five forms — **sphere, torus, trefoil knot,

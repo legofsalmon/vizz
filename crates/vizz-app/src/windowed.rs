@@ -17,6 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use vizz_midi::{MidiEngine, SharedMidi};
+use vizz_update::SharedUpdate;
 use vizz_ui::{Gui, MidiView, OutputStatus, PanelState};
 
 use crate::engine::FrameEngine;
@@ -27,6 +28,8 @@ pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
     pub show_gui: bool,
+    /// Check GitHub for a newer release once at startup.
+    pub check_updates: bool,
     /// Where MIDI mappings are persisted.
     pub midi_map_path: std::path::PathBuf,
     /// Window title; shows OSC port etc. so double-click users can see
@@ -62,6 +65,7 @@ struct App {
     midi_view: MidiView,
     /// Revision last written to disk, so saves happen only on change.
     saved_revision: u64,
+    update: SharedUpdate,
 }
 
 impl App {
@@ -204,6 +208,13 @@ impl App {
             .collect();
         refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
         let panel_state = PanelState {
+            // try_lock: the update thread holds this for microseconds, but
+            // the render thread still never waits on it.
+            update_available: self
+                .update
+                .try_lock()
+                .ok()
+                .and_then(|u| u.available.map(|v| v.to_string())),
             health: Some(self.engine.health.snapshot()),
             outputs: outputs_status,
             frame_times_ms: Vec::new(),
@@ -371,6 +382,11 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
         }
     };
 
+    let update: SharedUpdate = Arc::new(std::sync::Mutex::new(Default::default()));
+    if opts.check_updates {
+        vizz_update::spawn_check(Arc::clone(&update));
+    }
+
     let event_loop = EventLoop::new()?;
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -383,6 +399,7 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
         midi_shared,
         midi_view: MidiView::default(),
         saved_revision: 0,
+        update,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

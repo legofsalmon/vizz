@@ -42,6 +42,7 @@ fn main() {
     }
 
     let state = PanelState {
+        update_available: Some("0.2.0".into()),
         health: Some(health.snapshot()),
         outputs: vec![
             OutputStatus { name: "syphon:vizz".into(), live: true },

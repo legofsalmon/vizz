@@ -40,6 +40,8 @@ pub struct PanelActions {
 
 /// Everything the panel displays that it cannot read from the registry.
 pub struct PanelState {
+    /// Newer version string, if the background check found one.
+    pub update_available: Option<String>,
     pub health: Option<HealthSnapshot>,
     pub outputs: Vec<OutputStatus>,
     /// Recent frame times in ms, oldest first, for the sparkline.
@@ -60,6 +62,7 @@ pub fn draw(
         .default_width(360.0)
         .resizable(true)
         .show(ctx, |ui| {
+            update_banner(ui, state);
             health_section(ui, state);
             ui.separator();
             outputs_section(ui, state);
@@ -73,6 +76,20 @@ pub fn draw(
             ui.small("Tab toggles this panel · Esc quits");
         });
     actions
+}
+
+/// Notify, never install: the link opens the release page and the user
+/// picks the moment. Nothing about a running show changes.
+fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
+    let Some(version) = &state.update_available else { return };
+    ui.horizontal(|ui| {
+        ui.colored_label(
+            egui::Color32::from_rgb(255, 200, 90),
+            format!("vizz {version} available"),
+        );
+        ui.hyperlink_to("download", vizz_update::RELEASES_URL);
+    });
+    ui.separator();
 }
 
 fn midi_section(ui: &mut egui::Ui, state: &PanelState) {

@@ -77,6 +77,10 @@ struct Args {
     /// Where MIDI mappings are stored.
     #[arg(long)]
     midi_map: Option<PathBuf>,
+
+    /// Do not contact GitHub at startup to check for a newer release.
+    #[arg(long)]
+    no_update_check: bool,
 }
 
 fn main() -> Result<()> {
@@ -136,6 +140,7 @@ fn main() -> Result<()> {
                 width: args.width,
                 height: args.height,
                 show_gui: !args.no_gui,
+                check_updates: !args.no_update_check,
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),
                 title,
                 outputs: output_opts,
