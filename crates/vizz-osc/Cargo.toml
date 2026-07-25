@@ -1,0 +1,10 @@
+[package]
+name = "vizz-osc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vizz-params.workspace = true
+rosc.workspace = true
+log.workspace = true

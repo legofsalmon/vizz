@@ -1,0 +1,27 @@
+[package]
+name = "vizz-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vizz"
+path = "src/main.rs"
+
+[dependencies]
+vizz-params.workspace = true
+vizz-osc.workspace = true
+vizz-health.workspace = true
+vizz-render.workspace = true
+vizz-io.workspace = true
+
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+pollster.workspace = true
+clap.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true

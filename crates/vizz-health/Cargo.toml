@@ -1,0 +1,10 @@
+[package]
+name = "vizz-health"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sysinfo.workspace = true
+serde.workspace = true
+log.workspace = true
