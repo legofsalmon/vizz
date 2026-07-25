@@ -4,13 +4,14 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 3 — control panel and MIDI.** Renders a procedural particle
+**Status: phase 4 — modulation.** Renders a procedural particle
 field into a fixed-resolution master texture, publishes it over **Syphon**
 on macOS (zero-copy) and **NDI** on the network (async readback, never
 stalls the renderer), previews it aspect-fitted in the window, and takes
-OSC and MIDI control live — with an on-screen control panel, built-in
-health monitoring and a headless benchmark mode. Both outputs work
-windowed *and* headless. Spout is next.
+OSC and MIDI control live, LFOs and a beat clock driving parameters on
+their own, and five morphing geometry modes — with an on-screen control
+panel, built-in health monitoring and a headless benchmark mode. Both
+outputs work windowed *and* headless. Spout is next.
 
 ## Install (macOS, no developer tools)
 
@@ -114,6 +115,18 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+## Geometry
+
+`/shape/mode` sweeps through five forms — **sphere, torus, trefoil knot,
+grid plane, hollow shell** — and fractional values sit *between* two of
+them. Particles keep their identity across the blend (every form is
+sampled from the same per-particle hashes), so the field flows from one
+shape into the next rather than being re-scattered. A swept knob is
+playable; a stepped one is not.
+
+`/shape/twist` adds shear plus a height-dependent twist, and pairs well
+with a slow LFO.
+
 ## Control panel
 
 The preview window carries an egui panel (press **Tab** to toggle, or
@@ -124,8 +137,10 @@ start with `--no-gui`) showing:
   budget drawn as a reference line, plus p95/p99, worst, over-budget
   count, RSS and CPU.
 - **Output status** — which of Syphon/NDI actually came up.
+- **Modulation** — beat clock with a downbeat indicator, per-LFO shape
+  and rate with a live output dot, and the route list with depth.
 - **A slider for every parameter**, generated from the registry's own
-  metadata, each with a MIDI **learn** button. Registering a parameter in `params.rs` gives it a control
+  metadata, each with a MIDI **learn** and a **mod** button. Registering a parameter in `params.rs` gives it a control
   automatically, so the panel can never drift from the OSC surface, and
   the labels double as live documentation of the OSC addresses.
   Right-click a slider to restore its default.
@@ -184,6 +199,9 @@ control input can never crash the renderer.
 | `/particles/hue`        | 0 – 1        | 0.58    | base hue                       |
 | `/particles/saturation` | 0 – 1        | 0.8     | color saturation               |
 | `/particles/brightness` | 0 – 2        | 1.0     | value multiplier               |
+| `/shape/mode`           | 0 – 5        | 0.0     | geometry; fractional values morph |
+| `/shape/morph`          | 0 – 1        | 0.0     | extra blend into the next form |
+| `/shape/twist`          | 0 – 2        | 0.0     | shear and vertical twist       |
 | `/master/dim`           | 0 – 1        | 1.0     | master fader                   |
 
 Every parameter has a per-parameter smoothing time constant, so stepped
@@ -209,6 +227,8 @@ crates/
                 ordered on wgpu's Metal queue) and NDI (runtime-loaded
                 library, async readback ring, dedicated send thread).
                 Spout will follow the same trait.
+  vizz-mod      modulation: LFOs and a beat clock producing normalised
+                per-parameter offsets applied on top of the base value.
   vizz-midi     MIDI input: wire-format parsing, bindings with 14-bit CC
                 pairing, MIDI-learn, and JSON persistence. Hot-plugs
                 devices; writes into the param store exactly like OSC.

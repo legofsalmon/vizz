@@ -77,7 +77,11 @@ impl FrameEngine {
                 hue: self.snapshot.get(p.hue),
                 saturation: self.snapshot.get(p.saturation),
                 brightness,
-                _pad: 0.0,
+                shape: self.snapshot.get(p.shape),
+                morph: self.snapshot.get(p.morph),
+                twist: self.snapshot.get(p.twist),
+                _pad0: 0.0,
+                _pad1: 0.0,
             },
             count: self.snapshot.get(p.count).max(0.0) as u32,
         }

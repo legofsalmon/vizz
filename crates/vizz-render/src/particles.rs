@@ -17,7 +17,12 @@ pub struct Uniforms {
     pub hue: f32,
     pub saturation: f32,
     pub brightness: f32,
-    pub _pad: f32,
+    /// Geometry mode; fractional part morphs into the next one.
+    pub shape: f32,
+    pub morph: f32,
+    pub twist: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
 }
 
 pub struct ParticleScene {
