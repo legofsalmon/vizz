@@ -33,9 +33,17 @@ MadMapper, Syphon Simple Client, etc. Flags: `--no-syphon` disables it;
 the image upside down.
 
 Syphon.framework is loaded at runtime — no link-time dependency — so the
-binary runs without it (the output just reports unavailable). Download
-the framework from <https://github.com/Syphon/Syphon-Framework/releases>
-and put it in any of, in search order:
+binary runs without it (the output just reports unavailable). Easiest
+setup:
+
+```sh
+./scripts/fetch-syphon.sh    # downloads the latest release into ./vendor
+cargo run --release
+```
+
+Or download it yourself from
+<https://github.com/Syphon/Syphon-Framework/releases> and put it in any
+of, in search order:
 
 1. `$VIZZ_SYPHON_FRAMEWORK` (path to `Syphon.framework`)
 2. `<binary dir>/../Frameworks/` (app-bundle layout) or next to the binary
@@ -121,6 +129,18 @@ Planned output/input transports:
 | Syphon    | macOS    | IOSurface-backed Metal texture | zero-copy |
 | Spout     | Windows  | DXGI shared handle | zero-copy |
 | NDI       | all      | network (SpeedHQ) | CPU encode + async readback ring |
+
+## CI
+
+Every push runs `.github/workflows/ci.yml`:
+
+- **Linux**: build + full test suite.
+- **macOS (Apple Silicon)**: build + tests, then fetches Syphon.framework
+  and does a 120-frame headless run on real Metal, failing if the Syphon
+  server doesn't start or a publish errors. The health report
+  (`bench-macos.json`), last frame (`frame-macos.png`), and run log are
+  uploaded as artifacts — a per-commit performance record on real
+  Apple-silicon hardware.
 
 ## Roadmap
 
