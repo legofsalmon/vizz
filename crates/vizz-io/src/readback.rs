@@ -209,7 +209,25 @@ mod tests {
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
     /// Headless GPU (llvmpipe in CI) plus a texture cleared to a known color.
+    ///
+    /// Returns `None` when no adapter exists so a developer without a GPU
+    /// can still run the suite — but CI sets `VIZZ_REQUIRE_GPU=1`, which
+    /// turns that into a failure. Silently skipping the only tests that
+    /// exercise real GPU behaviour would look identical to passing them.
     fn gpu() -> Option<(wgpu::Device, wgpu::Queue, wgpu::Texture)> {
+        match try_gpu() {
+            Some(g) => Some(g),
+            None if std::env::var_os("VIZZ_REQUIRE_GPU").is_some() => {
+                panic!("VIZZ_REQUIRE_GPU is set but no GPU adapter was found")
+            }
+            None => {
+                eprintln!("no GPU adapter available; skipping GPU test");
+                None
+            }
+        }
+    }
+
+    fn try_gpu() -> Option<(wgpu::Device, wgpu::Queue, wgpu::Texture)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
