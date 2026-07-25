@@ -6,6 +6,8 @@ members = [
     "crates/vizz-health",
     "crates/vizz-render",
     "crates/vizz-io",
+    "crates/vizz-midi",
+    "crates/vizz-ui",
     "crates/vizz-app",
 ]
 
@@ -21,12 +23,16 @@ vizz-osc = { path = "crates/vizz-osc" }
 vizz-health = { path = "crates/vizz-health" }
 vizz-render = { path = "crates/vizz-render" }
 vizz-io = { path = "crates/vizz-io" }
+vizz-midi = { path = "crates/vizz-midi" }
+vizz-ui = { path = "crates/vizz-ui" }
 
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 wgpu = "30"
 winit = "0.30"
+egui = "0.35"
+egui-winit = { version = "0.35", default-features = false, features = ["links", "wayland", "x11"] }
 pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }
 rosc = "0.11"

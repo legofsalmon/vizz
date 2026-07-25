@@ -69,6 +69,14 @@ struct Args {
     /// Frame rate advertised to NDI receivers.
     #[arg(long, default_value_t = 60)]
     fps: u32,
+
+    /// Start with the control panel hidden (Tab toggles it at runtime).
+    #[arg(long)]
+    no_gui: bool,
+
+    /// Where MIDI mappings are stored.
+    #[arg(long)]
+    midi_map: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -127,6 +135,8 @@ fn main() -> Result<()> {
             windowed::WindowedOpts {
                 width: args.width,
                 height: args.height,
+                show_gui: !args.no_gui,
+                midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),
                 title,
                 outputs: output_opts,
             },
