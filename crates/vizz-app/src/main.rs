@@ -56,6 +56,19 @@ struct Args {
     /// the image is upside down in your receiving app.
     #[arg(long)]
     syphon_flip: bool,
+
+    /// Publish the output as an NDI source on the network. Requires the
+    /// NDI runtime to be installed; logs a warning and carries on if not.
+    #[arg(long)]
+    ndi: bool,
+
+    /// NDI source name shown to receivers.
+    #[arg(long, default_value = "vizz")]
+    ndi_name: String,
+
+    /// Frame rate advertised to NDI receivers.
+    #[arg(long, default_value_t = 60)]
+    fps: u32,
 }
 
 fn main() -> Result<()> {
@@ -81,6 +94,11 @@ fn main() -> Result<()> {
         syphon: !args.no_syphon,
         syphon_name: args.syphon_name.clone(),
         syphon_flip: args.syphon_flip,
+        ndi: args.ndi,
+        ndi_name: args.ndi_name.clone(),
+        width: args.width,
+        height: args.height,
+        fps: args.fps,
     };
 
     if args.headless {

@@ -23,6 +23,8 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      - name: Verify NDI ABI against stub
+        run: ./scripts/test-ndi-abi.sh
 
   # Real Apple Silicon with working Metal: this exercises the actual
   # Syphon publish path end-to-end, not just a compile check.
@@ -36,6 +38,8 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      - name: Verify NDI ABI against stub
+        run: ./scripts/test-ndi-abi.sh
       - name: Fetch Syphon.framework
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

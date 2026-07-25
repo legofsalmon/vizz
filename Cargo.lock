@@ -2307,6 +2307,7 @@ dependencies = [
  "libloading",
  "log",
  "objc2 0.6.4",
+ "pollster",
  "wgpu",
 ]
 

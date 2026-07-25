@@ -23,6 +23,8 @@
 
 use anyhow::Result;
 
+pub mod ndi;
+pub mod readback;
 #[cfg(target_os = "macos")]
 pub mod syphon;
 

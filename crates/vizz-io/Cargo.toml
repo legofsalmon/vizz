@@ -8,9 +8,13 @@ license.workspace = true
 wgpu.workspace = true
 anyhow.workspace = true
 log.workspace = true
+# NDI is loaded at runtime on every platform, so this is not target-gated.
+libloading = "0.8"
+
+[dev-dependencies]
+pollster.workspace = true
 
 # objc2 version must stay in sync with wgpu-hal's, so the
 # ProtocolObject types returned by wgpu's Metal HAL unify with ours.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-libloading = "0.8"
