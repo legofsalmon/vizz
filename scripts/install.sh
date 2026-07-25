@@ -18,7 +18,13 @@ url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/nul
     | grep -o 'https://[^"]*' | head -1 || true)
 
 if [ -z "$url" ]; then
-    echo "No release published yet." >&2
+    # Distinguish "no release" from "release exists but has no app attached",
+    # which is what a failed release workflow looks like from out here.
+    if curl -fsSL "https://api.github.com/repos/$repo/releases/latest" >/dev/null 2>&1; then
+        echo "The latest release has no vizz.app.zip attached yet." >&2
+    else
+        echo "No release published yet." >&2
+    fi
     echo "Grab the 'vizz.app' artifact from the latest CI run instead:" >&2
     echo "  https://github.com/$repo/actions" >&2
     exit 1

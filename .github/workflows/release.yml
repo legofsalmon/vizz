@@ -3,26 +3,57 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual trigger to (re)build and attach the bundle for an existing tag,
+  # e.g. to repair a release published before this workflow succeeded.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v0.1.0)"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   macos-app:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build the code the tag actually points at, not the branch the
+          # manual run was dispatched from.
+          ref: ${{ inputs.tag || github.ref }}
       - name: Ensure Rust
         run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
       - name: Build vizz.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/make-app.sh
-      - name: Create release with app bundle
+      # Attach the bundle whether or not the release already exists: a
+      # release published from the GitHub UI creates the tag itself, which
+      # triggers this workflow, so `gh release create` would fail on an
+      # already-existing release and leave it with no download.
+      - name: Publish app bundle to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/vizz.app.zip \
-            --title "vizz $GITHUB_REF_NAME" \
-            --generate-notes \
-            --notes "macOS app bundle with Syphon embedded. First launch: right-click → Open (unsigned). Appears in Resolume/VDMX as Syphon source 'vizz'; OSC control on udp/7000."
+          notes="macOS app bundle with Syphon embedded. First launch: right-click → Open (unsigned). Appears in Resolume/VDMX as Syphon source 'vizz'; OSC control on udp/7000."
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists — uploading bundle to it."
+            gh release upload "$RELEASE_TAG" dist/vizz.app.zip --clobber
+          else
+            echo "Creating release $RELEASE_TAG with bundle."
+            gh release create "$RELEASE_TAG" dist/vizz.app.zip \
+              --title "vizz $RELEASE_TAG" \
+              --generate-notes \
+              --notes "$notes"
+          fi
+          # Fail loudly if the asset somehow did not land — a release with
+          # no download silently breaks scripts/install.sh.
+          gh release view "$RELEASE_TAG" --json assets \
+            | grep -q "vizz.app.zip" \
+            || { echo "::error::vizz.app.zip missing from release $RELEASE_TAG"; exit 1; }
+          echo "vizz.app.zip published to release $RELEASE_TAG."
