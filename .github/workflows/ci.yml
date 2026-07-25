@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Rust
+        run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+
+  # Real Apple Silicon with working Metal: this exercises the actual
+  # Syphon publish path end-to-end, not just a compile check.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Rust
+        run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: Fetch Syphon.framework
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/fetch-syphon.sh vendor
+      - name: Headless run with Syphon on real Metal
+        run: |
+          RUST_LOG=info cargo run -- --headless --frames 120 \
+            --report bench-macos.json --dump frame-macos.png 2> run.log \
+            || { cat run.log; exit 1; }
+          cat run.log
+          grep -q "Syphon output 'vizz' is live" run.log \
+            || { echo "::error::Syphon server did not start — see run.log"; exit 1; }
+          if grep -q "output 'vizz' failed" run.log; then
+            echo "::error::Syphon publish failed mid-run — see run.log"; exit 1
+          fi
+          echo "Syphon server started and published 120 frames."
+      - name: Upload benchmark + frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-headless
+          path: |
+            bench-macos.json
+            frame-macos.png
+            run.log
+          if-no-files-found: ignore
+      - name: Build vizz.app bundle
+        run: ./scripts/make-app.sh
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: vizz.app
+          path: dist/vizz.app.zip
