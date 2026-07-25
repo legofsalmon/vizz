@@ -85,6 +85,8 @@ fn main() {
     });
     queue.submit([enc.finish()]);
 
+    let mut modulation = vizz_mod::ModEngine::with_defaults();
+    modulation.add_route(0, "/particles/hue", 0.3);
     let ctx = egui::Context::default();
     ctx.set_visuals(egui::Visuals::dark());
     let input = egui::RawInput {
@@ -104,7 +106,7 @@ fn main() {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
         ctx.begin_pass(input);
-        let _ = panel::draw(&ctx, &registry, &state);
+        let _ = panel::draw(&ctx, &registry, &state, &mut modulation);
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);
         last = Some(out);

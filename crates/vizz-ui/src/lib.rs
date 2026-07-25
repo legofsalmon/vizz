@@ -92,6 +92,7 @@ impl Gui {
         target: &wgpu::TextureView,
         registry: &ParamRegistry,
         mut state: PanelState,
+        modulation: &mut vizz_mod::ModEngine,
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
         if !self.visible {
@@ -103,7 +104,7 @@ impl Gui {
         // begin_pass/end_pass rather than run_ui: the panel builds its own
         // window from the context instead of drawing into a provided Ui.
         self.ctx.begin_pass(input);
-        let actions = panel::draw(&self.ctx, registry, &state);
+        let actions = panel::draw(&self.ctx, registry, &state, modulation);
         let output = self.ctx.end_pass();
         self.state
             .handle_platform_output(window, output.platform_output);
@@ -228,7 +229,7 @@ mod tests {
         let mut text = String::new();
         for _ in 0..2 {
             ctx.begin_pass(input.clone());
-            let _ = panel::draw(ctx, reg, state);
+            let _ = panel::draw(ctx, reg, state, &mut vizz_mod::ModEngine::with_defaults());
             text = collect_text(&ctx.end_pass().shapes);
         }
         text

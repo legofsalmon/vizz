@@ -218,6 +218,7 @@ impl App {
             &preview,
             &self.params.registry,
             panel_state,
+            &mut self.engine.modulation,
             [state.config.width, state.config.height],
         );
         match actions {
