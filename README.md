@@ -54,9 +54,14 @@ binary runs without it (the output just reports unavailable). Easiest
 setup:
 
 ```sh
-./scripts/fetch-syphon.sh    # downloads the latest release into ./vendor
+./scripts/fetch-syphon.sh    # provides Syphon.framework in ./vendor
 cargo run --release
 ```
+
+Note: the official prebuilt Syphon SDK is Intel-only, so on Apple
+Silicon the script builds the framework from source, which needs Xcode
+installed (one-time, ~30s). The vizz.app bundle ships with a universal
+framework already embedded, so app users never need Xcode.
 
 Or download it yourself from
 <https://github.com/Syphon/Syphon-Framework/releases> and put it in any
