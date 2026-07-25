@@ -4,12 +4,13 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 4 — modulation.** Renders a procedural particle
+**Status: phase 5 — effects.** Renders a procedural particle
 field into a fixed-resolution master texture, publishes it over **Syphon**
 on macOS (zero-copy) and **NDI** on the network (async readback, never
 stalls the renderer), previews it aspect-fitted in the window, and takes
 OSC and MIDI control live, LFOs and a beat clock driving parameters on
-their own, and five morphing geometry modes — with an on-screen control
+their own, five morphing geometry modes and a feedback/mirror/glow effect
+chain — with an on-screen control
 panel, built-in health monitoring and a headless benchmark mode. Both
 outputs work windowed *and* headless. Spout is next.
 
@@ -140,6 +141,33 @@ playable; a stepped one is not.
 `/shape/twist` adds shear plus a height-dependent twist, and pairs well
 with a slow LFO.
 
+## Effects
+
+The scene renders into an HDR buffer and passes through two full-screen
+stages before becoming the master output.
+
+**Feedback** (`/fx/trail`) mixes the previous frame back in, and because
+the history is sampled through a per-frame zoom and rotation
+(`/fx/zoom`, `/fx/spin`) a sustained setting builds a tunnel out of
+whatever is on screen. This is the single effect that most changes how
+the output reads. 0.7–0.85 is the useful range; the parameter stops at
+0.98 because nothing would ever decay at 1.0.
+
+Feedback *blends* rather than accumulates. Adding the history outright
+makes a geometric series with gain `1/(1-trail)` — at 0.96 that is 25×
+the scene, which saturates to flat white within a second regardless of
+tone-mapping. A lerp keeps the steady state at the scene's own level
+while still holding bright cores for a long time.
+
+**Mirror** (`/fx/mirror`) folds UV space: horizontal, quad, or a six-wedge
+kaleidoscope. Stepped rather than swept — half a mirror is not a look.
+
+**Glow** (`/fx/glow`) adds a cheap wide-tap bloom, which is what makes
+additive particles read as luminous.
+
+Buffers are `Rgba16Float`: trails accumulate past 1.0, and 8-bit would
+band and clip before the tone-map could roll it off.
+
 ## Control panel
 
 The preview window carries an egui panel (press **Tab** to toggle, or
@@ -215,6 +243,11 @@ control input can never crash the renderer.
 | `/shape/mode`           | 0 – 5        | 0.0     | geometry; fractional values morph |
 | `/shape/morph`          | 0 – 1        | 0.0     | extra blend into the next form |
 | `/shape/twist`          | 0 – 2        | 0.0     | shear and vertical twist       |
+| `/fx/trail`             | 0 – 0.98     | 0.0     | feedback: how much of last frame survives |
+| `/fx/zoom`              | 0.9 – 1.1    | 1.0     | per-frame zoom of the feedback (tunnels) |
+| `/fx/spin`              | -0.1 – 0.1   | 0.0     | per-frame rotation of the feedback |
+| `/fx/mirror`            | 0 – 3        | 0.0     | 0 off · 1 horizontal · 2 quad · 3 kaleidoscope |
+| `/fx/glow`              | 0 – 1        | 0.25    | bloom lift                     |
 | `/master/dim`           | 0 – 1        | 1.0     | master fader                   |
 
 Every parameter has a per-parameter smoothing time constant, so stepped

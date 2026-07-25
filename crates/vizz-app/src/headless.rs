@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use vizz_health::HealthSnapshot;
-use vizz_render::{GpuContext, output::OutputTarget, particles::ParticleScene};
+use vizz_render::{GpuContext, output::OutputTarget, particles::ParticleScene, post::PostChain};
 
 use crate::engine::FrameEngine;
 use crate::outputs::{self, OutputOpts};
@@ -37,7 +37,8 @@ pub struct HeadlessOpts {
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let ctx = pollster::block_on(GpuContext::new(None))?;
-    let scene = ParticleScene::new(&ctx, vizz_render::output::OUTPUT_FORMAT);
+    let mut post = PostChain::new(&ctx, opts.width, opts.height, vizz_render::output::OUTPUT_FORMAT);
+    let scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
     let mut engine = FrameEngine::new(params);
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
     let mut senders = outputs::build_senders(&ctx.device, &opts.outputs);
@@ -56,7 +57,8 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        scene.render(&ctx, &mut encoder, &output.view, &inputs.uniforms, inputs.count);
+        scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count);
+        post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         ctx.queue.submit([encoder.finish()]);
         outputs::publish_all(&mut senders, &ctx.device, &ctx.queue, &output.texture);
         // Headless has no vsync backpressure: wait for the GPU so frame

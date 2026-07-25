@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use vizz_render::{GpuContext, blit::BlitPass, output::OutputTarget, particles::ParticleScene};
+use vizz_render::{GpuContext, blit::BlitPass, output::OutputTarget, particles::ParticleScene, post::PostChain};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -48,6 +48,7 @@ struct RenderState {
     blit: BlitPass,
     blit_bind: wgpu::BindGroup,
     senders: Vec<Box<dyn vizz_io::FrameSender>>,
+    post: PostChain,
     gui: Gui,
 }
 
@@ -124,7 +125,11 @@ impl App {
         // Scenes draw into the master target at the fixed output resolution;
         // the swapchain only ever sees the preview blit.
         let output = OutputTarget::new(&ctx.device, self.opts.width, self.opts.height);
-        let scene = ParticleScene::new(&ctx, vizz_render::output::OUTPUT_FORMAT);
+        let post = PostChain::new(&ctx, self.opts.width, self.opts.height,
+            vizz_render::output::OUTPUT_FORMAT);
+        // The scene draws into the post chain's HDR buffer, not straight
+        // to the master: feedback needs somewhere to accumulate.
+        let scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
@@ -141,6 +146,7 @@ impl App {
             blit,
             blit_bind,
             senders,
+            post,
             gui,
         })
     }
@@ -187,10 +193,11 @@ impl App {
         state.scene.render(
             &state.ctx,
             &mut encoder,
-            &state.output.view,
+            &state.post.scene_view,
             &inputs.uniforms,
             inputs.count,
         );
+        state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         state.blit.draw(
             &mut encoder,
             &preview,
