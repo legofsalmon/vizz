@@ -4,6 +4,10 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Manual trigger: re-run the full check suite (including the real-Metal
+  # Syphon test) and rebuild the vizz.app artifact on demand, without
+  # needing an empty commit.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

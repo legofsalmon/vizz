@@ -3,26 +3,80 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual trigger: cuts a whole release in one action. Creates the tag if
+  # it does not exist yet, then builds and attaches the bundle — so a
+  # release never depends on doing UI steps in a particular order. Also
+  # repairs an existing release that is missing its download.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.1). Created if it does not exist."
+        required: true
+      ref:
+        description: "Branch or commit to tag when creating a new tag."
+        required: false
+        default: main
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   macos-app:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so existing tags are available to resolve against.
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Resolve or create the release tag
+        run: |
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            # Build exactly what the tag points at, not whatever the run
+            # was dispatched from.
+            echo "Tag $RELEASE_TAG exists — building from it."
+            git checkout --detach "refs/tags/$RELEASE_TAG"
+          else
+            echo "Tag $RELEASE_TAG does not exist — creating it at $(git rev-parse --short HEAD)."
+            # Runners have no git identity; annotated tags need one.
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" -m "vizz $RELEASE_TAG"
+            # A tag pushed with GITHUB_TOKEN does not re-trigger workflows,
+            # so this run stays the only build for the tag.
+            git push origin "$RELEASE_TAG"
+          fi
       - name: Ensure Rust
         run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
       - name: Build vizz.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/make-app.sh
-      - name: Create release with app bundle
+      # Attach the bundle whether or not the release already exists: a
+      # release published from the GitHub UI creates the tag itself, which
+      # triggers this workflow, so `gh release create` would fail on an
+      # already-existing release and leave it with no download.
+      - name: Publish app bundle to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/vizz.app.zip \
-            --title "vizz $GITHUB_REF_NAME" \
-            --generate-notes \
-            --notes "macOS app bundle with Syphon embedded. First launch: right-click → Open (unsigned). Appears in Resolume/VDMX as Syphon source 'vizz'; OSC control on udp/7000."
+          notes="macOS app bundle with Syphon embedded. First launch: right-click → Open (unsigned). Appears in Resolume/VDMX as Syphon source 'vizz'; OSC control on udp/7000."
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists — uploading bundle to it."
+            gh release upload "$RELEASE_TAG" dist/vizz.app.zip --clobber
+          else
+            echo "Creating release $RELEASE_TAG with bundle."
+            gh release create "$RELEASE_TAG" dist/vizz.app.zip \
+              --title "vizz $RELEASE_TAG" \
+              --generate-notes \
+              --notes "$notes"
+          fi
+          # Fail loudly if the asset somehow did not land — a release with
+          # no download silently breaks scripts/install.sh.
+          gh release view "$RELEASE_TAG" --json assets \
+            | grep -q "vizz.app.zip" \
+            || { echo "::error::vizz.app.zip missing from release $RELEASE_TAG"; exit 1; }
+          echo "vizz.app.zip published to release $RELEASE_TAG."
