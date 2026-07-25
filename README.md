@@ -10,7 +10,24 @@ macOS (zero-copy, works windowed *and* headless), previews it aspect-fitted
 in the window, and takes OSC control live — with built-in health monitoring
 and a headless benchmark mode. Spout and NDI are next.
 
-## Running
+## Install (macOS, no developer tools)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/install.sh | bash
+```
+
+This puts `vizz.app` (with Syphon embedded — nothing else to install) in
+your Applications folder. **First launch: right-click → Open** — the app
+is not notarized with Apple, so a plain double-click is blocked the first
+time. Until the first tagged release exists, download the `vizz.app`
+artifact from the latest [Actions run](https://github.com/legofsalmon/vizz/actions)
+instead, unzip, and drag to Applications.
+
+Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
+window title shows the live settings). Flags below need a terminal run.
+To build your own bundle from source: `./scripts/make-app.sh` → `dist/vizz.app`.
+
+## Running from source
 
 ```sh
 cargo run --release                 # windowed, OSC on udp/7000
@@ -140,7 +157,11 @@ Every push runs `.github/workflows/ci.yml`:
   server doesn't start or a publish errors. The health report
   (`bench-macos.json`), last frame (`frame-macos.png`), and run log are
   uploaded as artifacts — a per-commit performance record on real
-  Apple-silicon hardware.
+  Apple-silicon hardware. It also builds and uploads the `vizz.app`
+  bundle on every push.
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds
+the app bundle and publishes it as a GitHub Release.
 
 ## Roadmap
 

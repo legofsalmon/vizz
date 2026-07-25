@@ -58,3 +58,10 @@ jobs:
             frame-macos.png
             run.log
           if-no-files-found: ignore
+      - name: Build vizz.app bundle
+        run: ./scripts/make-app.sh
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: vizz.app
+          path: dist/vizz.app.zip

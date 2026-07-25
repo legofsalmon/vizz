@@ -23,6 +23,9 @@ use crate::params::AppParams;
 pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
+    /// Window title; shows OSC port etc. so double-click users can see
+    /// where to point a controller without reading logs.
+    pub title: String,
     pub outputs: OutputOpts,
 }
 
@@ -47,7 +50,7 @@ struct App {
 impl App {
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<RenderState> {
         let attrs = Window::default_attributes()
-            .with_title("vizz")
+            .with_title(self.opts.title.clone())
             .with_inner_size(LogicalSize::new(self.opts.width, self.opts.height));
         let window = Arc::new(event_loop.create_window(attrs)?);
 

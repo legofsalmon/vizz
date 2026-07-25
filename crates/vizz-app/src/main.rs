@@ -96,11 +96,20 @@ fn main() -> Result<()> {
             },
         )
     } else {
+        let title = if cfg!(target_os = "macos") && output_opts.syphon {
+            format!(
+                "vizz {}x{} — Syphon '{}' — OSC :{}",
+                args.width, args.height, output_opts.syphon_name, args.osc_port
+            )
+        } else {
+            format!("vizz {}x{} — OSC :{}", args.width, args.height, args.osc_port)
+        };
         windowed::run(
             params,
             windowed::WindowedOpts {
                 width: args.width,
                 height: args.height,
+                title,
                 outputs: output_opts,
             },
         )
