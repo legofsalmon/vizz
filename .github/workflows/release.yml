@@ -3,13 +3,19 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Manual trigger to (re)build and attach the bundle for an existing tag,
-  # e.g. to repair a release published before this workflow succeeded.
+  # Manual trigger: cuts a whole release in one action. Creates the tag if
+  # it does not exist yet, then builds and attaches the bundle — so a
+  # release never depends on doing UI steps in a particular order. Also
+  # repairs an existing release that is missing its download.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and publish (e.g. v0.1.0)"
+        description: "Release tag (e.g. v0.1.1). Created if it does not exist."
         required: true
+      ref:
+        description: "Branch or commit to tag when creating a new tag."
+        required: false
+        default: main
 
 permissions:
   contents: write
@@ -23,9 +29,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Build the code the tag actually points at, not the branch the
-          # manual run was dispatched from.
-          ref: ${{ inputs.tag || github.ref }}
+          # Full history so existing tags are available to resolve against.
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Resolve or create the release tag
+        run: |
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            # Build exactly what the tag points at, not whatever the run
+            # was dispatched from.
+            echo "Tag $RELEASE_TAG exists — building from it."
+            git checkout --detach "refs/tags/$RELEASE_TAG"
+          else
+            echo "Tag $RELEASE_TAG does not exist — creating it at $(git rev-parse --short HEAD)."
+            # Runners have no git identity; annotated tags need one.
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" -m "vizz $RELEASE_TAG"
+            # A tag pushed with GITHUB_TOKEN does not re-trigger workflows,
+            # so this run stays the only build for the tag.
+            git push origin "$RELEASE_TAG"
+          fi
       - name: Ensure Rust
         run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
       - name: Build vizz.app

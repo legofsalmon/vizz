@@ -165,8 +165,22 @@ Every push runs `.github/workflows/ci.yml`:
   Apple-silicon hardware. It also builds and uploads the `vizz.app`
   bundle on every push.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds
-the app bundle and publishes it as a GitHub Release.
+Releases are cut by `.github/workflows/release.yml`, either way round:
+
+- **Push a `v*` tag** — builds the bundle and publishes the release.
+- **Actions → Release → Run workflow**, entering a tag (e.g. `v0.1.1`)
+  and optionally a branch/commit to tag. This creates the tag if it does
+  not exist, then builds and attaches the bundle — one action, no
+  ordering pitfalls. Dispatching an *existing* tag rebuilds and
+  re-attaches the bundle, which repairs a release that is missing its
+  download.
+
+The job fails if `vizz.app.zip` does not end up attached, so a release
+can never silently ship without the app.
+
+CI itself can also be re-run on demand via **Actions → CI → Run
+workflow** (useful to regenerate the `vizz.app` artifact without an
+empty commit).
 
 ## Roadmap
 
