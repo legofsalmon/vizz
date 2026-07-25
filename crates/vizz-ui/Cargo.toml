@@ -8,6 +8,7 @@ license.workspace = true
 vizz-params.workspace = true
 vizz-health.workspace = true
 vizz-midi.workspace = true
+vizz-mod.workspace = true
 
 egui.workspace = true
 egui-winit.workspace = true

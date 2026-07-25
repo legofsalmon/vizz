@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use vizz_health::{HealthConfig, HealthMonitor, HealthSnapshot};
+use vizz_mod::ModEngine;
 use vizz_params::ParamSnapshot;
 use vizz_render::particles::Uniforms;
 
@@ -15,6 +16,9 @@ pub struct FrameEngine {
     params: Arc<AppParams>,
     snapshot: ParamSnapshot,
     pub health: HealthMonitor,
+    /// LFOs and the beat clock. Render-thread-owned: it ticks here and the
+    /// panel (drawn on this thread) edits it directly.
+    pub modulation: ModEngine,
     /// Visual time, pre-integrated so `/particles/speed` changes modulate
     /// the rate without jumping the phase.
     vis_time: f32,
@@ -33,6 +37,7 @@ impl FrameEngine {
             snapshot: ParamSnapshot::new(&params.registry),
             params,
             health: HealthMonitor::new(HealthConfig::default()),
+            modulation: ModEngine::with_defaults(),
             vis_time: 0.0,
             last_frame: None,
             last_log: Instant::now(),
@@ -56,7 +61,10 @@ impl FrameEngine {
 
         let dt_s = dt.as_secs_f32();
         let p = &self.params;
-        self.snapshot.advance(&p.registry, dt_s);
+        // Modulation is an offset on top of the stored targets, so a value
+        // set by hand or by MIDI is never overwritten.
+        let offsets = self.modulation.tick(dt_s, &p.registry);
+        self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
         self.vis_time += dt_s * self.snapshot.get(p.speed);
 
         let brightness = self.snapshot.get(p.brightness) * self.snapshot.get(p.dim);

@@ -7,6 +7,7 @@ members = [
     "crates/vizz-render",
     "crates/vizz-io",
     "crates/vizz-midi",
+    "crates/vizz-mod",
     "crates/vizz-ui",
     "crates/vizz-app",
 ]
@@ -24,6 +25,7 @@ vizz-health = { path = "crates/vizz-health" }
 vizz-render = { path = "crates/vizz-render" }
 vizz-io = { path = "crates/vizz-io" }
 vizz-midi = { path = "crates/vizz-midi" }
+vizz-mod = { path = "crates/vizz-mod" }
 vizz-ui = { path = "crates/vizz-ui" }
 
 anyhow = "1"

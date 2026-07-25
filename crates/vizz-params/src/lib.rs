@@ -18,6 +18,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ParamId(usize);
 
+impl ParamId {
+    /// Position in the registry. Modulation indexes its per-parameter
+    /// offset buffer by this.
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
 /// Static definition of one parameter.
 #[derive(Debug, Clone)]
 pub struct ParamDef {
@@ -169,33 +177,55 @@ impl ParamRegistry {
 /// Owned by exactly one thread; `advance` is the only coupling with the
 /// shared registry and it is wait-free.
 pub struct ParamSnapshot {
+    /// Smoothed values without modulation — what the user set.
+    base: Vec<f32>,
+    /// What the renderer uses: base plus modulation, clamped.
     current: Vec<f32>,
 }
 
 impl ParamSnapshot {
     /// Starts at the registry defaults.
     pub fn new(reg: &ParamRegistry) -> Self {
-        Self {
-            current: reg.defs().iter().map(|d| d.default).collect(),
-        }
+        let values: Vec<f32> = reg.defs().iter().map(|d| d.default).collect();
+        Self { base: values.clone(), current: values }
     }
 
     /// Pull targets and advance smoothing by `dt` seconds.
     pub fn advance(&mut self, reg: &ParamRegistry, dt: f32) {
+        self.advance_modulated(reg, dt, &[]);
+    }
+
+    /// As [`Self::advance`], plus per-parameter modulation.
+    ///
+    /// `offsets` is indexed by parameter position and expressed in
+    /// *normalised* units: 0.25 shifts a parameter by a quarter of its
+    /// range. Modulation is added after smoothing and never written back
+    /// to the store, so the value a user or controller set is preserved
+    /// and reappears the moment modulation stops.
+    pub fn advance_modulated(&mut self, reg: &ParamRegistry, dt: f32, offsets: &[f32]) {
         for (i, def) in reg.defs().iter().enumerate() {
             let target = reg.target(ParamId(i));
-            if def.smooth <= f32::EPSILON {
-                self.current[i] = target;
+            let base = if def.smooth <= f32::EPSILON {
+                target
             } else {
                 // Exponential slew: frame-rate independent for any dt.
                 let k = 1.0 - (-dt / def.smooth).exp();
-                self.current[i] += (target - self.current[i]) * k;
-            }
+                self.base[i] + (target - self.base[i]) * k
+            };
+            self.base[i] = base;
+
+            let offset = offsets.get(i).copied().unwrap_or(0.0) * (def.max - def.min);
+            self.current[i] = (base + offset).clamp(def.min, def.max);
         }
     }
 
     pub fn get(&self, id: ParamId) -> f32 {
         self.current[id.0]
+    }
+
+    /// The un-modulated value, i.e. where the fader actually sits.
+    pub fn base(&self, id: ParamId) -> f32 {
+        self.base[id.0]
     }
 }
 

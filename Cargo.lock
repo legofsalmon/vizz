@@ -2917,6 +2917,7 @@ dependencies = [
  "vizz-health",
  "vizz-io",
  "vizz-midi",
+ "vizz-mod",
  "vizz-osc",
  "vizz-params",
  "vizz-render",
@@ -2953,6 +2954,16 @@ dependencies = [
  "anyhow",
  "log",
  "midir",
+ "serde",
+ "serde_json",
+ "vizz-params",
+]
+
+[[package]]
+name = "vizz-mod"
+version = "0.1.0"
+dependencies = [
+ "log",
  "serde",
  "serde_json",
  "vizz-params",
@@ -2997,6 +3008,7 @@ dependencies = [
  "pollster",
  "vizz-health",
  "vizz-midi",
+ "vizz-mod",
  "vizz-params",
  "wgpu",
  "winit",

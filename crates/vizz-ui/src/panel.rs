@@ -8,6 +8,7 @@
 
 use vizz_health::HealthSnapshot;
 use vizz_midi::{MidiMap, Source};
+use vizz_mod::{ModEngine, Rate, Shape};
 use vizz_params::ParamRegistry;
 
 /// Status of one video output, as shown in the panel.
@@ -47,7 +48,12 @@ pub struct PanelState {
     pub midi: MidiView,
 }
 
-pub fn draw(ctx: &egui::Context, registry: &ParamRegistry, state: &PanelState) -> PanelActions {
+pub fn draw(
+    ctx: &egui::Context,
+    registry: &ParamRegistry,
+    state: &PanelState,
+    modulation: &mut ModEngine,
+) -> PanelActions {
     let mut actions = PanelActions::default();
     egui::Window::new("vizz")
         .default_pos([12.0, 12.0])
@@ -60,7 +66,9 @@ pub fn draw(ctx: &egui::Context, registry: &ParamRegistry, state: &PanelState) -
             ui.separator();
             midi_section(ui, state);
             ui.separator();
-            params_section(ui, registry, state, &mut actions);
+            modulation_section(ui, registry, modulation);
+            ui.separator();
+            params_section(ui, registry, state, modulation, &mut actions);
             ui.separator();
             ui.small("Tab toggles this panel · Esc quits");
         });
@@ -94,6 +102,104 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             format!("learning {target} — move a control (seen: {seen})"),
         );
     }
+}
+
+/// Modulation is owned by the render thread, and the panel draws on that
+/// same thread, so it edits the engine directly — no lock, no snapshot,
+/// no action plumbing.
+fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEngine) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Modulation").strong());
+        // Beat indicator: brightest on the downbeat, so tempo is visible
+        // at a glance rather than inferred from a number.
+        let phase = m.clock.bar_phase(4.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+        let glow = (1.0 - phase * 4.0).clamp(0.0, 1.0);
+        let color = egui::Color32::from_rgb(
+            (60.0 + 195.0 * glow) as u8,
+            (60.0 + 160.0 * glow) as u8,
+            90,
+        );
+        ui.painter().circle_filled(rect.center(), 5.0, color);
+        ui.add(
+            egui::DragValue::new(&mut m.clock.bpm)
+                .speed(0.5)
+                .range(20.0..=300.0)
+                .suffix(" bpm"),
+        );
+        ui.checkbox(&mut m.clock.running, "run");
+        if ui.small_button("reset").on_hover_text("restart on the downbeat").clicked() {
+            m.clock.reset();
+        }
+    });
+
+    for (i, lfo) in m.lfos.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("lfo{}", i + 1));
+            egui::ComboBox::from_id_salt(format!("shape{i}"))
+                .width(64.0)
+                .selected_text(lfo.shape.label())
+                .show_ui(ui, |ui| {
+                    for shape in Shape::ALL {
+                        ui.selectable_value(&mut lfo.shape, shape, shape.label());
+                    }
+                });
+            // Beat-synced or free-running, switchable in place: the same
+            // LFO is useful both locked to the track and drifting against it.
+            let mut synced = matches!(lfo.rate, Rate::Beats(_));
+            if ui.checkbox(&mut synced, "sync").changed() {
+                lfo.rate = if synced { Rate::Beats(4.0) } else { Rate::Hz(1.0) };
+            }
+            match &mut lfo.rate {
+                Rate::Beats(beats) => {
+                    ui.add(
+                        egui::DragValue::new(beats)
+                            .speed(0.05)
+                            .range(0.0625..=32.0)
+                            .suffix(" beats"),
+                    );
+                }
+                Rate::Hz(hz) => {
+                    ui.add(egui::DragValue::new(hz).speed(0.01).range(0.0..=20.0).suffix(" Hz"));
+                }
+            }
+            // Live output, so it is obvious which LFO is doing what.
+            let v = lfo.value();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 10.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, egui::Color32::from_black_alpha(120));
+            let x = rect.left() + (v * 0.5 + 0.5) * rect.width();
+            ui.painter().circle_filled(
+                egui::pos2(x, rect.center().y),
+                3.0,
+                egui::Color32::from_rgb(130, 190, 255),
+            );
+        });
+    }
+
+    let mut remove = None;
+    for (i, route) in m.routes.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut route.enabled, "");
+            ui.label(format!("lfo{} →", route.lfo + 1));
+            ui.label(route.param.trim_start_matches('/'));
+            ui.add(
+                egui::DragValue::new(&mut route.depth)
+                    .speed(0.01)
+                    .range(-1.0..=1.0)
+                    .prefix("×"),
+            );
+            if ui.small_button("x").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        m.routes.remove(i);
+    }
+    if m.routes.is_empty() {
+        ui.small("no routes — use ‘mod' next to a parameter");
+    }
+    let _ = registry;
 }
 
 fn health_section(ui: &mut egui::Ui, state: &PanelState) {
@@ -215,6 +321,7 @@ fn params_section(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
     state: &PanelState,
+    modulation: &mut ModEngine,
     actions: &mut PanelActions,
 ) {
     ui.label(egui::RichText::new("Parameters").strong());
@@ -236,6 +343,12 @@ fn params_section(
             // mess mid-set, and it costs nothing to support.
             if response.secondary_clicked() {
                 registry.set(id, def.default);
+            }
+
+            // Route the first LFO to this parameter as a starting point;
+            // which LFO and how deep are then adjustable above.
+            if ui.small_button("mod").on_hover_text("route lfo1 to this parameter").clicked() {
+                modulation.add_route(0, def.addr.clone(), 0.25);
             }
 
             if !state.midi.available {
