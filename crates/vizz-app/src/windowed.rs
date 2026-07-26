@@ -36,6 +36,8 @@ pub struct WindowedOpts {
     /// where to point a controller without reading logs.
     pub title: String,
     pub outputs: OutputOpts,
+    /// Substring match against an input device name; None picks the default.
+    pub audio_device: Option<String>,
 }
 
 struct RenderState {
@@ -67,6 +69,12 @@ struct App {
     /// Revision last written to disk, so saves happen only on change.
     saved_revision: u64,
     update: SharedUpdate,
+    /// Panel-side mirror of the analysis settings. The panel edits this
+    /// copy and the change is pushed to the analysis thread once, rather
+    /// than locking its settings every frame just to draw.
+    audio_bands: [vizz_audio::Band; 4],
+    audio_auto_bpm: bool,
+    tap: vizz_audio::TapTempo,
 }
 
 impl App {
@@ -227,6 +235,21 @@ impl App {
             frame_times_ms: Vec::new(),
             frame_budget_ms: 1000.0 / 60.0,
             midi: self.midi_view.clone(),
+            audio: {
+                let st = &self.engine.audio.state;
+                vizz_ui::AudioView {
+                    connected: st.connected(),
+                    device: self.engine.audio.device_name.clone(),
+                    bands: std::array::from_fn(|i| st.band(i)),
+                    raw: std::array::from_fn(|i| st.raw(i)),
+                    level: st.level(),
+                    detected_bpm: st.bpm(),
+                    confidence: st.confidence(),
+                    dropped: st.dropped.load(std::sync::atomic::Ordering::Relaxed),
+                }
+            },
+            audio_bands: self.audio_bands,
+            audio_auto_bpm: self.audio_auto_bpm,
         };
         let actions = state.gui.render(
             &state.window,
@@ -240,12 +263,21 @@ impl App {
             [state.config.width, state.config.height],
         );
         match actions {
-            Ok(actions) => apply_panel_actions(
-                actions,
-                &self.midi_shared,
-                &self.opts.midi_map_path,
-                &mut self.saved_revision,
-            ),
+            Ok(actions) => {
+                apply_audio_actions(
+                    &actions,
+                    &mut self.engine,
+                    &mut self.audio_bands,
+                    &mut self.audio_auto_bpm,
+                    &mut self.tap,
+                );
+                apply_panel_actions(
+                    actions,
+                    &self.midi_shared,
+                    &self.opts.midi_map_path,
+                    &mut self.saved_revision,
+                )
+            }
             // A GUI failure must never take down the output.
             Err(e) => log::error!("GUI draw failed: {e:#}"),
         }
@@ -337,6 +369,42 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     view.last_source = state.last_source;
 }
 
+/// Push panel edits through to the analysis thread. A free function taking
+/// disjoint fields rather than a method, because the render state is
+/// already mutably borrowed for the duration of the frame.
+///
+/// The settings mutex is held only long enough for a couple of field
+/// writes, and is never contended with the audio callback — that side only
+/// touches the lock-free ring.
+fn apply_audio_actions(
+    actions: &vizz_ui::PanelActions,
+    engine: &mut FrameEngine,
+    bands: &mut [vizz_audio::Band; 4],
+    auto_bpm: &mut bool,
+    tap: &mut vizz_audio::TapTempo,
+) {
+    let a = &actions.audio;
+    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped {
+        return;
+    }
+    if let Some(b) = a.bands {
+        *bands = b;
+    }
+    if let Some(auto) = a.auto_bpm {
+        *auto_bpm = auto;
+    }
+    if a.tapped && let Some(bpm) = tap.tap() {
+        engine.modulation.clock.bpm = bpm;
+        // Tapping is an explicit manual override; leaving auto on would
+        // have the detector overwrite it on the next frame.
+        *auto_bpm = false;
+    }
+    if let Ok(mut s) = engine.audio.settings.lock() {
+        s.bands = *bands;
+        s.auto_bpm = *auto_bpm;
+    }
+}
+
 fn apply_panel_actions(
     actions: vizz_ui::PanelActions,
     shared: &SharedMidi,
@@ -398,10 +466,16 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        engine: FrameEngine::new(Arc::clone(&params)),
+        engine: FrameEngine::new(
+            Arc::clone(&params),
+            vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
+        ),
         params,
         opts,
         state: None,
+        audio_bands: vizz_audio::default_bands(),
+        audio_auto_bpm: false,
+        tap: vizz_audio::TapTempo::new(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),

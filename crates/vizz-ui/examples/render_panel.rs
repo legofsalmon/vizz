@@ -51,6 +51,20 @@ fn main() {
         frame_times_ms: history,
         frame_budget_ms: 1000.0 / 60.0,
         midi: midi_view(),
+        // A plausible live reading, so the preview shows the meters doing
+        // something rather than four empty bars.
+        audio: vizz_ui::AudioView {
+            connected: true,
+            device: Some("Scarlett 2i2".into()),
+            bands: [0.82, 0.44, 0.31, 0.12],
+            raw: [0.14, 0.11, 0.06, 0.012],
+            level: 0.21,
+            detected_bpm: 128.0,
+            confidence: 0.71,
+            dropped: 0,
+        },
+        audio_bands: vizz_audio::default_bands(),
+        audio_auto_bpm: true,
     };
 
     let (device, queue) = gpu();
@@ -87,7 +101,8 @@ fn main() {
     queue.submit([enc.finish()]);
 
     let mut modulation = vizz_mod::ModEngine::with_defaults();
-    modulation.add_route(0, "/particles/hue", 0.3);
+    modulation.add_route(vizz_mod::Source::Lfo(0), "/particles/hue", 0.3);
+    modulation.add_route(vizz_mod::Source::Audio(0), "/particles/size", 0.4);
     let ctx = egui::Context::default();
     ctx.set_visuals(egui::Visuals::dark());
     let input = egui::RawInput {

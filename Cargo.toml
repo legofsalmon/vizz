@@ -8,6 +8,7 @@ members = [
     "crates/vizz-io",
     "crates/vizz-midi",
     "crates/vizz-mod",
+    "crates/vizz-audio",
     "crates/vizz-ui",
     "crates/vizz-update",
     "crates/vizz-app",
@@ -27,6 +28,7 @@ vizz-render = { path = "crates/vizz-render" }
 vizz-io = { path = "crates/vizz-io" }
 vizz-midi = { path = "crates/vizz-midi" }
 vizz-mod = { path = "crates/vizz-mod" }
+vizz-audio = { path = "crates/vizz-audio" }
 vizz-ui = { path = "crates/vizz-ui" }
 vizz-update = { path = "crates/vizz-update" }
 
@@ -46,6 +48,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 sysinfo = "0.38"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+cpal = "0.18"
+rustfft = "6"
 
 # Fast enough to iterate, realistic enough to judge frame times.
 [profile.dev]

@@ -16,6 +16,7 @@ vizz-render.workspace = true
 vizz-io.workspace = true
 vizz-midi.workspace = true
 vizz-mod.workspace = true
+vizz-audio.workspace = true
 vizz-ui.workspace = true
 vizz-update.workspace = true
 

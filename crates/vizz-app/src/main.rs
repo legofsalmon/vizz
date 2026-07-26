@@ -57,6 +57,19 @@ struct Args {
     #[arg(long)]
     syphon_flip: bool,
 
+    /// Audio input device to analyse, matched as a substring of the device
+    /// name. Omit to use the system default; `--list-audio` shows names.
+    #[arg(long)]
+    audio_device: Option<String>,
+
+    /// Disable audio capture entirely.
+    #[arg(long)]
+    no_audio: bool,
+
+    /// Print available audio input devices and exit.
+    #[arg(long)]
+    list_audio: bool,
+
     /// Publish the output as an NDI source on the network. Requires the
     /// NDI runtime to be installed; logs a warning and carries on if not.
     #[arg(long)]
@@ -86,6 +99,20 @@ struct Args {
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+
+    if args.list_audio {
+        for name in vizz_audio::input_devices() {
+            println!("{name}");
+        }
+        return Ok(());
+    }
+    // `--no-audio` is expressed as "no device can match", so the engine
+    // takes its normal unavailable path rather than needing a second one.
+    let audio_device = if args.no_audio {
+        Some(String::from("\0none"))
+    } else {
+        args.audio_device.clone()
+    };
 
     let params = Arc::new(AppParams::build());
 
@@ -121,6 +148,7 @@ fn main() -> Result<()> {
                 height: args.height,
                 frames: args.frames,
                 dump: args.dump,
+                audio_device,
                 report: args.report,
                 outputs: output_opts,
             },
@@ -143,6 +171,7 @@ fn main() -> Result<()> {
                 check_updates: !args.no_update_check,
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),
                 title,
+                audio_device,
                 outputs: output_opts,
             },
         )

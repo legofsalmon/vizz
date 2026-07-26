@@ -9,6 +9,7 @@ vizz-params.workspace = true
 vizz-health.workspace = true
 vizz-midi.workspace = true
 vizz-mod.workspace = true
+vizz-audio.workspace = true
 vizz-update.workspace = true
 
 egui.workspace = true

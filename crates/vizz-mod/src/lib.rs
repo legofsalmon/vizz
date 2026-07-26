@@ -175,10 +175,59 @@ impl Lfo {
     }
 }
 
-/// One LFO driving one parameter.
+/// Where a route's value comes from.
+///
+/// Externally tagged for the same reason `Rate` is. Generalising this out
+/// of a bare LFO index is what lets audio drive parameters, and it is the
+/// shape a node graph needs later — a node's input is a `Source`, not an
+/// oscillator.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// Index into `ModEngine::lfos`. Bipolar, -1..1.
+    Lfo(usize),
+    /// Audio band envelope. Unipolar, 0..1 — a kick pushes a parameter up
+    /// from where it is set rather than swinging it either side, which is
+    /// what you want from a transient.
+    Audio(usize),
+    /// Broadband RMS. Unipolar.
+    Level,
+}
+
+impl Source {
+    pub fn label(&self) -> String {
+        match self {
+            Source::Lfo(i) => format!("LFO {}", i + 1),
+            Source::Audio(i) => format!("Band {}", i + 1),
+            Source::Level => "Level".into(),
+        }
+    }
+
+    /// Unipolar sources only ever add; bipolar ones swing both ways. The
+    /// UI uses this to draw the right range on a depth control.
+    pub fn is_bipolar(&self) -> bool {
+        matches!(self, Source::Lfo(_))
+    }
+}
+
+/// Live audio values for one tick. Passed in rather than pulled, so this
+/// crate stays independent of whether audio capture exists at all.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioLevels<'a> {
+    pub bands: &'a [f32],
+    pub level: f32,
+}
+
+impl Default for AudioLevels<'_> {
+    fn default() -> Self {
+        Self { bands: &[], level: 0.0 }
+    }
+}
+
+/// One source driving one parameter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
-    pub lfo: usize,
+    pub source: Source,
     /// OSC-style parameter address.
     pub param: String,
     /// Fraction of the parameter's range the LFO swings it across.
@@ -223,7 +272,12 @@ impl ModEngine {
     ///
     /// The returned slice is indexed by parameter position and is in
     /// normalised units, ready for `ParamSnapshot::advance_modulated`.
-    pub fn tick(&mut self, dt: f32, registry: &ParamRegistry) -> &[f32] {
+    pub fn tick(
+        &mut self,
+        dt: f32,
+        registry: &ParamRegistry,
+        audio: AudioLevels<'_>,
+    ) -> &[f32] {
         self.offsets.clear();
         self.offsets.resize(registry.len(), 0.0);
 
@@ -237,7 +291,18 @@ impl ModEngine {
             if !route.enabled {
                 continue;
             }
-            let Some(value) = values.get(route.lfo) else { continue };
+            let value = match route.source {
+                Source::Lfo(i) => match values.get(i) {
+                    Some(&v) => v,
+                    None => continue,
+                },
+                // A missing band reads as silence rather than skipping the
+                // route, so unplugging the audio device parks modulated
+                // parameters at their set value instead of freezing them
+                // wherever the last sample left them.
+                Source::Audio(i) => audio.bands.get(i).copied().unwrap_or(0.0),
+                Source::Level => audio.level,
+            };
             let Some(id) = registry.id(&route.param) else { continue };
             // Several routes may target one parameter; they sum, and the
             // snapshot clamps the total.
@@ -251,8 +316,8 @@ impl ModEngine {
         &self.offsets
     }
 
-    pub fn add_route(&mut self, lfo: usize, param: impl Into<String>, depth: f32) {
-        self.routes.push(Route { lfo, param: param.into(), depth, enabled: true });
+    pub fn add_route(&mut self, source: Source, param: impl Into<String>, depth: f32) {
+        self.routes.push(Route { source, param: param.into(), depth, enabled: true });
     }
 
     /// Total modulation currently applied to a parameter, for showing the
@@ -375,10 +440,10 @@ mod tests {
             lfo.rate = Rate::Hz(0.0);
             lfo.phase = 0.25;
         }
-        engine.add_route(0, "/a", 0.25);
-        engine.add_route(1, "/a", 0.25);
+        engine.add_route(Source::Lfo(0), "/a", 0.25);
+        engine.add_route(Source::Lfo(1), "/a", 0.25);
 
-        let offsets = engine.tick(1.0 / 60.0, &reg);
+        let offsets = engine.tick(1.0 / 60.0, &reg, AudioLevels::default());
         let a = reg.id("/a").unwrap().index();
         assert!((offsets[a] - 0.5).abs() < 1e-5, "two routes should sum: {}", offsets[a]);
         let b = reg.id("/b").unwrap().index();
@@ -393,15 +458,15 @@ mod tests {
         engine.lfos[0].rate = Rate::Hz(0.0);
         engine.lfos[0].phase = 0.25;
 
-        engine.add_route(0, "/a", 1.0);
+        engine.add_route(Source::Lfo(0), "/a", 1.0);
         engine.routes[0].enabled = false;
         // A patch naming a parameter this build no longer has must not
         // panic or shift the wrong slider.
-        engine.add_route(0, "/gone", 1.0);
+        engine.add_route(Source::Lfo(0), "/gone", 1.0);
         // A route pointing at a missing LFO likewise.
-        engine.add_route(99, "/b", 1.0);
+        engine.add_route(Source::Lfo(99), "/b", 1.0);
 
-        let offsets = engine.tick(1.0 / 60.0, &reg);
+        let offsets = engine.tick(1.0 / 60.0, &reg, AudioLevels::default());
         assert!(offsets.iter().all(|&o| o == 0.0), "got {offsets:?}");
     }
 
@@ -418,9 +483,9 @@ mod tests {
         engine.lfos[0].shape = Shape::Square;
         engine.lfos[0].rate = Rate::Hz(0.0);
         engine.lfos[0].phase = 0.25; // pinned at +1
-        engine.add_route(0, "/a", 0.25); // quarter of a 0..10 range = +2.5
+        engine.add_route(Source::Lfo(0), "/a", 0.25); // quarter of a 0..10 range = +2.5
 
-        let offsets = engine.tick(1.0 / 60.0, &reg).to_vec();
+        let offsets = engine.tick(1.0 / 60.0, &reg, AudioLevels::default()).to_vec();
         snap.advance_modulated(&reg, 1.0, &offsets);
         assert!((snap.get(id) - 7.5).abs() < 0.01, "got {}", snap.get(id));
 
@@ -441,9 +506,9 @@ mod tests {
         engine.lfos[0].shape = Shape::Square;
         engine.lfos[0].rate = Rate::Hz(0.0);
         engine.lfos[0].phase = 0.25;
-        engine.add_route(0, "/a", 5.0); // absurd depth on purpose
+        engine.add_route(Source::Lfo(0), "/a", 5.0); // absurd depth on purpose
 
-        let offsets = engine.tick(1.0 / 60.0, &reg).to_vec();
+        let offsets = engine.tick(1.0 / 60.0, &reg, AudioLevels::default()).to_vec();
         snap.advance_modulated(&reg, 1.0, &offsets);
         assert_eq!(snap.get(id), 10.0, "must clamp to the parameter's max");
     }
@@ -451,7 +516,7 @@ mod tests {
     #[test]
     fn engine_round_trips_through_json() {
         let mut engine = ModEngine::with_defaults();
-        engine.add_route(0, "/a", 0.5);
+        engine.add_route(Source::Lfo(0), "/a", 0.5);
         engine.clock.bpm = 128.0;
         let json = serde_json::to_string(&engine).unwrap();
         let back: ModEngine = serde_json::from_str(&json).unwrap();

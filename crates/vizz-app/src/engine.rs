@@ -5,8 +5,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use vizz_audio::{AudioEngine, BAND_COUNT};
 use vizz_health::{HealthConfig, HealthMonitor, HealthSnapshot};
-use vizz_mod::ModEngine;
+use vizz_mod::{AudioLevels, ModEngine};
 use vizz_params::ParamSnapshot;
 use vizz_render::particles::Uniforms;
 use vizz_render::post::PostUniforms;
@@ -20,6 +21,13 @@ pub struct FrameEngine {
     /// LFOs and the beat clock. Render-thread-owned: it ticks here and the
     /// panel (drawn on this thread) edits it directly.
     pub modulation: ModEngine,
+    /// Audio capture and analysis. Always present — when no device could
+    /// be opened it simply reports zeros, so nothing downstream needs a
+    /// branch for "no audio".
+    pub audio: AudioEngine,
+    /// Scratch for this frame's band envelopes, so the tick borrows a
+    /// slice rather than allocating.
+    bands: [f32; BAND_COUNT],
     /// Visual time, pre-integrated so `/particles/speed` changes modulate
     /// the rate without jumping the phase.
     vis_time: f32,
@@ -34,12 +42,14 @@ pub struct FrameInputs {
 }
 
 impl FrameEngine {
-    pub fn new(params: Arc<AppParams>) -> Self {
+    pub fn new(params: Arc<AppParams>, audio: AudioEngine) -> Self {
         Self {
             snapshot: ParamSnapshot::new(&params.registry),
             params,
             health: HealthMonitor::new(HealthConfig::default()),
             modulation: ModEngine::with_defaults(),
+            audio,
+            bands: [0.0; BAND_COUNT],
             vis_time: 0.0,
             last_frame: None,
             last_log: Instant::now(),
@@ -63,9 +73,25 @@ impl FrameEngine {
 
         let dt_s = dt.as_secs_f32();
         let p = &self.params;
+        for (i, b) in self.bands.iter_mut().enumerate() {
+            *b = self.audio.state.band(i);
+        }
+        // Detected tempo drives the clock only when asked and only when the
+        // detector is sure. Ambient material still produces *a* peak, and
+        // letting that retune the clock mid-set is worse than a tempo that
+        // is slightly stale.
+        if let Ok(settings) = self.audio.settings.lock() {
+            if settings.auto_bpm {
+                let bpm = self.audio.state.bpm();
+                if bpm > 0.0 && self.audio.state.confidence() >= settings.min_confidence {
+                    self.modulation.clock.bpm = bpm;
+                }
+            }
+        }
         // Modulation is an offset on top of the stored targets, so a value
         // set by hand or by MIDI is never overwritten.
-        let offsets = self.modulation.tick(dt_s, &p.registry);
+        let levels = AudioLevels { bands: &self.bands, level: self.audio.state.level() };
+        let offsets = self.modulation.tick(dt_s, &p.registry, levels);
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
         self.vis_time += dt_s * self.snapshot.get(p.speed);
 

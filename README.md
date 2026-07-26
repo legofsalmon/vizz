@@ -9,7 +9,8 @@ field into a fixed-resolution master texture, publishes it over **Syphon**
 on macOS (zero-copy) and **NDI** on the network (async readback, never
 stalls the renderer), previews it aspect-fitted in the window, and takes
 OSC and MIDI control live, LFOs and a beat clock driving parameters on
-their own, seven morphing geometry modes including two strange
+their own, audio-reactive bands and tempo detection driving parameters,
+seven morphing geometry modes including two strange
 attractors, cosine colour palettes, and a feedback/mirror/glow/shift
 effect chain — with an on-screen control
 panel, built-in health monitoring and a headless benchmark mode. Both
@@ -129,6 +130,57 @@ The check runs on a background thread with a short timeout and fails
 silently: no network, an offline venue, a rate-limited API or a changed
 response all end with vizz simply not mentioning it. `--no-update-check`
 disables the request entirely.
+
+## Audio input
+
+```sh
+vizz --list-audio                        # device names
+vizz --audio-device "Scarlett"           # substring match
+vizz --no-audio                          # off entirely
+```
+
+Four bands, each with its own frequency range, gain and envelope timing,
+available as modulation sources alongside the LFOs. Defaults are kick/sub,
+bass, mids and highs; the edges are draggable in the panel because what
+counts as "the kick" depends on the material.
+
+Band levels read as the **RMS of the signal inside them**, the same units
+as the broadband level, which is what makes the gain control predictable
+across tracks. The panel meters both: the top bar is what modulation
+receives, the bottom is what is arriving at the input, and the gap between
+them is the gain. Levels are deliberately not auto-normalised — no
+automatic gain survives a track that opens on silence.
+
+Envelopes are asymmetric one-poles, fast up and slow down, so a kick lands
+on the frame it happened but the value stays usable as a modulator rather
+than a strobe. Audio sources are unipolar: they push a parameter up from
+where you set it, rather than swinging it either side like an LFO.
+
+### Tempo
+
+BPM can be typed, tapped, or detected. Detection autocorrelates the onset
+signal — spectral flux, positive differences only, so it follows attacks
+rather than loudness — and peak-picks over the lags corresponding to
+60–200 BPM.
+
+The characteristic failure of that method is the octave error: reporting
+150 for a 75 BPM track, because a signal that correlates at one period
+also correlates at its multiples. Two guards, both in `beat.rs`: a
+log-normal prior around 120 BPM that breaks ties without overriding a
+genuinely unusual tempo, and an explicit check of whether half the
+candidate also explains the signal.
+
+Detected tempo only drives the clock when **auto** is ticked *and*
+confidence clears a threshold. Ambient material with no pulse still
+produces a peak, and letting that retune the clock mid-set is worse than a
+stale tempo. Tapping switches auto off — an explicit manual override
+should not be overwritten a frame later.
+
+Capture never blocks: the device callback pushes into a lock-free ring, an
+analysis thread drains it, and results are published through atomics. If
+analysis falls behind, samples are dropped and counted rather than
+awaited. No device at all is a normal condition — the engine reports
+itself unavailable and everything else runs.
 
 ## Geometry
 

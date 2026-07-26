@@ -17,7 +17,7 @@ use vizz_params::ParamRegistry;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-pub use panel::{MidiView, OutputStatus, PanelActions, PanelState};
+pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState};
 
 /// How many frame times the sparkline keeps.
 const HISTORY: usize = 240;
@@ -149,6 +149,9 @@ mod tests {
             frame_times_ms: vec![16.0, 17.0, 15.5],
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
         };
 
         let text = run_panel(&ctx, &reg, &state);
@@ -174,10 +177,56 @@ mod tests {
             frame_times_ms: vec![],
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("Collecting health data"), "got: {text}");
         assert!(text.contains("preview only"), "got: {text}");
+    }
+
+    /// The audio section has to show the device, the band edges the user
+    /// can retune, and the detected tempo — without those the gain and
+    /// filter controls are unusable, because there is nothing to set them
+    /// against.
+    #[test]
+    fn panel_shows_audio_bands_and_detected_tempo() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let mut state = PanelState {
+            update_available: None,
+            health: None,
+            outputs: vec![],
+            frame_times_ms: vec![],
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView {
+                connected: true,
+                device: Some("Scarlett 2i2".into()),
+                bands: [0.8, 0.4, 0.2, 0.1],
+                raw: [0.13, 0.1, 0.05, 0.01],
+                level: 0.2,
+                detected_bpm: 128.0,
+                confidence: 0.7,
+                dropped: 0,
+            },
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: true,
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("Scarlett 2i2"), "device missing: {text}");
+        assert!(text.contains("128.0 bpm"), "detected tempo missing: {text}");
+        assert!(text.contains("tap"), "tap tempo missing: {text}");
+        // Band edges are the filter control; they must be editable numbers.
+        assert!(text.contains("30 Hz") && text.contains("110 Hz"), "band edges missing: {text}");
+
+        // Disconnected must say so and explain the fix rather than showing
+        // four dead meters.
+        state.audio = AudioView::default();
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("no input"), "got: {text}");
+        assert!(text.contains("--list-audio"), "no hint about finding a device: {text}");
     }
 
     /// A learned binding must be visible on its slider, and learn mode
@@ -205,6 +254,9 @@ mod tests {
                 learn_target: Some("/particles/count".into()),
                 last_source: Some(vizz_midi::Source::Note { channel: 9, note: 36 }),
             },
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("Launch Control XL"), "device missing: {text}");
@@ -226,6 +278,9 @@ mod tests {
             frame_times_ms: vec![],
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
         };
 
         let quiet = run_panel(&egui::Context::default(), &reg, &base(None));
