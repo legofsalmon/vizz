@@ -26,8 +26,9 @@ pub struct PostUniforms {
     pub mirror: f32,
     pub glow: f32,
     pub aspect: f32,
+    /// Radial RGB split (chromatic aberration).
+    pub shift: f32,
     pub _pad0: f32,
-    pub _pad1: f32,
 }
 
 /// HDR so sustained feedback has headroom before the tone-map. Scenes

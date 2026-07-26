@@ -12,8 +12,8 @@ struct Post {
     mirror: f32,  // 0 none, 1 horizontal, 2 quad, 3 kaleidoscope
     glow: f32,    // extra bloom-ish lift
     aspect: f32,
+    shift: f32,   // radial RGB split, 0 = off
     _pad0: f32,
-    _pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Post;
@@ -92,6 +92,18 @@ fn fold(uv: vec2<f32>, mode: f32, aspect: f32) -> vec2<f32> {
 fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     let uv = fold(in.uv, u.mirror, u.aspect);
     var color = textureSample(t_scene, samp, uv).rgb;
+
+    // Radial RGB split. Offsetting the channels along the vector from
+    // centre — rather than by a fixed amount — is what makes this read as
+    // a lens rather than as blur: the middle of the frame stays sharp and
+    // the fringing grows towards the edges, like real chromatic
+    // aberration. Green is left alone so the image does not shift hue
+    // overall, only fringe.
+    if (u.shift > 0.001) {
+        let radial = (uv - vec2<f32>(0.5)) * (u.shift * 0.06);
+        color.r = textureSample(t_scene, samp, uv + radial).r;
+        color.b = textureSample(t_scene, samp, uv - radial).b;
+    }
 
     // Cheap bloom: a few wide taps added back, enough to make additive
     // particles read as luminous without a separate blur chain.
