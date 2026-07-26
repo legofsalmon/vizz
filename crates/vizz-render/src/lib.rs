@@ -7,6 +7,7 @@
 
 use anyhow::{Context as _, Result};
 
+pub mod attractor;
 pub mod blit;
 pub mod output;
 pub mod particles;

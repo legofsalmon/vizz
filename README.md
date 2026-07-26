@@ -9,8 +9,9 @@ field into a fixed-resolution master texture, publishes it over **Syphon**
 on macOS (zero-copy) and **NDI** on the network (async readback, never
 stalls the renderer), previews it aspect-fitted in the window, and takes
 OSC and MIDI control live, LFOs and a beat clock driving parameters on
-their own, five morphing geometry modes and a feedback/mirror/glow effect
-chain — with an on-screen control
+their own, seven morphing geometry modes including two strange
+attractors, cosine colour palettes, and a feedback/mirror/glow/shift
+effect chain — with an on-screen control
 panel, built-in health monitoring and a headless benchmark mode. Both
 outputs work windowed *and* headless. Spout is next.
 
@@ -131,15 +132,54 @@ disables the request entirely.
 
 ## Geometry
 
-`/shape/mode` sweeps through five forms — **sphere, torus, trefoil knot,
-grid plane, hollow shell** — and fractional values sit *between* two of
-them. Particles keep their identity across the blend (every form is
-sampled from the same per-particle hashes), so the field flows from one
-shape into the next rather than being re-scattered. A swept knob is
-playable; a stepped one is not.
+`/shape/mode` sweeps through seven forms — **sphere, torus, trefoil knot,
+grid plane, hollow shell, Lorenz, Aizawa** — and fractional values sit
+*between* two of them. Particles keep their identity across the blend
+(every form is sampled from the same per-particle hashes), so the field
+flows from one shape into the next rather than being re-scattered. A
+swept knob is playable; a stepped one is not. The range wraps, so the top
+morphs the Aizawa attractor back into the sphere.
 
 `/shape/twist` adds shear plus a height-dependent twist, and pairs well
 with a slow LFO.
+
+### Attractors
+
+The last two modes are strange attractors, integrated **once on the CPU at
+startup** into a 65k-point lookup texture rather than iterated in the
+shader. Iterating is the obvious approach and it is the wrong one here: an
+attractor only appears after its transient decays — a few hundred Euler
+steps for Lorenz — and the vertex shader would pay that six times per
+particle (two triangles), twice over while morphing, every frame. It is
+also unnecessary, because the shape never changes.
+
+Storing the trajectory in time order pays for itself twice. Consecutive
+texels are consecutive points in time, so advancing every particle's index
+by the same amount sweeps the cloud *along* the attractor — the flow you
+want, and it costs one addition. `/particles/speed` drives the rate.
+
+Attractors rotate rigidly while the other modes keep their per-particle
+spin. That differential spin is what shears the blobs into ribbons, but
+the Lorenz butterfly is not a body of revolution: giving each particle its
+own rate smears the two lobes into an anonymous cone within seconds.
+
+## Colour
+
+`/color/palette` starts at **0 = the original HSV behaviour** and
+crossfades up through four cosine gradients — spectrum, amber/magenta,
+teal/gold, and a graphic red/blue two-tone. These are Inigo Quilez
+gradients (`a + b·cos(2π(c·t + d))`): a whole smooth ramp from four
+coefficients, one cosine to evaluate, and it loops seamlessly, which
+matters because the drive value wraps.
+
+`/color/drive` picks what maps to palette position — **particle index,
+radius, depth, or height**. Index gives per-particle confetti; the other
+three tie colour to geometry, which is what makes a shape read as a solid
+object rather than a cloud of unrelated dots. It is stepped, not swept:
+these are four different ideas, not a continuum.
+
+`/color/spread` sets how much of the palette the field spans, and
+`/particles/hue` still offsets into it.
 
 ## Effects
 
@@ -164,6 +204,12 @@ kaleidoscope. Stepped rather than swept — half a mirror is not a look.
 
 **Glow** (`/fx/glow`) adds a cheap wide-tap bloom, which is what makes
 additive particles read as luminous.
+
+**Shift** (`/fx/shift`) splits the red and blue channels along the vector
+from the centre of the frame. Offsetting radially rather than by a fixed
+amount is what makes it read as a lens: the middle stays sharp and the
+fringing grows towards the edges. Green is left alone, so the image
+fringes without shifting hue overall.
 
 Buffers are `Rgba16Float`: trails accumulate past 1.0, and 8-bit would
 band and clip before the tone-map could roll it off.
@@ -240,7 +286,7 @@ control input can never crash the renderer.
 | `/particles/hue`        | 0 – 1        | 0.58    | base hue                       |
 | `/particles/saturation` | 0 – 1        | 0.8     | color saturation               |
 | `/particles/brightness` | 0 – 2        | 1.0     | value multiplier               |
-| `/shape/mode`           | 0 – 5        | 0.0     | geometry; fractional values morph |
+| `/shape/mode`           | 0 – 7        | 0.0     | geometry; fractional values morph |
 | `/shape/morph`          | 0 – 1        | 0.0     | extra blend into the next form |
 | `/shape/twist`          | 0 – 2        | 0.0     | shear and vertical twist       |
 | `/fx/trail`             | 0 – 0.98     | 0.0     | feedback: how much of last frame survives |
@@ -248,6 +294,10 @@ control input can never crash the renderer.
 | `/fx/spin`              | -0.1 – 0.1   | 0.0     | per-frame rotation of the feedback |
 | `/fx/mirror`            | 0 – 3        | 0.0     | 0 off · 1 horizontal · 2 quad · 3 kaleidoscope |
 | `/fx/glow`              | 0 – 1        | 0.25    | bloom lift                     |
+| `/fx/shift`             | 0 – 1        | 0.0     | radial RGB split (chromatic aberration) |
+| `/color/palette`        | 0 – 4        | 0.0     | 0 HSV · 1 spectrum · 2 amber · 3 teal · 4 red/blue |
+| `/color/spread`         | 0 – 1        | 0.12    | how much of the palette the field spans |
+| `/color/drive`          | 0 – 3        | 0.0     | 0 index · 1 radius · 2 depth · 3 height |
 | `/master/dim`           | 0 – 1        | 1.0     | master fader                   |
 
 Every parameter has a per-parameter smoothing time constant, so stepped

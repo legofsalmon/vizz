@@ -82,8 +82,14 @@ impl FrameEngine {
                 shape: self.snapshot.get(p.shape),
                 morph: self.snapshot.get(p.morph),
                 twist: self.snapshot.get(p.twist),
+                palette: self.snapshot.get(p.palette),
+                color_spread: self.snapshot.get(p.color_spread),
+                // Stepped like mirror: a value sliding between two drive
+                // modes is not a crossfade, it is a wrong third thing.
+                color_drive: self.snapshot.get(p.color_drive).round(),
                 _pad0: 0.0,
                 _pad1: 0.0,
+                _pad2: 0.0,
             },
             post: PostUniforms {
                 trail: self.snapshot.get(p.trail),
@@ -94,8 +100,8 @@ impl FrameEngine {
                 mirror: self.snapshot.get(p.mirror).round(),
                 glow: self.snapshot.get(p.glow),
                 aspect,
+                shift: self.snapshot.get(p.shift),
                 _pad0: 0.0,
-                _pad1: 0.0,
             },
             count: self.snapshot.get(p.count).max(0.0) as u32,
         }
