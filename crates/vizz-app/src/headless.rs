@@ -33,13 +33,15 @@ pub struct HeadlessOpts {
     pub dump: Option<PathBuf>,
     pub report: Option<PathBuf>,
     pub outputs: OutputOpts,
+    /// Substring match against an input device name; None picks the default.
+    pub audio_device: Option<String>,
 }
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let ctx = pollster::block_on(GpuContext::new(None))?;
     let mut post = PostChain::new(&ctx, opts.width, opts.height, vizz_render::output::OUTPUT_FORMAT);
     let scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
-    let mut engine = FrameEngine::new(params);
+    let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
     let mut senders = outputs::build_senders(&ctx.device, &opts.outputs);
     let fixed_dt = Duration::from_nanos(16_666_667);

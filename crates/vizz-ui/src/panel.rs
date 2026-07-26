@@ -36,6 +36,8 @@ pub struct PanelActions {
     pub set_learn_target: Option<Option<String>>,
     /// Remove the MIDI binding for this parameter.
     pub clear_binding: Option<String>,
+    /// Audio settings the user changed this frame.
+    pub audio: AudioEdits,
 }
 
 /// Everything the panel displays that it cannot read from the registry.
@@ -48,6 +50,38 @@ pub struct PanelState {
     pub frame_times_ms: Vec<f32>,
     pub frame_budget_ms: f32,
     pub midi: MidiView,
+    pub audio: AudioView,
+    /// Current analysis settings, mirrored here so the widgets have
+    /// something to edit without locking the analysis thread while drawing.
+    pub audio_bands: [vizz_audio::Band; 4],
+    pub audio_auto_bpm: bool,
+}
+
+/// What the panel needs to know about audio this frame. A snapshot rather
+/// than a live handle, so drawing never touches the analysis thread.
+#[derive(Debug, Clone, Default)]
+pub struct AudioView {
+    pub connected: bool,
+    pub device: Option<String>,
+    /// Post-gain envelopes, 0..1 — what modulation actually sees.
+    pub bands: [f32; 4],
+    /// Pre-gain levels, for setting the gain against real material.
+    pub raw: [f32; 4],
+    pub level: f32,
+    pub detected_bpm: f32,
+    pub confidence: f32,
+    pub dropped: usize,
+}
+
+/// Edits the panel wants applied to the audio settings, collected here
+/// rather than written directly because the settings live behind a mutex
+/// shared with the analysis thread.
+#[derive(Debug, Clone, Default)]
+pub struct AudioEdits {
+    pub bands: Option<[vizz_audio::Band; 4]>,
+    pub auto_bpm: Option<bool>,
+    /// The user tapped tempo; the caller resolves it to a BPM.
+    pub tapped: bool,
 }
 
 pub fn draw(
@@ -68,6 +102,8 @@ pub fn draw(
             outputs_section(ui, state);
             ui.separator();
             midi_section(ui, state);
+            ui.separator();
+            audio_section(ui, state, &mut actions);
             ui.separator();
             modulation_section(ui, registry, modulation);
             ui.separator();
@@ -124,6 +160,125 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
 /// Modulation is owned by the render thread, and the panel draws on that
 /// same thread, so it edits the engine directly — no lock, no snapshot,
 /// no action plumbing.
+/// Two stacked bars: what modulation receives on top, what is arriving at
+/// the input underneath. Stacked rather than overlaid because with any
+/// gain above 1 the envelope covers the raw signal completely, and the
+/// whole point of the meter is comparing the two to set the gain.
+fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(80.0, 12.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(140));
+    let h = rect.height() * 0.5;
+    p.rect_filled(
+        egui::Rect::from_min_size(
+            rect.left_top(),
+            egui::vec2(rect.width() * env.clamp(0.0, 1.0), h),
+        ),
+        1.0,
+        egui::Color32::from_rgb(120, 200, 255),
+    );
+    p.rect_filled(
+        egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(0.0, h),
+            egui::vec2(rect.width() * raw.clamp(0.0, 1.0), h),
+        ),
+        1.0,
+        egui::Color32::from_rgb(70, 95, 125),
+    );
+    // Clipping marker: at 1.0 the band is pinned and the gain is too high.
+    if env >= 0.999 {
+        p.rect_filled(
+            egui::Rect::from_min_size(
+                rect.right_top() - egui::vec2(3.0, 0.0),
+                egui::vec2(3.0, rect.height()),
+            ),
+            0.0,
+            egui::Color32::from_rgb(255, 120, 90),
+        );
+    }
+}
+
+fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let a = &state.audio;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Audio").strong());
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        ui.painter().circle_filled(
+            dot.center(),
+            4.0,
+            if a.connected {
+                egui::Color32::from_rgb(90, 200, 120)
+            } else {
+                egui::Color32::from_rgb(110, 110, 110)
+            },
+        );
+        match &a.device {
+            Some(d) => ui.small(d.as_str()),
+            None => ui.small("no input"),
+        };
+    });
+
+    if !a.connected {
+        ui.small("Start with --audio-device, or --list-audio to see names.");
+        return;
+    }
+
+    let mut bands = state.audio_bands;
+    for (i, band) in bands.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            meter(ui, a.raw[i], a.bands[i]);
+            ui.add(
+                egui::DragValue::new(&mut band.lo_hz)
+                    .speed(2.0)
+                    .range(20.0..=18_000.0)
+                    .suffix("Hz"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut band.hi_hz)
+                    .speed(2.0)
+                    .range(20.0..=20_000.0)
+                    .suffix("Hz"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut band.gain)
+                    .speed(0.1)
+                    .range(0.1..=60.0)
+                    .prefix("×"),
+            );
+        });
+    }
+    // A band whose high edge is under its low edge would silently read
+    // zero; clamp on edit rather than letting a drag produce a dead band.
+    for b in &mut bands {
+        b.hi_hz = b.hi_hz.max(b.lo_hz + 10.0);
+    }
+    if bands != state.audio_bands {
+        actions.audio.bands = Some(bands);
+    }
+
+    ui.horizontal(|ui| {
+        ui.small(format!(
+            "detected {:.1} bpm ({:.0}% sure)",
+            a.detected_bpm,
+            a.confidence * 100.0
+        ));
+        let mut auto = state.audio_auto_bpm;
+        if ui
+            .checkbox(&mut auto, "auto")
+            .on_hover_text("let detected tempo drive the beat clock")
+            .changed()
+        {
+            actions.audio.auto_bpm = Some(auto);
+        }
+        if ui.small_button("tap").on_hover_text("tap tempo: three taps sets it").clicked() {
+            actions.audio.tapped = true;
+        }
+    });
+    if a.dropped > 0 {
+        ui.small(format!("{} samples dropped", a.dropped));
+    }
+}
+
 fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEngine) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Modulation").strong());
@@ -197,7 +352,7 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
     for (i, route) in m.routes.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.checkbox(&mut route.enabled, "");
-            ui.label(format!("lfo{} →", route.lfo + 1));
+            ui.label(format!("{} →", route.source.label()));
             ui.label(route.param.trim_start_matches('/'));
             ui.add(
                 egui::DragValue::new(&mut route.depth)
@@ -365,7 +520,7 @@ fn params_section(
             // Route the first LFO to this parameter as a starting point;
             // which LFO and how deep are then adjustable above.
             if ui.small_button("mod").on_hover_text("route lfo1 to this parameter").clicked() {
-                modulation.add_route(0, def.addr.clone(), 0.25);
+                modulation.add_route(vizz_mod::Source::Lfo(0), def.addr.clone(), 0.25);
             }
 
             if !state.midi.available {
