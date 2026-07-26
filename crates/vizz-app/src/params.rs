@@ -20,6 +20,11 @@ pub struct AppParams {
     pub shape: ParamId,
     pub morph: ParamId,
     pub twist: ParamId,
+    pub trail: ParamId,
+    pub zoom: ParamId,
+    pub spin: ParamId,
+    pub mirror: ParamId,
+    pub glow: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
@@ -39,6 +44,17 @@ impl AppParams {
         let shape = b.add(ParamDef::new("/shape/mode", 0.0, 5.0, 0.0).smooth(0.4));
         let morph = b.add(ParamDef::new("/shape/morph", 0.0, 1.0, 0.0).smooth(0.3));
         let twist = b.add(ParamDef::new("/shape/twist", 0.0, 2.0, 0.0).smooth(0.25));
+        // Feedback: the effect that turns a particle field into VJ
+        // material. Capped below 1.0 because at 1.0 nothing ever decays
+        // and the frame saturates to white within seconds.
+        let trail = b.add(ParamDef::new("/fx/trail", 0.0, 0.98, 0.0).smooth(0.2));
+        // Per-frame zoom of the history. Around 1.0 is still; away from it
+        // in either direction builds a tunnel.
+        let zoom = b.add(ParamDef::new("/fx/zoom", 0.9, 1.1, 1.0).smooth(0.3));
+        let spin = b.add(ParamDef::new("/fx/spin", -0.1, 0.1, 0.0).smooth(0.3));
+        // Stepped, not swept: half a mirror is not a look.
+        let mirror = b.add(ParamDef::new("/fx/mirror", 0.0, 3.0, 0.0));
+        let glow = b.add(ParamDef::new("/fx/glow", 0.0, 1.0, 0.25).smooth(0.2));
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -54,6 +70,11 @@ impl AppParams {
             shape,
             morph,
             twist,
+            trail,
+            zoom,
+            spin,
+            mirror,
+            glow,
         }
     }
 }

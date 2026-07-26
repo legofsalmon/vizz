@@ -143,6 +143,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            update_available: None,
             health: None,
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
             frame_times_ms: vec![16.0, 17.0, 15.5],
@@ -167,6 +168,7 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            update_available: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -191,6 +193,7 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            update_available: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -209,6 +212,31 @@ mod tests {
         assert!(text.contains("ch1 cc7"), "binding label missing: {text}");
         assert!(text.contains("learning /particles/count"), "learn prompt missing: {text}");
         assert!(text.contains("ch10 note36"), "learn feedback missing: {text}");
+    }
+
+    /// The update banner must appear only when there is something to
+    /// report, and must link out rather than imply an in-place install.
+    #[test]
+    fn update_banner_appears_only_when_a_newer_version_exists() {
+        let reg = registry();
+        let base = |update: Option<String>| PanelState {
+            update_available: update,
+            health: None,
+            outputs: vec![],
+            frame_times_ms: vec![],
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+        };
+
+        let quiet = run_panel(&egui::Context::default(), &reg, &base(None));
+        // Match the banner's own words: a bare "available" also matches
+        // the MIDI section's "unavailable".
+        assert!(!quiet.contains("download"), "banner shown with no update: {quiet}");
+        assert!(!quiet.contains("vizz 0.2.0"), "banner shown with no update: {quiet}");
+
+        let loud = run_panel(&egui::Context::default(), &reg, &base(Some("0.2.0".into())));
+        assert!(loud.contains("vizz 0.2.0 available"), "banner missing: {loud}");
+        assert!(loud.contains("download"), "no link to the release: {loud}");
     }
 
     /// Drive the panel and return every string it drew.

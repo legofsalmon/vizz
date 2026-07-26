@@ -9,6 +9,7 @@ use vizz_health::{HealthConfig, HealthMonitor, HealthSnapshot};
 use vizz_mod::ModEngine;
 use vizz_params::ParamSnapshot;
 use vizz_render::particles::Uniforms;
+use vizz_render::post::PostUniforms;
 
 use crate::params::AppParams;
 
@@ -28,6 +29,7 @@ pub struct FrameEngine {
 
 pub struct FrameInputs {
     pub uniforms: Uniforms,
+    pub post: PostUniforms,
     pub count: u32,
 }
 
@@ -80,6 +82,18 @@ impl FrameEngine {
                 shape: self.snapshot.get(p.shape),
                 morph: self.snapshot.get(p.morph),
                 twist: self.snapshot.get(p.twist),
+                _pad0: 0.0,
+                _pad1: 0.0,
+            },
+            post: PostUniforms {
+                trail: self.snapshot.get(p.trail),
+                zoom: self.snapshot.get(p.zoom),
+                spin: self.snapshot.get(p.spin),
+                // Rounded: mirror modes are discrete, and a smoothed value
+                // sliding between them would flicker between folds.
+                mirror: self.snapshot.get(p.mirror).round(),
+                glow: self.snapshot.get(p.glow),
+                aspect,
                 _pad0: 0.0,
                 _pad1: 0.0,
             },
