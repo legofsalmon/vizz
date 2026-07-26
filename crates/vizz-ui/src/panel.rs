@@ -352,7 +352,7 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
     for (i, route) in m.routes.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.checkbox(&mut route.enabled, "");
-            ui.label(format!("{} →", route.source.label()));
+            ui.label(format!("{} ->", route.source.label()));
             ui.label(route.param.trim_start_matches('/'));
             ui.add(
                 egui::DragValue::new(&mut route.depth)
