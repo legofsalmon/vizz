@@ -26,6 +26,8 @@ const PORT_R: f32 = 4.5;
 const PORT_HIT_R: f32 = 9.0;
 /// Height reserved for the selected-node inspector below the canvas.
 const INSPECTOR_H: f32 = 62.0;
+/// Width of the node palette strip.
+const PALETTE_W: f32 = 132.0;
 
 /// Maps between graph space and screen space, and knows where everything
 /// sits. Pure geometry — no egui state, no drawing.
@@ -120,6 +122,12 @@ pub struct GraphView {
     /// Where a right-click opened the add menu, in graph space, so a node
     /// appears where it was asked for rather than at the origin.
     add_at: [f32; 2],
+    /// Current patch name, for save/load.
+    pub patch_name: String,
+    /// Transient feedback ("saved", "load failed: …") and when it was set,
+    /// so it fades rather than sitting there misleading you later.
+    status: Option<(String, f64)>,
+    pub show_palette: bool,
 }
 
 impl Default for GraphView {
@@ -130,6 +138,9 @@ impl Default for GraphView {
             selected: None,
             drag: Drag::None,
             add_at: [0.0, 0.0],
+            patch_name: String::new(),
+            status: None,
+            show_palette: true,
         }
     }
 }
@@ -149,6 +160,146 @@ impl GraphView {
     /// Draw and interact. Returns true if the graph changed structurally,
     /// so the caller can persist the patch.
     pub fn show(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph, registry: &ParamRegistry) -> bool {
+        let mut changed = false;
+        changed |= self.toolbar(ui, graph);
+        ui.separator();
+        // Palette and canvas side by side. Width is taken from the parent
+        // before the canvas allocates, for the same reason the inspector
+        // reserves its strip: whichever allocates first would otherwise
+        // take everything.
+        let full = ui.available_size();
+        let canvas_w = if self.show_palette { full.x - PALETTE_W - 8.0 } else { full.x };
+        let mut inner_changed = false;
+        ui.horizontal_top(|ui| {
+            // Both regions must be explicitly top-down: `allocate_ui`
+            // inherits the parent's layout, and inside a horizontal parent
+            // that lays the palette out left-to-right, consuming the full
+            // width and leaving the canvas nothing.
+            let down = egui::Layout::top_down(egui::Align::Min);
+            if self.show_palette {
+                ui.allocate_ui_with_layout(vec2(PALETTE_W, full.y), down, |ui| {
+                    inner_changed |= self.palette(ui, graph);
+                });
+            }
+            ui.allocate_ui_with_layout(vec2(canvas_w.max(120.0), full.y), down, |ui| {
+                inner_changed |= self.canvas(ui, graph, registry);
+            });
+        });
+        changed | inner_changed
+    }
+
+    /// Patch name, save/load, and the palette toggle.
+    fn toolbar(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph) -> bool {
+        use vizz_mod::library;
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.patch_name)
+                    .hint_text("patch name")
+                    .desired_width(140.0),
+            );
+            if ui.button("save").clicked() {
+                match library::save(&self.patch_name, graph) {
+                    Ok(p) => {
+                        // Show the sanitised name back: a patch saved as
+                        // "café/bar" lands as "caf__bar", and silently
+                        // renaming it would make it unfindable later.
+                        let saved = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                        self.patch_name = saved.clone();
+                        self.set_status(ui, format!("saved “{saved}”"));
+                    }
+                    Err(e) => self.set_status(ui, format!("save failed: {e}")),
+                }
+            }
+            let patches = library::list();
+            egui::ComboBox::from_id_salt("load-patch")
+                .selected_text("load")
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    if patches.is_empty() {
+                        ui.label(egui::RichText::new("no saved patches").small());
+                    }
+                    for name in &patches {
+                        if ui.selectable_label(false, name).clicked() {
+                            match library::load(name) {
+                                Ok(g) => {
+                                    *graph = g;
+                                    self.patch_name = name.clone();
+                                    self.selected = None;
+                                    changed = true;
+                                }
+                                Err(e) => self.set_status(ui, format!("load failed: {e}")),
+                            }
+                        }
+                    }
+                });
+            if ui.button("new").on_hover_text("clear the graph").clicked() {
+                *graph = NodeGraph::default();
+                self.selected = None;
+                self.patch_name.clear();
+                changed = true;
+            }
+            ui.checkbox(&mut self.show_palette, "palette");
+
+            if let Some((msg, at)) = &self.status {
+                // Fade after a few seconds: stale feedback next to a
+                // changed graph reads as a fresh result.
+                let age = ui.ctx().input(|i| i.time) - at;
+                if age < 4.0 {
+                    ui.label(egui::RichText::new(msg).small().color(
+                        Color32::from_rgb(150, 200, 160).gamma_multiply(
+                            (1.0 - (age / 4.0) as f32).clamp(0.15, 1.0),
+                        ),
+                    ));
+                }
+            }
+        });
+        changed
+    }
+
+    fn set_status(&mut self, ui: &egui::Ui, msg: String) {
+        self.status = Some((msg, ui.ctx().input(|i| i.time)));
+    }
+
+    /// Every node kind, grouped. The canvas add-menu and this read the same
+    /// catalogue, so a new kind appears in both without being registered
+    /// twice — and this one makes the operators discoverable rather than
+    /// hidden behind a right-click nobody thinks to try.
+    fn palette(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph) -> bool {
+        let mut changed = false;
+        egui::ScrollArea::vertical().id_salt("palette").show(ui, |ui| {
+            for group in [Category::Source, Category::Operator, Category::Sink] {
+                ui.label(
+                    egui::RichText::new(group_label(group))
+                        .small()
+                        .strong()
+                        .color(category_color(group).gamma_multiply(1.6)),
+                );
+                for (cat, name, kind) in catalog() {
+                    if cat != group {
+                        continue;
+                    }
+                    if ui
+                        .add_sized([PALETTE_W - 14.0, 18.0], egui::Button::new(name))
+                        .on_hover_text("add to the canvas")
+                        .clicked()
+                    {
+                        // Drop new nodes near the middle of where the user
+                        // is looking rather than at the graph origin, which
+                        // may be off-screen entirely.
+                        let at = [-self.pan.x + 160.0, -self.pan.y + 80.0];
+                        let id = graph.add(kind, at);
+                        self.selected = Some(id);
+                        changed = true;
+                    }
+                }
+                ui.add_space(4.0);
+            }
+        });
+        changed
+    }
+
+    fn canvas(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph, registry: &ParamRegistry) -> bool {
         let mut changed = false;
         // Reserve the inspector's strip before the canvas claims the space.
         // Allocating everything to the canvas leaves the inspector nothing

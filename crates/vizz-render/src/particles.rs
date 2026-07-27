@@ -10,6 +10,14 @@ use crate::{GpuContext, attractor::Attractors};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Uniforms {
+    /// Mat4 first for its 16-byte alignment.
+    pub view_proj: [[f32; 4]; 4],
+    pub cam_right: [f32; 3],
+    pub focus: f32,
+    pub cam_up: [f32; 3],
+    pub defocus: f32,
+    pub cam_position: [f32; 3],
+    pub _pad_cam: f32,
     pub time: f32,
     pub aspect: f32,
     pub size: f32,
@@ -26,17 +34,19 @@ pub struct Uniforms {
     pub color_spread: f32,
     /// What drives palette position: index, radius, depth or height.
     pub color_drive: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    /// Slot indices for the cloud pair, and the blend between them.
+    pub cloud_a: f32,
+    pub cloud_b: f32,
+    pub cloud_morph: f32,
 }
 
 pub struct ParticleScene {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// Kept alive for the bind group's texture view.
-    _attractors: Attractors,
+    /// The cloud bank. Kept for the bind group's texture view, and
+    /// mutated when a cloud is loaded.
+    attractors: Attractors,
 }
 
 impl ParticleScene {
@@ -150,7 +160,47 @@ impl ParticleScene {
             pipeline,
             uniforms,
             bind_group,
-            _attractors: attractors,
+            attractors,
+        }
+    }
+
+    /// Names of the four cloud slots, for the UI.
+    pub fn cloud_names(&self) -> &[String; crate::attractor::SLOTS] {
+        &self.attractors.names
+    }
+
+    /// Load files into the loadable slots, in order.
+    ///
+    /// A file that will not parse is a warning, never a startup failure:
+    /// arriving at a venue to find the app refuses to open because a scan
+    /// has a malformed header is precisely the wrong trade.
+    pub fn load_clouds(&mut self, ctx: &GpuContext, paths: &[std::path::PathBuf]) {
+        use crate::attractor::{SLOT_AIZAWA, SLOTS};
+        // Slots 0 and 1 hold the built-in attractors.
+        let first_free = SLOT_AIZAWA + 1;
+        for (i, path) in paths.iter().enumerate() {
+            let slot = first_free + i;
+            if slot >= SLOTS {
+                log::warn!(
+                    "ignoring {}: only {} loadable cloud slots",
+                    path.display(),
+                    SLOTS - first_free
+                );
+                break;
+            }
+            match crate::pointcloud::load(path) {
+                Ok(mut points) => {
+                    crate::pointcloud::normalize(&mut points);
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("cloud")
+                        .to_string();
+                    log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
+                    self.attractors.load_slot(ctx, slot, &points, &name);
+                }
+                Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+            }
         }
     }
 
@@ -172,12 +222,9 @@ impl ParticleScene {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.004,
-                        g: 0.004,
-                        b: 0.008,
-                        a: 1.0,
-                    }),
+                    // Load, not clear: the room drew first and cleared for
+                    // us, and clearing again would erase it.
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -236,7 +283,15 @@ mod tests {
             mapped_at_creation: false,
         });
 
+        let cam = crate::camera::Camera { aspect: 1.0, ..Default::default() }.uniforms();
         let uniforms = Uniforms {
+            view_proj: cam.view_proj,
+            cam_right: cam.right,
+            focus: 3.5,
+            cam_up: cam.up,
+            defocus: 0.0,
+            cam_position: cam.position,
+            _pad_cam: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,
@@ -250,9 +305,9 @@ mod tests {
             palette: 0.0,
             color_spread: 0.12,
             color_drive: 0.0,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            cloud_a: 0.0,
+            cloud_b: 1.0,
+            cloud_morph: 0.0,
         };
 
         let mut encoder = ctx

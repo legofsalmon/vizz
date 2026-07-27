@@ -57,6 +57,13 @@ struct Args {
     #[arg(long)]
     syphon_flip: bool,
 
+    /// Load a point cloud (.ply, .xyz, .csv, .pts) into a cloud slot.
+    /// Repeat to fill both loadable slots: `--cloud a.ply --cloud b.ply`.
+    /// Select them with `/cloud/a` and `/cloud/b`, blend with
+    /// `/cloud/morph`, and set `/shape/mode 7` to show the pair.
+    #[arg(long)]
+    cloud: Vec<PathBuf>,
+
     /// Audio input device to analyse, matched as a substring of the device
     /// name. Omit to use the system default; `--list-audio` shows names.
     #[arg(long)]
@@ -149,6 +156,7 @@ fn main() -> Result<()> {
                 frames: args.frames,
                 dump: args.dump,
                 audio_device,
+                clouds: args.cloud.clone(),
                 report: args.report,
                 outputs: output_opts,
             },
@@ -172,6 +180,7 @@ fn main() -> Result<()> {
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),
                 title,
                 audio_device,
+                clouds: args.cloud.clone(),
                 outputs: output_opts,
             },
         )

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Notarization requires the hardened runtime, and the hardened
+         runtime enforces library validation: loaded code must be signed by
+         the same team or by Apple. vizz loads two libraries at runtime that
+         it does not own — the NDI runtime, installed separately by the
+         user, and optionally a Syphon.framework the user points
+         VIZZ_SYPHON_FRAMEWORK at. Without this entitlement both are
+         blocked, and NDI output would silently stop working on exactly the
+         builds people download.
+
+         This is the standard entitlement for a host with a plugin
+         architecture and does not prevent notarization. It is a real
+         loosening: it permits loading third-party code we have not signed.
+         The alternative is dropping NDI from signed builds. -->
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+
+    <!-- Audio input. Paired with NSMicrophoneUsageDescription in the
+         Info.plist: the key explains the request, this permits it. -->
+    <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>

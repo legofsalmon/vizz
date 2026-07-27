@@ -14,6 +14,36 @@
 
 pub mod graph;
 
+/// Serialises tests that redirect `XDG_CONFIG_HOME`.
+///
+/// `set_var` is unsafe precisely because it mutates process-global state:
+/// two suites doing it under the default parallel test runner see each
+/// other's directory and fail intermittently, which is exactly what
+/// happened when the macros tests were added next to the patch tests.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// Redirect config storage at a private directory for the duration of
+    /// the returned guard.
+    pub fn scoped(tag: &str) -> (MutexGuard<'static, ()>, std::path::PathBuf) {
+        let guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("vizz-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: the mutex makes this the only thread touching the
+        // environment for as long as the guard is held.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        (guard, dir)
+    }
+}
+pub mod library;
+pub mod perform;
+
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;
 

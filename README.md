@@ -4,17 +4,26 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 5 — effects.** Renders a procedural particle
-field into a fixed-resolution master texture, publishes it over **Syphon**
-on macOS (zero-copy) and **NDI** on the network (async readback, never
-stalls the renderer), previews it aspect-fitted in the window, and takes
-OSC and MIDI control live, LFOs and a beat clock driving parameters on
-their own, audio-reactive bands and tempo detection driving parameters,
-seven morphing geometry modes including two strange
-attractors, cosine colour palettes, and a feedback/mirror/glow/shift
-effect chain — with an on-screen control
-panel, built-in health monitoring and a headless benchmark mode. Both
-outputs work windowed *and* headless. Spout is next.
+**Status: phase 7 — camera and space.** A procedural particle field
+rendered into a fixed-resolution master texture and published over
+**Syphon** on macOS (zero-copy) and **NDI** on the network (async
+readback, never stalls the renderer).
+
+Geometry is eight morphing modes including two strange attractors and a
+point-cloud pair, with **PLY/XYZ import** and colour. Colour runs through
+cosine palettes driven by index, radius, depth or height. A
+feedback/mirror/glow/shift chain sits on the output, and a real camera
+with orbit, field of view and depth of field looks into an optional
+wireframe **room** sized to the frame for forced perspective and parallax.
+
+Control is OSC, MIDI, and a **node graph** — sources, operators and
+parameter sinks on a pannable canvas, with saved patches. Modulation
+sources include LFOs, a beat clock, and **audio** analysis: four
+configurable spectral bands plus tempo detection. There is a control
+panel, a stripped-back **performance layout**, health monitoring and a
+headless benchmark mode. Both outputs work windowed *and* headless.
+
+Spout is the notable gap.
 
 ## Install (macOS, no developer tools)
 
@@ -23,10 +32,14 @@ curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/insta
 ```
 
 This puts `vizz.app` (with Syphon embedded — nothing else to install) in
-your Applications folder. **First launch: right-click → Open** — the app
-is not notarized with Apple, so a plain double-click is blocked the first
-time. You can also grab the bundle directly from the
+your Applications folder. You can also grab the bundle directly from the
 [latest release](https://github.com/legofsalmon/vizz/releases/latest).
+
+**Ad-hoc signed releases need right-click → Open on first launch.** Once
+the Developer ID secrets are configured the workflow signs and notarizes
+instead, and those builds double-click normally — verified in CI with
+`spctl` and `stapler validate` before publishing, so it is asserted
+rather than assumed. Each release's notes say which it is.
 
 Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
 window title shows the live settings). Flags below need a terminal run.
@@ -146,10 +159,30 @@ is not evidence that it runs, and without this a bundle that dies on
 startup would publish clean and pass the asset-presence check, with the
 first person to find out being someone downloading it.
 
-One risk this cannot close: the bundle is unsigned, so first launch needs
-right-click → Open. CI can verify it runs from a terminal, but not that
-Gatekeeper behaves on a clean machine. That only shows up on a real
+### Signing and notarization
+
+When `APPLE_CERT_P12` and the App Store Connect API-key secrets are
+present, the workflow signs with the Developer ID under the hardened
+runtime, notarizes, staples, and then verifies with `stapler validate` and
+`spctl -a -t install`. That last check is the important one: `codesign
+--verify` only says the signature is well formed, while `spctl` asks the
+question Gatekeeper will ask on a user's machine — so the "does it
+double-click" property is asserted in CI rather than discovered on
 download.
+
+Stapling matters separately: without it, first launch needs a network
+round-trip to Apple, which at a venue with no wifi is exactly the failure
+this is meant to remove.
+
+Without those secrets the workflow still publishes, ad-hoc signed, with a
+warning in the log. Nothing is a flag day.
+
+**The hardened runtime enforces library validation**, which would block
+both the NDI runtime and any Syphon framework the user supplies
+themselves — neither is signed by us. `scripts/vizz.entitlements`
+therefore sets `com.apple.security.cs.disable-library-validation`. That is
+a deliberate loosening, permitting third-party code we have not signed to
+load; the alternative is dropping NDI from signed builds.
 
 ## Updates
 
@@ -280,7 +313,142 @@ inside the node boxes: inline widgets would have to be hit-tested through
 the zoom transform and become unusable when zoomed out, which is exactly
 when a patch is big enough to need editing.
 
+### Patches and the palette
+
+The canvas has a palette down the left listing every node kind, grouped
+into sources, operators and outputs. It reads the same catalogue the
+right-click menu does, so a new kind appears in both — and it makes the
+operators discoverable rather than hidden behind a right-click nobody
+thinks to try.
+
+Patches save to `~/.config/vizz/patches/*.json`, including node positions:
+a patch that reloads with its layout scrambled has to be re-read from
+scratch. Writes go to a temporary file and are renamed over the target, so
+a crash or a full disk mid-save cannot destroy the patch that was already
+there.
+
+Patch names are user-typed and become filenames, so they are reduced to a
+conservative allowlist rather than trusted — `../../../.ssh/config` is a
+name someone can type, and it has to land in the patch directory as a
+mangled filename. The sanitised name is shown back after saving, because
+silently renaming a patch makes it unfindable later.
+
 The flat route list still works and its offsets sum with the graph's.
+
+## Performance layout
+
+Press **P**. Eight assigned faders, a master, and the two or three facts
+that matter when something goes wrong — is the output live, is it dropping
+frames, is audio still arriving.
+
+Deliberately not a smaller control panel. The panel is for building a
+look: every parameter, dense, read at a desk. This is for playing one. A
+control you did not decide to reach for in advance is a control you will
+not find in a dark room, and having it on screen only makes the ones you
+do want harder to hit.
+
+The faders are drawn by hand rather than with `egui::Slider`, because the
+built-in vertical slider is a thin rail with a small handle whatever size
+it is given — the premise of this screen fails with it. Here the **whole
+column** is the drag target, and grabbing anywhere in it jumps to that
+value rather than dragging relatively, which is what you want when
+reaching quickly.
+
+Click a fader's name to reassign it. Assignments live in
+`~/.config/vizz/macros.json`, separately from patches: which parameters
+you want under your fingers is a property of how you play, not of the
+modulation graph, and loading someone else's patch should not rearrange
+your faders. A slot pointing at a parameter this build no longer has draws
+as an empty placeholder rather than vanishing, so the layout cannot reflow
+mid-set.
+
+Eight is a deliberate limit — enough for the things worth reaching for,
+few enough that each stays large and unambiguous under stage lighting.
+
+## Camera and room
+
+```
+/camera/distance /camera/orbit /camera/elevation
+/camera/fov /camera/focus /camera/defocus
+/room/brightness /room/depth /room/fade
+```
+
+The camera used to be four hardcoded lines in the vertex shader. It is now
+a real view/projection, because parallax, forced perspective and depth of
+field all depend on *where you are* and none of them can be expressed
+without one.
+
+Distance and field of view are both "zoom" and are deliberately separate:
+moving closer changes the perspective, narrowing the lens does not.
+
+**Depth of field** resizes the sprite rather than blurring the frame. A
+defocused point light *is* a larger, dimmer disc, so this is closer to the
+real thing than a post-process blur and costs nothing — brightness falls
+as the square of the disc, or defocusing would brighten the image instead
+of softening it.
+
+### The room
+
+A wireframe box drawn with the same projection, so camera movement
+parallaxes it against the cloud. That parallax is the point: a static
+backdrop reads as wallpaper, one that shifts against the foreground reads
+as space. Off by default — it is a strong look, not a neutral one.
+
+Its opening is sized from the camera frustum rather than by eye, so **at
+the design viewpoint the frame edge is the room edge** and the screen
+reads as a window. Guessing the numbers instead leaves a sliver of
+background along one edge, which reads as a floating box and gives the
+illusion away. The opening tracks the output aspect automatically, so it
+is correct for whatever canvas you configure.
+
+There is a real trade here, and it is the interesting one. The room is
+fixed in world space, so the illusion is exact only at
+`elevation 0, orbit 0`. Moving off that viewpoint reveals the room's
+edges — but that is also what produces the parallax. Orienting the room to
+the camera instead would keep the illusion everywhere and eliminate the
+parallax entirely, which would defeat the purpose.
+
+## Point clouds
+
+```sh
+vizz --cloud scan.ply --cloud other.xyz
+```
+
+Reads **PLY** (ASCII and binary little-endian) and plain **XYZ/CSV/PTS**,
+with per-point colour where the file has it. Files load into two slots
+alongside the two built-in attractors, giving four in total.
+
+`/shape/mode 7` shows the **cloud pair**: `/cloud/a` and `/cloud/b` choose
+slots, `/cloud/morph` blends between them. That is separate from the shape
+sweep because the sweep only reaches *adjacent* modes — morphing an
+imported scan into Lorenz needs its own control. Slot choice is stepped
+(half a slot is not a cloud); the morph is swept and modulatable, so it
+can be driven from an LFO, the beat clock or an audio band like anything
+else.
+
+Particles keep their index across the blend, so the same point travels
+from one cloud to the other rather than the field being re-scattered. Be
+aware that a linear blend between two unrelated clouds passes through a
+shapeless middle — that is inherent to index-based morphing, not a bug.
+Clouds with related structure morph far better than arbitrary pairs.
+
+Imported colour multiplies the palette rather than replacing it, so the
+palette still works as a tint and an uncoloured cloud is unaffected.
+Colour is packed into the position texture's unused `w` channel, eight
+bits per channel, so carrying it costs nothing over positions alone.
+
+Clouds are resampled to fill their slot: fewer points than the slot means
+each is repeated with a small deterministic jitter, because a dense clump
+at the origin is far more visually wrong than slight duplication. Position
+is centred and uniformly scaled to the same box the procedural shapes use,
+so `/particles/spread` means one thing everywhere — uniformly, since
+fitting each axis independently would stretch a scan into something that
+is no longer the thing scanned.
+
+A file that will not parse is a warning, never a startup failure.
+Arriving at a venue to find the app refuses to open because a scan has a
+malformed header is precisely the wrong trade. A truncated body keeps
+whatever was read.
 
 ## Colour
 

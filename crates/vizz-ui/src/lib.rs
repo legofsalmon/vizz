@@ -8,6 +8,7 @@
 
 pub mod graph_view;
 pub mod panel;
+pub mod performance;
 mod renderer;
 
 /// Exposed for the offscreen panel-preview example; the app uses [`Gui`].
@@ -19,6 +20,7 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 pub use graph_view::GraphView;
+pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState};
 
 /// How many frame times the sparkline keeps.
@@ -34,7 +36,11 @@ pub struct Gui {
     /// The node canvas, in its own window. Off by default: patching is an
     /// editing activity, and a live set should not open onto it.
     pub graph_open: bool,
+    /// Performance layout: faders and status, nothing else. Off by
+    /// default — you arrive wanting to build a look, not play one.
+    pub performance: bool,
     graph_view: graph_view::GraphView,
+    macros: vizz_mod::perform::Macros,
     history: Vec<f32>,
 }
 
@@ -57,7 +63,9 @@ impl Gui {
             renderer: renderer::EguiRenderer::new(device, target_format),
             visible: true,
             graph_open: false,
+            performance: false,
             graph_view: graph_view::GraphView::default(),
+            macros: vizz_mod::perform::Macros::load(),
             history: Vec::with_capacity(HISTORY),
         }
     }
@@ -77,11 +85,19 @@ impl Gui {
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
-            && event.logical_key == winit::keyboard::Key::Character("g".into())
             && !self.ctx.egui_wants_keyboard_input()
         {
-            self.graph_open = !self.graph_open;
-            return true;
+            match event.logical_key.as_ref() {
+                winit::keyboard::Key::Character("g") => {
+                    self.graph_open = !self.graph_open;
+                    return true;
+                }
+                winit::keyboard::Key::Character("p") => {
+                    self.performance = !self.performance;
+                    return true;
+                }
+                _ => {}
+            }
         }
         if !self.visible {
             return false;
@@ -111,7 +127,7 @@ impl Gui {
         modulation: &mut vizz_mod::ModEngine,
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
-        if !self.visible && !self.graph_open {
+        if !self.visible && !self.graph_open && !self.performance {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
@@ -120,6 +136,9 @@ impl Gui {
         // begin_pass/end_pass rather than run_ui: the panel builds its own
         // window from the context instead of drawing into a provided Ui.
         self.ctx.begin_pass(input);
+        if self.performance {
+            return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
+        }
         let actions = if self.visible {
             panel::draw(&self.ctx, registry, &state, modulation)
         } else {
@@ -154,6 +173,59 @@ impl Gui {
         )?;
         Ok(actions)
     }
+
+    /// The performance layout replaces the panel and canvas entirely
+    /// rather than sitting alongside them: its whole value is that nothing
+    /// else is competing for the same screen.
+    #[allow(clippy::too_many_arguments)]
+    fn render_performance(
+        &mut self,
+        window: &Window,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        registry: &ParamRegistry,
+        state: PanelState,
+        size_px: [u32; 2],
+    ) -> Result<PanelActions> {
+        let health = state.health.as_ref();
+        let perf_state = performance::PerformanceState {
+            outputs: &state.outputs,
+            audio: &state.audio,
+            fps: health.map(|h| h.fps).unwrap_or(0.0),
+            over_budget: health.map(|h| h.over_budget_window_pct > 1.0).unwrap_or(false),
+            bpm: state.bpm,
+            bar_phase: state.bar_phase,
+        };
+        let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
+        if perf.exit {
+            self.performance = false;
+        }
+        if perf.macros_changed && let Err(e) = self.macros.save() {
+            log::warn!("could not save macro assignments: {e}");
+        }
+
+        let output = self.ctx.end_pass();
+        self.state.handle_platform_output(window, output.platform_output);
+        self.renderer.update_textures(device, queue, &output.textures_delta);
+        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        self.renderer.render(
+            device,
+            queue,
+            encoder,
+            target,
+            &primitives,
+            size_px,
+            output.pixels_per_point,
+        )?;
+
+        // Tap tempo is the one action shared with the panel, so it rides
+        // the same path the app already handles.
+        let mut actions = PanelActions::default();
+        actions.audio.tapped = perf.tapped;
+        Ok(actions)
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +256,8 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            bpm: 120.0,
+            bar_phase: 0.0,
         };
 
         let text = run_panel(&ctx, &reg, &state);
@@ -212,6 +286,8 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            bpm: 120.0,
+            bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("Collecting health data"), "got: {text}");
@@ -245,6 +321,8 @@ mod tests {
             },
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
+            bpm: 128.0,
+            bar_phase: 0.05,
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("Scarlett 2i2"), "device missing: {text}");
@@ -289,6 +367,8 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            bpm: 120.0,
+            bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("Launch Control XL"), "device missing: {text}");
@@ -313,6 +393,8 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            bpm: 120.0,
+            bar_phase: 0.0,
         };
 
         let quiet = run_panel(&egui::Context::default(), &reg, &base(None));

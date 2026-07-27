@@ -4,6 +4,15 @@
 // count parameter is just a vertex count. Two triangles per particle.
 
 struct Uniforms {
+    // Mat4 first: it needs 16-byte alignment, and putting it anywhere else
+    // makes the layout depend on how many scalars happen to precede it.
+    view_proj: mat4x4<f32>,
+    cam_right: vec3<f32>,
+    focus: f32,
+    cam_up: vec3<f32>,
+    defocus: f32,
+    cam_position: vec3<f32>,
+    _pad_cam: f32,
     time: f32,          // pre-integrated on CPU: advances at `speed` rate
     aspect: f32,        // width / height
     size: f32,          // particle billboard half-size in view units
@@ -17,9 +26,9 @@ struct Uniforms {
     palette: f32,       // 0 = classic HSV, 1..4 = cosine gradients
     color_spread: f32,  // how much of the palette the field spans
     color_drive: f32,   // what maps to palette position, see drive_value
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    cloud_a: f32,       // slot index for the A cloud
+    cloud_b: f32,       // slot index for the B cloud
+    cloud_morph: f32,   // 0 = A, 1 = B
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -56,17 +65,34 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
 // particle's index sweeps the whole cloud forward along the path.
 const ATTRACTOR_POINTS: u32 = 65536u;
 const ATTRACTOR_W: u32 = 256u;
+const CLOUD_SLOTS: u32 = 4u;
+
+/// Raw texel for a slot, so callers can use the packed colour too.
+fn cloud_texel(which: u32, h: f32, t: f32) -> vec4<f32> {
+    let flow = u32(max(t, 0.0) * 260.0);
+    let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
+    let row = (which % CLOUD_SLOTS) * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
+    return textureLoad(t_attractor, vec2<u32>(idx % ATTRACTOR_W, row), 0);
+}
+
+/// Colour packed into the w channel by the CPU: 8 bits per channel.
+/// Imported scans carry colour; procedural slots store white and so take
+/// the palette instead.
+fn cloud_color(w: f32) -> vec3<f32> {
+    let bits = bitcast<u32>(w);
+    return vec3<f32>(
+        f32((bits >> 16u) & 255u),
+        f32((bits >> 8u) & 255u),
+        f32(bits & 255u),
+    ) / 255.0;
+}
 
 fn attractor_point(which: u32, h: f32, t: f32, jitter: vec3<f32>) -> vec3<f32> {
     // Flow rate is in points per unit of visual time, so `/particles/speed`
     // drives it like everything else.
-    let flow = u32(max(t, 0.0) * 260.0);
-    let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
-    let row = which * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
-    let texel = textureLoad(t_attractor, vec2<u32>(idx % ATTRACTOR_W, row), 0);
     // Consecutive points are close together, so without a little spread
     // the cloud collapses onto a wire rather than reading as a volume.
-    return texel.xyz + jitter * 0.02;
+    return cloud_texel(which, h, t).xyz + jitter * 0.02;
 }
 
 // Point positions for each geometry mode, all derived from the same four
@@ -124,14 +150,26 @@ fn sample_shape(mode: u32, h1: f32, h2: f32, h3: f32, h4: f32, t: f32) -> vec3<f
             return attractor_point(0u, h1, t, j);
         }
         // Aizawa: rounder, shell-like, with a spike through the poles.
-        default: {
+        case 6u: {
             let j = vec3<f32>(h2 * 2.0 - 1.0, h3 * 2.0 - 1.0, h4 * 2.0 - 1.0);
             return attractor_point(1u, h1, t, j);
+        }
+        // Cloud pair: any two slots, blended by /cloud/morph. The
+        // shape-mode sweep only reaches *adjacent* modes, so morphing an
+        // imported scan into an attractor needs its own control. Particles
+        // keep their index across the blend, so the same point travels
+        // from one cloud to the other rather than the field being
+        // re-scattered.
+        default: {
+            let j = vec3<f32>(h2 * 2.0 - 1.0, h3 * 2.0 - 1.0, h4 * 2.0 - 1.0);
+            let a = attractor_point(u32(u.cloud_a), h1, t, j);
+            let b = attractor_point(u32(u.cloud_b), h1, t, j);
+            return mix(a, b, smoothstep(0.0, 1.0, u.cloud_morph));
         }
     }
 }
 
-const SHAPE_COUNT: u32 = 7u;
+const SHAPE_COUNT: u32 = 8u;
 
 // How much a mode's rotation should be rigid rather than per-particle.
 //
@@ -143,6 +181,29 @@ const SHAPE_COUNT: u32 = 7u;
 // those rigidly so the shape survives being turned.
 fn rigidity(mode: u32) -> f32 {
     return select(0.0, 1.0, mode >= 5u);
+}
+
+/// Imported clouds carry their own colour; procedural ones store white and
+/// take the palette. Blended the same way the positions are, so a morph
+/// crossfades colour along with shape.
+fn cloud_tint(mode_a: u32, mode_b: u32, blend: f32, h: f32, t: f32) -> vec3<f32> {
+    let ca = slot_tint(mode_a, h, t);
+    let cb = slot_tint(mode_b, h, t);
+    return mix(ca, cb, blend);
+}
+
+fn slot_tint(mode: u32, h: f32, t: f32) -> vec3<f32> {
+    if (mode == 7u) {
+        return mix(
+            cloud_color(cloud_texel(u32(u.cloud_a), h, t).w),
+            cloud_color(cloud_texel(u32(u.cloud_b), h, t).w),
+            smoothstep(0.0, 1.0, u.cloud_morph),
+        );
+    }
+    if (mode >= 5u) {
+        return cloud_color(cloud_texel(mode - 5u, h, t).w);
+    }
+    return vec3<f32>(1.0);
 }
 
 // --- Colour -----------------------------------------------------------
@@ -271,37 +332,49 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let radius = length(p);
     p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
 
-    // Camera looks slightly down rather than dead-on. Without this the
-    // grid mode sits exactly edge-on and vanishes, and the volumetric
-    // shapes lose most of their depth cues.
-    let el = 0.34;
-    let ce = cos(el);
-    let se = sin(el);
-    let tilted = vec3<f32>(p.x, p.y * ce - p.z * se, p.y * se + p.z * ce);
-
-    // Simple perspective: camera on -Z looking at the origin.
-    let view = tilted + vec3<f32>(0.0, 0.0, 3.5);
-    if (view.z < 0.15) {
-        // Behind the near plane: emit a degenerate off-screen vertex.
+    // Real projection, so the camera can move and the room can line up
+    // with the frame. The old fixed transform could not express either.
+    let centre = u.view_proj * vec4<f32>(p, 1.0);
+    if (centre.w < 0.02) {
+        // Behind the camera: emit a degenerate off-screen vertex rather
+        // than letting the perspective divide flip it back into view.
         var cull: VsOut;
         cull.pos = vec4<f32>(4.0, 4.0, 2.0, 1.0);
         cull.uv = vec2<f32>(0.0);
         cull.color = vec3<f32>(0.0);
         return cull;
     }
-    let persp = 1.8 / view.z;
-    var clip = vec2<f32>(view.x * persp / u.aspect, view.y * persp);
-    let half = u.size * persp;
-    clip += off * vec2<f32>(half / u.aspect, half);
 
-    // Distance fade so depth reads even without a depth buffer.
-    let fade = clamp(1.7 - view.z * 0.28, 0.15, 1.0);
-    let drive = drive_value(u.color_drive, h1, radius, view.z, tilted.y);
+    // Depth of field, done by resizing the sprite rather than blurring the
+    // frame: a defocused point light *is* a larger, dimmer disc, so this is
+    // closer to the real thing than a post-process blur and costs nothing.
+    let dist = distance(p, u.cam_position);
+    let coc = 1.0 + abs(dist - u.focus) * u.defocus * 2.5;
+    let half = u.size * coc;
+
+    // Billboard in world space against the camera basis, so sprites face
+    // the camera from any angle instead of only from straight on.
+    // Named apart from the quad-corner index above.
+    let corner_pos = p + (u.cam_right * off.x + u.cam_up * off.y) * half;
+    var clip4 = u.view_proj * vec4<f32>(corner_pos, 1.0);
+
+    // Spreading the same energy over a wider disc dims it; without this,
+    // defocusing brightens the frame instead of softening it.
+    let bokeh = 1.0 / (coc * coc);
+    // Distance fade so depth still reads without a depth buffer.
+    let fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
+    // `w` after the view-projection is the view-space depth, which is what
+    // the depth-driven palette wants.
+    let drive = drive_value(u.color_drive, h1, radius, centre.w, p.y);
     let t = drive * u.color_spread + 0.03 * sin(u.time * 0.2);
-    let col = palette_color(u.palette, t, u.saturation, u.hue) * u.brightness * fade;
+    // An imported cloud's own colour multiplies the palette rather than
+    // replacing it, so the palette still works as a tint and a white
+    // procedural cloud is unaffected.
+    let tint = cloud_tint(mode_a, mode_b, smoothstep(0.0, 1.0, blend), h1, u.time);
+    let col = palette_color(u.palette, t, u.saturation, u.hue) * tint * u.brightness * fade;
 
     var out: VsOut;
-    out.pos = vec4<f32>(clip, 0.0, 1.0);
+    out.pos = clip4;
     out.uv = off;
     out.color = col;
     return out;

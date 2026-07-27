@@ -9,9 +9,12 @@ use anyhow::{Context as _, Result};
 
 pub mod attractor;
 pub mod blit;
+pub mod camera;
 pub mod output;
 pub mod particles;
+pub mod pointcloud;
 pub mod post;
+pub mod room;
 
 /// Owned GPU handles, shared by scenes and (later) I/O backends.
 pub struct GpuContext {

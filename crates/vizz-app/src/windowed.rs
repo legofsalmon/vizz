@@ -38,6 +38,8 @@ pub struct WindowedOpts {
     pub outputs: OutputOpts,
     /// Substring match against an input device name; None picks the default.
     pub audio_device: Option<String>,
+    /// Point clouds to load into the loadable slots, in order.
+    pub clouds: Vec<std::path::PathBuf>,
 }
 
 struct RenderState {
@@ -46,6 +48,7 @@ struct RenderState {
     config: wgpu::SurfaceConfiguration,
     ctx: GpuContext,
     scene: ParticleScene,
+    room: vizz_render::room::Room,
     output: OutputTarget,
     blit: BlitPass,
     blit_bind: wgpu::BindGroup,
@@ -137,7 +140,9 @@ impl App {
             vizz_render::output::OUTPUT_FORMAT);
         // The scene draws into the post chain's HDR buffer, not straight
         // to the master: feedback needs somewhere to accumulate.
-        let scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+        let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+        scene.load_clouds(&ctx, &self.opts.clouds);
+        let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
@@ -150,6 +155,7 @@ impl App {
             config,
             ctx,
             scene,
+            room,
             output,
             blit,
             blit_bind,
@@ -198,6 +204,14 @@ impl App {
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // Room first: it clears the scene texture and the particles then
+        // add on top. Skipped entirely when dark, since it is off by
+        // default and drawing invisible lines is wasted work.
+        if inputs.room_visible {
+            state
+                .room
+                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room);
+        }
         state.scene.render(
             &state.ctx,
             &mut encoder,
@@ -250,6 +264,8 @@ impl App {
             },
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
+            bpm: self.engine.modulation.clock.bpm,
+            bar_phase: self.engine.modulation.clock.bar_phase(4.0),
         };
         let actions = state.gui.render(
             &state.window,

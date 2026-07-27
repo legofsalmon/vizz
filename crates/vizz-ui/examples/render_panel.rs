@@ -65,6 +65,8 @@ fn main() {
         },
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
+        bpm: 128.0,
+        bar_phase: 0.05,
     };
 
     let (device, queue) = gpu();
