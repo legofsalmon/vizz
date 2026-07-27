@@ -114,6 +114,25 @@ impl FrameEngine {
         };
         let cam = camera.uniforms();
         let room_brightness = self.snapshot.get(p.room);
+        // The opening sits a little in front of the origin so the cloud is
+        // inside the room rather than pressed against its face.
+        let room = RoomUniforms::for_camera(
+            &camera,
+            (camera.distance - 1.6).max(0.3),
+            self.snapshot.get(p.room_depth),
+            room_brightness,
+            self.snapshot.get(p.room_fade),
+            self.snapshot.get(p.room_converge),
+            self.snapshot.get(p.room_vanish_x),
+            self.snapshot.get(p.room_vanish_y),
+        );
+        // Placement is derived even when the room is invisible: embedding
+        // the cloud in a room you have not turned up is a legitimate look,
+        // and it costs a struct copy.
+        let placement = room.placement(
+            self.snapshot.get(p.room_anchor),
+            self.snapshot.get(p.room_embed),
+        );
 
         FrameInputs {
             uniforms: Uniforms {
@@ -143,6 +162,7 @@ impl FrameEngine {
                 cloud_a: self.snapshot.get(p.cloud_a).round(),
                 cloud_b: self.snapshot.get(p.cloud_b).round(),
                 cloud_morph: self.snapshot.get(p.cloud_morph),
+                room: placement,
             },
             post: PostUniforms {
                 trail: self.snapshot.get(p.trail),
@@ -156,15 +176,7 @@ impl FrameEngine {
                 shift: self.snapshot.get(p.shift),
                 _pad0: 0.0,
             },
-            // The opening sits a little in front of the origin so the cloud
-            // is inside the room rather than pressed against its face.
-            room: RoomUniforms::for_camera(
-                &camera,
-                (camera.distance - 1.6).max(0.3),
-                self.snapshot.get(p.room_depth),
-                room_brightness,
-                self.snapshot.get(p.room_fade),
-            ),
+            room,
             room_visible: room_brightness > 0.002,
             count: self.snapshot.get(p.count).max(0.0) as u32,
         }

@@ -38,6 +38,9 @@ pub struct Uniforms {
     pub cloud_a: f32,
     pub cloud_b: f32,
     pub cloud_morph: f32,
+    /// The room's volume, so the field can be placed inside it rather than
+    /// drawn in front of it.
+    pub room: crate::room::Placement,
 }
 
 pub struct ParticleScene {
@@ -308,6 +311,7 @@ mod tests {
             cloud_a: 0.0,
             cloud_b: 1.0,
             cloud_morph: 0.0,
+            room: Default::default(),
         };
 
         let mut encoder = ctx
