@@ -4,17 +4,26 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 5 — effects.** Renders a procedural particle
-field into a fixed-resolution master texture, publishes it over **Syphon**
-on macOS (zero-copy) and **NDI** on the network (async readback, never
-stalls the renderer), previews it aspect-fitted in the window, and takes
-OSC and MIDI control live, LFOs and a beat clock driving parameters on
-their own, audio-reactive bands and tempo detection driving parameters,
-seven morphing geometry modes including two strange
-attractors, cosine colour palettes, and a feedback/mirror/glow/shift
-effect chain — with an on-screen control
-panel, built-in health monitoring and a headless benchmark mode. Both
-outputs work windowed *and* headless. Spout is next.
+**Status: phase 7 — camera and space.** A procedural particle field
+rendered into a fixed-resolution master texture and published over
+**Syphon** on macOS (zero-copy) and **NDI** on the network (async
+readback, never stalls the renderer).
+
+Geometry is eight morphing modes including two strange attractors and a
+point-cloud pair, with **PLY/XYZ import** and colour. Colour runs through
+cosine palettes driven by index, radius, depth or height. A
+feedback/mirror/glow/shift chain sits on the output, and a real camera
+with orbit, field of view and depth of field looks into an optional
+wireframe **room** sized to the frame for forced perspective and parallax.
+
+Control is OSC, MIDI, and a **node graph** — sources, operators and
+parameter sinks on a pannable canvas, with saved patches. Modulation
+sources include LFOs, a beat clock, and **audio** analysis: four
+configurable spectral bands plus tempo detection. There is a control
+panel, a stripped-back **performance layout**, health monitoring and a
+headless benchmark mode. Both outputs work windowed *and* headless.
+
+Spout is the notable gap.
 
 ## Install (macOS, no developer tools)
 
@@ -26,11 +35,11 @@ This puts `vizz.app` (with Syphon embedded — nothing else to install) in
 your Applications folder. You can also grab the bundle directly from the
 [latest release](https://github.com/legofsalmon/vizz/releases/latest).
 
-**Releases before v0.3.0 need right-click → Open on first launch**, because
-they are ad-hoc signed rather than notarized. Signed builds double-click
-normally; the release workflow verifies this with `spctl` and
-`stapler validate` before publishing, so it is asserted rather than
-assumed.
+**Ad-hoc signed releases need right-click → Open on first launch.** Once
+the Developer ID secrets are configured the workflow signs and notarizes
+instead, and those builds double-click normally — verified in CI with
+`spctl` and `stapler validate` before publishing, so it is asserted
+rather than assumed. Each release's notes say which it is.
 
 Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
 window title shows the live settings). Flags below need a terminal run.
