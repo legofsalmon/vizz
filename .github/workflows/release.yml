@@ -74,8 +74,12 @@ jobs:
             exit 1
           fi
 
+          # Audio deliberately left enabled: it is on by default for real
+          # users, and opening an input is exactly where a missing
+          # Info.plist usage description kills the app. CI runners have no
+          # input device, so this exercises the fail-soft path.
           "$BIN" --headless --frames 30 --width 320 --height 180 \
-                 --no-audio --no-update-check --no-syphon \
+                 --no-update-check --no-syphon \
                  --report smoke.json
           python3 - smoke.json <<'PY'
           import json, sys
