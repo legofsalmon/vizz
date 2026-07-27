@@ -326,6 +326,36 @@ silently renaming a patch makes it unfindable later.
 
 The flat route list still works and its offsets sum with the graph's.
 
+## Performance layout
+
+Press **P**. Eight assigned faders, a master, and the two or three facts
+that matter when something goes wrong — is the output live, is it dropping
+frames, is audio still arriving.
+
+Deliberately not a smaller control panel. The panel is for building a
+look: every parameter, dense, read at a desk. This is for playing one. A
+control you did not decide to reach for in advance is a control you will
+not find in a dark room, and having it on screen only makes the ones you
+do want harder to hit.
+
+The faders are drawn by hand rather than with `egui::Slider`, because the
+built-in vertical slider is a thin rail with a small handle whatever size
+it is given — the premise of this screen fails with it. Here the **whole
+column** is the drag target, and grabbing anywhere in it jumps to that
+value rather than dragging relatively, which is what you want when
+reaching quickly.
+
+Click a fader's name to reassign it. Assignments live in
+`~/.config/vizz/macros.json`, separately from patches: which parameters
+you want under your fingers is a property of how you play, not of the
+modulation graph, and loading someone else's patch should not rearrange
+your faders. A slot pointing at a parameter this build no longer has draws
+as an empty placeholder rather than vanishing, so the layout cannot reflow
+mid-set.
+
+Eight is a deliberate limit — enough for the things worth reaching for,
+few enough that each stays large and unambiguous under stage lighting.
+
 ## Colour
 
 `/color/palette` starts at **0 = the original HSV behaviour** and

@@ -55,6 +55,10 @@ pub struct PanelState {
     /// something to edit without locking the analysis thread while drawing.
     pub audio_bands: [vizz_audio::Band; 4],
     pub audio_auto_bpm: bool,
+    /// Beat clock, mirrored for the performance layout (which does not get
+    /// a mutable ModEngine).
+    pub bpm: f32,
+    pub bar_phase: f32,
 }
 
 /// What the panel needs to know about audio this frame. A snapshot rather
@@ -109,7 +113,7 @@ pub fn draw(
             ui.separator();
             params_section(ui, registry, state, modulation, &mut actions);
             ui.separator();
-            ui.small("Tab toggles this panel · G opens modulation · Esc quits");
+            ui.small("Tab panel · G modulation · P performance · Esc quits");
         });
     actions
 }

@@ -32,6 +32,7 @@ fn main() {
         // The real canvas, not a mockup: same code path the app runs.
         Shot { name: "graph_real", w: 900, h: 620, draw: draw_real_graph },
         Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
+        Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
     ];
 
     for s in shots {
@@ -334,6 +335,48 @@ fn draw_real_zoomed(ctx: &egui::Context, w: f32, h: f32) {
         ui.set_max_size(vec2(w, h));
         view.show(ui, &mut g, &reg);
     });
+}
+
+fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
+    use vizz_params::ParamDef;
+    let mut b = vizz_params::ParamRegistry::builder();
+    for (a, lo, hi, d) in [
+        ("/particles/size", 0.001, 0.2, 0.06),
+        ("/particles/speed", 0.0, 4.0, 1.4),
+        ("/shape/mode", 0.0, 7.0, 5.0),
+        ("/shape/morph", 0.0, 1.0, 0.3),
+        ("/fx/trail", 0.0, 0.98, 0.72),
+        ("/fx/glow", 0.0, 1.0, 0.55),
+        ("/fx/mirror", 0.0, 3.0, 2.0),
+        ("/particles/hue", 0.0, 1.0, 0.58),
+        ("/master/dim", 0.0, 1.0, 0.85),
+    ] {
+        b.add(ParamDef::new(a, lo, hi, d));
+    }
+    let reg = b.build();
+    let mut macros = vizz_mod::perform::Macros::default();
+    let audio = vizz_ui::AudioView {
+        connected: true,
+        device: Some("Scarlett 2i2".into()),
+        bands: [0.85, 0.42, 0.3, 0.12],
+        raw: [0.14, 0.1, 0.06, 0.01],
+        level: 0.22,
+        detected_bpm: 128.0,
+        confidence: 0.72,
+        dropped: 0,
+    };
+    let state = vizz_ui::PerformanceState {
+        outputs: &[
+            vizz_ui::OutputStatus { name: "syphon:vizz".into(), live: true },
+            vizz_ui::OutputStatus { name: "ndi:vizz".into(), live: true },
+        ],
+        audio: &audio,
+        fps: 60.0,
+        over_budget: false,
+        bpm: 128.0,
+        bar_phase: 0.05,
+    };
+    vizz_ui::performance::draw(ctx, &reg, &state, &mut macros);
 }
 
 // --- offscreen plumbing -------------------------------------------------

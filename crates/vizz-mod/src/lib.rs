@@ -14,6 +14,7 @@
 
 pub mod graph;
 pub mod library;
+pub mod perform;
 
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;

@@ -250,6 +250,8 @@ impl App {
             },
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
+            bpm: self.engine.modulation.clock.bpm,
+            bar_phase: self.engine.modulation.clock.bar_phase(4.0),
         };
         let actions = state.gui.render(
             &state.window,
