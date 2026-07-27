@@ -55,6 +55,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/make-app.sh
+
+      # Compiling is not evidence that it runs. Launch the binary that is
+      # actually inside the bundle and make it render: a build that dies on
+      # startup would otherwise publish clean and pass the asset check,
+      # and the first person to find out would be someone downloading it.
+      - name: Smoke-test the bundled binary
+        run: |
+          BIN="dist/vizz.app/Contents/MacOS/vizz"
+          test -x "$BIN" || { echo "::error::no executable at $BIN"; exit 1; }
+
+          # Version must match the tag, or the update banner nags every
+          # user about a release they are already running.
+          want="${RELEASE_TAG#v}"; want="${want%%-*}"
+          got=$("$BIN" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::bundle reports version $got but the tag is $RELEASE_TAG"
+            exit 1
+          fi
+
+          "$BIN" --headless --frames 30 --width 320 --height 180 \
+                 --no-audio --no-update-check --no-syphon \
+                 --report smoke.json
+          python3 - smoke.json <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          fps = d.get("health", {}).get("fps", 0)
+          assert d.get("frames_requested") == 30, d
+          assert fps > 0, f"fps was {fps}"
+          print(f"smoke: rendered 30 frames at {fps:.1f} fps")
+          PY
       # Attach the bundle whether or not the release already exists: a
       # release published from the GitHub UI creates the tag itself, which
       # triggers this workflow, so `gh release create` would fail on an

@@ -118,6 +118,39 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+## Releasing
+
+```sh
+./scripts/preflight-release.sh v0.2.0    # refuses if anything is off
+# then dispatch the Release workflow with that tag
+```
+
+A published release is effectively irreversible — you can delete it from
+GitHub but not from machines that already downloaded it — so everything
+machine-checkable is checked before anything is tagged.
+
+Preflight refuses on: a malformed tag, a workspace version that does not
+match it, a dirty tree, a HEAD that is not `origin/main`, a release build
+that fails, a binary that cannot render 30 headless frames, or a binary
+that self-reports the wrong version. An existing tag is a warning rather
+than a failure, because re-running to repair a release with a missing
+asset is a legitimate thing to want.
+
+The version check is not bureaucracy. The update banner compares a
+published tag against the running build's own version, so a tag ahead of
+`Cargo.toml` makes every user nag about a release they already have.
+
+The Release workflow then repeats the smoke test **on the bundled binary**
+— launching the executable inside `vizz.app` and making it render. Building
+is not evidence that it runs, and without this a bundle that dies on
+startup would publish clean and pass the asset-presence check, with the
+first person to find out being someone downloading it.
+
+One risk this cannot close: the bundle is unsigned, so first launch needs
+right-click → Open. CI can verify it runs from a terminal, but not that
+Gatekeeper behaves on a clean machine. That only shows up on a real
+download.
+
 ## Updates
 
 On startup vizz asks GitHub once whether a newer release exists and, if
