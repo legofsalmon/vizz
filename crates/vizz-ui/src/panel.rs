@@ -109,7 +109,7 @@ pub fn draw(
             ui.separator();
             params_section(ui, registry, state, modulation, &mut actions);
             ui.separator();
-            ui.small("Tab toggles this panel · Esc quits");
+            ui.small("Tab toggles this panel · G opens modulation · Esc quits");
         });
     actions
 }

@@ -6,6 +6,7 @@
 //! the same frame's command encoder, so it costs one extra render pass
 //! and never introduces a synchronisation point.
 
+pub mod graph_view;
 pub mod panel;
 mod renderer;
 
@@ -17,6 +18,7 @@ use vizz_params::ParamRegistry;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+pub use graph_view::GraphView;
 pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState};
 
 /// How many frame times the sparkline keeps.
@@ -29,6 +31,10 @@ pub struct Gui {
     /// Toggled with Tab. Hidden by default is wrong for a first run — you
     /// would not know the panel exists — so it starts visible.
     pub visible: bool,
+    /// The node canvas, in its own window. Off by default: patching is an
+    /// editing activity, and a live set should not open onto it.
+    pub graph_open: bool,
+    graph_view: graph_view::GraphView,
     history: Vec<f32>,
 }
 
@@ -50,6 +56,8 @@ impl Gui {
             state,
             renderer: renderer::EguiRenderer::new(device, target_format),
             visible: true,
+            graph_open: false,
+            graph_view: graph_view::GraphView::default(),
             history: Vec::with_capacity(HISTORY),
         }
     }
@@ -65,6 +73,14 @@ impl Gui {
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
         {
             self.visible = !self.visible;
+            return true;
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state.is_pressed()
+            && event.logical_key == winit::keyboard::Key::Character("g".into())
+            && !self.ctx.egui_wants_keyboard_input()
+        {
+            self.graph_open = !self.graph_open;
             return true;
         }
         if !self.visible {
@@ -95,7 +111,7 @@ impl Gui {
         modulation: &mut vizz_mod::ModEngine,
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
-        if !self.visible {
+        if !self.visible && !self.graph_open {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
@@ -104,7 +120,23 @@ impl Gui {
         // begin_pass/end_pass rather than run_ui: the panel builds its own
         // window from the context instead of drawing into a provided Ui.
         self.ctx.begin_pass(input);
-        let actions = panel::draw(&self.ctx, registry, &state, modulation);
+        let actions = if self.visible {
+            panel::draw(&self.ctx, registry, &state, modulation)
+        } else {
+            PanelActions::default()
+        };
+        if self.graph_open {
+            let mut open = true;
+            egui::Window::new("modulation")
+                .open(&mut open)
+                .default_pos([420.0, 60.0])
+                .default_size([760.0, 520.0])
+                .resizable(true)
+                .show(&self.ctx, |ui| {
+                    self.graph_view.show(ui, &mut modulation.graph, registry);
+                });
+            self.graph_open = open;
+        }
         let output = self.ctx.end_pass();
         self.state
             .handle_platform_output(window, output.platform_output);

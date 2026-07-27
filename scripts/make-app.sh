@@ -39,6 +39,11 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
+    <!-- Required. A bundled app that reaches the microphone without a
+         usage description is terminated by TCC, not prompted — so without
+         this key vizz.app dies at launch as soon as audio input opens.
+         A CLI run does not show it, because it inherits Terminal's grant. -->
+    <key>NSMicrophoneUsageDescription</key><string>vizz analyses audio input to drive visuals from the music.</string>
 </dict>
 </plist>
 EOF

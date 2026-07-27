@@ -118,6 +118,39 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+## Releasing
+
+```sh
+./scripts/preflight-release.sh v0.2.0    # refuses if anything is off
+# then dispatch the Release workflow with that tag
+```
+
+A published release is effectively irreversible — you can delete it from
+GitHub but not from machines that already downloaded it — so everything
+machine-checkable is checked before anything is tagged.
+
+Preflight refuses on: a malformed tag, a workspace version that does not
+match it, a dirty tree, a HEAD that is not `origin/main`, a release build
+that fails, a binary that cannot render 30 headless frames, or a binary
+that self-reports the wrong version. An existing tag is a warning rather
+than a failure, because re-running to repair a release with a missing
+asset is a legitimate thing to want.
+
+The version check is not bureaucracy. The update banner compares a
+published tag against the running build's own version, so a tag ahead of
+`Cargo.toml` makes every user nag about a release they already have.
+
+The Release workflow then repeats the smoke test **on the bundled binary**
+— launching the executable inside `vizz.app` and making it render. Building
+is not evidence that it runs, and without this a bundle that dies on
+startup would publish clean and pass the asset-presence check, with the
+first person to find out being someone downloading it.
+
+One risk this cannot close: the bundle is unsigned, so first launch needs
+right-click → Open. CI can verify it runs from a terminal, but not that
+Gatekeeper behaves on a clean machine. That only shows up on a real
+download.
+
 ## Updates
 
 On startup vizz asks GitHub once whether a newer release exists and, if
@@ -214,6 +247,40 @@ Attractors rotate rigidly while the other modes keep their per-particle
 spin. That differential spin is what shears the blobs into ribbons, but
 the Lorenz butterfly is not a body of revolution: giving each particle its
 own rate smears the two lobes into an anonymous cone within seconds.
+
+## Modulation
+
+Modulation is a directed graph. Sources, operators and parameter sinks are
+all nodes; every node has one output and zero or more inputs. Press **G**
+for the canvas.
+
+Node kinds: LFO, audio band, level, phasor and constant (sources); curve,
+math, scale, smooth, quantise and sample & hold (operators); parameter
+(sink). Drag from an output port to an input to wire; drag an input away
+to unplug; right-click for the add menu; Delete removes the selected node.
+Scroll zooms about the cursor. Node positions save with the patch.
+
+Three behaviours worth knowing:
+
+**Cycles degrade, they do not explode.** Wiring an output back into its
+own chain is a two-second mistake to make live. Nodes in a cycle are
+excluded from evaluation and drawn red, and unrelated chains keep running.
+A connection that *would* cycle is refused at the drop rather than
+accepted and then disabled — a wire that appears and goes dead is worse
+than one that never lands.
+
+**One edge per input.** Summing several wires into a port invisibly is how
+patches become unreadable; combine with an explicit Math node instead.
+
+**Bypass passes through rather than mutes**, so it auditions a chain
+without an operator instead of silencing it.
+
+Parameters are edited in the inspector strip below the canvas rather than
+inside the node boxes: inline widgets would have to be hit-tested through
+the zoom transform and become unusable when zoomed out, which is exactly
+when a patch is big enough to need editing.
+
+The flat route list still works and its offsets sum with the graph's.
 
 ## Colour
 
