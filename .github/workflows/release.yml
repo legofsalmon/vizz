@@ -49,12 +49,85 @@ jobs:
             # so this run stays the only build for the tag.
             git push origin "$RELEASE_TAG"
           fi
+      - name: Detect signing configuration
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+        run: |
+          if [ -n "$CERT_P12" ]; then
+            echo "HAVE_CERT=true" >> "$GITHUB_ENV"
+            echo "Developer ID present — the bundle will be signed and notarized."
+          else
+            echo "HAVE_CERT=false" >> "$GITHUB_ENV"
+            echo "::warning::No APPLE_CERT_P12 secret — publishing an ad-hoc signed bundle; first launch will need right-click → Open."
+          fi
+
       - name: Ensure Rust
         run: command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH")
+      # Import the Developer ID into a throwaway keychain. Skipped
+      # entirely when the secret is absent, so the workflow keeps working
+      # before the certificate exists and for forks that will never have
+      # it — the bundle is simply ad-hoc signed as before.
+      - name: Import signing certificate
+        if: ${{ env.HAVE_CERT == 'true' }}
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          # A random password on an ephemeral keychain: it exists for the
+          # length of this job and is discarded with the runner.
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          # Without this, codesign blocks on a UI prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
       - name: Build vizz.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ env.HAVE_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
         run: ./scripts/make-app.sh
+
+      # Notarize and staple. Stapling matters: without it the bundle needs
+      # a network round-trip to Apple on first launch, which at a venue
+      # with no wifi is exactly the failure this is meant to remove.
+      - name: Notarize and staple
+        if: ${{ env.HAVE_CERT == 'true' }}
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          echo "$API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/key.p8"
+          # Notarization takes a zip; the stapled result goes back onto the
+          # .app itself, which is what ships.
+          ditto -c -k --keepParent dist/vizz.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/key.p8" \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait --timeout 30m
+          rm -f "$RUNNER_TEMP/key.p8"
+          xcrun stapler staple dist/vizz.app
+
+          # The check that actually proves the right-click step is gone.
+          # codesign --verify only says the signature is well formed;
+          # spctl asks the question Gatekeeper will ask on a user machine.
+          xcrun stapler validate dist/vizz.app
+          spctl -a -vvv -t install dist/vizz.app
+
+          # Re-zip so the published asset is the stapled bundle, not the
+          # pre-notarization one.
+          rm -f dist/vizz.app.zip
+          ditto -c -k --keepParent dist/vizz.app dist/vizz.app.zip
 
       # Compiling is not evidence that it runs. Launch the binary that is
       # actually inside the bundle and make it render: a build that dies on

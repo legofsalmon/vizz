@@ -23,10 +23,14 @@ curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/insta
 ```
 
 This puts `vizz.app` (with Syphon embedded — nothing else to install) in
-your Applications folder. **First launch: right-click → Open** — the app
-is not notarized with Apple, so a plain double-click is blocked the first
-time. You can also grab the bundle directly from the
+your Applications folder. You can also grab the bundle directly from the
 [latest release](https://github.com/legofsalmon/vizz/releases/latest).
+
+**Releases before v0.3.0 need right-click → Open on first launch**, because
+they are ad-hoc signed rather than notarized. Signed builds double-click
+normally; the release workflow verifies this with `spctl` and
+`stapler validate` before publishing, so it is asserted rather than
+assumed.
 
 Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
 window title shows the live settings). Flags below need a terminal run.
@@ -146,10 +150,30 @@ is not evidence that it runs, and without this a bundle that dies on
 startup would publish clean and pass the asset-presence check, with the
 first person to find out being someone downloading it.
 
-One risk this cannot close: the bundle is unsigned, so first launch needs
-right-click → Open. CI can verify it runs from a terminal, but not that
-Gatekeeper behaves on a clean machine. That only shows up on a real
+### Signing and notarization
+
+When `APPLE_CERT_P12` and the App Store Connect API-key secrets are
+present, the workflow signs with the Developer ID under the hardened
+runtime, notarizes, staples, and then verifies with `stapler validate` and
+`spctl -a -t install`. That last check is the important one: `codesign
+--verify` only says the signature is well formed, while `spctl` asks the
+question Gatekeeper will ask on a user's machine — so the "does it
+double-click" property is asserted in CI rather than discovered on
 download.
+
+Stapling matters separately: without it, first launch needs a network
+round-trip to Apple, which at a venue with no wifi is exactly the failure
+this is meant to remove.
+
+Without those secrets the workflow still publishes, ad-hoc signed, with a
+warning in the log. Nothing is a flag day.
+
+**The hardened runtime enforces library validation**, which would block
+both the NDI runtime and any Syphon framework the user supplies
+themselves — neither is signed by us. `scripts/vizz.entitlements`
+therefore sets `com.apple.security.cs.disable-library-validation`. That is
+a deliberate loosening, permitting third-party code we have not signed to
+load; the alternative is dropping NDI from signed builds.
 
 ## Updates
 

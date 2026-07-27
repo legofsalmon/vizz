@@ -48,11 +48,28 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Ad-hoc signature: required for arm64 binaries to run at all. A paid
-# Developer ID + notarization would remove the right-click-to-open step;
-# until then this is the standard unsigned-open-source story.
-codesign --force -s - "$app/Contents/Frameworks/Syphon.framework"
-codesign --force -s - "$app"
+# Sign with a Developer ID when one is available, ad-hoc otherwise, so a
+# local build still works for anyone without the certificate. Frameworks
+# first: codesign seals what it finds, so signing the app before its
+# embedded frameworks produces a bundle that fails verification.
+entitlements="$(dirname "$0")/vizz.entitlements"
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  echo "Signing with $APPLE_SIGNING_IDENTITY (hardened runtime)"
+  # --options runtime is what notarization requires; --timestamp is what
+  # keeps the signature valid after the certificate expires.
+  codesign --force --timestamp --options runtime \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$app/Contents/Frameworks/Syphon.framework"
+  codesign --force --timestamp --options runtime \
+    --entitlements "$entitlements" \
+    --sign "$APPLE_SIGNING_IDENTITY" "$app"
+  codesign --verify --deep --strict --verbose=2 "$app"
+else
+  echo "No APPLE_SIGNING_IDENTITY — ad-hoc signing (first launch needs right-click → Open)"
+  # Ad-hoc is still required: arm64 binaries will not run unsigned at all.
+  codesign --force -s - "$app/Contents/Frameworks/Syphon.framework"
+  codesign --force -s - "$app"
+fi
 
 # ditto preserves the framework's symlink structure, unlike plain zip -r.
 ditto -c -k --keepParent "$app" dist/vizz.app.zip
