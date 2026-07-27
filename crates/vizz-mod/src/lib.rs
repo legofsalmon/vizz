@@ -12,6 +12,8 @@
 //! Everything here is pure arithmetic driven by `dt`, so the whole layer
 //! is testable without a GPU, a clock, or a controller.
 
+pub mod graph;
+
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;
 
@@ -107,7 +109,7 @@ impl BeatClock {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Lfo {
     pub shape: Shape,
     pub rate: Rate,
@@ -118,13 +120,20 @@ pub struct Lfo {
     /// Current sample-and-hold value, and the cycle it was drawn in.
     #[serde(skip)]
     hold: f32,
-    #[serde(skip)]
+    /// xorshift state. Skipped by serde like the rest of the live state,
+    /// but it needs a non-zero default: xorshift on 0 stays 0 forever, so
+    /// a reloaded sample-and-hold LFO would emit a constant.
+    #[serde(skip, default = "seed_default")]
     seed: u32,
+}
+
+const fn seed_default() -> u32 {
+    0x9E37_79B9
 }
 
 impl Default for Lfo {
     fn default() -> Self {
-        Self { shape: Shape::Sine, rate: Rate::Beats(4.0), phase: 0.0, hold: 0.0, seed: 0x9E37_79B9 }
+        Self { shape: Shape::Sine, rate: Rate::Beats(4.0), phase: 0.0, hold: 0.0, seed: seed_default() }
     }
 }
 
@@ -168,6 +177,11 @@ impl Lfo {
     /// xorshift: deterministic and dependency-free, which keeps the whole
     /// crate reproducible in tests.
     fn next_random(&mut self) -> f32 {
+        // Belt and braces against a zero state reaching here from an older
+        // patch: xorshift cannot escape 0.
+        if self.seed == 0 {
+            self.seed = seed_default();
+        }
         self.seed ^= self.seed << 13;
         self.seed ^= self.seed >> 17;
         self.seed ^= self.seed << 5;
@@ -248,6 +262,14 @@ pub struct ModEngine {
     pub clock: BeatClock,
     pub lfos: Vec<Lfo>,
     pub routes: Vec<Route>,
+    /// The node graph. Evaluated alongside the flat routes rather than
+    /// replacing them, so the existing route list keeps working while the
+    /// canvas is built; their offsets sum, as several routes onto one
+    /// parameter already do.
+    #[serde(default)]
+    pub graph: graph::NodeGraph,
+    #[serde(skip)]
+    graph_offsets: Vec<f32>,
     /// Scratch offsets indexed by parameter, rebuilt every tick.
     #[serde(skip)]
     offsets: Vec<f32>,
@@ -264,6 +286,8 @@ impl ModEngine {
                 Lfo { shape: Shape::Triangle, rate: Rate::Beats(1.0), ..Default::default() },
             ],
             routes: Vec::new(),
+            graph: graph::NodeGraph::default(),
+            graph_offsets: Vec::new(),
             offsets: Vec::new(),
         }
     }
@@ -307,6 +331,18 @@ impl ModEngine {
             // Several routes may target one parameter; they sum, and the
             // snapshot clamps the total.
             self.offsets[id.index()] += value * route.depth;
+        }
+
+        self.graph.tick(
+            dt,
+            beat_delta,
+            self.clock.beats,
+            audio,
+            registry,
+            &mut self.graph_offsets,
+        );
+        for (o, g) in self.offsets.iter_mut().zip(&self.graph_offsets) {
+            *o += g;
         }
         &self.offsets
     }
@@ -428,6 +464,44 @@ mod tests {
         // Crossing the cycle boundary draws a new value.
         lfo.tick(0.6, 0.0);
         assert_ne!(lfo.value(), held, "s&h did not step at the cycle boundary");
+    }
+
+    /// Graph and flat routes must both reach the parameter and sum, since
+    /// the two coexist while the canvas is being built. If one silently
+    /// won, half a patch would stop working with no error anywhere.
+    #[test]
+    fn graph_and_flat_routes_sum_into_the_same_parameter() {
+        use graph::NodeKind;
+        let reg = registry();
+        let mut engine = ModEngine { lfos: vec![Lfo::default()], ..Default::default() };
+        engine.lfos[0].shape = Shape::Square;
+        engine.lfos[0].rate = Rate::Hz(0.0);
+        engine.lfos[0].phase = 0.25; // parked at +1
+        engine.add_route(Source::Lfo(0), "/a", 0.25);
+
+        let src = engine.graph.add(NodeKind::Constant(0.5), [0.0, 0.0]);
+        let sink = engine.graph.add(NodeKind::Param { addr: "/a".into(), depth: 0.5 }, [1.0, 0.0]);
+        engine.graph.connect(src, sink, 0);
+
+        let offsets = engine.tick(1.0 / 60.0, &reg, AudioLevels::default());
+        let a = reg.id("/a").unwrap().index();
+        // 0.25 from the route plus 0.25 from the graph.
+        assert!((offsets[a] - 0.5).abs() < 1e-5, "got {}", offsets[a]);
+    }
+
+    /// A patch reloaded from disk must still produce varying sample-and-hold
+    /// values. The seed is skipped by serde, and xorshift started from zero
+    /// stays at zero forever, so without a non-zero default a reloaded S&H
+    /// LFO emits a constant — silently, and only for that one shape.
+    #[test]
+    fn deserialised_sample_hold_still_varies() {
+        let lfo = Lfo { shape: Shape::SampleHold, rate: Rate::Hz(30.0), ..Default::default() };
+        let mut back: Lfo = serde_json::from_str(&serde_json::to_string(&lfo).unwrap()).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..40 {
+            seen.insert(back.tick(1.0 / 60.0, 0.0).to_bits());
+        }
+        assert!(seen.len() > 3, "sample-and-hold froze after a reload: {seen:?}");
     }
 
     #[test]
