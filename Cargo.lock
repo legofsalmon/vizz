@@ -3281,6 +3281,7 @@ dependencies = [
 name = "vizz-mod"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "log",
  "serde",
  "serde_json",

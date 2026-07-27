@@ -304,6 +304,26 @@ inside the node boxes: inline widgets would have to be hit-tested through
 the zoom transform and become unusable when zoomed out, which is exactly
 when a patch is big enough to need editing.
 
+### Patches and the palette
+
+The canvas has a palette down the left listing every node kind, grouped
+into sources, operators and outputs. It reads the same catalogue the
+right-click menu does, so a new kind appears in both — and it makes the
+operators discoverable rather than hidden behind a right-click nobody
+thinks to try.
+
+Patches save to `~/.config/vizz/patches/*.json`, including node positions:
+a patch that reloads with its layout scrambled has to be re-read from
+scratch. Writes go to a temporary file and are renamed over the target, so
+a crash or a full disk mid-save cannot destroy the patch that was already
+there.
+
+Patch names are user-typed and become filenames, so they are reduced to a
+conservative allowlist rather than trusted — `../../../.ssh/config` is a
+name someone can type, and it has to land in the patch directory as a
+mangled filename. The sanitised name is shown back after saving, because
+silently renaming a patch makes it unfindable later.
+
 The flat route list still works and its offsets sum with the graph's.
 
 ## Colour

@@ -13,6 +13,7 @@
 //! is testable without a GPU, a clock, or a controller.
 
 pub mod graph;
+pub mod library;
 
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;
