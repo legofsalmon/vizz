@@ -48,6 +48,7 @@ struct RenderState {
     config: wgpu::SurfaceConfiguration,
     ctx: GpuContext,
     scene: ParticleScene,
+    room: vizz_render::room::Room,
     output: OutputTarget,
     blit: BlitPass,
     blit_bind: wgpu::BindGroup,
@@ -141,6 +142,7 @@ impl App {
         // to the master: feedback needs somewhere to accumulate.
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
+        let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
@@ -153,6 +155,7 @@ impl App {
             config,
             ctx,
             scene,
+            room,
             output,
             blit,
             blit_bind,
@@ -201,6 +204,14 @@ impl App {
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // Room first: it clears the scene texture and the particles then
+        // add on top. Skipped entirely when dark, since it is off by
+        // default and drawing invisible lines is wasted work.
+        if inputs.room_visible {
+            state
+                .room
+                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room);
+        }
         state.scene.render(
             &state.ctx,
             &mut encoder,

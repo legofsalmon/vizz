@@ -10,6 +10,14 @@ use crate::{GpuContext, attractor::Attractors};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Uniforms {
+    /// Mat4 first for its 16-byte alignment.
+    pub view_proj: [[f32; 4]; 4],
+    pub cam_right: [f32; 3],
+    pub focus: f32,
+    pub cam_up: [f32; 3],
+    pub defocus: f32,
+    pub cam_position: [f32; 3],
+    pub _pad_cam: f32,
     pub time: f32,
     pub aspect: f32,
     pub size: f32,
@@ -30,7 +38,6 @@ pub struct Uniforms {
     pub cloud_a: f32,
     pub cloud_b: f32,
     pub cloud_morph: f32,
-    pub _pad0: f32,
 }
 
 pub struct ParticleScene {
@@ -215,12 +222,9 @@ impl ParticleScene {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.004,
-                        g: 0.004,
-                        b: 0.008,
-                        a: 1.0,
-                    }),
+                    // Load, not clear: the room drew first and cleared for
+                    // us, and clearing again would erase it.
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -279,7 +283,15 @@ mod tests {
             mapped_at_creation: false,
         });
 
+        let cam = crate::camera::Camera { aspect: 1.0, ..Default::default() }.uniforms();
         let uniforms = Uniforms {
+            view_proj: cam.view_proj,
+            cam_right: cam.right,
+            focus: 3.5,
+            cam_up: cam.up,
+            defocus: 0.0,
+            cam_position: cam.position,
+            _pad_cam: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,
@@ -296,7 +308,6 @@ mod tests {
             cloud_a: 0.0,
             cloud_b: 1.0,
             cloud_morph: 0.0,
-            _pad0: 0.0,
         };
 
         let mut encoder = ctx

@@ -9,8 +9,10 @@ use vizz_audio::{AudioEngine, BAND_COUNT};
 use vizz_health::{HealthConfig, HealthMonitor, HealthSnapshot};
 use vizz_mod::{AudioLevels, ModEngine};
 use vizz_params::ParamSnapshot;
+use vizz_render::camera::Camera;
 use vizz_render::particles::Uniforms;
 use vizz_render::post::PostUniforms;
+use vizz_render::room::RoomUniforms;
 
 use crate::params::AppParams;
 
@@ -38,6 +40,10 @@ pub struct FrameEngine {
 pub struct FrameInputs {
     pub uniforms: Uniforms,
     pub post: PostUniforms,
+    pub room: RoomUniforms,
+    /// Skip the room pass entirely when it is dark — it is off by default,
+    /// and drawing invisible lines every frame is wasted work.
+    pub room_visible: bool,
     pub count: u32,
 }
 
@@ -96,8 +102,28 @@ impl FrameEngine {
         self.vis_time += dt_s * self.snapshot.get(p.speed);
 
         let brightness = self.snapshot.get(p.brightness) * self.snapshot.get(p.dim);
+
+        let camera = Camera {
+            distance: self.snapshot.get(p.cam_dist),
+            orbit: self.snapshot.get(p.cam_orbit),
+            elevation: self.snapshot.get(p.cam_elev),
+            fov: self.snapshot.get(p.cam_fov),
+            aspect,
+            focus: self.snapshot.get(p.cam_focus),
+            defocus: self.snapshot.get(p.cam_defocus),
+        };
+        let cam = camera.uniforms();
+        let room_brightness = self.snapshot.get(p.room);
+
         FrameInputs {
             uniforms: Uniforms {
+                view_proj: cam.view_proj,
+                cam_right: cam.right,
+                focus: camera.focus,
+                cam_up: cam.up,
+                defocus: camera.defocus,
+                cam_position: cam.position,
+                _pad_cam: 0.0,
                 time: self.vis_time,
                 aspect,
                 size: self.snapshot.get(p.size),
@@ -117,7 +143,6 @@ impl FrameEngine {
                 cloud_a: self.snapshot.get(p.cloud_a).round(),
                 cloud_b: self.snapshot.get(p.cloud_b).round(),
                 cloud_morph: self.snapshot.get(p.cloud_morph),
-                _pad0: 0.0,
             },
             post: PostUniforms {
                 trail: self.snapshot.get(p.trail),
@@ -131,6 +156,16 @@ impl FrameEngine {
                 shift: self.snapshot.get(p.shift),
                 _pad0: 0.0,
             },
+            // The opening sits a little in front of the origin so the cloud
+            // is inside the room rather than pressed against its face.
+            room: RoomUniforms::for_camera(
+                &camera,
+                (camera.distance - 1.6).max(0.3),
+                self.snapshot.get(p.room_depth),
+                room_brightness,
+                self.snapshot.get(p.room_fade),
+            ),
+            room_visible: room_brightness > 0.002,
             count: self.snapshot.get(p.count).max(0.0) as u32,
         }
     }

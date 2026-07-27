@@ -32,6 +32,15 @@ pub struct AppParams {
     pub cloud_a: ParamId,
     pub cloud_b: ParamId,
     pub cloud_morph: ParamId,
+    pub cam_dist: ParamId,
+    pub cam_orbit: ParamId,
+    pub cam_elev: ParamId,
+    pub cam_fov: ParamId,
+    pub cam_focus: ParamId,
+    pub cam_defocus: ParamId,
+    pub room: ParamId,
+    pub room_depth: ParamId,
+    pub room_fade: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
@@ -80,6 +89,20 @@ impl AppParams {
         let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, 3.0, 0.0));
         let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, 3.0, 1.0));
         let cloud_morph = b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).smooth(0.5));
+        // Camera. Distance and field of view are two different kinds of
+        // zoom — moving closer changes the perspective, narrowing the lens
+        // does not — so both are exposed rather than conflated.
+        let cam_dist = b.add(ParamDef::new("/camera/distance", 0.4, 12.0, 3.5).smooth(0.4));
+        let cam_orbit = b.add(ParamDef::new("/camera/orbit", -3.15, 3.15, 0.0).smooth(0.4));
+        let cam_elev = b.add(ParamDef::new("/camera/elevation", -1.4, 1.4, 0.34).smooth(0.4));
+        let cam_fov = b.add(ParamDef::new("/camera/fov", 0.2, 2.0, 0.9).smooth(0.4));
+        // Focus is a distance, so its useful range tracks the camera's.
+        let cam_focus = b.add(ParamDef::new("/camera/focus", 0.0, 12.0, 3.5).smooth(0.4));
+        let cam_defocus = b.add(ParamDef::new("/camera/defocus", 0.0, 1.0, 0.0).smooth(0.3));
+        // Room. Off by default: it is a strong look, not a neutral one.
+        let room = b.add(ParamDef::new("/room/brightness", 0.0, 1.0, 0.0).smooth(0.3));
+        let room_depth = b.add(ParamDef::new("/room/depth", 1.0, 20.0, 7.0).smooth(0.4));
+        let room_fade = b.add(ParamDef::new("/room/fade", 0.0, 1.0, 0.75).smooth(0.3));
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -107,6 +130,15 @@ impl AppParams {
             cloud_a,
             cloud_b,
             cloud_morph,
+            cam_dist,
+            cam_orbit,
+            cam_elev,
+            cam_fov,
+            cam_focus,
+            cam_defocus,
+            room,
+            room_depth,
+            room_fade,
         }
     }
 }

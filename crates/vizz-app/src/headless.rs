@@ -41,6 +41,7 @@ pub struct HeadlessOpts {
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let ctx = pollster::block_on(GpuContext::new(None))?;
+    let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
     let mut post = PostChain::new(&ctx, opts.width, opts.height, vizz_render::output::OUTPUT_FORMAT);
     let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
     scene.load_clouds(&ctx, &opts.clouds);
@@ -62,6 +63,10 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // Room first: it clears, and the particles then add on top.
+        if inputs.room_visible {
+            room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room);
+        }
         scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count);
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         ctx.queue.submit([encoder.finish()]);

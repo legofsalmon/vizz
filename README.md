@@ -356,6 +356,49 @@ mid-set.
 Eight is a deliberate limit — enough for the things worth reaching for,
 few enough that each stays large and unambiguous under stage lighting.
 
+## Camera and room
+
+```
+/camera/distance /camera/orbit /camera/elevation
+/camera/fov /camera/focus /camera/defocus
+/room/brightness /room/depth /room/fade
+```
+
+The camera used to be four hardcoded lines in the vertex shader. It is now
+a real view/projection, because parallax, forced perspective and depth of
+field all depend on *where you are* and none of them can be expressed
+without one.
+
+Distance and field of view are both "zoom" and are deliberately separate:
+moving closer changes the perspective, narrowing the lens does not.
+
+**Depth of field** resizes the sprite rather than blurring the frame. A
+defocused point light *is* a larger, dimmer disc, so this is closer to the
+real thing than a post-process blur and costs nothing — brightness falls
+as the square of the disc, or defocusing would brighten the image instead
+of softening it.
+
+### The room
+
+A wireframe box drawn with the same projection, so camera movement
+parallaxes it against the cloud. That parallax is the point: a static
+backdrop reads as wallpaper, one that shifts against the foreground reads
+as space. Off by default — it is a strong look, not a neutral one.
+
+Its opening is sized from the camera frustum rather than by eye, so **at
+the design viewpoint the frame edge is the room edge** and the screen
+reads as a window. Guessing the numbers instead leaves a sliver of
+background along one edge, which reads as a floating box and gives the
+illusion away. The opening tracks the output aspect automatically, so it
+is correct for whatever canvas you configure.
+
+There is a real trade here, and it is the interesting one. The room is
+fixed in world space, so the illusion is exact only at
+`elevation 0, orbit 0`. Moving off that viewpoint reveals the room's
+edges — but that is also what produces the parallax. Orienting the room to
+the camera instead would keep the illusion everywhere and eliminate the
+parallax entirely, which would defeat the purpose.
+
 ## Point clouds
 
 ```sh

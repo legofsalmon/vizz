@@ -4,6 +4,15 @@
 // count parameter is just a vertex count. Two triangles per particle.
 
 struct Uniforms {
+    // Mat4 first: it needs 16-byte alignment, and putting it anywhere else
+    // makes the layout depend on how many scalars happen to precede it.
+    view_proj: mat4x4<f32>,
+    cam_right: vec3<f32>,
+    focus: f32,
+    cam_up: vec3<f32>,
+    defocus: f32,
+    cam_position: vec3<f32>,
+    _pad_cam: f32,
     time: f32,          // pre-integrated on CPU: advances at `speed` rate
     aspect: f32,        // width / height
     size: f32,          // particle billboard half-size in view units
@@ -20,7 +29,6 @@ struct Uniforms {
     cloud_a: f32,       // slot index for the A cloud
     cloud_b: f32,       // slot index for the B cloud
     cloud_morph: f32,   // 0 = A, 1 = B
-    _pad0: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -324,32 +332,40 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let radius = length(p);
     p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
 
-    // Camera looks slightly down rather than dead-on. Without this the
-    // grid mode sits exactly edge-on and vanishes, and the volumetric
-    // shapes lose most of their depth cues.
-    let el = 0.34;
-    let ce = cos(el);
-    let se = sin(el);
-    let tilted = vec3<f32>(p.x, p.y * ce - p.z * se, p.y * se + p.z * ce);
-
-    // Simple perspective: camera on -Z looking at the origin.
-    let view = tilted + vec3<f32>(0.0, 0.0, 3.5);
-    if (view.z < 0.15) {
-        // Behind the near plane: emit a degenerate off-screen vertex.
+    // Real projection, so the camera can move and the room can line up
+    // with the frame. The old fixed transform could not express either.
+    let centre = u.view_proj * vec4<f32>(p, 1.0);
+    if (centre.w < 0.02) {
+        // Behind the camera: emit a degenerate off-screen vertex rather
+        // than letting the perspective divide flip it back into view.
         var cull: VsOut;
         cull.pos = vec4<f32>(4.0, 4.0, 2.0, 1.0);
         cull.uv = vec2<f32>(0.0);
         cull.color = vec3<f32>(0.0);
         return cull;
     }
-    let persp = 1.8 / view.z;
-    var clip = vec2<f32>(view.x * persp / u.aspect, view.y * persp);
-    let half = u.size * persp;
-    clip += off * vec2<f32>(half / u.aspect, half);
 
-    // Distance fade so depth reads even without a depth buffer.
-    let fade = clamp(1.7 - view.z * 0.28, 0.15, 1.0);
-    let drive = drive_value(u.color_drive, h1, radius, view.z, tilted.y);
+    // Depth of field, done by resizing the sprite rather than blurring the
+    // frame: a defocused point light *is* a larger, dimmer disc, so this is
+    // closer to the real thing than a post-process blur and costs nothing.
+    let dist = distance(p, u.cam_position);
+    let coc = 1.0 + abs(dist - u.focus) * u.defocus * 2.5;
+    let half = u.size * coc;
+
+    // Billboard in world space against the camera basis, so sprites face
+    // the camera from any angle instead of only from straight on.
+    // Named apart from the quad-corner index above.
+    let corner_pos = p + (u.cam_right * off.x + u.cam_up * off.y) * half;
+    var clip4 = u.view_proj * vec4<f32>(corner_pos, 1.0);
+
+    // Spreading the same energy over a wider disc dims it; without this,
+    // defocusing brightens the frame instead of softening it.
+    let bokeh = 1.0 / (coc * coc);
+    // Distance fade so depth still reads without a depth buffer.
+    let fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
+    // `w` after the view-projection is the view-space depth, which is what
+    // the depth-driven palette wants.
+    let drive = drive_value(u.color_drive, h1, radius, centre.w, p.y);
     let t = drive * u.color_spread + 0.03 * sin(u.time * 0.2);
     // An imported cloud's own colour multiplies the palette rather than
     // replacing it, so the palette still works as a tint and a white
@@ -358,7 +374,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let col = palette_color(u.palette, t, u.saturation, u.hue) * tint * u.brightness * fade;
 
     var out: VsOut;
-    out.pos = vec4<f32>(clip, 0.0, 1.0);
+    out.pos = clip4;
     out.uv = off;
     out.color = col;
     return out;
