@@ -356,6 +356,48 @@ mid-set.
 Eight is a deliberate limit — enough for the things worth reaching for,
 few enough that each stays large and unambiguous under stage lighting.
 
+## Point clouds
+
+```sh
+vizz --cloud scan.ply --cloud other.xyz
+```
+
+Reads **PLY** (ASCII and binary little-endian) and plain **XYZ/CSV/PTS**,
+with per-point colour where the file has it. Files load into two slots
+alongside the two built-in attractors, giving four in total.
+
+`/shape/mode 7` shows the **cloud pair**: `/cloud/a` and `/cloud/b` choose
+slots, `/cloud/morph` blends between them. That is separate from the shape
+sweep because the sweep only reaches *adjacent* modes — morphing an
+imported scan into Lorenz needs its own control. Slot choice is stepped
+(half a slot is not a cloud); the morph is swept and modulatable, so it
+can be driven from an LFO, the beat clock or an audio band like anything
+else.
+
+Particles keep their index across the blend, so the same point travels
+from one cloud to the other rather than the field being re-scattered. Be
+aware that a linear blend between two unrelated clouds passes through a
+shapeless middle — that is inherent to index-based morphing, not a bug.
+Clouds with related structure morph far better than arbitrary pairs.
+
+Imported colour multiplies the palette rather than replacing it, so the
+palette still works as a tint and an uncoloured cloud is unaffected.
+Colour is packed into the position texture's unused `w` channel, eight
+bits per channel, so carrying it costs nothing over positions alone.
+
+Clouds are resampled to fill their slot: fewer points than the slot means
+each is repeated with a small deterministic jitter, because a dense clump
+at the origin is far more visually wrong than slight duplication. Position
+is centred and uniformly scaled to the same box the procedural shapes use,
+so `/particles/spread` means one thing everywhere — uniformly, since
+fitting each axis independently would stretch a scan into something that
+is no longer the thing scanned.
+
+A file that will not parse is a warning, never a startup failure.
+Arriving at a venue to find the app refuses to open because a scan has a
+malformed header is precisely the wrong trade. A truncated body keeps
+whatever was read.
+
 ## Colour
 
 `/color/palette` starts at **0 = the original HSV behaviour** and

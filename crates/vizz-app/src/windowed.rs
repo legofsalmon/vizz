@@ -38,6 +38,8 @@ pub struct WindowedOpts {
     pub outputs: OutputOpts,
     /// Substring match against an input device name; None picks the default.
     pub audio_device: Option<String>,
+    /// Point clouds to load into the loadable slots, in order.
+    pub clouds: Vec<std::path::PathBuf>,
 }
 
 struct RenderState {
@@ -137,7 +139,8 @@ impl App {
             vizz_render::output::OUTPUT_FORMAT);
         // The scene draws into the post chain's HDR buffer, not straight
         // to the master: feedback needs somewhere to accumulate.
-        let scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+        let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+        scene.load_clouds(&ctx, &self.opts.clouds);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);

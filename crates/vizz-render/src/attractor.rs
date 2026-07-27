@@ -25,16 +25,29 @@ use crate::GpuContext;
 /// the cloud reads as a surface rather than a wire.
 pub const POINTS: usize = 256 * 256;
 const WIDTH: u32 = 256;
-const COUNT: usize = 2;
+/// Slots in the bank: two built-in attractors plus two loadable from file.
+/// Fixed rather than dynamic because the texture is allocated once and the
+/// shader indexes it by row — growing it live would mean reallocating and
+/// rebuilding every bind group mid-frame.
+pub const SLOTS: usize = 4;
+/// Which slots the built-in attractors occupy.
+pub const SLOT_LORENZ: usize = 0;
+pub const SLOT_AIZAWA: usize = 1;
 
 /// Discarded before recording: the run-in from an arbitrary start point to
 /// the attractor itself. This is exactly the work the old shader could not
 /// afford to do.
 const TRANSIENT: usize = 20_000;
 
+/// White, for procedurally generated slots: they carry no colour of their
+/// own and should take the palette untinted.
+const WHITE: f32 = f32::from_bits(0x00FF_FFFF);
+
 pub struct Attractors {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    /// A label per slot for the UI, so a loaded cloud is identifiable.
+    pub names: [String; SLOTS],
 }
 
 /// Classic Lorenz, sigma 10 / rho 28 / beta 8/3.
@@ -106,7 +119,10 @@ fn trace(step: fn([f64; 3], f64) -> [f64; 3], start: [f64; 3], dt: f64) -> Vec<[
                 ((p[0] - centre[0]) * scale) as f32,
                 ((p[2] - centre[2]) * scale) as f32,
                 ((p[1] - centre[1]) * scale) as f32,
-                0.0,
+                // White, not zero: the w channel carries packed colour,
+                // and an unpacked 0.0 is RGB(0,0,0) — a procedural slot
+                // would multiply the palette by black and vanish.
+                WHITE,
             ]
         })
         .collect()
@@ -116,13 +132,16 @@ impl Attractors {
     pub fn new(ctx: &GpuContext) -> Self {
         let mut data = trace(lorenz_step, [0.1, 0.0, 20.0], 0.005);
         data.extend(trace(aizawa_step, [0.1, 0.0, 0.0], 0.01));
-        debug_assert_eq!(data.len(), POINTS * COUNT);
+        // Loadable slots start empty — a slot with nothing in it collapses
+        // to the origin, which reads as "no cloud here" rather than as a
+        // broken shape.
+        data.resize(POINTS * SLOTS, [0.0, 0.0, 0.0, WHITE]);
 
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("attractors"),
             size: wgpu::Extent3d {
                 width: WIDTH,
-                height: (POINTS * COUNT) as u32 / WIDTH,
+                height: (POINTS * SLOTS) as u32 / WIDTH,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -147,9 +166,94 @@ impl Attractors {
         );
 
         let view = texture.create_view(&Default::default());
-        Self { texture, view }
+        Self {
+            texture,
+            view,
+            names: [
+                "Lorenz".into(),
+                "Aizawa".into(),
+                "(empty)".into(),
+                "(empty)".into(),
+            ],
+        }
+    }
+
+    /// Replace a slot with points read from a file.
+    ///
+    /// Clouds have whatever point count the scanner produced; the slot has
+    /// a fixed size, so the cloud is resampled to fill it. Fewer points than
+    /// the slot means each is repeated with a small jitter rather than
+    /// leaving the tail at the origin — a dense clump at the centre is far
+    /// more visually wrong than slight duplication.
+    pub fn load_slot(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        points: &[crate::pointcloud::Point],
+        name: &str,
+    ) {
+        if slot >= SLOTS || points.is_empty() {
+            return;
+        }
+        let mut data = Vec::with_capacity(POINTS);
+        // Deterministic jitter, so reloading the same file gives the same
+        // cloud rather than a subtly different one each run.
+        let mut seed = 0x9E37_79B9u32;
+        let mut rng = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        for i in 0..POINTS {
+            let p = &points[i % points.len()];
+            // Only jitter the repeats; the first pass through the cloud is
+            // exact, so a cloud that already fills the slot is untouched.
+            let j = if i < points.len() { 0.0 } else { 0.004 };
+            data.push([
+                p.pos[0] + rng() * j,
+                p.pos[1] + rng() * j,
+                p.pos[2] + rng() * j,
+                pack_color(p.color),
+            ]);
+        }
+
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: (slot * POINTS) as u32 / WIDTH,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&data),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(WIDTH * 16),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: WIDTH,
+                height: POINTS as u32 / WIDTH,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.names[slot] = name.to_string();
     }
 }
+
+/// Colour packed into the unused w channel: 8 bits per channel in a u32,
+/// bitcast to f32. Costs nothing over carrying positions alone, and an
+/// imported scan without its colour is much less recognisable.
+fn pack_color(c: [u8; 3]) -> f32 {
+    let bits = ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32;
+    f32::from_bits(bits)
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -176,6 +280,41 @@ mod tests {
             // to actually occupy its box.
             let spread = pts.iter().map(|p| p[1].abs()).fold(0.0f32, f32::max);
             assert!(spread > 0.3, "trace occupies too little of its box: {spread}");
+        }
+    }
+
+    /// The w channel carries packed colour. A procedural slot must store
+    /// white, because the shader multiplies the palette by it — zero there
+    /// unpacks to RGB(0,0,0) and the whole attractor renders black, which
+    /// is exactly what happened when the colour channel was added.
+    #[test]
+    fn procedural_slots_store_white_not_zero() {
+        let pts = trace(lorenz_step, [0.1, 0.0, 20.0], 0.005);
+        assert!(
+            pts.iter().all(|p| p[3] == WHITE),
+            "a procedural slot stored a non-white colour, which renders black"
+        );
+        // And WHITE must actually unpack to full white, the way the shader
+        // reads it.
+        let bits = WHITE.to_bits();
+        assert_eq!(
+            [(bits >> 16) & 255, (bits >> 8) & 255, bits & 255],
+            [255, 255, 255]
+        );
+    }
+
+    /// Loaded colours must survive the pack/unpack round trip the shader
+    /// performs, or an imported scan comes back the wrong colour.
+    #[test]
+    fn packed_colour_round_trips() {
+        for c in [[0u8, 0, 0], [255, 255, 255], [10, 20, 30], [200, 5, 128]] {
+            let bits = pack_color(c).to_bits();
+            let back = [
+                ((bits >> 16) & 255) as u8,
+                ((bits >> 8) & 255) as u8,
+                (bits & 255) as u8,
+            ];
+            assert_eq!(back, c, "colour {c:?} did not survive packing");
         }
     }
 

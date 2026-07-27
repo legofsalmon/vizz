@@ -35,12 +35,15 @@ pub struct HeadlessOpts {
     pub outputs: OutputOpts,
     /// Substring match against an input device name; None picks the default.
     pub audio_device: Option<String>,
+    /// Point clouds to load into the loadable slots, in order.
+    pub clouds: Vec<PathBuf>,
 }
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let ctx = pollster::block_on(GpuContext::new(None))?;
     let mut post = PostChain::new(&ctx, opts.width, opts.height, vizz_render::output::OUTPUT_FORMAT);
-    let scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+    let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+    scene.load_clouds(&ctx, &opts.clouds);
     let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
     let mut senders = outputs::build_senders(&ctx.device, &opts.outputs);

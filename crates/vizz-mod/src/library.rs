@@ -173,10 +173,7 @@ mod tests {
     /// layout, and must still evaluate afterwards.
     #[test]
     fn patches_round_trip_through_disk() {
-        let dir = std::env::temp_dir().join(format!("vizz-patch-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: single-threaded test; set before any patch call reads it.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let (_guard, dir) = crate::test_env::scoped("patch");
 
         let mut g = NodeGraph::default();
         let src = g.add(NodeKind::Band(2), [11.0, 22.0]);
@@ -219,9 +216,7 @@ mod tests {
 
     #[test]
     fn loading_a_missing_patch_is_an_error_not_a_panic() {
-        let dir = std::env::temp_dir().join(format!("vizz-patch-miss-{}", std::process::id()));
-        // SAFETY: single-threaded test.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let (_guard, _dir) = crate::test_env::scoped("patch-miss");
         assert!(load("nothing-here").is_err());
         assert!(!exists("nothing-here"));
     }

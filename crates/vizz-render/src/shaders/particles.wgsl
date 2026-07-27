@@ -17,9 +17,10 @@ struct Uniforms {
     palette: f32,       // 0 = classic HSV, 1..4 = cosine gradients
     color_spread: f32,  // how much of the palette the field spans
     color_drive: f32,   // what maps to palette position, see drive_value
+    cloud_a: f32,       // slot index for the A cloud
+    cloud_b: f32,       // slot index for the B cloud
+    cloud_morph: f32,   // 0 = A, 1 = B
     _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -56,17 +57,34 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
 // particle's index sweeps the whole cloud forward along the path.
 const ATTRACTOR_POINTS: u32 = 65536u;
 const ATTRACTOR_W: u32 = 256u;
+const CLOUD_SLOTS: u32 = 4u;
+
+/// Raw texel for a slot, so callers can use the packed colour too.
+fn cloud_texel(which: u32, h: f32, t: f32) -> vec4<f32> {
+    let flow = u32(max(t, 0.0) * 260.0);
+    let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
+    let row = (which % CLOUD_SLOTS) * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
+    return textureLoad(t_attractor, vec2<u32>(idx % ATTRACTOR_W, row), 0);
+}
+
+/// Colour packed into the w channel by the CPU: 8 bits per channel.
+/// Imported scans carry colour; procedural slots store white and so take
+/// the palette instead.
+fn cloud_color(w: f32) -> vec3<f32> {
+    let bits = bitcast<u32>(w);
+    return vec3<f32>(
+        f32((bits >> 16u) & 255u),
+        f32((bits >> 8u) & 255u),
+        f32(bits & 255u),
+    ) / 255.0;
+}
 
 fn attractor_point(which: u32, h: f32, t: f32, jitter: vec3<f32>) -> vec3<f32> {
     // Flow rate is in points per unit of visual time, so `/particles/speed`
     // drives it like everything else.
-    let flow = u32(max(t, 0.0) * 260.0);
-    let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
-    let row = which * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
-    let texel = textureLoad(t_attractor, vec2<u32>(idx % ATTRACTOR_W, row), 0);
     // Consecutive points are close together, so without a little spread
     // the cloud collapses onto a wire rather than reading as a volume.
-    return texel.xyz + jitter * 0.02;
+    return cloud_texel(which, h, t).xyz + jitter * 0.02;
 }
 
 // Point positions for each geometry mode, all derived from the same four
@@ -124,14 +142,26 @@ fn sample_shape(mode: u32, h1: f32, h2: f32, h3: f32, h4: f32, t: f32) -> vec3<f
             return attractor_point(0u, h1, t, j);
         }
         // Aizawa: rounder, shell-like, with a spike through the poles.
-        default: {
+        case 6u: {
             let j = vec3<f32>(h2 * 2.0 - 1.0, h3 * 2.0 - 1.0, h4 * 2.0 - 1.0);
             return attractor_point(1u, h1, t, j);
+        }
+        // Cloud pair: any two slots, blended by /cloud/morph. The
+        // shape-mode sweep only reaches *adjacent* modes, so morphing an
+        // imported scan into an attractor needs its own control. Particles
+        // keep their index across the blend, so the same point travels
+        // from one cloud to the other rather than the field being
+        // re-scattered.
+        default: {
+            let j = vec3<f32>(h2 * 2.0 - 1.0, h3 * 2.0 - 1.0, h4 * 2.0 - 1.0);
+            let a = attractor_point(u32(u.cloud_a), h1, t, j);
+            let b = attractor_point(u32(u.cloud_b), h1, t, j);
+            return mix(a, b, smoothstep(0.0, 1.0, u.cloud_morph));
         }
     }
 }
 
-const SHAPE_COUNT: u32 = 7u;
+const SHAPE_COUNT: u32 = 8u;
 
 // How much a mode's rotation should be rigid rather than per-particle.
 //
@@ -143,6 +173,29 @@ const SHAPE_COUNT: u32 = 7u;
 // those rigidly so the shape survives being turned.
 fn rigidity(mode: u32) -> f32 {
     return select(0.0, 1.0, mode >= 5u);
+}
+
+/// Imported clouds carry their own colour; procedural ones store white and
+/// take the palette. Blended the same way the positions are, so a morph
+/// crossfades colour along with shape.
+fn cloud_tint(mode_a: u32, mode_b: u32, blend: f32, h: f32, t: f32) -> vec3<f32> {
+    let ca = slot_tint(mode_a, h, t);
+    let cb = slot_tint(mode_b, h, t);
+    return mix(ca, cb, blend);
+}
+
+fn slot_tint(mode: u32, h: f32, t: f32) -> vec3<f32> {
+    if (mode == 7u) {
+        return mix(
+            cloud_color(cloud_texel(u32(u.cloud_a), h, t).w),
+            cloud_color(cloud_texel(u32(u.cloud_b), h, t).w),
+            smoothstep(0.0, 1.0, u.cloud_morph),
+        );
+    }
+    if (mode >= 5u) {
+        return cloud_color(cloud_texel(mode - 5u, h, t).w);
+    }
+    return vec3<f32>(1.0);
 }
 
 // --- Colour -----------------------------------------------------------
@@ -298,7 +351,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let fade = clamp(1.7 - view.z * 0.28, 0.15, 1.0);
     let drive = drive_value(u.color_drive, h1, radius, view.z, tilted.y);
     let t = drive * u.color_spread + 0.03 * sin(u.time * 0.2);
-    let col = palette_color(u.palette, t, u.saturation, u.hue) * u.brightness * fade;
+    // An imported cloud's own colour multiplies the palette rather than
+    // replacing it, so the palette still works as a tint and a white
+    // procedural cloud is unaffected.
+    let tint = cloud_tint(mode_a, mode_b, smoothstep(0.0, 1.0, blend), h1, u.time);
+    let col = palette_color(u.palette, t, u.saturation, u.hue) * tint * u.brightness * fade;
 
     var out: VsOut;
     out.pos = vec4<f32>(clip, 0.0, 1.0);

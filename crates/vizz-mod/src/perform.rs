@@ -130,10 +130,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_disk() {
-        let dir = std::env::temp_dir().join(format!("vizz-macro-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: single-threaded test, set before any path is read.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let (_guard, dir) = crate::test_env::scoped("macros");
 
         // Absent file yields the defaults rather than an error.
         assert!(Macros::load().slots.iter().all(|s| s.is_some()));

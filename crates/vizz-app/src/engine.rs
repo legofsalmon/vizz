@@ -113,9 +113,11 @@ impl FrameEngine {
                 // Stepped like mirror: a value sliding between two drive
                 // modes is not a crossfade, it is a wrong third thing.
                 color_drive: self.snapshot.get(p.color_drive).round(),
+                // Slot choice is stepped; the morph between them is not.
+                cloud_a: self.snapshot.get(p.cloud_a).round(),
+                cloud_b: self.snapshot.get(p.cloud_b).round(),
+                cloud_morph: self.snapshot.get(p.cloud_morph),
                 _pad0: 0.0,
-                _pad1: 0.0,
-                _pad2: 0.0,
             },
             post: PostUniforms {
                 trail: self.snapshot.get(p.trail),
