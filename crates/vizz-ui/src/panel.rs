@@ -500,7 +500,65 @@ fn params_section(
     modulation: &mut ModEngine,
     actions: &mut PanelActions,
 ) {
-    ui.label(egui::RichText::new("Parameters").strong());
+    // The one section that grows without bound — it gained the whole
+    // camera and room set in two releases. An egui window sizes to its
+    // content, so left unscrolled the list runs off the bottom of the
+    // display and everything past roughly /fx/spin becomes unreachable:
+    // a control you cannot scroll to is a control you do not have.
+    //
+    // Take whatever the sections above left on screen, so the panel as a
+    // whole fits rather than the list merely being bounded — a window
+    // that runs past the bottom edge hides its own footer too.
+    let screen_h = ui.ctx().input(|i| i.raw.screen_rect).map_or(720.0, |r| r.height());
+    let total = registry.iter().count();
+    // Provisional, only to decide whether to say "scroll for more"; the
+    // binding measurement happens below, once the header has been laid
+    // out and the cursor is where the list will actually start.
+    let scrolls = total as f32 * PARAM_ROW_H > screen_h - ui.cursor().top();
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Parameters").strong());
+        // Say the count when the list is cut, because egui draws no
+        // scrollbar here and the truncation alone reads as "that's all
+        // there is". A control nobody knows exists is no better than one
+        // that will not fit — and the room and camera sets both live
+        // below the fold.
+        if scrolls {
+            ui.small(format!("{total} · scroll for more"));
+        }
+    });
+    // Measured here, not above: the header has been laid out by now, so
+    // this is where the list genuinely begins. Reading the cursor before
+    // drawing it leaves the panel a row over the bottom of the screen.
+    let height = (screen_h - ui.cursor().top() - PARAM_LIST_MARGIN)
+        .clamp(PARAM_LIST_MIN, PARAM_LIST_MAX);
+    egui::ScrollArea::vertical()
+        .max_height(height)
+        .auto_shrink([false, true])
+        .show(ui, |ui| params_rows(ui, registry, state, modulation, actions));
+    ui.small("right-click a slider to reset it · learn binds the next control you move");
+}
+
+/// Approximate row height, for deciding whether the list will be cut.
+/// Only drives a label, so being a pixel or two out costs nothing.
+const PARAM_ROW_H: f32 = 21.0;
+
+/// Room left below the list for the hint line and the window's own edge.
+const PARAM_LIST_MARGIN: f32 = 46.0;
+/// Never shrink below about five rows: past that the list is unusable and
+/// it is better to let the panel overflow than to hide everything.
+const PARAM_LIST_MIN: f32 = 120.0;
+/// Nor grow past this — a long list is easier to scan in a fixed frame
+/// than one that changes height with the display.
+const PARAM_LIST_MAX: f32 = 320.0;
+
+fn params_rows(
+    ui: &mut egui::Ui,
+    registry: &ParamRegistry,
+    state: &PanelState,
+    modulation: &mut ModEngine,
+    actions: &mut PanelActions,
+) {
     for (id, def) in registry.iter() {
         let mut value = registry.target(id);
         ui.horizontal(|ui| {
@@ -554,5 +612,4 @@ fn params_section(
             }
         });
     }
-    ui.small("right-click a slider to reset it · learn binds the next control you move");
 }
