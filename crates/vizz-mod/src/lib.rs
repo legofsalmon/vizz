@@ -28,6 +28,12 @@ pub(crate) mod test_env {
 
     /// Redirect config storage at a private directory for the duration of
     /// the returned guard.
+    ///
+    /// **Every test that reads a config path must take this**, not only
+    /// the ones that write. A read-only test skipping it still calls
+    /// `patch_dir()`, and a guarded test on another thread will change
+    /// what that returns mid-test — which is a false failure that shows
+    /// up in about one CI run in eight, on whichever machine is slowest.
     pub fn scoped(tag: &str) -> (MutexGuard<'static, ()>, std::path::PathBuf) {
         let guard = LOCK
             .get_or_init(|| Mutex::new(()))

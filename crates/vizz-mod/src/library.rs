@@ -10,7 +10,7 @@
 //! type, and it must land in the patch directory as a mangled filename, not
 //! anywhere else.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
@@ -111,10 +111,6 @@ pub fn resolved_path(name: &str) -> PathBuf {
     path_for(name)
 }
 
-fn _assert_in_dir(p: &Path) -> bool {
-    p.starts_with(patch_dir())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +121,16 @@ mod tests {
     /// where someone pastes something odd.
     #[test]
     fn names_cannot_escape_the_patch_directory() {
+        // Take the guard even though this test writes nothing.
+        // `patch_dir()` reads the environment, and a *writing* test
+        // running beside it swaps XDG_CONFIG_HOME under our feet — so the
+        // resolved path and the directory it is compared against came
+        // from two different config homes and the test reported an escape
+        // that never happened. Flaky at about one run in eight.
+        let (_guard, _tmp) = crate::test_env::scoped("patch-escape");
+        // And read it once: comparing two separate calls is what let the
+        // race in, so make it impossible rather than merely unlikely.
+        let dir = patch_dir();
         for evil in [
             "../../../.ssh/authorized_keys",
             "..",
@@ -138,14 +144,14 @@ mod tests {
         ] {
             let path = resolved_path(evil);
             assert!(
-                _assert_in_dir(&path),
+                path.starts_with(&dir),
                 "{evil:?} escaped to {}",
                 path.display()
             );
             // And it must still be a single file, not a nested path.
             assert_eq!(
                 path.parent().unwrap(),
-                patch_dir(),
+                dir,
                 "{evil:?} landed in a subdirectory: {}",
                 path.display()
             );
