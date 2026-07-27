@@ -21,6 +21,7 @@ anyhow.workspace = true
 log.workspace = true
 
 [dev-dependencies]
+vizz-params.workspace = true
 pollster.workspace = true
 image.workspace = true
 vizz-midi.workspace = true

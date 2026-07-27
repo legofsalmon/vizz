@@ -215,6 +215,40 @@ spin. That differential spin is what shears the blobs into ribbons, but
 the Lorenz butterfly is not a body of revolution: giving each particle its
 own rate smears the two lobes into an anonymous cone within seconds.
 
+## Modulation
+
+Modulation is a directed graph. Sources, operators and parameter sinks are
+all nodes; every node has one output and zero or more inputs. Press **G**
+for the canvas.
+
+Node kinds: LFO, audio band, level, phasor and constant (sources); curve,
+math, scale, smooth, quantise and sample & hold (operators); parameter
+(sink). Drag from an output port to an input to wire; drag an input away
+to unplug; right-click for the add menu; Delete removes the selected node.
+Scroll zooms about the cursor. Node positions save with the patch.
+
+Three behaviours worth knowing:
+
+**Cycles degrade, they do not explode.** Wiring an output back into its
+own chain is a two-second mistake to make live. Nodes in a cycle are
+excluded from evaluation and drawn red, and unrelated chains keep running.
+A connection that *would* cycle is refused at the drop rather than
+accepted and then disabled — a wire that appears and goes dead is worse
+than one that never lands.
+
+**One edge per input.** Summing several wires into a port invisibly is how
+patches become unreadable; combine with an explicit Math node instead.
+
+**Bypass passes through rather than mutes**, so it auditions a chain
+without an operator instead of silencing it.
+
+Parameters are edited in the inspector strip below the canvas rather than
+inside the node boxes: inline widgets would have to be hit-tested through
+the zoom transform and become unusable when zoomed out, which is exactly
+when a patch is big enough to need editing.
+
+The flat route list still works and its offsets sum with the graph's.
+
 ## Colour
 
 `/color/palette` starts at **0 = the original HSV behaviour** and

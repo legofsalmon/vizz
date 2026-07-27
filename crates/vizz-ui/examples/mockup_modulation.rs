@@ -29,6 +29,9 @@ fn main() {
         Shot { name: "mod_a_matrix", w: PANEL_W, h: 520, draw: draw_matrix },
         Shot { name: "mod_b_canvas", w: 900, h: 560, draw: draw_canvas },
         Shot { name: "mod_c_flat", w: PANEL_W, h: 360, draw: draw_flat },
+        // The real canvas, not a mockup: same code path the app runs.
+        Shot { name: "graph_real", w: 900, h: 620, draw: draw_real_graph },
+        Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
     ];
 
     for s in shots {
@@ -263,6 +266,73 @@ fn draw_flat(ctx: &egui::Context, _w: f32, _h: f32) {
         ui.add_space(6.0);
         ui.small("A source still cannot feed another source —");
         ui.small("no LFO modulating an LFO's rate, no summing two bands.");
+    });
+}
+
+// --- the real canvas -----------------------------------------------------
+
+fn demo_graph() -> vizz_mod::graph::NodeGraph {
+    use vizz_mod::graph::{CurveShape, MathOp, NodeKind as K};
+    let mut g = vizz_mod::graph::NodeGraph::default();
+    let lfo = g.add(K::Lfo(vizz_mod::Lfo::default()), [20.0, 20.0]);
+    let band = g.add(K::Band(0), [20.0, 150.0]);
+    let level = g.add(K::Level, [20.0, 280.0]);
+    let curve = g.add(K::Curve { shape: CurveShape::Exp2, amount: 1.0 }, [240.0, 150.0]);
+    let math = g.add(K::Math { op: MathOp::Multiply }, [240.0, 280.0]);
+    let morph = g.add(K::Param { addr: "/shape/morph".into(), depth: 0.4 }, [470.0, 20.0]);
+    let size = g.add(K::Param { addr: "/particles/size".into(), depth: 0.25 }, [470.0, 150.0]);
+    let trail = g.add(K::Param { addr: "/fx/trail".into(), depth: 0.3 }, [470.0, 280.0]);
+    g.connect(lfo, morph, 0);
+    g.connect(band, curve, 0);
+    g.connect(curve, size, 0);
+    g.connect(level, math, 0);
+    g.connect(band, math, 1);
+    g.connect(math, trail, 0);
+    g
+}
+
+fn registry() -> vizz_params::ParamRegistry {
+    use vizz_params::ParamDef;
+    let mut b = vizz_params::ParamRegistry::builder();
+    for (a, lo, hi, d) in [
+        ("/shape/morph", 0.0, 1.0, 0.0),
+        ("/particles/size", 0.001, 0.2, 0.015),
+        ("/fx/trail", 0.0, 0.98, 0.0),
+    ] {
+        b.add(ParamDef::new(a, lo, hi, d));
+    }
+    b.build()
+}
+
+/// Ticked once so the live per-node readouts show real numbers rather
+/// than zeros — a canvas of +0.00 would not show whether they work.
+fn ticked() -> (vizz_mod::graph::NodeGraph, vizz_params::ParamRegistry) {
+    let (mut g, reg) = (demo_graph(), registry());
+    let mut offsets = Vec::new();
+    for _ in 0..8 {
+        g.tick(1.0 / 60.0, 0.02, 1.7, vizz_mod::AudioLevels { bands: &[0.8, 0.3, 0.5, 0.2], level: 0.44 }, &reg, &mut offsets);
+    }
+    (g, reg)
+}
+
+fn draw_real_graph(ctx: &egui::Context, w: f32, h: f32) {
+    let (mut g, reg) = ticked();
+    let mut view = vizz_ui::GraphView::default();
+    view.selected = Some(vizz_mod::graph::NodeId(3));
+    egui::Area::new(egui::Id::new("real")).fixed_pos([0.0, 0.0]).show(ctx, |ui| {
+        ui.set_max_size(vec2(w, h));
+        view.show(ui, &mut g, &reg);
+    });
+}
+
+/// Zoomed out: the case where a node has to stay legible or the canvas is
+/// useless exactly when a patch is big enough to need it.
+fn draw_real_zoomed(ctx: &egui::Context, w: f32, h: f32) {
+    let (mut g, reg) = ticked();
+    let mut view = vizz_ui::GraphView::with_zoom(0.55);
+    egui::Area::new(egui::Id::new("realz")).fixed_pos([0.0, 0.0]).show(ctx, |ui| {
+        ui.set_max_size(vec2(w, h));
+        view.show(ui, &mut g, &reg);
     });
 }
 
