@@ -4,7 +4,7 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 7 — camera and space.** A procedural particle field
+**Status: phase 8 — presets and the panel rework.** A procedural particle field
 rendered into a fixed-resolution master texture and published over
 **Syphon** on macOS (zero-copy) and **NDI** on the network (async
 readback, never stalls the renderer).
@@ -19,9 +19,15 @@ wireframe **room** sized to the frame for forced perspective and parallax.
 Control is OSC, MIDI, and a **node graph** — sources, operators and
 parameter sinks on a pannable canvas, with saved patches. Modulation
 sources include LFOs, a beat clock, and **audio** analysis: four
-configurable spectral bands plus tempo detection. There is a control
-panel, a stripped-back **performance layout**, health monitoring and a
-headless benchmark mode. Both outputs work windowed *and* headless.
+configurable spectral bands plus tempo detection.
+
+**Presets** capture every knob: six ship with the app, your own save
+alongside them, and any of the first ten fires from a number key, from
+OSC, or from a MIDI button. The control panel groups and filters its
+parameters and marks the ones being modulated; the stripped-back
+**performance layout** puts presets and eight assignable faders on one
+screen. There is health monitoring and a headless benchmark mode, and both
+outputs work windowed *and* headless.
 
 Spout is the notable gap.
 

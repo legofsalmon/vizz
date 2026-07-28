@@ -201,7 +201,11 @@ impl Gui {
         modulation: &mut vizz_mod::ModEngine,
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
-        if !self.visible && !self.graph_open && !self.performance {
+        // The shortcut list counts as something to draw. Leaving it out
+        // meant `?` did nothing with everything hidden — which is exactly
+        // the moment you press it, having forgotten how to get the panel
+        // back.
+        if !self.visible && !self.graph_open && !self.performance && !self.shortcuts_open {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
@@ -211,6 +215,12 @@ impl Gui {
         // begin_pass/end_pass rather than run_ui: the panel builds its own
         // window from the context instead of drawing into a provided Ui.
         self.ctx.begin_pass(input);
+        // Before the performance branch, not after: that branch returns
+        // early, so an overlay drawn below it never appears in the layout
+        // where a shortcut list is most wanted.
+        if self.shortcuts_open {
+            shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
+        }
         if self.performance {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
         }
@@ -219,9 +229,6 @@ impl Gui {
         } else {
             PanelActions::default()
         };
-        if self.shortcuts_open {
-            shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
-        }
         if self.graph_open {
             let mut open = true;
             egui::Window::new("modulation")
