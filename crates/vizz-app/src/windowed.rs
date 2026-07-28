@@ -218,7 +218,17 @@ impl App {
             let bind = pass.bind(&ctx.device, &output.view);
             (Some(target), Some((pass, bind)))
         };
+        // Senders describe the stream up front (NDI sizes its ring from
+        // this), so they must be told the size the master actually is —
+        // not the one the command line asked for. When settings override
+        // the size, a ring sized from the CLI value is smaller than the
+        // texture being copied into it, and `ReadbackRing::capture` copies
+        // a fixed extent with no bounds check.
+        self.opts.outputs.width = ow;
+        self.opts.outputs.height = oh;
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
+        // The title is the one place a performer checks what is going out.
+        window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
         gui.visible = self.opts.show_gui;
 
@@ -278,6 +288,24 @@ impl App {
         };
         state.publish = publish;
         state.publish_blit = publish_blit;
+
+        // Rebuild the senders as well. This was the omission: the master,
+        // the post chain and the publish path were all rebuilt and the
+        // senders were not, so NDI kept a ring sized for the old
+        // resolution — copied into with no bounds check, which is a hard
+        // panic when the master grows — and Syphon kept publishing a
+        // texture nobody was rendering into any more, which reads as the
+        // output having frozen.
+        //
+        // Dropping the old senders first releases the Syphon server name
+        // and the NDI sender before the replacements claim them; receivers
+        // see the source drop and reappear, which is the honest signal
+        // that the stream's size changed.
+        self.opts.outputs.width = ow;
+        self.opts.outputs.height = oh;
+        state.senders.clear();
+        state.senders = outputs::build_senders(&state.ctx.device, &self.opts.outputs);
+        state.window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
 
         let mut s = crate::settings::load();
         s.output_size = Some([ow, oh]);
@@ -959,6 +987,16 @@ fn apply_grid_actions(
         grid.duration = reg.target(b.time);
         grid.autopilot.bars = reg.target(b.bars);
         grid.autopilot.enabled = reg.target(b.auto) >= 0.5;
+        // The curve was missing from this list, so the file kept whatever
+        // `tick_grid` had synced *before* the click was processed — set
+        // "cut" for a set that needs hard changes, restart, and you were
+        // back on "smooth" with nothing on screen to say so, because live
+        // behaviour was correct all along.
+        let curve = reg.target(b.curve).round().max(0.0) as usize;
+        grid.curve = vizz_mod::scene::Curve::ALL
+            .get(curve)
+            .copied()
+            .unwrap_or_default();
         if let Err(e) = vizz_mod::scene::save_kind(b.kind, grid) {
             log::error!("could not save the {} grid: {e:#}", b.noun);
         }
@@ -998,10 +1036,20 @@ fn apply_panel_actions(
     map_path: &std::path::Path,
     saved_revision: &mut u64,
 ) {
-    if actions.set_learn_target.is_none() && actions.clear_binding.is_none() {
-        return;
-    }
-    let Ok(mut state) = shared.lock() else { return };
+    // No early return on "the UI did nothing this frame".
+    //
+    // A learn *completes* on the MIDI callback thread, not in response to
+    // a click, so the frame that creates a binding has neither of these
+    // actions set. Gating the flush on them meant the newest binding was
+    // only written the next time the user armed learn or cleared one —
+    // and there is no save on exit, so the last binding of every session
+    // was silently lost. The chip still rendered as bound in-session, so
+    // nothing warned.
+    //
+    // `try_lock`, because this now runs every frame and the render thread
+    // must never wait on the MIDI thread. A missed flush is picked up on
+    // the next frame.
+    let Ok(mut state) = shared.try_lock() else { return };
     if let Some(target) = actions.set_learn_target {
         state.learn_target = target;
     }

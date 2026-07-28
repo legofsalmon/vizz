@@ -79,15 +79,36 @@ pub struct Preset {
 /// would have two grids that fight each other rather than two that
 /// compose. So each kind captures only its own addresses, and neither can
 /// disturb the other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Kind {
     /// Shape, colour, camera, room, effects. Everything but gravity.
+    ///
+    /// The default, so a grid deserialised without one behaves as the
+    /// original single-layer grid did rather than as an empty gravity one.
+    #[default]
     Look,
     /// The gravity wells and nothing else.
     Gravity,
 }
 
 impl Kind {
+    /// Whether this kind captures and applies the given parameter.
+    ///
+    /// Takes the definition rather than the address so transport comes
+    /// from [`ParamDef::transport`] — one source of truth, rather than the
+    /// hand-maintained list this used to consult and which had already
+    /// drifted once when a layer was added.
+    pub fn owns_def(self, def: &vizz_params::ParamDef) -> bool {
+        if def.transport || excluded(&def.addr) {
+            return false;
+        }
+        let gravity = def.addr.starts_with("/gravity/");
+        match self {
+            Kind::Look => !gravity,
+            Kind::Gravity => gravity,
+        }
+    }
+
     /// Whether this kind captures and applies the given address.
     pub fn owns(self, addr: &str) -> bool {
         let gravity = addr.starts_with("/gravity/");
@@ -121,7 +142,7 @@ impl Preset {
     pub fn capture_kind(reg: &ParamRegistry, kind: Kind) -> Self {
         let values = reg
             .iter()
-            .filter(|(_, def)| kind.owns(&def.addr))
+            .filter(|(_, def)| kind.owns_def(def))
             .map(|(id, def)| (def.addr.clone(), reg.target(id)))
             .collect();
         Self { values }

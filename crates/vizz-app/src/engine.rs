@@ -82,7 +82,7 @@ impl FrameEngine {
             last_preset: None,
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
-            gravity_grid: vizz_mod::scene::Grid::new(),
+            gravity_grid: vizz_mod::scene::Grid::for_kind(vizz_mod::preset::Kind::Gravity),
             last_gravity: None,
         }
     }
@@ -365,6 +365,8 @@ impl FrameEngine {
                 // control, and fading the output to black should not also
                 // straighten the cloud out on the way down.
                 gravity_amount: [self.snapshot.get(p.gravity_amount), 0.0, 0.0, 0.0],
+                // Filled by the caller, which owns the palette bank.
+                palette_rows: [4.0, 0.0, 0.0, 0.0],
                 // Slot choice is stepped; the morph between them is not.
                 cloud_a: self.snapshot.get(p.cloud_a).round(),
                 cloud_b: self.snapshot.get(p.cloud_b).round(),

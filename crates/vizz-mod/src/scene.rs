@@ -58,7 +58,9 @@ const SNAP_AT: f32 = 0.5;
 /// Shortest transition that is still a transition rather than a cut.
 /// Below this the smoothing in the parameter store dominates anyway.
 const MIN_DURATION: f32 = 0.0;
-const MAX_DURATION: f32 = 60.0;
+/// Public so the parameter that feeds it can share the same ceiling
+/// rather than keeping a second, quieter one.
+pub const MAX_DURATION: f32 = 60.0;
 
 /// How a transition travels from one scene to the next.
 ///
@@ -213,6 +215,19 @@ struct Transition {
 /// them without you.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grid {
+    /// Which layer this grid sequences.
+    ///
+    /// A grid must know its own layer, because a transition is defined by
+    /// what it captures as the *starting point*. Without this the gravity
+    /// grid captured a Look — so every look parameter went into the
+    /// transition and was rewritten every frame for its whole duration,
+    /// reverting knobs, MIDI and OSC under the performer, while the wells
+    /// themselves were absent from `from` and therefore snapped.
+    ///
+    /// Not serialised: it is a property of which file the grid was loaded
+    /// from, and storing it would let a file disagree with its own name.
+    #[serde(skip)]
+    kind: crate::preset::Kind,
     /// Always [`SLOTS`] long. A `Vec` rather than an array so serde does
     /// not need const-generic help, with the length restored on load.
     cells: Vec<Option<Cell>>,
@@ -235,6 +250,7 @@ pub struct Grid {
 impl Default for Grid {
     fn default() -> Self {
         Self {
+            kind: crate::preset::Kind::Look,
             cells: vec![None; SLOTS],
             duration: 2.0,
             curve: Curve::default(),
@@ -249,6 +265,18 @@ impl Default for Grid {
 impl Grid {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A grid for one layer.
+    pub fn for_kind(kind: crate::preset::Kind) -> Self {
+        Self {
+            kind,
+            ..Self::default()
+        }
+    }
+
+    pub fn kind(&self) -> crate::preset::Kind {
+        self.kind
     }
 
     pub fn cells(&self) -> &[Option<Cell>] {
@@ -336,7 +364,10 @@ impl Grid {
             );
             return;
         };
-        let from = Preset::capture(reg).values;
+        // Capture *this layer*, not everything. A gravity transition that
+        // started from a full look snapshot would carry every look
+        // parameter in `to` and rewrite it on every frame of the blend.
+        let from = Preset::capture_kind(reg, self.kind).values;
         let mut to = from.clone();
         for (addr, value) in &preset.values {
             to.insert(addr.clone(), *value);
@@ -429,13 +460,14 @@ impl Grid {
     }
 
     fn advance(&mut self, dt: f32, reg: &ParamRegistry) {
+        let kind = self.kind;
         let Some(t) = self.transition.as_mut() else {
             return;
         };
         t.elapsed += dt.max(0.0);
         let done = t.progress() >= 1.0;
         let shaped = t.curve.shape(t.progress());
-        t.write(reg, shaped, done);
+        t.write(reg, shaped, done, kind);
         if done {
             self.current = Some(t.to_slot);
             self.transition = None;
@@ -470,7 +502,7 @@ impl Transition {
     /// at 1.0, so floating point cannot leave a parameter a hair short of
     /// where the scene said it should be — over a set those would
     /// accumulate.
-    fn write(&self, reg: &ParamRegistry, t: f32, done: bool) {
+    fn write(&self, reg: &ParamRegistry, t: f32, done: bool, kind: crate::preset::Kind) {
         for (addr, to) in &self.to {
             if is_cloud(addr) {
                 continue;
@@ -487,7 +519,12 @@ impl Transition {
             };
             reg.set(id, value);
         }
-        self.write_cloud(reg, t, done);
+        // The cloud pair belongs to the look. A gravity transition has no
+        // business pinning it — and would fight a look blend running at
+        // the same time for control of the same three parameters.
+        if kind == crate::preset::Kind::Look {
+            self.write_cloud(reg, t, done);
+        }
     }
 
     /// Drive the cloud pair.
@@ -585,6 +622,10 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
     };
     match serde_json::from_slice::<Grid>(&bytes) {
         Ok(mut grid) => {
+            // The layer is not serialised — it is a property of which file
+            // this came from — so it has to be stamped on here. A grid that
+            // kept the default would run a Look transition for gravity.
+            grid.kind = kind;
             grid.cells.resize(SLOTS, None);
             grid.cells.truncate(SLOTS);
             grid.duration = grid.duration.clamp(MIN_DURATION, MAX_DURATION);
@@ -595,7 +636,7 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
                 "could not read {}: {e:#} — starting with an empty grid",
                 path.display()
             );
-            Grid::new()
+            Grid::for_kind(kind)
         }
     }
 }
@@ -636,7 +677,21 @@ pub fn load() -> Grid {
             grid
         }
         Err(e) => match migrate_inline(&bytes) {
-            Some(grid) => grid,
+            Some(grid) => {
+                // Persist immediately, so the migration can never run
+                // twice. It is only idempotent while every converted
+                // preset still equals its embedded snapshot — the moment
+                // the user refines one in the panel, a second run takes
+                // the collision path and mints "intro (2)" holding the
+                // *pre-edit* values, keeps the pad's label, and does it
+                // again on every launch after that. Silent, unbounded, and
+                // it targets exactly the workflow the by-name grid exists
+                // to enable.
+                if let Err(e) = write_grid(&path, &grid) {
+                    log::error!("could not save the migrated grid: {e:#}");
+                }
+                grid
+            }
             None => {
                 log::error!(
                     "could not read {}: {e:#} — starting with an empty grid",
@@ -760,6 +815,7 @@ mod tests {
         b.add(ParamDef::new(CLOUD_A, 0.0, 3.0, 0.0));
         b.add(ParamDef::new(CLOUD_B, 0.0, 3.0, 1.0));
         b.add(ParamDef::new(CLOUD_MORPH, 0.0, 1.0, 0.0).smooth(0.5));
+        b.add(ParamDef::new("/gravity/0/strength", -2.0, 2.0, 0.0).smooth(0.4));
         (b.build(), hue, mirror, dim)
     }
 
@@ -1286,6 +1342,17 @@ mod tests {
             0.8
         );
 
+        // And it must not run again: a second load sees the converted
+        // file, not the old one, so no duplicate presets appear.
+        let before = crate::preset::list();
+        let again = load();
+        assert_eq!(
+            crate::preset::list(),
+            before,
+            "the migration ran a second time and minted duplicates"
+        );
+        assert_eq!(again.cell(0).map(|c| c.preset.as_str()), Some("intro"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1318,6 +1385,55 @@ mod tests {
         assert!(crate::preset::by_name(builtin).is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gravity transition must blend the wells and leave the look
+    /// alone.
+    ///
+    /// The layer had no test of its own, and the bug that hid there was
+    /// the worst in the app: the grid captured a *Look* as its starting
+    /// point, so every look parameter was in the transition and got
+    /// rewritten every frame for the blend's whole duration — reverting
+    /// knobs, MIDI and OSC under the performer for up to thirty seconds —
+    /// while the wells, absent from the starting point, snapped instead of
+    /// blending. Both halves are asserted here.
+    #[test]
+    fn a_gravity_transition_blends_gravity_and_leaves_the_look_alone() {
+        let (reg, hue, _, _) = registry();
+        let strength = reg.id("/gravity/0/strength").unwrap();
+        let mut grid = Grid::for_kind(crate::preset::Kind::Gravity);
+        let mut lib: BTreeMap<String, Preset> = BTreeMap::new();
+
+        reg.set(strength, 2.0);
+        lib.insert(
+            "pull".into(),
+            Preset::capture_kind(&reg, crate::preset::Kind::Gravity),
+        );
+        grid.assign(0, "pull");
+
+        reg.set(strength, 0.0);
+        reg.set(hue, 0.25);
+        grid.duration = 2.0;
+        grid.curve = Curve::Linear;
+        grid.fire(0, &reg, &src(&lib));
+
+        // Half way: the well is half way, not snapped to either end.
+        grid.tick(1.0, 0.0, &reg, &src(&lib));
+        let mid = reg.target(strength);
+        assert!(
+            mid > 0.4 && mid < 1.6,
+            "the well snapped instead of blending: {mid}"
+        );
+
+        // And a look parameter moved by hand mid-blend stays where the
+        // performer put it, rather than being stamped back every frame.
+        reg.set(hue, 0.9);
+        grid.tick(0.5, 0.0, &reg, &src(&lib));
+        assert_eq!(
+            reg.target(hue),
+            0.9,
+            "the gravity transition overwrote a look parameter"
+        );
     }
 
     /// A file from another build can have any number of cells. Trusting

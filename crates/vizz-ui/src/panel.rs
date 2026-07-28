@@ -1018,7 +1018,7 @@ fn params_section(
     // whole fits rather than the list merely being bounded — a window
     // that runs past the bottom edge hides its own footer too.
     let screen_h = ui.ctx().input(|i| i.raw.screen_rect).map_or(720.0, |r| r.height());
-    let total = registry.iter().filter(|(_, d)| !is_transport(&d.addr)).count();
+    let total = registry.iter().filter(|(_, d)| !is_transport(d)).count();
     // Provisional, only to decide whether to say "scroll for more"; the
     // binding measurement happens below, once the header has been laid
     // out and the cursor is where the list will actually start.
@@ -1145,14 +1145,14 @@ impl Group<'_> {
 /// reads as something that changes the picture, and people reasonably
 /// took them for point-cloud settings. A parameter in the wrong company
 /// is worse than a parameter you have to go one screen to find.
-fn is_transport(addr: &str) -> bool {
-    addr.starts_with("/scene/") || addr == "/preset/recall"
+fn is_transport(def: &vizz_params::ParamDef) -> bool {
+    def.transport
 }
 
 fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
     let mut out: Vec<Group<'_>> = Vec::new();
     for (id, def) in registry.iter() {
-        if is_transport(&def.addr) {
+        if is_transport(def) {
             continue;
         }
         let name = def
@@ -1346,9 +1346,9 @@ fn param_row(
         if def.labels.is_none() {
             let narrowed = ranges.is_narrowed(&def.addr);
             let (label, hint) = if narrowed {
-                ("↔", "restore the full range")
+                ("<>", "restore the full range")
             } else {
-                ("→←", "narrow the slider around this value for finer control")
+                ("><", "narrow the slider around this value for finer control")
             };
             if ui
                 .add(egui::Button::new(label).small().selected(narrowed))
@@ -1373,6 +1373,12 @@ fn param_row(
         } else {
             "route lfo1 to this parameter"
         };
+    // Modulation cannot reach transport: the engine reads fire, blend time,
+    // curve and autopilot from `target()`, which modulation never touches,
+    // so a route there is inert. Offering the button and then drawing the
+    // "modulated" marker beside it was the app claiming to do something it
+    // had no path to do.
+    if !is_transport(def) {
         if ui
             .add(egui::Button::new("mod").small().selected(routed))
             .on_hover_text(hint)
@@ -1380,6 +1386,7 @@ fn param_row(
         {
             modulation.toggle_route(lfo1, &def.addr, 0.25);
         }
+    }
 
         if !state.midi.available {
             return;

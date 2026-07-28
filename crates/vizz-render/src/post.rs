@@ -355,6 +355,7 @@ mod tests {
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
         };
         let post_u = PostUniforms {
             trail,

@@ -70,6 +70,15 @@ fn main() {
 
     let audio = audio_view();
     let grid = stage_grid();
+    // The gravity row, unless the caller asks for it to be absent. The
+    // harness used to hardcode `None`, so the layout was never once
+    // rendered in the configuration a prepared set actually runs in — and
+    // that is exactly where the fader row overflowed the window.
+    let gravity = if std::env::args().any(|a| a == "no-gravity") {
+        None
+    } else {
+        Some(gravity_grid())
+    };
     // One fader already bound and one mid-learn, so the preview shows both
     // states of the MIDI chip rather than eight identical "learn" links.
     let mut midi = vizz_ui::MidiView {
@@ -129,7 +138,7 @@ fn main() {
         bar_phase: 0.12,
         presets: &presets,
         grid: &grid,
-        gravity: None,
+        gravity: gravity.as_ref(),
         midi: &midi,
         values: Some(&modulated),
     };
@@ -242,7 +251,7 @@ fn registry() -> ParamRegistry {
     ] {
         let def = ParamDef::new(addr, 0.0, 1.0, 0.4);
         b.add(match addr {
-            "/fx/mirror" => ParamDef::new(addr, 0.0, 3.0, 0.0).labels(&["off", "x", "y", "quad"]),
+            "/fx/mirror" => ParamDef::new(addr, 0.0, 3.0, 0.0).labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/palette" => {
                 ParamDef::new(addr, 0.0, 4.0, 0.0).labels(&["hsv", "warm", "ember", "ice", "neon"])
             }
@@ -267,6 +276,24 @@ fn audio_view() -> vizz_ui::AudioView {
         detected_bpm: 128.0,
         confidence: 0.71,
         dropped: 0,
+    }
+}
+
+/// A second grid for the gravity layer, so the preview shows the shape a
+/// prepared set actually has.
+fn gravity_grid() -> vizz_ui::grid_view::GridView {
+    let mut names = vec![None; vizz_ui::grid_view::SLOTS];
+    for (slot, name) in [(0, "still"), (1, "pull in"), (4, "burst")] {
+        names[slot] = Some(name.to_string());
+    }
+    vizz_ui::grid_view::GridView {
+        names,
+        current: Some(1),
+        curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        ..Default::default()
     }
 }
 

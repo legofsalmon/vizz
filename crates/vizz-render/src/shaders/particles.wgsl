@@ -36,6 +36,10 @@ struct Uniforms {
     // Reach of each well, and the master amount in .w of the second.
     gravity_radius: vec4<f32>,
     gravity_amount: vec4<f32>,
+    /// How many palette rows hold a real ramp. Rows past this are empty
+    /// and read back black, so the index saturates here rather than
+    /// sweeping the field into one.
+    palette_rows: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -286,7 +290,7 @@ fn cos_palette(id: u32, t: f32) -> vec3<f32> {
     let i0 = u32(floor(x)) % PALETTE_W;
     let i1 = (i0 + 1u) % PALETTE_W;
     let f = x - floor(x);
-    let row = i32(min(id, PALETTE_ROWS - 1u));
+    let row = i32(min(id, max(u32(u.palette_rows.x), 1u)));
     let a = textureLoad(t_palette, vec2<i32>(i32(i0), row), 0).rgb;
     let b = textureLoad(t_palette, vec2<i32>(i32(i1), row), 0).rgb;
     return mix(a, b, f);
@@ -303,7 +307,12 @@ fn mix_sat(c: vec3<f32>, sat: f32) -> vec3<f32> {
 // Palette 0 is the original HSV colouring, so the default look is
 // unchanged and `/particles/hue` still means what it used to. Above 0 the
 // index crossfades on through the cosine gradients.
-fn palette_color(idx: f32, t: f32, sat: f32, hue: f32) -> vec3<f32> {
+fn palette_color(idx_raw: f32, t: f32, sat: f32, hue: f32) -> vec3<f32> {
+    // Saturate on the last written row. Without this the fader's upper
+    // travel crossfades into unwritten rows, which are zeroed texels — the
+    // field fades to black over most of the control's throw and there is
+    // nothing on screen to say the rows are empty.
+    let idx = clamp(idx_raw, 0.0, u.palette_rows.x);
     let hsv = hsv2rgb(vec3<f32>(fract(hue + t), sat, 1.0));
     if (idx <= 0.0) {
         return hsv;

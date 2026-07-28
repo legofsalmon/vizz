@@ -96,6 +96,13 @@ pub const MAX_PRESET_SLOT: f32 = 64.0;
 /// zero cannot fire a scene on the first frame.
 pub const SCENE_SLOTS: f32 = vizz_mod::scene::SLOTS as f32;
 
+/// Longest blend either grid will accept.
+///
+/// Taken from the grid rather than typed here: the two disagreed —
+/// registered at 30 while `Grid` clamped at 60 — so a grid file saved with
+/// a longer blend was silently shortened on load, with nothing to say so.
+pub const MAX_BLEND: f32 = vizz_mod::scene::MAX_DURATION;
+
 impl AppParams {
     pub fn build() -> Self {
         let mut b = ParamRegistry::builder();
@@ -139,8 +146,15 @@ impl AppParams {
         let zoom = b.add(ParamDef::new("/fx/zoom", 0.9, 1.1, 1.0).smooth(0.3));
         let spin = b.add(ParamDef::new("/fx/spin", -0.1, 0.1, 0.0).smooth(0.3));
         // Stepped, not swept: half a mirror is not a look.
-        let mirror =
-            b.add(ParamDef::new("/fx/mirror", 0.0, 3.0, 0.0).labels(&["off", "x", "y", "quad"]));
+        // Names taken from what `fold()` in post.wgsl actually does. They
+        // used to read ["off","x","y","quad"], which was shifted one step:
+        // there is no y-only mirror in the shader, so reaching for "quad"
+        // gave a kaleidoscope. This is a default macro, so the wrong label
+        // was on the performance screen during every set.
+        let mirror = b.add(
+            ParamDef::new("/fx/mirror", 0.0, 3.0, 0.0)
+                .labels(&["off", "mirror", "quad", "kaleido"]),
+        );
         let glow = b.add(ParamDef::new("/fx/glow", 0.0, 1.0, 0.25).smooth(0.2));
         // Chromatic aberration. Subtle at the low end, prismatic at the top.
         let shift = b.add(ParamDef::new("/fx/shift", 0.0, 1.0, 0.0).smooth(0.2));
@@ -266,15 +280,19 @@ impl AppParams {
         // own rather than shared, because the whole point of a second
         // layer is that it moves on its own clock — a well arriving over
         // eight bars under a look that cut is a normal thing to want.
-        let gravity_fire = b.add(ParamDef::new("/gravity/fire", 0.0, SCENE_SLOTS, 0.0));
-        let gravity_time = b.add(ParamDef::new("/gravity/time", 0.0, 30.0, 2.0));
+        let gravity_fire = b.add(ParamDef::new("/gravity/fire", 0.0, SCENE_SLOTS, 0.0).transport());
+        let gravity_time = b.add(ParamDef::new("/gravity/time", 0.0, MAX_BLEND, 2.0).transport());
         let gravity_curve = b.add(
             ParamDef::new("/gravity/curve", 0.0, 4.0, 1.0)
+                .transport()
                 .labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
         );
-        let gravity_auto =
-            b.add(ParamDef::new("/gravity/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
-        let gravity_bars = b.add(ParamDef::new("/gravity/bars", 0.25, 16.0, 4.0));
+        let gravity_auto = b.add(
+            ParamDef::new("/gravity/auto", 0.0, 1.0, 0.0)
+                .transport()
+                .labels(&["off", "on"]),
+        );
+        let gravity_bars = b.add(ParamDef::new("/gravity/bars", 0.25, 16.0, 4.0).transport());
 
         let bg_r = b.add(ParamDef::new("/bg/red", 0.0, 1.0, 0.004).smooth(0.3));
         let bg_g = b.add(ParamDef::new("/bg/green", 0.0, 1.0, 0.004).smooth(0.3));
@@ -286,7 +304,7 @@ impl AppParams {
         // where it was and where it is going, firing each preset on the
         // way. Being an ordinary parameter is what gets it MIDI learn and
         // OSC for free.
-        let preset_recall = b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
+        let preset_recall = b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0).transport());
         // The scene grid. Parameters rather than plain settings for the
         // same reason recall is one: a pad controller addresses them for
         // free, and there is one path to firing a scene rather than a UI
@@ -294,20 +312,25 @@ impl AppParams {
         //
         // Unsmoothed, all of them: a glided fire sweeps through every slot
         // between here and there, firing each on the way.
-        let scene_fire = b.add(ParamDef::new("/scene/fire", 0.0, SCENE_SLOTS, 0.0));
+        let scene_fire = b.add(ParamDef::new("/scene/fire", 0.0, SCENE_SLOTS, 0.0).transport());
         // Transition length. Zero is a cut, which is why the range starts
         // there rather than at some minimum that would put cuts out of a
         // fader's reach.
-        let scene_time = b.add(ParamDef::new("/scene/time", 0.0, 30.0, 2.0));
+        let scene_time = b.add(ParamDef::new("/scene/time", 0.0, MAX_BLEND, 2.0).transport());
         let scene_curve = b.add(
             ParamDef::new("/scene/curve", 0.0, 4.0, 1.0)
+                .transport()
                 .labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
         );
-        let scene_auto = b.add(ParamDef::new("/scene/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
+        let scene_auto = b.add(
+            ParamDef::new("/scene/auto", 0.0, 1.0, 0.0)
+                .transport()
+                .labels(&["off", "on"]),
+        );
         // Bars between autopilot steps. Down to a quarter bar, because a
         // scene change on every beat is a legitimate effect and a minimum
         // of one bar would rule it out.
-        let scene_bars = b.add(ParamDef::new("/scene/bars", 0.25, 16.0, 4.0));
+        let scene_bars = b.add(ParamDef::new("/scene/bars", 0.25, 16.0, 4.0).transport());
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -505,6 +528,46 @@ mod tests {
             assert!(
                 p.registry.id(addr).is_some(),
                 "default fader {slot} points at {addr}, which is not a parameter"
+            );
+        }
+    }
+
+    /// Every transport parameter must be excluded from presets, and every
+    /// excluded parameter except the panic fader must be transport.
+    ///
+    /// This is the drift guard. The set existed twice — `preset::EXCLUDED`
+    /// and the panel's `is_transport` — and adding the gravity layer
+    /// updated one and not the other, so dragging `/gravity/fire` in the
+    /// parameter list fired every scene it glided over. Both now derive
+    /// from `ParamDef::transport`; this asserts the third list agrees.
+    #[test]
+    fn transport_and_the_preset_exclusion_list_agree() {
+        let p = AppParams::build();
+        for (_, def) in p.registry.iter() {
+            if def.transport {
+                assert!(
+                    vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()),
+                    "{} is transport but a preset would capture it",
+                    def.addr
+                );
+                assert!(
+                    !vizz_mod::preset::Kind::Look.owns_def(def)
+                        && !vizz_mod::preset::Kind::Gravity.owns_def(def),
+                    "{} is transport but a layer claims it",
+                    def.addr
+                );
+            }
+        }
+        for addr in vizz_mod::preset::EXCLUDED {
+            // The master dim is excluded for a different reason — it is
+            // the panic fader, not transport — so it is the one exemption.
+            if *addr == "/master/dim" {
+                continue;
+            }
+            let id = p.registry.id(addr).expect("EXCLUDED names a real parameter");
+            assert!(
+                p.registry.defs()[id.index()].transport,
+                "{addr} is excluded from presets but not marked transport"
             );
         }
     }

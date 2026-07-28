@@ -45,6 +45,13 @@ pub struct ParamDef {
     /// tells you what is on screen. Only for parameters whose positions
     /// are genuinely discrete — a swept control has no names to give.
     pub labels: Option<&'static [&'static str]>,
+    /// Transport rather than look: fire, blend time, curve, autopilot.
+    ///
+    /// The single source of truth for that set. Presets exclude it, the
+    /// panel's parameter list hides it, and modulation refuses to route to
+    /// it — all derived from here rather than from separate lists that
+    /// have already drifted once.
+    pub transport: bool,
 }
 
 impl ParamDef {
@@ -62,6 +69,7 @@ impl ParamDef {
             default,
             smooth: 0.0,
             labels: None,
+            transport: false,
         }
     }
 
@@ -80,6 +88,20 @@ impl ParamDef {
     }
 
     /// Set the smoothing time constant (seconds).
+    /// Mark this as transport: it says *when* something happens, not what
+    /// anything looks like.
+    ///
+    /// One flag rather than a hand-maintained list, because there were two
+    /// such lists — `preset::EXCLUDED` and the panel's `is_transport` —
+    /// and adding the gravity layer updated one and not the other. The
+    /// result was that dragging `/gravity/fire` in the parameter list
+    /// fired every gravity scene it glided over, which is precisely the
+    /// failure the second list existed to prevent.
+    pub fn transport(mut self) -> Self {
+        self.transport = true;
+        self
+    }
+
     pub fn smooth(mut self, seconds: f32) -> Self {
         self.smooth = seconds.max(0.0);
         self
@@ -160,7 +182,21 @@ impl ParamRegistry {
     }
 
     /// Set a target value (clamped to range).
+    ///
+    /// Non-finite values are dropped rather than stored. `f32::clamp`
+    /// returns NaN for NaN, and the smoothing in `advance_modulated` is
+    /// NaN-absorbing — `base + (target - base) * k` stays NaN forever once
+    /// poisoned — so a single NaN from an OSC client with a divide in its
+    /// expression would kill that parameter for the life of the process,
+    /// recoverable only by a restart. It also serialises as JSON `null`,
+    /// producing a preset file that saves cleanly and can never be loaded.
+    ///
+    /// Every writer — OSC, MIDI, presets, the grid, the panel — funnels
+    /// through here, which is why one guard is enough.
     pub fn set(&self, id: ParamId, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
         let def = &self.defs[id.0];
         let v = value.clamp(def.min, def.max);
         self.targets[id.0].store(v.to_bits(), Ordering::Relaxed);

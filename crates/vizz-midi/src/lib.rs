@@ -220,7 +220,14 @@ pub fn save_map(path: &Path, map: &MidiMap) -> Result<()> {
             .with_context(|| format!("creating {}", dir.display()))?;
     }
     let text = serde_json::to_string_pretty(map)?;
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+    // Temp file then rename, matching every other persisted artefact in
+    // the workspace. A plain write truncates first, so a crash, a power
+    // loss or a full disk during it leaves an empty or half-written file,
+    // `load_map` fails, and the app starts with no mappings — losing the
+    // most laborious setup in the app to the narrowest of windows.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))
 }
 
 #[cfg(test)]

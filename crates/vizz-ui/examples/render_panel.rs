@@ -102,7 +102,7 @@ fn main() {
             "/shape/mode" => def.labels(&[
                 "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
             ]),
-            "/fx/mirror" => def.labels(&["off", "x", "y", "quad"]),
+            "/fx/mirror" => def.labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
             "/scene/curve" => def.labels(&["linear", "smooth", "ease in", "ease out", "cut"]),

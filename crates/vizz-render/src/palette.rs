@@ -93,6 +93,20 @@ impl Palettes {
         self.names[row] = name.to_string();
     }
 
+    /// Highest row that has actually been written.
+    ///
+    /// The parameter's range covers the whole bank, but rows past the
+    /// built-ins are empty until a palette is dropped — and an empty row
+    /// reads back as zeroed texels, so sweeping into one faded the field
+    /// to black and held it there. The shader clamps to this instead, so
+    /// the control saturates on the last real palette.
+    pub fn occupied(&self) -> usize {
+        self.names
+            .iter()
+            .rposition(|n| !n.is_empty())
+            .unwrap_or(0)
+    }
+
     /// The next free user row, wrapping once they are all taken. Wrapping
     /// rather than refusing: a full bank should keep accepting palettes,
     /// and the oldest is the one you are least likely to still want.
@@ -284,6 +298,14 @@ pub fn parse(path: &std::path::Path) -> Result<(Vec<[f32; 3]>, String)> {
 
 fn parse_hex(token: &str) -> Option<[f32; 3]> {
     let t = token.trim_start_matches('#');
+    // Byte length is only a char count for ASCII, and the slicing below
+    // indexes bytes. A palette file with a smart quote, an em dash or a
+    // BOM — all of which these formats are full of — would otherwise
+    // panic on a char boundary and take the app down, and because
+    // palettes reload at startup it would then do it on every launch.
+    if !t.is_ascii() {
+        return None;
+    }
     let (r, g, b) = match t.len() {
         6 => (
             u8::from_str_radix(&t[0..2], 16).ok()?,

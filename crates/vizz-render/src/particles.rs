@@ -56,6 +56,9 @@ pub struct Uniforms {
     pub gravity_radius: [f32; 4],
     /// Master amount in `.x`; the rest is padding the alignment demands.
     pub gravity_amount: [f32; 4],
+    /// Highest written palette row in `.x`, so the colour index saturates
+    /// on a real ramp instead of sweeping into empty rows.
+    pub palette_rows: [f32; 4],
 }
 
 pub struct ParticleScene {
@@ -322,8 +325,14 @@ impl ParticleScene {
         clear: bool,
         background: wgpu::Color,
     ) {
+        // The caller does not own the palette bank, so the occupied-row
+        // count is filled in here rather than being threaded through the
+        // engine. It changes whenever a palette is dropped, which is why
+        // it is read per frame rather than captured once.
+        let mut uniforms = *uniforms;
+        uniforms.palette_rows[0] = self.palettes.occupied() as f32;
         ctx.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particles"),
@@ -429,6 +438,7 @@ mod tests {
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
         };
         let mut encoder = ctx
             .device
@@ -596,6 +606,43 @@ mod tests {
         })
     }
 
+    /// The colour fader must not sweep into empty palette rows.
+    ///
+    /// The parameter's range covers the whole bank, but only the built-ins
+    /// are written on a fresh install — the rest fill as palettes are
+    /// dropped. An unwritten row reads back as zeroed texels, so before
+    /// the clamp the top two-thirds of a default macro fader's throw faded
+    /// the field to black and held it there, with the readout showing a
+    /// plausible "7.00" and nothing saying the row was empty.
+    #[test]
+    fn the_colour_index_saturates_on_the_last_real_palette() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        assert_eq!(
+            scene.palettes.occupied(),
+            4,
+            "a fresh bank should hold hsv plus four built-ins"
+        );
+
+        let lit = |px: &[u8]| {
+            px.chunks_exact(4)
+                .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
+                .count()
+        };
+        let last = render_palette(&ctx, &scene, 4.0);
+        // Well past the written rows — this used to be black.
+        let past = render_palette(&ctx, &scene, 12.0);
+        assert!(lit(&last) > 0, "the last built-in rendered nothing");
+        assert!(
+            lit(&past) > 0,
+            "sweeping past the written rows blacked the field out"
+        );
+        assert_eq!(
+            last, past,
+            "the index did not saturate: past the last palette should hold it"
+        );
+    }
+
     /// Transparency has to reach the pixels, not just the clear call.
     ///
     /// This is the property the whole feature rests on: vizz is only
@@ -726,6 +773,7 @@ mod tests {
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
         };
 
         let mut uniforms = uniforms;

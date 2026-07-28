@@ -370,10 +370,30 @@ fn faders(
     width: f32,
     height: f32,
 ) {
-    let rows = MACRO_COUNT.div_ceil(PER_ROW);
+    // How many rows the height can actually carry.
+    //
+    // Two rows of eight need `2 * (FADER_MIN_H + chrome)` plus spacing;
+    // below that the second row was simply painted outside the window —
+    // an `Area` at a fixed position with no scroll area and no clipping,
+    // so slots 9-16 were not drawn at all, with no scrollbar and nothing
+    // on screen to say eight assigned faders existed. At the app's own
+    // default of 1280x720 with the gravity grid shown, that was the
+    // normal case.
+    //
+    // One wide row of sixteen instead. Narrower columns are a real cost,
+    // but a fader you can see and hit badly beats one that is not there —
+    // and scrolling is not an answer on stage.
+    let chrome_h = 17.0 * 3.0 + 2.0 * 3.0;
+    let two_rows = 2.0 * (FADER_MIN_H + chrome_h) + 8.0;
+    let rows = if height >= two_rows {
+        MACRO_COUNT.div_ceil(PER_ROW)
+    } else {
+        1
+    };
+    let per_row = MACRO_COUNT.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
-    let cols = PER_ROW + 1;
+    let cols = per_row + 1;
     let w = ((width - (cols as f32 - 1.0) * 6.0) / cols as f32).clamp(FADER_MIN_W, FADER_MAX_W);
     // Value, name and binding under each track, plus the spacing between
     // them. Measured rather than guessed: underestimating this is what
@@ -382,6 +402,7 @@ fn faders(
     const LABEL_H: f32 = 17.0;
     const LABEL_GAP: f32 = 2.0;
     let chrome = LABEL_H * 3.0 + LABEL_GAP * 3.0;
+    debug_assert!((chrome - chrome_h).abs() < 0.01, "row-fit and layout disagree");
     let h = ((height / rows as f32) - chrome - 6.0).max(FADER_MIN_H);
 
     for row in 0..rows {
@@ -390,8 +411,8 @@ fn faders(
             // gap is right for a form and far too loose for three lines
             // that belong to one control.
             ui.spacing_mut().item_spacing.y = LABEL_GAP;
-            for col in 0..PER_ROW {
-                let slot = row * PER_ROW + col;
+            for col in 0..per_row {
+                let slot = row * per_row + col;
                 if slot >= MACRO_COUNT {
                     break;
                 }
