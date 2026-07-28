@@ -218,6 +218,7 @@ impl App {
             &state.post.scene_view,
             &inputs.uniforms,
             inputs.count,
+            !inputs.room_visible,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         state.blit.draw(
@@ -264,6 +265,7 @@ impl App {
             },
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
+            presets: preset_entries(),
             bpm: self.engine.modulation.clock.bpm,
             bar_phase: self.engine.modulation.clock.bar_phase(4.0),
         };
@@ -287,6 +289,7 @@ impl App {
                     &mut self.audio_auto_bpm,
                     &mut self.tap,
                 );
+                apply_preset_actions(&actions, &self.params.registry);
                 apply_panel_actions(
                     actions,
                     &self.midi_shared,
@@ -418,6 +421,52 @@ fn apply_audio_actions(
     if let Ok(mut s) = engine.audio.settings.lock() {
         s.bands = *bands;
         s.auto_bpm = *auto_bpm;
+    }
+}
+
+/// The preset list the panel shows: built-ins first, then whatever is on
+/// disk, in the same order `/preset/recall` numbers them.
+fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
+    use vizz_mod::preset;
+    preset::BUILTINS
+        .iter()
+        .map(|b| vizz_ui::PresetEntry {
+            name: b.name.to_string(),
+            builtin: true,
+            about: Some(b.about.to_string()),
+        })
+        .chain(preset::list().into_iter().map(|name| vizz_ui::PresetEntry {
+            name,
+            builtin: false,
+            about: None,
+        }))
+        .collect()
+}
+
+/// Preset actions from the panel. Disk work happens here rather than in
+/// the panel so drawing stays free of side effects, and every failure is
+/// logged rather than propagated — losing a preset must not take the show
+/// with it.
+fn apply_preset_actions(actions: &vizz_ui::PanelActions, registry: &vizz_params::ParamRegistry) {
+    use vizz_mod::preset;
+    if let Some(name) = &actions.preset_load {
+        match preset::by_name(name) {
+            Some(p) => log::info!("recalled preset {name} ({} parameters)", p.apply(registry)),
+            None => log::error!("preset {name} could not be read"),
+        }
+    }
+    if let Some(name) = &actions.preset_save {
+        let snapshot = preset::Preset::capture(registry);
+        match preset::save(name, &snapshot) {
+            Ok(saved) => log::info!("saved preset {saved} ({} parameters)", snapshot.values.len()),
+            Err(e) => log::error!("could not save preset {name}: {e:#}"),
+        }
+    }
+    if let Some(name) = &actions.preset_delete {
+        match preset::delete(name) {
+            Ok(()) => log::info!("deleted preset {name}"),
+            Err(e) => log::error!("could not delete preset {name}: {e:#}"),
+        }
     }
 }
 

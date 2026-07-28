@@ -38,6 +38,22 @@ pub struct PanelActions {
     pub clear_binding: Option<String>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
+    /// Recall this preset by name.
+    pub preset_load: Option<String>,
+    /// Capture the current parameters under this name.
+    pub preset_save: Option<String>,
+    /// Delete this user preset.
+    pub preset_delete: Option<String>,
+}
+
+/// One entry in the preset list.
+#[derive(Debug, Clone)]
+pub struct PresetEntry {
+    pub name: String,
+    /// Built-ins are read-only, so they get no delete button.
+    pub builtin: bool,
+    /// One-line description, built-ins only.
+    pub about: Option<String>,
 }
 
 /// Everything the panel displays that it cannot read from the registry.
@@ -59,6 +75,8 @@ pub struct PanelState {
     /// a mutable ModEngine).
     pub bpm: f32,
     pub bar_phase: f32,
+    /// Built-ins first, then user presets, matching `/preset/recall` slots.
+    pub presets: Vec<PresetEntry>,
 }
 
 /// What the panel needs to know about audio this frame. A snapshot rather
@@ -110,6 +128,8 @@ pub fn draw(
             audio_section(ui, state, &mut actions);
             ui.separator();
             modulation_section(ui, registry, modulation);
+            ui.separator();
+            presets_section(ui, state, &mut actions);
             ui.separator();
             params_section(ui, registry, state, modulation, &mut actions);
             ui.separator();
@@ -493,6 +513,70 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     }
 }
 
+/// Presets: recall a whole look, and store your own.
+///
+/// The list is deliberately above the parameter list rather than buried
+/// below it. Recalling a look is something you do mid-set with one hand;
+/// scrolling to find it is not.
+fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    ui.label(egui::RichText::new("Presets").strong());
+    egui::ScrollArea::vertical()
+        .id_salt("presets")
+        .max_height(PRESET_LIST_H)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for (i, p) in state.presets.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    // The slot number, because it is what `/preset/recall`
+                    // and therefore a MIDI button addresses. Showing it
+                    // saves counting rows to work out what to bind.
+                    ui.small(format!("{:>2}", i + 1));
+                    let mut button = ui.button(&p.name);
+                    if let Some(about) = &p.about {
+                        button = button.on_hover_text(about);
+                    }
+                    if button.clicked() {
+                        actions.preset_load = Some(p.name.clone());
+                    }
+                    if p.builtin {
+                        return;
+                    }
+                    if ui
+                        .small_button("x")
+                        .on_hover_text("delete this preset")
+                        .clicked()
+                    {
+                        actions.preset_delete = Some(p.name.clone());
+                    }
+                });
+            }
+        });
+
+    ui.horizontal(|ui| {
+        let id = egui::Id::new("preset-save-name");
+        let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+        let editing = ui.add(
+            egui::TextEdit::singleline(&mut name)
+                .hint_text("name")
+                .desired_width(140.0),
+        );
+        // Enter saves, so the whole thing is type-and-go rather than
+        // type-then-aim.
+        let entered = editing.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let clicked = ui.button("save").on_hover_text("store the current look").clicked();
+        if (entered || clicked) && !name.trim().is_empty() {
+            actions.preset_save = Some(name.clone());
+            name.clear();
+        }
+        ui.memory_mut(|m| m.data.insert_temp(id, name));
+    });
+    ui.small("saving overwrites a preset of the same name; built-ins cannot be replaced");
+}
+
+/// Room for a handful of presets before the list scrolls. Smaller than the
+/// parameter list: presets are chosen, not scanned.
+const PRESET_LIST_H: f32 = 112.0;
+
 fn params_section(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
@@ -547,7 +631,7 @@ const PARAM_ROW_H: f32 = 21.0;
 const PARAM_LIST_MARGIN: f32 = 46.0;
 /// Never shrink below about five rows: past that the list is unusable and
 /// it is better to let the panel overflow than to hide everything.
-const PARAM_LIST_MIN: f32 = 120.0;
+const PARAM_LIST_MIN: f32 = 92.0;
 /// Nor grow past this — a long list is easier to scan in a fixed frame
 /// than one that changes height with the display.
 const PARAM_LIST_MAX: f32 = 320.0;

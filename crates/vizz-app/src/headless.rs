@@ -67,7 +67,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         if inputs.room_visible {
             room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room);
         }
-        scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count);
+        scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count, !inputs.room_visible);
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         ctx.queue.submit([encoder.finish()]);
         outputs::publish_all(&mut senders, &ctx.device, &ctx.queue, &output.texture);

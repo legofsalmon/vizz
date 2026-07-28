@@ -35,11 +35,13 @@ This puts `vizz.app` (with Syphon embedded — nothing else to install) in
 your Applications folder. You can also grab the bundle directly from the
 [latest release](https://github.com/legofsalmon/vizz/releases/latest).
 
-**Ad-hoc signed releases need right-click → Open on first launch.** Once
-the Developer ID secrets are configured the workflow signs and notarizes
-instead, and those builds double-click normally — verified in CI with
-`spctl` and `stapler validate` before publishing, so it is asserted
-rather than assumed. Each release's notes say which it is.
+**Releases are signed and notarized, so they double-click normally** —
+no right-click → Open. Every release is checked with `spctl -a -t install`
+and `stapler validate` before publishing, so it is asserted rather than
+assumed; v0.4.0 was the first to clear it. A build made without the
+Developer ID secrets (a fork, or a local `make-app.sh`) is ad-hoc signed
+and does need right-click → Open on first launch. Each release's notes
+say which it is.
 
 Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
 window title shows the live settings). Flags below need a terminal run.
@@ -456,6 +458,65 @@ distance, and it shrinks and drifts toward the vanishing point as it goes.
 `embed` defaults to `0`, so turning the room on never moves the cloud.
 Reaching for a control mid-set must not teleport the thing the audience is
 looking at.
+
+## Presets
+
+```
+/preset/recall     0 = none, 1..N = the list below
+```
+
+A preset is **where every knob is sitting**. A patch is the modulation
+*graph* — what moves what. They are stored separately on purpose: recalling
+a look should not rewire your LFOs, and loading someone else's patch should
+not jump your visuals to their settings.
+
+Six ship with the app: **Slow bloom** (wide breathing sphere, a neutral
+opener), **Butterfly** (the Lorenz attractor), **Tunnel** (grid plane driven
+into feedback, the high-energy one), **Stage** (cloud sitting inside the
+room with forced perspective on), **Confetti** (dense, fast, per-particle
+colour) and **Ribbon** (torus sheared by twist, mirrored).
+
+They are compiled into the binary rather than written to disk on first run,
+so they are always present, cannot be half-installed, and cannot be lost by
+clearing the config directory. They are also read-only — "put it back how
+it shipped" has to stay available.
+
+Your own go to `~/.config/vizz/presets/*.json`, beside patches and the MIDI
+map. Type a name, press save. Names are sanitised the same way patch names
+are, because they become filenames.
+
+**Recall does not snap.** Values go in as parameter *targets*, and the
+registry's per-parameter smoothing carries them from wherever they are, so
+a preset arrives as a glide of a few hundred milliseconds rather than a
+cut. That is what makes them usable during a set instead of only between
+tracks.
+
+**Two parameters are never captured and never written.** `/master/dim` is
+the panic fader — a preset that restored it could black out the show, or
+silently undo a blackout somebody reached for. `/preset/recall` is excluded
+because a preset containing it would fire another preset on load.
+
+Each preset sets only the parameters that matter to its look, so recalling
+one changes the thing you asked for and leaves everything else where you
+left it.
+
+### Firing them from a controller
+
+`/preset/recall` is an ordinary parameter, which is what gets it OSC and
+MIDI learn for free. **Slot 0 means nothing selected and presets start at
+1** — that is what makes startup safe by construction, since the control
+rests at 0 and the first frame has nothing to recall. Numbering from 0
+instead would also make the first preset unreachable from a fresh start,
+because the control is already sitting on it.
+
+Recall is edge-triggered: it fires when the slot *changes*. A button parked
+on a slot would otherwise re-apply its preset every frame, pinning every
+parameter it names so you could not adjust one by hand afterwards. It is
+also unsmoothed — a smoothed value glides through every slot between where
+it was and where it is going, firing each preset on the way.
+
+Built-ins come first and keep their order, so a slot learned onto a MIDI
+button keeps meaning the same preset after you save your own.
 
 ## Point clouds
 

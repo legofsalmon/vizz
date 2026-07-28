@@ -21,7 +21,7 @@ use winit::window::Window;
 
 pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
-pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState};
+pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState, PresetEntry};
 
 /// How many frame times the sparkline keeps.
 const HISTORY: usize = 240;
@@ -240,6 +240,44 @@ mod tests {
         b.build()
     }
 
+    /// The preset list has to render, including the slot numbers — they
+    /// are what `/preset/recall` and therefore a MIDI button address, and
+    /// without them you would count rows to work out what to bind.
+    ///
+    /// Built-ins must not offer a delete button: they are the "put it back
+    /// how it shipped" path, and a starting point you can destroy is not a
+    /// starting point.
+    #[test]
+    fn the_panel_lists_presets_with_slot_numbers() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            bpm: 120.0,
+            presets: vec![
+                PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) },
+                PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
+            ],
+            bar_phase: 0.0,
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("Presets"), "no presets section: {text}");
+        assert!(text.contains("Slow bloom"), "built-in missing: {text}");
+        assert!(text.contains("Warehouse 2"), "user preset missing: {text}");
+        assert!(text.contains("save"), "no way to store a preset: {text}");
+        // Slots are 1-based; slot 0 means nothing selected.
+        assert!(text.contains(" 1"), "slot numbers missing: {text}");
+        assert!(text.contains(" 2"), "slot numbers missing: {text}");
+    }
+
     /// The panel must be buildable from nothing but the registry — this is
     /// what keeps it in sync with the OSC surface automatically.
     #[test]
@@ -257,6 +295,7 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             bpm: 120.0,
+            presets: Vec::new(),
             bar_phase: 0.0,
         };
 
@@ -287,6 +326,7 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             bpm: 120.0,
+            presets: Vec::new(),
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -322,6 +362,7 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
             bpm: 128.0,
+            presets: Vec::new(),
             bar_phase: 0.05,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -368,6 +409,7 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             bpm: 120.0,
+            presets: Vec::new(),
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -394,6 +436,7 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             bpm: 120.0,
+            presets: Vec::new(),
             bar_phase: 0.0,
         };
 

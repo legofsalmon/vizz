@@ -170,10 +170,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="macOS app bundle with Syphon embedded. First launch: right-click → Open (unsigned). Appears in Resolume/VDMX as Syphon source 'vizz'; OSC control on udp/7000."
+          # Say which kind of build this actually is. Hardcoding
+          # "unsigned" told every downloader of a properly notarized
+          # v0.4.0 to right-click → Open, which is both wrong and the
+          # exact instruction that trains people to bypass Gatekeeper.
+          # The signing steps already gate on HAVE_CERT; so does this.
+          common="Appears in Resolume/VDMX as Syphon source 'vizz'; OSC control on udp/7000."
+          if [ "$HAVE_CERT" = "true" ]; then
+            notes="macOS app bundle with Syphon embedded. Signed with a Developer ID and notarized by Apple, so it opens with a normal double-click — checked in CI with \`spctl\` and \`stapler validate\` before publishing. $common"
+          else
+            notes="macOS app bundle with Syphon embedded. Ad-hoc signed: first launch needs right-click → Open. $common"
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG exists — uploading bundle to it."
             gh release upload "$RELEASE_TAG" dist/vizz.app.zip --clobber
+            # Notes on an existing release are left alone: it may have
+            # been written by hand from the UI, and clobbering someone's
+            # release text to fix one sentence is the worse trade.
           else
             echo "Creating release $RELEASE_TAG with bundle."
             gh release create "$RELEASE_TAG" dist/vizz.app.zip \

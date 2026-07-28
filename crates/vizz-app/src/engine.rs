@@ -35,6 +35,10 @@ pub struct FrameEngine {
     vis_time: f32,
     last_frame: Option<Instant>,
     last_log: Instant,
+    /// Last `/preset/recall` index acted on. Presets fire on *change*, so
+    /// a controller parked on an index does not re-apply it every frame
+    /// and fight whatever you are adjusting by hand.
+    last_preset: Option<usize>,
 }
 
 pub struct FrameInputs {
@@ -59,6 +63,44 @@ impl FrameEngine {
             vis_time: 0.0,
             last_frame: None,
             last_log: Instant::now(),
+            last_preset: None,
+        }
+    }
+
+    /// Recall a preset when `/preset/recall` has moved to a new index.
+    ///
+    /// Edge-triggered, not level-triggered. A MIDI button or an OSC client
+    /// parked on an index would otherwise re-apply that preset every
+    /// frame, which pins every parameter it names and makes them
+    /// impossible to adjust by hand — the control would feel broken rather
+    /// than latched.
+    ///
+    /// Slot 0 means "nothing selected", and presets start at 1. That is
+    /// what makes startup safe *by construction*: the control rests at 0,
+    /// so the first frame has nothing to recall and cannot stamp preset 0
+    /// over the defaults. It also keeps the first preset reachable —
+    /// number it from 0 and it can never be fired from a fresh start,
+    /// because the control is already sitting on it.
+    ///
+    /// A slot past the end of the list is ignored, and still recorded, so
+    /// a fader swept across the full range settles quietly instead of
+    /// retrying every frame.
+    fn apply_pending_preset(&mut self) {
+        let reg = &self.params.registry;
+        let slot = reg.target(self.params.preset_recall).round().max(0.0) as usize;
+        if self.last_preset == Some(slot) {
+            return;
+        }
+        self.last_preset = Some(slot);
+        let Some(index) = slot.checked_sub(1) else {
+            return;
+        };
+        match vizz_mod::preset::by_index(index) {
+            Some((name, preset)) => {
+                let applied = preset.apply(reg);
+                log::info!("recalled preset {slot}: {name} ({applied} parameters)");
+            }
+            None => log::debug!("no preset in slot {slot}"),
         }
     }
 
@@ -78,7 +120,12 @@ impl FrameEngine {
         self.last_frame = Some(now);
 
         let dt_s = dt.as_secs_f32();
-        let p = &self.params;
+        // Recall before taking a borrow of `params`, and before smoothing
+        // advances, so a preset's values are targets for this same frame
+        // and the glide starts immediately rather than one frame late.
+        self.apply_pending_preset();
+        let p = Arc::clone(&self.params);
+        let p = &*p;
         for (i, b) in self.bands.iter_mut().enumerate() {
             *b = self.audio.state.band(i);
         }
@@ -101,7 +148,12 @@ impl FrameEngine {
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
         self.vis_time += dt_s * self.snapshot.get(p.speed);
 
-        let brightness = self.snapshot.get(p.brightness) * self.snapshot.get(p.dim);
+        // Master dim multiplies *everything* that emits light. It is the
+        // fader you grab when something is wrong on a big screen, so
+        // anything it does not reach is a thing still lit when you have
+        // asked for black — the room used to be exactly that.
+        let dim = self.snapshot.get(p.dim);
+        let brightness = self.snapshot.get(p.brightness) * dim;
 
         let camera = Camera {
             distance: self.snapshot.get(p.cam_dist),
@@ -113,7 +165,7 @@ impl FrameEngine {
             defocus: self.snapshot.get(p.cam_defocus),
         };
         let cam = camera.uniforms();
-        let room_brightness = self.snapshot.get(p.room);
+        let room_brightness = self.snapshot.get(p.room) * dim;
         // The opening sits a little in front of the origin so the cloud is
         // inside the room rather than pressed against its face.
         let room = RoomUniforms::for_camera(
@@ -191,6 +243,113 @@ impl FrameEngine {
             Some(self.health.snapshot())
         } else {
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine() -> FrameEngine {
+        // "\0none" matches no device, so the engine takes its normal
+        // unavailable path and reports zeros. No GPU is involved here.
+        FrameEngine::new(
+            Arc::new(AppParams::build()),
+            vizz_audio::AudioEngine::start(Some("\0none")),
+        )
+    }
+
+    /// Starting up must not recall anything. `/preset/recall` defaults to
+    /// 0, and treating the first frame as a change fires preset 0 over the
+    /// defaults before the window is even on screen — which is how this
+    /// was found: every headless render logged "recalled preset 0".
+    #[test]
+    fn startup_does_not_recall_a_preset() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let glow = reg.id("/fx/glow").unwrap();
+        let before = reg.target(glow);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(
+            reg.target(glow),
+            before,
+            "startup recalled a preset over the defaults"
+        );
+    }
+
+    /// Moving the control recalls; staying put does not. Level-triggering
+    /// would re-apply every frame and pin every parameter the preset
+    /// names, so adjusting one by hand afterwards would be impossible.
+    #[test]
+    fn recall_fires_on_change_and_only_on_change() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        let glow = reg.id("/fx/glow").unwrap();
+
+        // Slot 1 is the first built-in, so this must change something.
+        reg.set_by_addr("/preset/recall", 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        let recalled = reg.target(glow);
+        let expected = vizz_mod::preset::BUILTINS[0]
+            .preset()
+            .values
+            .get("/fx/glow")
+            .copied()
+            .expect("the first built-in should set glow");
+        assert!((recalled - expected).abs() < 1e-6, "preset did not apply");
+
+        // Now move it by hand with recall parked. A second frame must not
+        // stamp the preset back over the top.
+        reg.set_by_addr("/fx/glow", 0.02);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert!(
+            (reg.target(glow) - 0.02).abs() < 1e-6,
+            "a parked recall re-applied its preset and fought the user"
+        );
+    }
+
+    /// The master dim is the fader you reach for when something is wrong
+    /// in front of an audience. Anything it fails to reach is still lit
+    /// when you have asked for black — the room was, until this test.
+    #[test]
+    fn the_master_dim_blacks_out_the_room_too() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        reg.set_by_addr("/room/brightness", 1.0);
+        // Dim is smoothed, so run long enough for it to arrive.
+        reg.set_by_addr("/master/dim", 0.0);
+        for _ in 0..120 {
+            e.begin_frame(16.0 / 9.0, dt);
+        }
+        let f = e.begin_frame(16.0 / 9.0, dt);
+        assert!(
+            f.room.brightness < 0.01,
+            "room still lit at {} with the master dim down",
+            f.room.brightness
+        );
+        assert!(!f.room_visible, "room pass still running with the master dim down");
+    }
+
+    /// An index past the end is ignored rather than applying whatever is
+    /// nearest, and sweeping a fader through empty indices must not spam
+    /// or reset anything.
+    #[test]
+    fn an_empty_index_changes_nothing() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        let glow = reg.id("/fx/glow").unwrap();
+        reg.set_by_addr("/fx/glow", 0.33);
+        for index in [40.0, 41.0, 63.0] {
+            reg.set_by_addr("/preset/recall", index);
+            e.begin_frame(16.0 / 9.0, dt);
+            assert!(
+                (reg.target(glow) - 0.33).abs() < 1e-6,
+                "index {index} disturbed a parameter"
+            );
         }
     }
 }

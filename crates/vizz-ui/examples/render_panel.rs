@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use vizz_health::{HealthConfig, HealthMonitor};
 use vizz_params::{ParamDef, ParamRegistry};
-use vizz_ui::{MidiView, OutputStatus, PanelState, panel};
+use vizz_ui::{MidiView, OutputStatus, PanelState, PresetEntry, panel};
 
 const W: u32 = 460;
 /// A tall-ish window on a modest display. The panel has to stay usable at
@@ -105,6 +105,11 @@ fn main() {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         bpm: 128.0,
+        presets: vec![
+            PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
+            PresetEntry { name: "Butterfly".into(), builtin: true, about: None },
+            PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
+        ],
         bar_phase: 0.05,
     };
 

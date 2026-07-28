@@ -6,6 +6,10 @@
 
 use crate::{GpuContext, attractor::Attractors};
 
+/// What an empty frame looks like. Matches the room's clear colour, so
+/// turning the room on and off does not change the background.
+pub const SCENE_CLEAR: wgpu::Color = wgpu::Color { r: 0.004, g: 0.004, b: 0.008, a: 1.0 };
+
 /// Per-frame shader inputs. Layout must match `Uniforms` in particles.wgsl.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -215,6 +219,7 @@ impl ParticleScene {
         target: &wgpu::TextureView,
         uniforms: &Uniforms,
         count: u32,
+        clear: bool,
     ) {
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
@@ -225,9 +230,16 @@ impl ParticleScene {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Load, not clear: the room drew first and cleared for
-                    // us, and clearing again would erase it.
-                    load: wgpu::LoadOp::Load,
+                    // Somebody has to clear, and blending is additive: a
+                    // scene texture that is only ever loaded accumulates
+                    // every frame it has ever drawn and saturates to white
+                    // within seconds. The room clears when it runs, so
+                    // this pass clears when it did not.
+                    load: if clear {
+                        wgpu::LoadOp::Clear(SCENE_CLEAR)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -264,6 +276,89 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// Draw `frames` frames into one texture, clearing only on the first
+    /// — which is what the app does when the room is on and clearing for
+    /// it. Returns the share of fully-saturated pixels.
+    fn saturation_after(ctx: &GpuContext, scene: &ParticleScene, frames: u32, clear_each: bool) -> f32 {
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("accumulation-test-target"),
+            size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("accumulation-test-readback"),
+            size: (W * W * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let cam = crate::camera::Camera { aspect: 1.0, ..Default::default() }.uniforms();
+        let uniforms = Uniforms {
+            view_proj: cam.view_proj,
+            cam_right: cam.right,
+            focus: 3.5,
+            cam_up: cam.up,
+            defocus: 0.0,
+            cam_position: cam.position,
+            _pad_cam: 0.0,
+            time: 0.0,
+            aspect: 1.0,
+            size: 0.02,
+            spread: 1.0,
+            hue: 0.5,
+            saturation: 0.8,
+            brightness: 1.0,
+            shape: 0.0,
+            morph: 0.0,
+            twist: 0.0,
+            palette: 0.0,
+            color_spread: 0.12,
+            color_drive: 0.0,
+            cloud_a: 0.0,
+            cloud_b: 1.0,
+            cloud_morph: 0.0,
+            room: Default::default(),
+        };
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        for i in 0..frames {
+            scene.render(ctx, &mut encoder, &view, &uniforms, 20_000, clear_each || i == 0);
+        }
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 4),
+                    rows_per_image: Some(W),
+                },
+            },
+            wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+        );
+        ctx.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range().unwrap().to_vec();
+        let blown = pixels
+            .chunks_exact(4)
+            .filter(|p| p[0] == 255 && p[1] == 255 && p[2] == 255)
+            .count();
+        drop(buffer);
+        blown as f32 / (W * W) as f32
     }
 
     /// Render one frame at a given `shape` and return the pixels.
@@ -317,7 +412,7 @@ mod tests {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        scene.render(ctx, &mut encoder, &view, &uniforms, 20_000);
+        scene.render(ctx, &mut encoder, &view, &uniforms, 20_000, true);
         // W is 128, so the row stride is already 512 bytes — a multiple of
         // COPY_BYTES_PER_ROW_ALIGNMENT, no padding needed.
         encoder.copy_texture_to_buffer(
@@ -383,5 +478,38 @@ mod tests {
                 .count();
             assert!(diff > 1_000, "{pair} render near-identically: {diff} differing bytes");
         }
+    }
+
+    /// Blending is additive, so a scene texture that is only ever loaded
+    /// accumulates every frame it has ever drawn. Whoever draws first has
+    /// to clear.
+    ///
+    /// This shipped: the room pass did the clearing, and the app skips the
+    /// room pass when the room is dark — which is the default. The result
+    /// was that a default launch saturated to solid white within seconds,
+    /// and every headless render of a preset came out as a white disc.
+    /// Nothing caught it because the room happened to be on in every
+    /// render anyone had looked at.
+    #[test]
+    fn a_frame_that_never_clears_saturates_and_a_cleared_one_does_not() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+
+        // Clearing every frame is steady state: 120 frames look like one.
+        let cleared = saturation_after(&ctx, &scene, 120, true);
+        let once = saturation_after(&ctx, &scene, 1, true);
+        assert!(
+            (cleared - once).abs() < 0.02,
+            "clearing every frame should be stable: {once} then {cleared}"
+        );
+
+        // Not clearing is the bug, and the test is only meaningful if the
+        // failure it guards against actually reproduces here.
+        let accumulated = saturation_after(&ctx, &scene, 120, false);
+        assert!(
+            accumulated > cleared + 0.05,
+            "accumulation did not reproduce ({accumulated} vs {cleared}); \
+             this test would not catch the regression it exists for"
+        );
     }
 }
