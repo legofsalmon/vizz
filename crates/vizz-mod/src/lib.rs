@@ -49,6 +49,7 @@ pub(crate) mod test_env {
 }
 pub mod library;
 pub mod perform;
+pub mod preset;
 
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;

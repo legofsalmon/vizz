@@ -46,9 +46,17 @@ pub struct AppParams {
     pub room_vanish_y: ParamId,
     pub room_anchor: ParamId,
     pub room_embed: ParamId,
+    pub preset_recall: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
+
+/// Highest slot `/preset/recall` will address. Slot 0 is "none" and
+/// presets run from 1, so this is one more than the number of presets
+/// reachable. Fixed rather than sized from the preset list, because the
+/// parameter set is built once at startup and saving a preset must not
+/// reshape the registry underneath a running show.
+pub const MAX_PRESET_SLOT: f32 = 64.0;
 
 impl AppParams {
     pub fn build() -> Self {
@@ -124,6 +132,14 @@ impl AppParams {
         // on never moves the cloud — see room.rs.
         let room_anchor = b.add(ParamDef::new("/room/anchor", 0.0, 1.0, 0.35).smooth(0.4));
         let room_embed = b.add(ParamDef::new("/room/embed", 0.0, 1.0, 0.0).smooth(0.4));
+        // Preset recall by slot: 0 selects nothing, 1 is the first preset.
+        // Unsmoothed on
+        // purpose: a smoothed value glides through every index between
+        // where it was and where it is going, firing each preset on the
+        // way. Being an ordinary parameter is what gets it MIDI learn and
+        // OSC for free.
+        let preset_recall =
+            b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -165,6 +181,78 @@ impl AppParams {
             room_vanish_y,
             room_anchor,
             room_embed,
+            preset_recall,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The built-in presets are hand-written address tables in another
+    /// crate, so nothing but a test connects them to the real parameter
+    /// set. A typo'd address is not a compile error — it is a preset that
+    /// silently does less than it claims, which you would only notice by
+    /// recalling it and squinting.
+    #[test]
+    fn every_builtin_preset_names_real_parameters_in_range() {
+        let p = AppParams::build();
+        for b in vizz_mod::preset::BUILTINS {
+            for (addr, value) in b.values {
+                let id = p
+                    .registry
+                    .id(addr)
+                    .unwrap_or_else(|| panic!("preset {:?}: no such parameter {addr}", b.name));
+                let def = &p.registry.defs()[id.index()];
+                assert!(
+                    (def.min..=def.max).contains(value),
+                    "preset {:?}: {addr} = {value} outside {}..{}",
+                    b.name,
+                    def.min,
+                    def.max
+                );
+            }
+        }
+    }
+
+    /// A preset must be able to address everything worth recalling. If a
+    /// parameter is added and deliberately kept out of presets, it belongs
+    /// in `preset::EXCLUDED` with a reason, not left to chance.
+    #[test]
+    fn only_the_documented_parameters_are_excluded_from_presets() {
+        let p = AppParams::build();
+        for addr in vizz_mod::preset::EXCLUDED {
+            assert!(
+                p.registry.id(addr).is_some(),
+                "EXCLUDED names {addr}, which is not a parameter"
+            );
+        }
+        assert_eq!(vizz_mod::preset::EXCLUDED, &["/master/dim", "/preset/recall"]);
+    }
+
+    /// Recall must reach every preset the app can list. The range is
+    /// fixed at startup while the list grows on disk, so the two can drift
+    /// apart — and a preset you cannot address is invisible to MIDI.
+    #[test]
+    fn recall_range_covers_the_builtins_with_room_to_spare() {
+        // Slot 0 is "none", so N built-ins need slots up to N.
+        let builtins = vizz_mod::preset::BUILTINS.len() as f32;
+        assert!(
+            MAX_PRESET_SLOT >= builtins,
+            "recall tops out at {MAX_PRESET_SLOT} but there are {builtins} built-ins"
+        );
+        assert!(MAX_PRESET_SLOT >= builtins + 16.0, "no headroom for user presets");
+    }
+
+    /// Slot 0 must select nothing. It is the resting value, so anything
+    /// else means a fresh start recalls a preset over the defaults.
+    #[test]
+    fn slot_zero_is_reserved_for_nothing_selected() {
+        let p = AppParams::build();
+        let def = &p.registry.defs()[p.preset_recall.index()];
+        assert_eq!(def.default, 0.0, "recall must rest at the empty slot");
+        assert_eq!(def.min, 0.0);
+        assert_eq!(def.smooth, 0.0, "a smoothed recall glides through every slot on the way");
     }
 }
