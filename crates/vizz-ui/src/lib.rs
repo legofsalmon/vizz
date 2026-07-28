@@ -33,6 +33,12 @@ pub fn draw_shortcuts_for_preview(ctx: &egui::Context, open: &mut bool) {
     shortcuts_overlay(ctx, open);
 }
 
+/// As above, for the quit confirmation — which appears over a running set
+/// and so is worth looking at rather than only reasoning about.
+pub fn draw_quit_prompt_for_preview(ctx: &egui::Context) {
+    quit_prompt(ctx);
+}
+
 /// Keyboard shortcuts, on screen rather than only in the README.
 ///
 /// A shortcut nobody can discover is a shortcut nobody uses, and the
@@ -52,7 +58,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
                 ("P", "performance layout"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
-                ("Esc", "quit"),
+                ("Esc", "quit — twice, to mean it"),
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(
@@ -64,6 +70,40 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
             }
             ui.separator();
             ui.small("right-click any slider to reset it to its default");
+        });
+}
+
+/// "Press Escape again to quit."
+///
+/// Escape used to quit on the first press. On a laptop driving a projector
+/// that is one stray keystroke — a hand on the wrong part of the keyboard,
+/// a habit from dismissing something — between a running set and a black
+/// screen with no way back. Nothing else in the app is destructive on one
+/// key, and this was the most destructive thing in it.
+///
+/// Drawn centre-screen and drawn *whatever else is hidden*, because the
+/// press it answers is one that would otherwise have ended the show.
+fn quit_prompt(ctx: &egui::Context) {
+    egui::Area::new(egui::Id::new("quit-prompt"))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(120, 40, 36))
+                .inner_margin(egui::Margin::symmetric(22, 16))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("press Esc again to quit")
+                            .size(20.0)
+                            .color(egui::Color32::from_rgb(255, 240, 236)),
+                    );
+                    ui.label(
+                        egui::RichText::new("any other key carries on")
+                            .size(13.0)
+                            .color(egui::Color32::from_rgb(240, 200, 194)),
+                    );
+                });
         });
 }
 
@@ -86,6 +126,9 @@ pub struct Gui {
     /// Keyboard-shortcut overlay, toggled with `?`. Shortcuts that are
     /// only in the README are shortcuts nobody uses.
     pub shortcuts_open: bool,
+    /// Escape has been pressed once and is waiting for a second press.
+    /// Owned by the app, which holds the timer; this is just told.
+    pub quit_armed: bool,
     /// `/` was pressed; the panel focuses its filter next frame.
     pub focus_filter: bool,
     /// A number key was pressed: fire this preset slot.
@@ -118,6 +161,7 @@ impl Gui {
             graph_open: false,
             performance: false,
             shortcuts_open: false,
+            quit_armed: false,
             focus_filter: false,
             preset_key: None,
             graph_view: graph_view::GraphView::default(),
@@ -212,7 +256,16 @@ impl Gui {
         // meant `?` did nothing with everything hidden — which is exactly
         // the moment you press it, having forgotten how to get the panel
         // back.
-        if !self.visible && !self.graph_open && !self.performance && !self.shortcuts_open {
+        // The quit prompt counts as something to draw, and it is the one
+        // that most has to: it appears in response to a key that would
+        // otherwise have ended the show, and it is worth nothing if it is
+        // invisible because the panel happened to be hidden.
+        if !self.visible
+            && !self.graph_open
+            && !self.performance
+            && !self.shortcuts_open
+            && !self.quit_armed
+        {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
@@ -227,6 +280,9 @@ impl Gui {
         // where a shortcut list is most wanted.
         if self.shortcuts_open {
             shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
+        }
+        if self.quit_armed {
+            quit_prompt(&self.ctx);
         }
         if self.performance {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);

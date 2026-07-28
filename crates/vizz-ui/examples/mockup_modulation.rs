@@ -34,6 +34,7 @@ fn main() {
         Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
         Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
         Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
+        Shot { name: "quit", w: 420, h: 200, draw: draw_quit },
     ];
 
     for s in shots {
@@ -342,6 +343,12 @@ fn draw_real_zoomed(ctx: &egui::Context, w: f32, h: f32) {
 fn draw_shortcuts(ctx: &egui::Context, _w: f32, _h: f32) {
     let mut open = true;
     vizz_ui::draw_shortcuts_for_preview(ctx, &mut open);
+}
+
+/// The quit confirmation. It appears over a running set, in response to a
+/// key that used to end one, so it is worth looking at.
+fn draw_quit(ctx: &egui::Context, _w: f32, _h: f32) {
+    vizz_ui::draw_quit_prompt_for_preview(ctx);
 }
 
 fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {

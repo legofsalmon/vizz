@@ -108,7 +108,14 @@ struct App {
     next_cloud: usize,
     /// Palette files loaded this session, in order, for persistence.
     palettes: Vec<String>,
+    /// When Escape was first pressed, if it is waiting for a second.
+    quit_armed: Option<Instant>,
 }
+
+/// How long the quit confirmation stays armed. Long enough to be a
+/// deliberate second press, short enough that an Escape now and an Escape
+/// in a minute are never the same gesture.
+const QUIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl App {
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<RenderState> {
@@ -493,6 +500,13 @@ impl App {
             .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
             .collect();
         refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+        // The prompt expires on its own as well as on a keystroke: an
+        // Escape pressed and then walked away from must not leave the app
+        // one key from quitting for the rest of the night.
+        if self.quit_armed.is_some_and(|at| at.elapsed() >= QUIT_CONFIRM_WINDOW) {
+            self.quit_armed = None;
+        }
+        state.gui.quit_armed = self.quit_armed.is_some();
         // Picks up presets added behind the app's back — dropped into the
         // folder, or synced in. Anything the app writes refreshes this
         // directly, so the interval only has to catch what it did not do
@@ -739,6 +753,18 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Any keystroke that is not Escape means you are still working, so
+        // the quit prompt goes away. Checked before the panel gets the
+        // event, because the panel *consumes* most of the keys that would
+        // say so — the number keys, `p`, Tab — and a prompt that outlived
+        // firing a preset would be saying "still waiting" while the show
+        // visibly carried on.
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state.is_pressed()
+            && key.logical_key != Key::Named(NamedKey::Escape)
+        {
+            self.quit_armed = None;
+        }
         // The panel sees events first; if it used one (dragging a slider,
         // typing in a field) the app must not also act on it.
         if let Some(state) = &mut self.state {
@@ -749,11 +775,27 @@ impl ApplicationHandler for App {
             }
         }
         match event {
+            // Closing the window is an aimed gesture — the title bar, or
+            // the platform's own quit. Nothing to confirm.
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
                 if event.logical_key == Key::Named(NamedKey::Escape) && event.state.is_pressed() =>
             {
-                event_loop.exit()
+                // Escape is not. It is one key, next to nothing, and it
+                // used to end the show on the first press — the only
+                // destructive single keystroke in the app, on a machine
+                // whose whole job is not going black. So it asks, once,
+                // and a second press within a few seconds means it.
+                match self.quit_armed {
+                    Some(at) if at.elapsed() < QUIT_CONFIRM_WINDOW => event_loop.exit(),
+                    _ => {
+                        self.quit_armed = Some(Instant::now());
+                        log::info!("press Esc again to quit");
+                        if let Some(state) = &self.state {
+                            state.window.request_redraw();
+                        }
+                    }
+                }
             }
             WindowEvent::Resized(size) => {
                 if let Some(state) = &mut self.state
@@ -1283,6 +1325,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         clouds: cloud_paths,
         next_cloud: 0,
         palettes: palette_paths,
+        quit_armed: None,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

@@ -384,6 +384,21 @@ impl ParticleScene {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
+        // Six vertices per particle as one flat triangle list, not four as
+        // an instanced strip.
+        //
+        // The strip is the obvious optimisation — a third fewer vertex
+        // invocations, each of which recomputes the whole particle — and it
+        // was tried. It measured *slower*: 108ms to 116ms a frame at 1080p,
+        // repeatably, both directions. Four vertices is far too small an
+        // instance to keep a vertex pipeline fed, and the per-instance
+        // overhead costs more than the two invocations it saves.
+        //
+        // Measured on a software rasteriser, which is what this machine
+        // has, so the size of the effect will differ on real hardware —
+        // but the direction is a known trap rather than an artefact, and
+        // "fewer invocations" is not on its own a reason to expect a win.
+        // Anyone re-attempting this should benchmark before believing it.
         pass.draw(0..count * 6, 0..1);
     }
 }
