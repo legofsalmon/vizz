@@ -251,7 +251,7 @@ impl App {
         if inputs.room_visible {
             state
                 .room
-                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room);
+                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room, inputs.background);
         }
         state.scene.render(
             &state.ctx,
@@ -260,6 +260,7 @@ impl App {
             &inputs.uniforms,
             inputs.count,
             !inputs.room_visible,
+            inputs.background,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         state.blit.draw(
@@ -467,8 +468,19 @@ fn apply_audio_actions(
     tap: &mut vizz_audio::TapTempo,
 ) {
     let a = &actions.audio;
-    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped {
+    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped && a.device.is_none() {
         return;
+    }
+    if let Some(want) = &a.device {
+        // Reopen rather than rebuild: the band gains live in the settings
+        // the analysis thread shares, and rebuilding would reset the one
+        // thing the user tuned to their interface.
+        engine.audio.reopen(want.as_deref());
+        // Remember it, so plugging the same interface in tomorrow does not
+        // mean finding this menu again.
+        if let Err(e) = crate::settings::save_audio_device(want.as_deref()) {
+            log::warn!("could not remember the audio device: {e:#}");
+        }
     }
     if let Some(b) = a.bands {
         *bands = b;

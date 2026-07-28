@@ -246,6 +246,7 @@ impl ParticleScene {
         uniforms: &Uniforms,
         count: u32,
         clear: bool,
+        background: wgpu::Color,
     ) {
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
@@ -262,7 +263,7 @@ impl ParticleScene {
                     // within seconds. The room clears when it runs, so
                     // this pass clears when it did not.
                     load: if clear {
-                        wgpu::LoadOp::Clear(SCENE_CLEAR)
+                        wgpu::LoadOp::Clear(background)
                     } else {
                         wgpu::LoadOp::Load
                     },
@@ -356,7 +357,7 @@ mod tests {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for i in 0..frames {
-            scene.render(ctx, &mut encoder, &view, &uniforms, 20_000, clear_each || i == 0);
+            scene.render(ctx, &mut encoder, &view, &uniforms, 20_000, clear_each || i == 0, SCENE_CLEAR);
         }
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
@@ -387,8 +388,77 @@ mod tests {
         blown as f32 / (W * W) as f32
     }
 
+    /// Transparency has to reach the pixels, not just the clear call.
+    ///
+    /// This is the property the whole feature rests on: vizz is only
+    /// usable as a layer in Resolume or VDMX if the background arrives
+    /// transparent and the field arrives opaque. Both halves are asserted,
+    /// because either one alone is easy to get by accident — an all-zero
+    /// alpha channel would pass a "background is transparent" check and be
+    /// completely useless.
+    #[test]
+    fn a_transparent_background_reaches_the_output() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+        let pixels = render_with(&ctx, &scene, 0.0, clear);
+
+        let alphas: Vec<u8> = pixels.chunks_exact(4).map(|p| p[3]).collect();
+        let empty = alphas.iter().filter(|a| **a == 0).count();
+        let covered = alphas.iter().filter(|a| **a > 8).count();
+
+        assert!(
+            empty > alphas.len() / 4,
+            "background did not come through transparent: only {empty} of {} pixels were clear",
+            alphas.len()
+        );
+        assert!(
+            covered > 0,
+            "the field itself was transparent too, which makes the output empty"
+        );
+        // And the covered pixels must actually be where the light is: an
+        // alpha channel unrelated to the picture would composite wrongly.
+        let lit_and_opaque = pixels
+            .chunks_exact(4)
+            .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
+            .filter(|p| p[3] > 8)
+            .count();
+        let lit = pixels
+            .chunks_exact(4)
+            .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
+            .count();
+        assert!(
+            lit > 0 && lit_and_opaque * 4 >= lit * 3,
+            "alpha does not follow the image: {lit_and_opaque} of {lit} lit pixels carried alpha"
+        );
+    }
+
+    /// An opaque background must stay opaque — the default, and what every
+    /// existing receiver expects.
+    #[test]
+    fn the_default_background_is_fully_opaque() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        let pixels = render_with(&ctx, &scene, 0.0, SCENE_CLEAR);
+        let transparent = pixels.chunks_exact(4).filter(|p| p[3] < 250).count();
+        assert_eq!(
+            transparent, 0,
+            "{transparent} pixels were not opaque with the default background"
+        );
+    }
+
     /// Render one frame at a given `shape` and return the pixels.
     fn render_shape(ctx: &GpuContext, scene: &ParticleScene, shape: f32) -> Vec<u8> {
+        render_with(ctx, scene, shape, SCENE_CLEAR)
+    }
+
+    /// As [`render_shape`], with the background under test.
+    fn render_with(
+        ctx: &GpuContext,
+        scene: &ParticleScene,
+        shape: f32,
+        background: wgpu::Color,
+    ) -> Vec<u8> {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("particle-test-target"),
             size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
@@ -438,7 +508,7 @@ mod tests {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        scene.render(ctx, &mut encoder, &view, &uniforms, 20_000, true);
+        scene.render(ctx, &mut encoder, &view, &uniforms, 20_000, true, background);
         // W is 128, so the row stride is already 512 bytes — a multiple of
         // COPY_BYTES_PER_ROW_ALIGNMENT, no padding needed.
         encoder.copy_texture_to_buffer(

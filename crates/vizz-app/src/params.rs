@@ -46,6 +46,10 @@ pub struct AppParams {
     pub room_vanish_y: ParamId,
     pub room_anchor: ParamId,
     pub room_embed: ParamId,
+    pub bg_r: ParamId,
+    pub bg_g: ParamId,
+    pub bg_b: ParamId,
+    pub bg_a: ParamId,
     pub preset_recall: ParamId,
     pub scene_fire: ParamId,
     pub scene_time: ParamId,
@@ -166,6 +170,20 @@ impl AppParams {
         // on never moves the cloud — see room.rs.
         let room_anchor = b.add(ParamDef::new("/room/anchor", 0.0, 1.0, 0.35).smooth(0.4));
         let room_embed = b.add(ParamDef::new("/room/embed", 0.0, 1.0, 0.0).smooth(0.4));
+        // The background. Defaults match the near-black the renderer has
+        // always cleared to, so this is invisible until someone reaches
+        // for it.
+        //
+        // Alpha is the interesting one. At 0 the field is delivered on a
+        // transparent background, which is what lets vizz be a layer in
+        // Resolume or VDMX rather than a whole picture. It is a parameter
+        // like everything else, so it blends across a scene change and can
+        // be pulled on a fader — fading the background out from under a
+        // look is a transition in its own right.
+        let bg_r = b.add(ParamDef::new("/bg/red", 0.0, 1.0, 0.004).smooth(0.3));
+        let bg_g = b.add(ParamDef::new("/bg/green", 0.0, 1.0, 0.004).smooth(0.3));
+        let bg_b = b.add(ParamDef::new("/bg/blue", 0.0, 1.0, 0.008).smooth(0.3));
+        let bg_a = b.add(ParamDef::new("/bg/alpha", 0.0, 1.0, 1.0).smooth(0.3));
         // Preset recall by slot: 0 selects nothing, 1 is the first preset.
         // Unsmoothed on
         // purpose: a smoothed value glides through every index between
@@ -235,6 +253,10 @@ impl AppParams {
             room_vanish_y,
             room_anchor,
             room_embed,
+            bg_r,
+            bg_g,
+            bg_b,
+            bg_a,
             preset_recall,
             scene_fire,
             scene_time,

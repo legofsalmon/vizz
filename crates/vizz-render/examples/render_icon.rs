@@ -113,7 +113,8 @@ fn main() {
 
     for _ in 0..WARMUP {
         let mut enc = ctx.device.create_command_encoder(&Default::default());
-        scene.render(&ctx, &mut enc, &post.scene_view, &uniforms, 95_000, true);
+        scene.render(&ctx, &mut enc, &post.scene_view, &uniforms, 95_000, true,
+            vizz_render::particles::SCENE_CLEAR);
         post.render(&ctx, &mut enc, &target.view, &post_uniforms);
         ctx.queue.submit([enc.finish()]);
         ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();

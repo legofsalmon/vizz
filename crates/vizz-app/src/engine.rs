@@ -55,6 +55,10 @@ pub struct FrameInputs {
     /// and drawing invisible lines every frame is wasted work.
     pub room_visible: bool,
     pub count: u32,
+    /// What an empty frame looks like, alpha included. At alpha 0 the
+    /// field is delivered on a transparent background so vizz can be a
+    /// layer in a mixer rather than the whole picture.
+    pub background: wgpu::Color,
 }
 
 impl FrameEngine {
@@ -314,6 +318,18 @@ impl FrameEngine {
             room,
             room_visible: room_brightness > 0.002,
             count: self.snapshot.get(p.count).max(0.0) as u32,
+            background: wgpu::Color {
+                // The master dim scales the background as well as the
+                // field. Pulling the master and being left with a lit
+                // backdrop would make the one emergency control not work.
+                r: (self.snapshot.get(p.bg_r) * dim) as f64,
+                g: (self.snapshot.get(p.bg_g) * dim) as f64,
+                b: (self.snapshot.get(p.bg_b) * dim) as f64,
+                // Alpha is *not* dimmed: transparency is a routing
+                // decision, not a brightness one, and fading the master
+                // should not quietly make the output opaque.
+                a: self.snapshot.get(p.bg_a) as f64,
+            },
         }
     }
 

@@ -557,11 +557,20 @@ mod tests {
         assert!(text.contains("fit"), "no way to set the gains from the input: {text}");
 
         // Disconnected must say so and explain the fix rather than showing
-        // four dead meters.
+        // four dead meters. The fix used to be a command-line flag, which
+        // meant quitting and restarting to change soundcard; it is a
+        // picker now, so the panel points at that instead.
         state.audio = AudioView::default();
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("no input"), "got: {text}");
-        assert!(text.contains("--list-audio"), "no hint about finding a device: {text}");
+        assert!(
+            text.contains("pick an input"),
+            "no hint about finding a device: {text}"
+        );
+        assert!(
+            text.contains("not capturing"),
+            "a dead input must not look live: {text}"
+        );
     }
 
     /// A learned binding must be visible on its slider, and learn mode

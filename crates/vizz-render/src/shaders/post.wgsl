@@ -62,7 +62,13 @@ fn fs_feedback(in: VsOut) -> @location(0) vec4<f32> {
     // the scene, which saturates to flat white within a second no matter
     // how hard the tone-map works. A lerp keeps the steady state at the
     // scene's own level while still holding bright cores for a long time.
-    return vec4<f32>(mix(scene.rgb, history.rgb, u.trail), 1.0);
+    // Alpha travels with the colour it belongs to. A trail that faded in
+    // brightness while staying fully opaque would punch a solid hole in a
+    // transparent output wherever the field had ever been.
+    return vec4<f32>(
+        mix(scene.rgb, history.rgb, u.trail),
+        mix(scene.a, history.a, u.trail),
+    );
 }
 
 // Fold UV space for mirror/kaleidoscope modes.
@@ -91,7 +97,9 @@ fn fold(uv: vec2<f32>, mode: f32, aspect: f32) -> vec2<f32> {
 @fragment
 fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     let uv = fold(in.uv, u.mirror, u.aspect);
-    var color = textureSample(t_scene, samp, uv).rgb;
+    let sampled = textureSample(t_scene, samp, uv);
+    var color = sampled.rgb;
+    var alpha = sampled.a;
 
     // Radial RGB split. Offsetting the channels along the vector from
     // centre — rather than by a fixed amount — is what makes this read as
@@ -110,18 +118,29 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     if (u.glow > 0.001) {
         let d = 0.004 + 0.02 * u.glow;
         var sum = vec3<f32>(0.0);
+        var sum_a = 0.0;
         sum += textureSample(t_scene, samp, uv + vec2<f32>( d,  0.0)).rgb;
         sum += textureSample(t_scene, samp, uv + vec2<f32>(-d,  0.0)).rgb;
         sum += textureSample(t_scene, samp, uv + vec2<f32>(0.0,  d)).rgb;
         sum += textureSample(t_scene, samp, uv + vec2<f32>(0.0, -d)).rgb;
         sum += textureSample(t_scene, samp, uv + vec2<f32>( d,  d)).rgb;
         sum += textureSample(t_scene, samp, uv + vec2<f32>(-d, -d)).rgb;
+        sum_a += textureSample(t_scene, samp, uv + vec2<f32>( d,  0.0)).a;
+        sum_a += textureSample(t_scene, samp, uv + vec2<f32>(-d,  0.0)).a;
+        sum_a += textureSample(t_scene, samp, uv + vec2<f32>(0.0,  d)).a;
+        sum_a += textureSample(t_scene, samp, uv + vec2<f32>(0.0, -d)).a;
+        sum_a += textureSample(t_scene, samp, uv + vec2<f32>( d,  d)).a;
+        sum_a += textureSample(t_scene, samp, uv + vec2<f32>(-d, -d)).a;
         color += sum * (u.glow * 0.16);
+        // The halo has to be present in alpha too. Glow that brightened
+        // pixels without covering them would show as a bloom that vanishes
+        // the moment the output is composited over anything.
+        alpha += sum_a * (u.glow * 0.16);
     }
 
     // Gentle shoulder: glow can push past 1, and a hard clip turns
     // highlights into flat white blobs. Weak enough to leave midtones
     // essentially untouched.
     color = color / (vec3<f32>(1.0) + color * 0.15);
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(color, clamp(alpha, 0.0, 1.0));
 }

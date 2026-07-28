@@ -275,6 +275,7 @@ impl Room {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         uniforms: &RoomUniforms,
+        background: wgpu::Color,
     ) {
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
@@ -285,12 +286,11 @@ impl Room {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     // The room clears; the particles then load and add.
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.004,
-                        g: 0.004,
-                        b: 0.008,
-                        a: 1.0,
-                    }),
+                    // Takes the same background as the particle pass, so
+                    // turning the room on does not change what the
+                    // background is — the one thing that would make the
+                    // setting look broken.
+                    load: wgpu::LoadOp::Clear(background),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,

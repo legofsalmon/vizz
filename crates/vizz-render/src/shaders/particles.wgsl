@@ -437,8 +437,18 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // Soft round sprite; additive blending means alpha is irrelevant.
+    // Soft round sprite. Alpha carries the same falloff as the colour,
+    // which makes it coverage: it accumulates where the field is dense and
+    // stays at the background's own alpha where nothing was drawn.
+    //
+    // This used to write 1.0, on the reasoning that additive blending made
+    // alpha irrelevant. It was irrelevant only while the output was always
+    // opaque — and it was actively wrong, because the blend adds alpha too,
+    // so every sprite contributed a full 1.0 across its whole quad
+    // including the parts that had faded to nothing. Anything downstream
+    // reading alpha as coverage saw a solid rectangle per particle.
     let d = length(in.uv);
     let a = smoothstep(1.0, 0.1, d);
-    return vec4<f32>(in.color * a * a, 1.0);
+    let cover = a * a;
+    return vec4<f32>(in.color * cover, cover);
 }

@@ -127,6 +127,9 @@ pub struct AudioEdits {
     pub auto_bpm: Option<bool>,
     /// The user tapped tempo; the caller resolves it to a BPM.
     pub tapped: bool,
+    /// Switch to this input device. `Some(None)` means the system
+    /// default — distinct from `None`, which means "unchanged".
+    pub device: Option<Option<String>>,
 }
 
 pub fn draw(
@@ -158,6 +161,10 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| outputs_section(ui, state));
+            egui::CollapsingHeader::new("background")
+                .id_salt("background")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| background_section(ui, registry));
             egui::CollapsingHeader::new("midi")
                 .id_salt("midi")
                 .default_open(state.expand_sections)
@@ -272,6 +279,73 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
     ui.separator();
 }
 
+/// The background colour, and whether there is one at all.
+///
+/// A swatch rather than three sliders, because nobody picks a colour by
+/// typing red, green and blue — those live in the parameter list for OSC
+/// and MIDI, and this is how a human chooses.
+///
+/// Alpha is separate and labelled, because it is not a colour decision. At
+/// zero the field is delivered on nothing, which is what makes vizz a
+/// layer in Resolume or VDMX rather than a whole picture, and that is
+/// worth saying out loud rather than leaving as the left end of a slider.
+fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
+    let (Some(r), Some(g), Some(b), Some(a)) = (
+        registry.id("/bg/red"),
+        registry.id("/bg/green"),
+        registry.id("/bg/blue"),
+        registry.id("/bg/alpha"),
+    ) else {
+        return;
+    };
+
+    ui.horizontal(|ui| {
+        // egui's picker works in 0..255 gamma space; the parameters are
+        // linear 0..1, which is what the clear colour wants.
+        let mut rgb = [registry.target(r), registry.target(g), registry.target(b)];
+        if ui.color_edit_button_rgb(&mut rgb).changed() {
+            registry.set(r, rgb[0]);
+            registry.set(g, rgb[1]);
+            registry.set(b, rgb[2]);
+        }
+        ui.label("colour");
+        if ui
+            .small_button("black")
+            .on_hover_text("a true black background")
+            .clicked()
+        {
+            registry.set(r, 0.0);
+            registry.set(g, 0.0);
+            registry.set(b, 0.0);
+        }
+    });
+
+    ui.horizontal(|ui| {
+        let mut alpha = registry.target(a);
+        if ui
+            .add(
+                egui::Slider::new(&mut alpha, 0.0..=1.0)
+                    .text("opacity")
+                    .clamping(egui::SliderClamping::Always),
+            )
+            .on_hover_text("0 sends the field on a transparent background")
+            .changed()
+        {
+            registry.set(a, alpha);
+        }
+    });
+    // Say which state you are in rather than making it inferred from a
+    // slider position — "why is my key not working" is the question this
+    // line exists to answer.
+    if registry.target(a) <= 0.001 {
+        ui.small("transparent — receivers get the field with an alpha channel");
+    } else if registry.target(a) < 0.999 {
+        ui.small("partly transparent");
+    } else {
+        ui.small("opaque");
+    }
+}
+
 fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
     ui.label(egui::RichText::new("MIDI").strong());
     if !state.midi.available {
@@ -342,6 +416,44 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
     }
 }
 
+/// Choose the input device.
+///
+/// This used to be a command-line flag only, which meant picking your
+/// interface required quitting, remembering the flag and restarting — at a
+/// venue, with the wrong input already on screen. The list is read when
+/// the menu is opened rather than every frame: enumerating devices talks
+/// to CoreAudio/WASAPI and is far too expensive to do at 60 Hz.
+fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let current = state.audio.device.as_deref().unwrap_or("no input");
+    ui.horizontal(|ui| {
+        ui.label("input");
+        egui::ComboBox::from_id_salt("audio-device")
+            .selected_text(current)
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(state.audio.device.is_none(), "system default")
+                    .clicked()
+                {
+                    actions.audio.device = Some(None);
+                }
+                ui.separator();
+                for name in vizz_audio::input_devices() {
+                    let selected = state.audio.device.as_deref() == Some(name.as_str());
+                    if ui.selectable_label(selected, &name).clicked() {
+                        actions.audio.device = Some(Some(name.clone()));
+                    }
+                }
+            });
+        // A device that has gone away should not look like a live one.
+        if !state.audio.connected {
+            ui.label(
+                egui::RichText::new("not capturing").color(egui::Color32::from_rgb(240, 150, 90)),
+            );
+        }
+    });
+}
+
 fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let a = &state.audio;
     ui.horizontal(|ui| {
@@ -356,14 +468,12 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                 egui::Color32::from_rgb(110, 110, 110)
             },
         );
-        match &a.device {
-            Some(d) => ui.small(d.as_str()),
-            None => ui.small("no input"),
-        };
     });
 
+    device_picker(ui, state, actions);
+
     if !a.connected {
-        ui.small("Start with --audio-device, or --list-audio to see names.");
+        ui.small("pick an input above, or start with --audio-device");
         return;
     }
 
