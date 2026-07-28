@@ -35,11 +35,13 @@ This puts `vizz.app` (with Syphon embedded — nothing else to install) in
 your Applications folder. You can also grab the bundle directly from the
 [latest release](https://github.com/legofsalmon/vizz/releases/latest).
 
-**Ad-hoc signed releases need right-click → Open on first launch.** Once
-the Developer ID secrets are configured the workflow signs and notarizes
-instead, and those builds double-click normally — verified in CI with
-`spctl` and `stapler validate` before publishing, so it is asserted
-rather than assumed. Each release's notes say which it is.
+**Releases are signed and notarized, so they double-click normally** —
+no right-click → Open. Every release is checked with `spctl -a -t install`
+and `stapler validate` before publishing, so it is asserted rather than
+assumed; v0.4.0 was the first to clear it. A build made without the
+Developer ID secrets (a fork, or a local `make-app.sh`) is ad-hoc signed
+and does need right-click → Open on first launch. Each release's notes
+say which it is.
 
 Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on (the
 window title shows the live settings). Flags below need a terminal run.
