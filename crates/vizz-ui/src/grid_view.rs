@@ -78,12 +78,28 @@ const EMPTY: Color32 = Color32::from_rgb(34, 36, 42);
 const CURRENT: Color32 = Color32::from_rgb(110, 180, 255);
 const ARRIVING: Color32 = Color32::from_rgb(255, 175, 80);
 const ARMED: Color32 = Color32::from_rgb(255, 120, 90);
+/// The autopilot's own colour. Green rather than the blue of `CURRENT` or
+/// the amber of `ARRIVING`: those two say where the grid *is*, and this
+/// says something is driving it. Sharing a colour with either would make
+/// the sweep read as another transition.
+const AUTO_ON: Color32 = Color32::from_rgb(72, 160, 104);
+const AUTO_BED: Color32 = Color32::from_rgb(30, 46, 36);
+/// Secondary text. The egui default is dimmer than anything on a stage
+/// should be, so labels here are set explicitly rather than inherited.
+const LABEL: Color32 = Color32::from_rgb(178, 187, 200);
 
 /// What the grid row needs to draw itself. Names rather than the `Grid`
 /// itself so this crate does not depend on the scene module's internals.
 pub struct GridView {
     /// Cell names in slot order; `None` for an empty pad.
     pub names: Vec<Option<String>>,
+    /// Per slot: the pad is filled but its preset no longer exists.
+    /// A scene names a look rather than owning one, so a deleted or
+    /// renamed preset leaves a pad that would silently do nothing — the
+    /// kind of fault that gets blamed on the controller mid-set.
+    pub missing: Vec<bool>,
+    /// Presets available to put on a pad, for the assign menu.
+    pub presets: Vec<String>,
     /// The cell arrived at.
     pub current: Option<usize>,
     /// The cell being moved to, and how far along, 0..1.
@@ -94,12 +110,20 @@ pub struct GridView {
     pub curve_names: Vec<String>,
     pub autopilot: bool,
     pub bars: f32,
+    /// How far through the current autopilot step the clock is, 0..1.
+    /// `None` when the autopilot is off.
+    pub auto_phase: Option<f32>,
+    /// The slot the autopilot will move to next, so the control can say
+    /// what is coming rather than only that something is.
+    pub upcoming: Option<usize>,
 }
 
 impl Default for GridView {
     fn default() -> Self {
         Self {
             names: vec![None; SLOTS],
+            missing: vec![false; SLOTS],
+            presets: Vec::new(),
             current: None,
             in_flight: None,
             duration: 2.0,
@@ -107,6 +131,8 @@ impl Default for GridView {
             curve_names: Vec::new(),
             autopilot: false,
             bars: 4.0,
+            auto_phase: None,
+            upcoming: None,
         }
     }
 }
@@ -130,8 +156,10 @@ pub struct GridActions {
     /// Fire this slot (0-based). The app turns it into a `/scene/fire`
     /// write so a click and a MIDI pad take the same path.
     pub fire: Option<usize>,
-    /// Capture the live parameters into this slot.
+    /// Capture the live parameters into this slot, as a new preset.
     pub store: Option<usize>,
+    /// Put an existing preset on this pad.
+    pub assign: Option<(usize, String)>,
     pub clear: Option<usize>,
     pub rename: Option<(usize, String)>,
     /// Transition settings the user moved. `Option` rather than a value so
@@ -235,7 +263,12 @@ fn pad(
         p.rect_filled(fill, 3.0, ARRIVING.gamma_multiply(0.5));
     }
 
-    let outline = if view.in_flight.map(|(to, _)| to) == Some(slot) {
+    // A dangling reference outranks every other outline: a pad that will
+    // not fire is more urgent than which pad you are on.
+    let broken = view.missing.get(slot).copied().unwrap_or(false);
+    let outline = if broken {
+        Some(ARMED)
+    } else if view.in_flight.map(|(to, _)| to) == Some(slot) {
         Some(ARRIVING)
     } else if view.current == Some(slot) {
         Some(CURRENT)
@@ -262,18 +295,36 @@ fn pad(
             egui::Align2::LEFT_CENTER,
             name,
             egui::FontId::proportional(11.0),
-            Color32::from_rgb(225, 228, 235),
+            if broken {
+                ARMED
+            } else {
+                Color32::from_rgb(225, 228, 235)
+            },
         );
     }
 
     let response = response.on_hover_text(match state.mode {
-        PadMode::Fire => name.map_or_else(
-            || format!("scene {} — empty", slot + 1),
-            |n| format!("fire {n}"),
+        PadMode::Fire if broken => format!(
+            "{} — this preset no longer exists; right-click to pick another",
+            name.unwrap_or("scene")
         ),
-        PadMode::Store => format!("store the current look in scene {}", slot + 1),
+        PadMode::Fire => name.map_or_else(
+            || format!("scene {} — empty; right-click to play a preset here", slot + 1),
+            // The rename is advertised here because it was previously only
+            // on the right-click menu, where nobody found it. A hover that
+            // names the gesture is the cheapest possible fix, and the
+            // double-click below is the gesture people try first.
+            |n| format!("fire {n}  ·  double-click to rename"),
+        ),
+        PadMode::Store => format!("capture the current look into scene {}", slot + 1),
         PadMode::Clear => format!("empty scene {}", slot + 1),
     });
+    // Double-click to rename, which is where a name gets edited in every
+    // other program. The context menu keeps its entry: this is a second
+    // door to the same room, not a replacement.
+    if response.double_clicked() && name.is_some() {
+        state.editing = Some((slot, name.unwrap_or_default().to_string()));
+    }
     if response.clicked() {
         match state.mode {
             // Firing an empty pad is a no-op in the grid itself, so this
@@ -292,7 +343,28 @@ fn pad(
         }
     }
     response.context_menu(|ui| {
-        if ui.button("store here").clicked() {
+        // Assignment first: a scene names a preset, so choosing which
+        // preset is the primary thing you do to a pad. Capture is below
+        // it, as the shortcut it now is.
+        ui.menu_button("play preset...", |ui| {
+            if view.presets.is_empty() {
+                ui.label("no presets saved yet");
+                return;
+            }
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for name in &view.presets {
+                    if ui.button(name).clicked() {
+                        actions.assign = Some((slot, name.clone()));
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if ui
+            .button("capture current look")
+            .on_hover_text("save what is on screen as a preset and play it here")
+            .clicked()
+        {
             actions.store = Some(slot);
             ui.close();
         }
@@ -351,46 +423,126 @@ fn modes(ui: &mut egui::Ui, state: &mut GridState, _actions: &mut GridActions) {
 /// parameter list to change a blend time is the wrong distance away from
 /// the pads you are pressing.
 fn controls(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
+    // Blend, curve and autopilot on one line. They are one thought — "how
+    // does a scene change happen" — and stacking them over three rows both
+    // wasted the height the faders need and made each one look like an
+    // unrelated setting.
     ui.horizontal(|ui| {
-        ui.label("blend");
+        ui.label(egui::RichText::new("blend").size(13.0).color(LABEL));
         let mut duration = view.duration;
         let slider = egui::Slider::new(&mut duration, 0.0..=30.0)
             .suffix(" s")
             .clamping(egui::SliderClamping::Always);
         if ui
-            .add(slider)
+            .add_sized([170.0, 20.0], slider)
             .on_hover_text("how long a scene change takes. 0 is a cut")
             .changed()
         {
             actions.set_duration = Some(duration);
         }
-    });
-    ui.horizontal(|ui| {
+        ui.add_space(14.0);
         // The curve as a row of names rather than a number: "ease out"
         // means something, 3.0 does not.
         for (i, name) in view.curve_names.iter().enumerate() {
-            if ui.selectable_label(view.curve == i, name).clicked() {
+            let text = egui::RichText::new(name)
+                .size(13.0)
+                .color(if view.curve == i {
+                    Color32::from_rgb(240, 244, 250)
+                } else {
+                    LABEL
+                });
+            if ui.selectable_label(view.curve == i, text).clicked() {
                 actions.set_curve = Some(i);
             }
         }
     });
     ui.horizontal(|ui| {
-        let mut on = view.autopilot;
-        if ui
-            .checkbox(&mut on, "autopilot")
-            .on_hover_text("walk the filled pads in time with the clock")
-            .changed()
-        {
-            actions.set_autopilot = Some(on);
-        }
+        autopilot_toggle(ui, view, actions);
         let mut bars = view.bars;
         let slider = egui::Slider::new(&mut bars, 0.25..=16.0)
             .suffix(" bars")
             .clamping(egui::SliderClamping::Always);
-        if ui.add(slider).changed() {
+        if ui
+            .add_sized([150.0, 20.0], slider)
+            .on_hover_text("how often the autopilot steps")
+            .changed()
+        {
             actions.set_bars = Some(bars);
         }
     });
+}
+
+/// The autopilot switch, drawn as a countdown rather than a checkbox.
+///
+/// A checkbox was the wrong widget for this. Autopilot is the one control
+/// that changes the output when nobody touched anything, so "is it on" has
+/// to be answerable from across a room — and a 13-point tick box beside a
+/// grey label is not. Worse, a tick box can only say *on*, and on with a
+/// sixteen-bar rate looks exactly like off for the best part of a minute.
+///
+/// So the switch shows the thing that distinguishes them: it fills towards
+/// the next fire. Sweeping means running, flat means off, and the two are
+/// never confusable no matter how slow the rate. It also names the pad it
+/// is about to move to, because during a set the question is not only
+/// whether something is coming but what.
+fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
+    let label = if view.autopilot { "AUTO" } else { "auto" };
+    let name = view
+        .upcoming
+        .and_then(|s| view.names.get(s).cloned().flatten());
+    // ASCII only. egui's default font has no arrow glyph, so "→" renders
+    // as a tofu box — which on the one control that says whether the show
+    // is running itself reads as a bug.
+    let text = match (view.autopilot, name) {
+        (true, Some(n)) => format!("{label}  >  {n}"),
+        (true, None) => format!("{label}  >  (empty grid)"),
+        (false, _) => label.to_string(),
+    };
+
+    let size = vec2(ui.available_width().min(210.0).max(120.0), 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let p = ui.painter();
+    p.rect_filled(rect, 4.0, if view.autopilot { AUTO_BED } else { EMPTY });
+
+    // The sweep. Drawn under the label so the text stays readable as the
+    // fill passes behind it.
+    if let Some(phase) = view.auto_phase {
+        let w = rect.width() * phase.clamp(0.0, 1.0);
+        p.rect_filled(
+            egui::Rect::from_min_size(rect.left_top(), vec2(w, rect.height())),
+            4.0,
+            AUTO_ON,
+        );
+    }
+    // A lit border as well as a fill: at phase 0 the sweep is zero pixels
+    // wide, and without this the control would blink to looking off once
+    // per cycle.
+    if view.autopilot {
+        p.rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.5, AUTO_ON),
+            egui::StrokeKind::Inside,
+        );
+    }
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(13.0),
+        if view.autopilot {
+            Color32::from_rgb(238, 250, 240)
+        } else {
+            Color32::from_rgb(150, 154, 162)
+        },
+    );
+
+    if response
+        .on_hover_text("walk the filled pads in time with the clock")
+        .clicked()
+    {
+        actions.set_autopilot = Some(!view.autopilot);
+    }
 }
 
 fn rename_row(

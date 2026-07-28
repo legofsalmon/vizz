@@ -251,7 +251,7 @@ impl App {
         if inputs.room_visible {
             state
                 .room
-                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room);
+                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room, inputs.background);
         }
         state.scene.render(
             &state.ctx,
@@ -260,6 +260,7 @@ impl App {
             &inputs.uniforms,
             inputs.count,
             !inputs.room_visible,
+            inputs.background,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         state.blit.draw(
@@ -307,8 +308,17 @@ impl App {
             },
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
+            // What the renderer is actually using this frame, so a fader
+            // whose parameter is being modulated can show where the value
+            // has really gone rather than only where its handle sits.
+            modulated: self
+                .params
+                .registry
+                .iter()
+                .map(|(id, _)| self.engine.snapshot.get(id))
+                .collect(),
             presets: preset_entries(),
-            grid: grid_view(&self.engine.grid),
+            grid: grid_view(&self.engine.grid, self.engine.modulation.clock.beats),
             focus_filter: std::mem::take(&mut self.focus_filter),
             expand_sections: false,
             bpm: self.engine.modulation.clock.bpm,
@@ -458,8 +468,19 @@ fn apply_audio_actions(
     tap: &mut vizz_audio::TapTempo,
 ) {
     let a = &actions.audio;
-    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped {
+    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped && a.device.is_none() {
         return;
+    }
+    if let Some(want) = &a.device {
+        // Reopen rather than rebuild: the band gains live in the settings
+        // the analysis thread shares, and rebuilding would reset the one
+        // thing the user tuned to their interface.
+        engine.audio.reopen(want.as_deref());
+        // Remember it, so plugging the same interface in tomorrow does not
+        // mean finding this menu again.
+        if let Err(e) = crate::settings::save_audio_device(want.as_deref()) {
+            log::warn!("could not remember the audio device: {e:#}");
+        }
     }
     if let Some(b) = a.bands {
         *bands = b;
@@ -499,10 +520,28 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
 }
 
 /// The scene grid as the panel needs to see it.
-fn grid_view(grid: &vizz_mod::scene::Grid) -> vizz_ui::grid_view::GridView {
+///
+/// `beats` is the musical clock, so the autopilot switch can show how far
+/// through its step it is rather than only that it is on.
+fn grid_view(grid: &vizz_mod::scene::Grid, beats: f64) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
-        names: grid.cells().iter().map(|c| c.as_ref().map(|c| c.name.clone())).collect(),
+        names: grid
+            .cells()
+            .iter()
+            .map(|c| c.as_ref().map(|c| c.display().to_string()))
+            .collect(),
+        // A pad whose preset has been deleted or renamed must say so
+        // rather than looking filled and doing nothing when pressed.
+        missing: grid
+            .cells()
+            .iter()
+            .map(|c| {
+                c.as_ref()
+                    .is_some_and(|c| vizz_mod::preset::by_name(&c.preset).is_none())
+            })
+            .collect(),
+        presets: vizz_mod::preset::all_names(),
         current: grid.current(),
         in_flight: grid.in_flight(),
         duration: grid.duration,
@@ -510,6 +549,8 @@ fn grid_view(grid: &vizz_mod::scene::Grid) -> vizz_ui::grid_view::GridView {
         curve_names: Curve::ALL.iter().map(|c| c.name().to_string()).collect(),
         autopilot: grid.autopilot.enabled,
         bars: grid.autopilot.bars,
+        auto_phase: grid.autopilot_phase(beats),
+        upcoming: grid.upcoming(),
     }
 }
 
@@ -533,26 +574,43 @@ fn apply_grid_actions(
     if let Some(slot) = actions.fire {
         reg.set(params.scene_fire, slot as f32 + 1.0);
     }
+    // Put an existing preset on a pad. The core gesture now that a scene
+    // names a look rather than owning a copy of one.
+    if let Some((slot, name)) = &actions.assign {
+        grid.assign(*slot, name.clone());
+        dirty = true;
+    }
     if let Some(slot) = actions.store {
-        // Keeps the name it had, or takes the pad's number. A scene with
-        // no name is a blank square you have to press to identify, which
-        // during a set means identifying it on the output.
+        // Capture still exists, because during a set the useful gesture is
+        // "keep what is on screen" and stopping to name it is exactly the
+        // wrong moment. But what it captures is now a *preset* — saved to
+        // the library under the pad's name and then referenced — rather
+        // than a copy hidden inside the grid. One gesture, and the result
+        // is a look you can also recall, edit and put on another pad.
         let name = grid
             .cell(slot)
-            .map(|c| c.name.clone())
+            .map(|c| c.preset.clone())
             .unwrap_or_else(|| format!("scene {}", slot + 1));
-        grid.store(slot, name, reg);
-        dirty = true;
+        let captured = vizz_mod::preset::Preset::capture(reg);
+        match vizz_mod::preset::save(&name, &captured) {
+            Ok(saved) => {
+                grid.assign(slot, saved);
+                dirty = true;
+            }
+            // A failed save must not leave the pad pointing at a preset
+            // that was never written — that would be a pad which looks
+            // filled and does nothing.
+            Err(e) => log::warn!("could not save scene {} as a preset: {e:#}", slot + 1),
+        }
     }
     if let Some(slot) = actions.clear {
         grid.clear(slot);
         dirty = true;
     }
-    if let Some((slot, name)) = &actions.rename
-        && let Some(cell) = grid.cell(*slot)
-    {
-        let preset = cell.preset.clone();
-        grid.put(*slot, name.clone(), preset);
+    if let Some((slot, name)) = &actions.rename {
+        // Renames the pad, not the preset. The same look is the drop in
+        // one set and the outro in another.
+        grid.relabel(*slot, name.clone());
         dirty = true;
     }
     if let Some(v) = actions.set_duration {

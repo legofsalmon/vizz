@@ -18,7 +18,7 @@ use crate::params::AppParams;
 
 pub struct FrameEngine {
     params: Arc<AppParams>,
-    snapshot: ParamSnapshot,
+    pub snapshot: ParamSnapshot,
     pub health: HealthMonitor,
     /// LFOs and the beat clock. Render-thread-owned: it ticks here and the
     /// panel (drawn on this thread) edits it directly.
@@ -55,6 +55,10 @@ pub struct FrameInputs {
     /// and drawing invisible lines every frame is wasted work.
     pub room_visible: bool,
     pub count: u32,
+    /// What an empty frame looks like, alpha included. At alpha 0 the
+    /// field is delivered on a transparent background so vizz can be a
+    /// layer in a mixer rather than the whole picture.
+    pub background: wgpu::Color,
 }
 
 impl FrameEngine {
@@ -94,7 +98,10 @@ impl FrameEngine {
                 .position(|c| *c == grid.curve)
                 .unwrap_or(1) as f32,
         );
-        reg.set(self.params.scene_auto, if grid.autopilot.enabled { 1.0 } else { 0.0 });
+        reg.set(
+            self.params.scene_auto,
+            if grid.autopilot.enabled { 1.0 } else { 0.0 },
+        );
         reg.set(self.params.scene_bars, grid.autopilot.bars);
         self.grid = grid;
     }
@@ -123,14 +130,20 @@ impl FrameEngine {
         self.grid.autopilot.enabled = reg.target(p.scene_auto) >= 0.5;
         self.grid.autopilot.bars = reg.target(p.scene_bars);
 
+        // Scenes name presets rather than carrying copies, so firing one
+        // resolves through the library here. Built-ins and saved presets
+        // are equally addressable, which is what lets a set be prepared
+        // from either.
+        let presets = |name: &str| vizz_mod::preset::by_name(name);
         let slot = reg.target(p.scene_fire).round().max(0.0) as usize;
         if self.last_scene != Some(slot) {
             self.last_scene = Some(slot);
             if let Some(index) = slot.checked_sub(1) {
-                self.grid.fire(index, reg);
+                self.grid.fire(index, reg, &presets);
             }
         }
-        self.grid.tick(dt, self.modulation.clock.beats, reg);
+        self.grid
+            .tick(dt, self.modulation.clock.beats, reg, &presets);
     }
 
     /// Recall a preset when `/preset/recall` has moved to a new index.
@@ -214,7 +227,10 @@ impl FrameEngine {
         }
         // Modulation is an offset on top of the stored targets, so a value
         // set by hand or by MIDI is never overwritten.
-        let levels = AudioLevels { bands: &self.bands, level: self.audio.state.level() };
+        let levels = AudioLevels {
+            bands: &self.bands,
+            level: self.audio.state.level(),
+        };
         let offsets = self.modulation.tick(dt_s, &p.registry, levels);
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
         self.vis_time += dt_s * self.snapshot.get(p.speed);
@@ -234,6 +250,8 @@ impl FrameEngine {
             aspect,
             focus: self.snapshot.get(p.cam_focus),
             defocus: self.snapshot.get(p.cam_defocus),
+            pan_x: self.snapshot.get(p.cam_pan_x),
+            pan_y: self.snapshot.get(p.cam_pan_y),
         };
         let cam = camera.uniforms();
         let room_brightness = self.snapshot.get(p.room) * dim;
@@ -302,6 +320,18 @@ impl FrameEngine {
             room,
             room_visible: room_brightness > 0.002,
             count: self.snapshot.get(p.count).max(0.0) as u32,
+            background: wgpu::Color {
+                // The master dim scales the background as well as the
+                // field. Pulling the master and being left with a lit
+                // backdrop would make the one emergency control not work.
+                r: (self.snapshot.get(p.bg_r) * dim) as f64,
+                g: (self.snapshot.get(p.bg_g) * dim) as f64,
+                b: (self.snapshot.get(p.bg_b) * dim) as f64,
+                // Alpha is *not* dimmed: transparency is a routing
+                // decision, not a brightness one, and fading the master
+                // should not quietly make the output opaque.
+                a: self.snapshot.get(p.bg_a) as f64,
+            },
         }
     }
 
@@ -401,7 +431,10 @@ mod tests {
             "room still lit at {} with the master dim down",
             f.room.brightness
         );
-        assert!(!f.room_visible, "room pass still running with the master dim down");
+        assert!(
+            !f.room_visible,
+            "room pass still running with the master dim down"
+        );
     }
 
     /// An index past the end is ignored rather than applying whatever is

@@ -46,6 +46,12 @@ pub struct AppParams {
     pub room_vanish_y: ParamId,
     pub room_anchor: ParamId,
     pub room_embed: ParamId,
+    pub cam_pan_x: ParamId,
+    pub cam_pan_y: ParamId,
+    pub bg_r: ParamId,
+    pub bg_g: ParamId,
+    pub bg_b: ParamId,
+    pub bg_a: ParamId,
     pub preset_recall: ParamId,
     pub scene_fire: ParamId,
     pub scene_time: ParamId,
@@ -71,7 +77,8 @@ pub const SCENE_SLOTS: f32 = vizz_mod::scene::SLOTS as f32;
 impl AppParams {
     pub fn build() -> Self {
         let mut b = ParamRegistry::builder();
-        let count = b.add(ParamDef::new("/particles/count", 0.0, MAX_PARTICLES, 60_000.0).smooth(0.2));
+        let count =
+            b.add(ParamDef::new("/particles/count", 0.0, MAX_PARTICLES, 60_000.0).smooth(0.2));
         let size = b.add(ParamDef::new("/particles/size", 0.001, 0.2, 0.015).smooth(0.1));
         let speed = b.add(ParamDef::new("/particles/speed", 0.0, 4.0, 0.6).smooth(0.25));
         let spread = b.add(ParamDef::new("/particles/spread", 0.05, 3.0, 1.2).smooth(0.3));
@@ -88,7 +95,14 @@ impl AppParams {
                 .smooth(0.4)
                 // The sweep wraps, so 8 is the sphere again coming round.
                 .labels(&[
-                    "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
+                    "sphere",
+                    "torus",
+                    "knot",
+                    "grid",
+                    "shell",
+                    "Lorenz",
+                    "Aizawa",
+                    "cloud pair",
                     "sphere",
                 ]),
         );
@@ -138,6 +152,12 @@ impl AppParams {
         // Focus is a distance, so its useful range tracks the camera's.
         let cam_focus = b.add(ParamDef::new("/camera/focus", 0.0, 12.0, 3.5).smooth(0.4));
         let cam_defocus = b.add(ParamDef::new("/camera/defocus", 0.0, 1.0, 0.0).smooth(0.3));
+        // Pan, in the camera's own screen plane. The range is roughly the
+        // width of the field at the default distance: enough to push the
+        // subject fully out of frame, which is a legitimate move, without
+        // a fader whose useful travel is the middle two percent.
+        let cam_pan_x = b.add(ParamDef::new("/camera/pan_x", -4.0, 4.0, 0.0).smooth(0.4));
+        let cam_pan_y = b.add(ParamDef::new("/camera/pan_y", -4.0, 4.0, 0.0).smooth(0.4));
         // Room. Off by default: it is a strong look, not a neutral one.
         let room = b.add(ParamDef::new("/room/brightness", 0.0, 1.0, 0.0).smooth(0.3));
         let room_depth = b.add(ParamDef::new("/room/depth", 1.0, 20.0, 7.0).smooth(0.4));
@@ -158,14 +178,27 @@ impl AppParams {
         // on never moves the cloud — see room.rs.
         let room_anchor = b.add(ParamDef::new("/room/anchor", 0.0, 1.0, 0.35).smooth(0.4));
         let room_embed = b.add(ParamDef::new("/room/embed", 0.0, 1.0, 0.0).smooth(0.4));
+        // The background. Defaults match the near-black the renderer has
+        // always cleared to, so this is invisible until someone reaches
+        // for it.
+        //
+        // Alpha is the interesting one. At 0 the field is delivered on a
+        // transparent background, which is what lets vizz be a layer in
+        // Resolume or VDMX rather than a whole picture. It is a parameter
+        // like everything else, so it blends across a scene change and can
+        // be pulled on a fader — fading the background out from under a
+        // look is a transition in its own right.
+        let bg_r = b.add(ParamDef::new("/bg/red", 0.0, 1.0, 0.004).smooth(0.3));
+        let bg_g = b.add(ParamDef::new("/bg/green", 0.0, 1.0, 0.004).smooth(0.3));
+        let bg_b = b.add(ParamDef::new("/bg/blue", 0.0, 1.0, 0.008).smooth(0.3));
+        let bg_a = b.add(ParamDef::new("/bg/alpha", 0.0, 1.0, 1.0).smooth(0.3));
         // Preset recall by slot: 0 selects nothing, 1 is the first preset.
         // Unsmoothed on
         // purpose: a smoothed value glides through every index between
         // where it was and where it is going, firing each preset on the
         // way. Being an ordinary parameter is what gets it MIDI learn and
         // OSC for free.
-        let preset_recall =
-            b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
+        let preset_recall = b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
         // The scene grid. Parameters rather than plain settings for the
         // same reason recall is one: a pad controller addresses them for
         // free, and there is one path to firing a scene rather than a UI
@@ -182,8 +215,7 @@ impl AppParams {
             ParamDef::new("/scene/curve", 0.0, 4.0, 1.0)
                 .labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
         );
-        let scene_auto =
-            b.add(ParamDef::new("/scene/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
+        let scene_auto = b.add(ParamDef::new("/scene/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
         // Bars between autopilot steps. Down to a quarter bar, because a
         // scene change on every beat is a legitimate effect and a minimum
         // of one bar would rule it out.
@@ -229,6 +261,12 @@ impl AppParams {
             room_vanish_y,
             room_anchor,
             room_embed,
+            cam_pan_x,
+            cam_pan_y,
+            bg_r,
+            bg_g,
+            bg_b,
+            bg_a,
             preset_recall,
             scene_fire,
             scene_time,
@@ -325,7 +363,11 @@ mod tests {
         assert_eq!(def.default, 0.0);
         assert_eq!(def.min, 0.0);
         assert_eq!(def.smooth, 0.0);
-        assert_eq!(def.max, vizz_mod::scene::SLOTS as f32, "not every pad is reachable");
+        assert_eq!(
+            def.max,
+            vizz_mod::scene::SLOTS as f32,
+            "not every pad is reachable"
+        );
     }
 
     /// Recall must reach every preset the app can list. The range is
@@ -339,7 +381,29 @@ mod tests {
             MAX_PRESET_SLOT >= builtins,
             "recall tops out at {MAX_PRESET_SLOT} but there are {builtins} built-ins"
         );
-        assert!(MAX_PRESET_SLOT >= builtins + 16.0, "no headroom for user presets");
+        assert!(
+            MAX_PRESET_SLOT >= builtins + 16.0,
+            "no headroom for user presets"
+        );
+    }
+
+    /// Every default fader assignment must name a real parameter.
+    ///
+    /// The shipped macro list lives in another crate, which cannot see this
+    /// registry, so a typo or a renamed address there produces a fader that
+    /// draws as an empty slot on a fresh install and is silent about why.
+    /// This is the only place both halves are visible at once.
+    #[test]
+    fn every_default_macro_names_a_real_parameter() {
+        let p = AppParams::build();
+        let macros = vizz_mod::perform::Macros::default();
+        for (slot, addr) in macros.slots.iter().enumerate() {
+            let Some(addr) = addr else { continue };
+            assert!(
+                p.registry.id(addr).is_some(),
+                "default fader {slot} points at {addr}, which is not a parameter"
+            );
+        }
     }
 
     /// Slot 0 must select nothing. It is the resting value, so anything
@@ -350,6 +414,9 @@ mod tests {
         let def = &p.registry.defs()[p.preset_recall.index()];
         assert_eq!(def.default, 0.0, "recall must rest at the empty slot");
         assert_eq!(def.min, 0.0);
-        assert_eq!(def.smooth, 0.0, "a smoothed recall glides through every slot on the way");
+        assert_eq!(
+            def.smooth, 0.0,
+            "a smoothed recall glides through every slot on the way"
+        );
     }
 }

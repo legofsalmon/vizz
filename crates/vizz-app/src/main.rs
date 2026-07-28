@@ -2,7 +2,34 @@ mod engine;
 mod headless;
 mod outputs;
 mod params;
+mod settings;
 mod windowed;
+
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// Point the config directory at a scratch path for one test.
+    ///
+    /// Serialised behind a mutex because it mutates process-wide
+    /// environment: two tests redirecting `XDG_CONFIG_HOME` at once would
+    /// read each other's files and fail in a way that looks like a bug in
+    /// the code under test.
+    pub fn scoped(tag: &str) -> (MutexGuard<'static, ()>, std::path::PathBuf) {
+        let guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("vizz-app-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: the mutex makes this the only thread touching the
+        // environment for as long as the guard is held.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        (guard, dir)
+    }
+}
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,7 +171,12 @@ fn main() -> Result<()> {
     let audio_device = if args.no_audio {
         Some(String::from("\0none"))
     } else {
-        args.audio_device.clone()
+        // The flag wins when given, so a venue can be scripted; otherwise
+        // fall back to whatever was last picked in the panel. Without this
+        // the picker would appear to forget every restart.
+        args.audio_device
+            .clone()
+            .or_else(|| settings::load().audio_device)
     };
 
     // Parsed once here so a malformed source is a clear startup error

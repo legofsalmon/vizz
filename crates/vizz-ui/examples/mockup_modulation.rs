@@ -402,8 +402,11 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
             ..Default::default()
         }
     };
+    let midi = vizz_ui::MidiView::default();
     let state = vizz_ui::PerformanceState {
         grid: &grid,
+        midi: &midi,
+        values: None,
         outputs: &[
             vizz_ui::OutputStatus { name: "syphon:vizz".into(), live: true },
             vizz_ui::OutputStatus { name: "ndi:vizz".into(), live: true },

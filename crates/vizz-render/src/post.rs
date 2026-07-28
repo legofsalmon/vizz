@@ -282,3 +282,175 @@ impl PostChain {
         let _ = &self.history_tex;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::particles::ParticleScene;
+
+    const W: u32 = 128;
+
+    fn gpu() -> Option<GpuContext> {
+        match pollster::block_on(GpuContext::new(None)) {
+            Ok(ctx) => Some(ctx),
+            Err(_) if std::env::var_os("VIZZ_REQUIRE_GPU").is_some() => {
+                panic!("VIZZ_REQUIRE_GPU is set but no GPU adapter was found")
+            }
+            Err(_) => {
+                eprintln!("no GPU adapter available; skipping GPU test");
+                None
+            }
+        }
+    }
+
+    /// Run the real chain — particles into the post chain into a master in
+    /// the output format — and return the master's pixels.
+    fn render_chain(ctx: &GpuContext, background: wgpu::Color, glow: f32, trail: f32) -> Vec<u8> {
+        let mut post = PostChain::new(ctx, W, W, crate::output::OUTPUT_FORMAT);
+        let scene = ParticleScene::new(ctx, SCENE_FORMAT);
+        let master = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("post-test-master"),
+            size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::output::OUTPUT_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = master.create_view(&Default::default());
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post-test-readback"),
+            size: (W * W * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let cam = crate::camera::Camera { aspect: 1.0, ..Default::default() }.uniforms();
+        let uniforms = crate::particles::Uniforms {
+            view_proj: cam.view_proj,
+            cam_right: cam.right,
+            focus: 3.5,
+            cam_up: cam.up,
+            defocus: 0.0,
+            cam_position: cam.position,
+            _pad_cam: 0.0,
+            time: 0.0,
+            aspect: 1.0,
+            size: 0.02,
+            spread: 1.0,
+            hue: 0.5,
+            saturation: 0.8,
+            brightness: 1.0,
+            shape: 0.0,
+            morph: 0.0,
+            twist: 0.0,
+            palette: 0.0,
+            color_spread: 0.12,
+            color_drive: 0.0,
+            cloud_a: 0.0,
+            cloud_b: 1.0,
+            cloud_morph: 0.0,
+            room: Default::default(),
+        };
+        let post_u = PostUniforms {
+            trail,
+            zoom: 0.0,
+            spin: 0.0,
+            mirror: 0.0,
+            glow,
+            aspect: 1.0,
+            shift: 0.0,
+            _pad0: 0.0,
+        };
+
+        let mut enc = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        scene.render(ctx, &mut enc, &post.scene_view, &uniforms, 20_000, true, background);
+        post.render(ctx, &mut enc, &view, &post_u);
+        enc.copy_texture_to_buffer(
+            master.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 4),
+                    rows_per_image: None,
+                },
+            },
+            master.size(),
+        );
+        ctx.queue.submit([enc.finish()]);
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range().unwrap().to_vec();
+        drop(buffer);
+        pixels
+    }
+
+    /// Transparency must survive the *whole* chain, not just the clear.
+    ///
+    /// This is the one that matters for using vizz as a layer: the output
+    /// a Syphon or NDI receiver sees is the master, and it is two full
+    /// shader passes downstream of the background. Both of those passes
+    /// used to write a hardcoded alpha of 1.0, so the clear colour could
+    /// be perfectly transparent and the receiver would still get an opaque
+    /// rectangle — which looks exactly like the feature not existing.
+    #[test]
+    fn transparency_survives_the_post_chain() {
+        let Some(ctx) = gpu() else { return };
+        let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+        let pixels = render_chain(&ctx, clear, 0.0, 0.0);
+
+        let alphas: Vec<u8> = pixels.chunks_exact(4).map(|p| p[3]).collect();
+        let clear_px = alphas.iter().filter(|a| **a < 8).count();
+        let covered = alphas.iter().filter(|a| **a > 8).count();
+        assert!(
+            clear_px > alphas.len() / 4,
+            "the master came out opaque: only {clear_px} of {} pixels were transparent",
+            alphas.len()
+        );
+        assert!(covered > 0, "the field did not carry alpha, so the output is empty");
+    }
+
+    /// Glow has to widen the alpha halo as well as the colour one.
+    ///
+    /// A bloom that brightens pixels without covering them looks correct
+    /// on a black background and vanishes the instant the output is
+    /// composited over anything else — the failure mode is invisible in
+    /// the preview window and obvious on the projector.
+    #[test]
+    fn glow_widens_the_alpha_halo_not_just_the_colour() {
+        let Some(ctx) = gpu() else { return };
+        let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+        let covered = |glow: f32| {
+            render_chain(&ctx, clear, glow, 0.0)
+                .chunks_exact(4)
+                .filter(|p| p[3] > 8)
+                .count()
+        };
+        let plain = covered(0.0);
+        let bloomed = covered(1.0);
+        assert!(
+            bloomed > plain,
+            "glow did not extend coverage: {plain} covered without, {bloomed} with"
+        );
+    }
+
+    /// The default background must still be completely opaque, since that
+    /// is what every existing receiver and the preview window expect.
+    #[test]
+    fn the_opaque_default_survives_the_post_chain() {
+        let Some(ctx) = gpu() else { return };
+        let pixels = render_chain(&ctx, crate::particles::SCENE_CLEAR, 0.4, 0.0);
+        let holes = pixels.chunks_exact(4).filter(|p| p[3] < 250).count();
+        assert_eq!(holes, 0, "{holes} pixels were transparent with an opaque background");
+    }
+}

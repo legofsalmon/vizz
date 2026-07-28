@@ -15,10 +15,18 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
-/// Eight is a deliberate limit. Enough for the things worth reaching for,
-/// few enough that each one can be large and unambiguous under stage
-/// lighting — the constraint is the point.
-pub const MACRO_COUNT: usize = 8;
+/// Sixteen slots, laid out as two rows of eight.
+///
+/// This was eight, on the argument that a hard limit keeps every fader
+/// large. The limit was real but the number was wrong: eight does not cover
+/// one look's worth of controls, so playing meant leaving the layout to
+/// reach the ninth thing — which is the one failure this screen exists to
+/// prevent. Sixteen still fits at a size you can hit without aiming on any
+/// display wide enough to run a set from, and matches the grid above it.
+///
+/// Growing this is safe for existing files: [`Macros::ensure_len`] pads
+/// short lists with empty slots on load.
+pub const MACRO_COUNT: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Macros {
@@ -28,17 +36,33 @@ pub struct Macros {
 
 impl Default for Macros {
     fn default() -> Self {
-        // A useful starting set rather than eight blanks: these are the
+        // A useful starting set rather than sixteen blanks: these are the
         // controls most worth having under a hand during a set.
+        //
+        // Ordered so the first row is the one you reach for constantly —
+        // size, motion, shape, the two effects that change the whole
+        // picture — and the second row is the colour and framing you set
+        // up once and revisit. A row is a reach, so what shares a row
+        // matters as much as what is present.
         let defaults = [
+            // Row one: the things that get moved during a track.
             "/particles/size",
             "/particles/speed",
+            "/particles/count",
             "/shape/mode",
             "/shape/morph",
             "/fx/trail",
             "/fx/glow",
             "/fx/mirror",
+            // Row two: colour and framing.
             "/particles/hue",
+            "/particles/saturation",
+            "/particles/brightness",
+            "/color/palette",
+            "/color/spread",
+            "/shape/twist",
+            "/fx/zoom",
+            "/particles/spread",
         ];
         Self {
             slots: defaults.iter().map(|s| Some((*s).to_string())).collect(),
@@ -60,7 +84,10 @@ impl Macros {
     /// starting, least of all at a venue.
     pub fn load() -> Self {
         let path = Self::path();
-        match std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Self>(&b).ok()) {
+        match std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Self>(&b).ok())
+        {
             Some(mut m) => {
                 // Tolerate a file written by a build with a different slot
                 // count rather than panicking on index.
@@ -110,7 +137,9 @@ mod tests {
     /// silently drop the layout — it should widen to the current count.
     #[test]
     fn a_short_file_widens_rather_than_panicking() {
-        let mut m = Macros { slots: vec![Some("/a".into()), Some("/b".into())] };
+        let mut m = Macros {
+            slots: vec![Some("/a".into()), Some("/b".into())],
+        };
         m.slots.resize(MACRO_COUNT, None);
         assert_eq!(m.slots.len(), MACRO_COUNT);
         assert_eq!(m.get(0), Some("/a"));

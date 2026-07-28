@@ -292,6 +292,8 @@ impl Gui {
             bar_phase: state.bar_phase,
             presets: &preset_names,
             grid: &state.grid,
+            midi: &state.midi,
+            values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
         };
         let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         if perf.exit {
@@ -322,6 +324,11 @@ impl Gui {
         // The grid on the performance layout drives the same actions the
         // panel's does, so storing a scene mid-set works from either.
         actions.grid = perf.grid;
+        // Learn and unbind are handled identically to the panel's, so a
+        // controller mapped from the performance layout and one mapped
+        // from the parameter list end up in the same map by the same path.
+        actions.set_learn_target = perf.set_learn_target;
+        actions.clear_binding = perf.clear_binding;
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -367,6 +374,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -400,6 +408,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             focus_filter: false,
             grid: Default::default(),
@@ -436,6 +445,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -474,6 +484,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -514,6 +525,7 @@ mod tests {
             },
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
+            modulated: Vec::new(),
             bpm: 128.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -545,11 +557,20 @@ mod tests {
         assert!(text.contains("fit"), "no way to set the gains from the input: {text}");
 
         // Disconnected must say so and explain the fix rather than showing
-        // four dead meters.
+        // four dead meters. The fix used to be a command-line flag, which
+        // meant quitting and restarting to change soundcard; it is a
+        // picker now, so the panel points at that instead.
         state.audio = AudioView::default();
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("no input"), "got: {text}");
-        assert!(text.contains("--list-audio"), "no hint about finding a device: {text}");
+        assert!(
+            text.contains("pick an input"),
+            "no hint about finding a device: {text}"
+        );
+        assert!(
+            text.contains("not capturing"),
+            "a dead input must not look live: {text}"
+        );
     }
 
     /// A learned binding must be visible on its slider, and learn mode
@@ -580,6 +601,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -610,6 +632,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,

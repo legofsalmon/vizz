@@ -80,6 +80,13 @@ impl AudioState {
     /// to `fit` several seconds later. Decaying rather than absolute: a
     /// peak that never forgets would mean one accidental clip at the start
     /// of the night set the gain for the rest of it.
+    /// Forget the held peak. Used when the input changes: a peak measured
+    /// on one interface is not evidence about another, and `fit` reading a
+    /// stale one would set every gain from a device that is gone.
+    fn reset_peak(&self, i: usize) {
+        Self::store(&self.raw_peak[i], 0.0);
+    }
+
     fn observe_peak(&self, i: usize, raw: f32, dt: f32) {
         let decay = (-dt / PEAK_TAU).exp();
         let held = Self::load(&self.raw_peak[i]) * decay;
@@ -216,6 +223,58 @@ impl AudioEngine {
                 }
             }
         }
+    }
+
+    /// Switch to another input without disturbing anything downstream.
+    ///
+    /// Deliberately not "drop the engine and build a new one". `state` and
+    /// `settings` are shared by `Arc` with the render thread and the
+    /// analysis thread, and the settings hold the band gains — which are
+    /// the one thing a user has hand-tuned to their interface. Rebuilding
+    /// the engine would silently reset them at the exact moment the user
+    /// plugged in the interface they tuned for.
+    ///
+    /// Returns whether the new device opened. On failure the engine is
+    /// left disconnected rather than silently still capturing the old
+    /// device, so the panel can say so instead of showing meters that
+    /// belong to something the user just switched away from.
+    pub fn reopen(&mut self, device_name: Option<&str>) -> bool {
+        // Stop the running analysis thread and let go of the stream before
+        // opening another: two threads writing the same `AudioState` would
+        // interleave two devices' readings.
+        self.stop.store(true, Ordering::Relaxed);
+        self._stream = None;
+        self.state.connected.store(false, Ordering::Relaxed);
+        // Meters must not keep showing the old device's levels while the
+        // new one is opening, or worse, forever if it fails.
+        for i in 0..BAND_COUNT {
+            Self::reset_band(&self.state, i);
+        }
+        AudioState::store(&self.state.level, 0.0);
+
+        // A fresh flag: reusing the old one would stop the new thread the
+        // moment it started.
+        self.stop = Arc::new(AtomicBool::new(false));
+        match Self::open(device_name, &self.state, &self.settings, &self.stop) {
+            Ok((stream, name)) => {
+                log::info!("audio input: {name}");
+                self.state.connected.store(true, Ordering::Relaxed);
+                self.device_name = Some(name);
+                self._stream = Some(stream);
+                true
+            }
+            Err(e) => {
+                log::warn!("could not open audio input {device_name:?}: {e}");
+                self.device_name = None;
+                false
+            }
+        }
+    }
+
+    fn reset_band(state: &AudioState, i: usize) {
+        AudioState::store(&state.bands[i], 0.0);
+        AudioState::store(&state.raw[i], 0.0);
+        state.reset_peak(i);
     }
 
     fn open(

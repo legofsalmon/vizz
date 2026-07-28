@@ -100,9 +100,10 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         // Room first: it clears, and the particles then add on top.
         if inputs.room_visible {
-            room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room);
+            room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room, inputs.background);
         }
-        scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count, !inputs.room_visible);
+        scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count,
+            !inputs.room_visible, inputs.background);
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         ctx.queue.submit([encoder.finish()]);
         outputs::publish_all(&mut senders, &ctx.device, &ctx.queue, &output.texture);

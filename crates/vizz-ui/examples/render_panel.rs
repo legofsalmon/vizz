@@ -84,6 +84,10 @@ fn main() {
         "/room/vanish_y",
         "/room/anchor",
         "/room/embed",
+        "/bg/red",
+        "/bg/green",
+        "/bg/blue",
+        "/bg/alpha",
         "/master/dim",
         "/scene/fire",
         "/scene/time",
@@ -102,6 +106,11 @@ fn main() {
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
             "/scene/curve" => def.labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
+            // Alpha rests opaque, as it does in the app: the preview
+            // must show the shipped state, not a transparent one.
+            "/bg/alpha" => ParamDef::new(addr, 0.0, 1.0, 1.0),
+            "/bg/blue" => ParamDef::new(addr, 0.0, 1.0, 0.008),
+            "/bg/red" | "/bg/green" => ParamDef::new(addr, 0.0, 1.0, 0.004),
             "/scene/auto" => def.labels(&["off", "on"]),
             _ => def,
         });
@@ -133,6 +142,7 @@ fn main() {
         audio: audio_view(),
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
+        modulated: Vec::new(),
         bpm: 128.0,
         focus_filter: false,
         grid: preview_grid(),

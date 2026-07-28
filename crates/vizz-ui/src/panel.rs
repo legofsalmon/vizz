@@ -75,6 +75,13 @@ pub struct PanelState {
     /// something to edit without locking the analysis thread while drawing.
     pub audio_bands: [vizz_audio::Band; 4],
     pub audio_auto_bpm: bool,
+    /// Live smoothed values including modulation, indexed by parameter
+    /// position. Owned rather than borrowed so this struct stays free of
+    /// lifetimes; it is one float per parameter, rebuilt each frame.
+    ///
+    /// Empty when nothing is reporting, in which case controls fall back
+    /// to drawing only what the user set.
+    pub modulated: Vec<f32>,
     /// Beat clock, mirrored for the performance layout (which does not get
     /// a mutable ModEngine).
     pub bpm: f32,
@@ -120,6 +127,9 @@ pub struct AudioEdits {
     pub auto_bpm: Option<bool>,
     /// The user tapped tempo; the caller resolves it to a BPM.
     pub tapped: bool,
+    /// Switch to this input device. `Some(None)` means the system
+    /// default — distinct from `None`, which means "unchanged".
+    pub device: Option<Option<String>>,
 }
 
 pub fn draw(
@@ -151,6 +161,10 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| outputs_section(ui, state));
+            egui::CollapsingHeader::new("background")
+                .id_salt("background")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| background_section(ui, registry));
             egui::CollapsingHeader::new("midi")
                 .id_salt("midi")
                 .default_open(state.expand_sections)
@@ -164,25 +178,15 @@ pub fn draw(
                 .default_open(state.expand_sections)
                 .show(ui, |ui| modulation_section(ui, registry, modulation));
             ui.separator();
-            // Scenes above presets, because the grid is the thing you play
-            // and the preset list is where looks are built. A preset is one
-            // press and you are there; a scene is one press and you arrive
-            // over four bars.
+            // No scene grid here any more.
             //
-            // Pads only: the blend time, the curve and the autopilot are
-            // parameters like everything else and already have rows in the
-            // list below. Drawing them here as well would give the panel
-            // two controls for one value — and the height. The full row,
-            // sixteen across and with its settings, is on the performance
-            // layout, which has the width for it.
-            egui::CollapsingHeader::new("scenes")
-                .id_salt("scenes")
-                .default_open(true)
-                .show(ui, |ui| {
-                    actions.grid =
-                        crate::grid_view::draw(ui, &state.grid, crate::grid_view::Shape::Panel);
-                });
-            ui.separator();
+            // The two screens have distinct jobs: this one is for building
+            // a look, the performance layout is for playing looks in an
+            // order. The grid belongs entirely to the second, and a
+            // four-by-four copy of it here was both a duplicate control
+            // and — because it read as a row of sliders among the visual
+            // parameters — a thing people mistook for part of the look.
+            // The sixteen-across row on the performance layout is the one.
             presets_section(ui, state, &mut actions);
             ui.separator();
             params_section(ui, registry, state, modulation, ranges, &mut actions);
@@ -265,6 +269,73 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
     ui.separator();
 }
 
+/// The background colour, and whether there is one at all.
+///
+/// A swatch rather than three sliders, because nobody picks a colour by
+/// typing red, green and blue — those live in the parameter list for OSC
+/// and MIDI, and this is how a human chooses.
+///
+/// Alpha is separate and labelled, because it is not a colour decision. At
+/// zero the field is delivered on nothing, which is what makes vizz a
+/// layer in Resolume or VDMX rather than a whole picture, and that is
+/// worth saying out loud rather than leaving as the left end of a slider.
+fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
+    let (Some(r), Some(g), Some(b), Some(a)) = (
+        registry.id("/bg/red"),
+        registry.id("/bg/green"),
+        registry.id("/bg/blue"),
+        registry.id("/bg/alpha"),
+    ) else {
+        return;
+    };
+
+    ui.horizontal(|ui| {
+        // egui's picker works in 0..255 gamma space; the parameters are
+        // linear 0..1, which is what the clear colour wants.
+        let mut rgb = [registry.target(r), registry.target(g), registry.target(b)];
+        if ui.color_edit_button_rgb(&mut rgb).changed() {
+            registry.set(r, rgb[0]);
+            registry.set(g, rgb[1]);
+            registry.set(b, rgb[2]);
+        }
+        ui.label("colour");
+        if ui
+            .small_button("black")
+            .on_hover_text("a true black background")
+            .clicked()
+        {
+            registry.set(r, 0.0);
+            registry.set(g, 0.0);
+            registry.set(b, 0.0);
+        }
+    });
+
+    ui.horizontal(|ui| {
+        let mut alpha = registry.target(a);
+        if ui
+            .add(
+                egui::Slider::new(&mut alpha, 0.0..=1.0)
+                    .text("opacity")
+                    .clamping(egui::SliderClamping::Always),
+            )
+            .on_hover_text("0 sends the field on a transparent background")
+            .changed()
+        {
+            registry.set(a, alpha);
+        }
+    });
+    // Say which state you are in rather than making it inferred from a
+    // slider position — "why is my key not working" is the question this
+    // line exists to answer.
+    if registry.target(a) <= 0.001 {
+        ui.small("transparent — receivers get the field with an alpha channel");
+    } else if registry.target(a) < 0.999 {
+        ui.small("partly transparent");
+    } else {
+        ui.small("opaque");
+    }
+}
+
 fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
     ui.label(egui::RichText::new("MIDI").strong());
     if !state.midi.available {
@@ -335,6 +406,44 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
     }
 }
 
+/// Choose the input device.
+///
+/// This used to be a command-line flag only, which meant picking your
+/// interface required quitting, remembering the flag and restarting — at a
+/// venue, with the wrong input already on screen. The list is read when
+/// the menu is opened rather than every frame: enumerating devices talks
+/// to CoreAudio/WASAPI and is far too expensive to do at 60 Hz.
+fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let current = state.audio.device.as_deref().unwrap_or("no input");
+    ui.horizontal(|ui| {
+        ui.label("input");
+        egui::ComboBox::from_id_salt("audio-device")
+            .selected_text(current)
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(state.audio.device.is_none(), "system default")
+                    .clicked()
+                {
+                    actions.audio.device = Some(None);
+                }
+                ui.separator();
+                for name in vizz_audio::input_devices() {
+                    let selected = state.audio.device.as_deref() == Some(name.as_str());
+                    if ui.selectable_label(selected, &name).clicked() {
+                        actions.audio.device = Some(Some(name.clone()));
+                    }
+                }
+            });
+        // A device that has gone away should not look like a live one.
+        if !state.audio.connected {
+            ui.label(
+                egui::RichText::new("not capturing").color(egui::Color32::from_rgb(240, 150, 90)),
+            );
+        }
+    });
+}
+
 fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let a = &state.audio;
     ui.horizontal(|ui| {
@@ -349,14 +458,12 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                 egui::Color32::from_rgb(110, 110, 110)
             },
         );
-        match &a.device {
-            Some(d) => ui.small(d.as_str()),
-            None => ui.small("no input"),
-        };
     });
 
+    device_picker(ui, state, actions);
+
     if !a.connected {
-        ui.small("Start with --audio-device, or --list-audio to see names.");
+        ui.small("pick an input above, or start with --audio-device");
         return;
     }
 
@@ -658,13 +765,22 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     }
 }
 
-/// Presets: recall a whole look, and store your own.
+/// The preset library: where looks are made, kept and thrown away.
 ///
-/// The list is deliberately above the parameter list rather than buried
-/// below it. Recalling a look is something you do mid-set with one hand;
-/// scrolling to find it is not.
+/// This is not the same control as the preset row on the performance
+/// layout, even though both list the same names. That one *fires* a look
+/// with one press during a set. This one is the library behind it —
+/// saving what is on screen, opening a saved look to keep working on it,
+/// and deleting the ones that did not survive the night. Those are design
+/// activities, and this is the design screen; firing lives next to the
+/// grid that sequences them.
+///
+/// So the list stays here even though a version of it exists there: it is
+/// the only place a preset can be created or removed, and creating them is
+/// the entire purpose of this screen.
 fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     ui.label(egui::RichText::new("Presets").strong());
+    ui.small("click to open a look and keep editing it");
     egui::ScrollArea::vertical()
         .id_salt("presets")
         .max_height(PRESET_LIST_H)
@@ -741,7 +857,7 @@ fn params_section(
     // whole fits rather than the list merely being bounded — a window
     // that runs past the bottom edge hides its own footer too.
     let screen_h = ui.ctx().input(|i| i.raw.screen_rect).map_or(720.0, |r| r.height());
-    let total = registry.iter().count();
+    let total = registry.iter().filter(|(_, d)| !is_transport(&d.addr)).count();
     // Provisional, only to decide whether to say "scroll for more"; the
     // binding measurement happens below, once the header has been laid
     // out and the cursor is where the list will actually start.
@@ -783,6 +899,12 @@ fn params_section(
             if !needle.is_empty() {
                 // Filtering flattens: groups are for browsing, and when
                 // you have typed a name you already know what you want.
+                //
+                // Transport parameters *are* searchable here, unlike in the
+                // grouped list. Hiding them from the groups is about not
+                // putting them in misleading company; refusing to show one
+                // whose name has just been typed would be hiding it, which
+                // is a different and worse thing.
                 let mut hits = 0;
                 for (id, def) in registry.iter() {
                     if def.addr.to_ascii_lowercase().contains(&needle) {
@@ -803,12 +925,16 @@ fn params_section(
             // closing any group by default hides whatever is inside it,
             // which for `master` would mean hiding the panic fader.
             for group in groups(registry) {
+                let name = group.name;
                 egui::CollapsingHeader::new(group.label(modulation, registry))
                     .id_salt(group.name)
                     .default_open(true)
                     .show(ui, |ui| {
                         for (id, def) in group.params {
                             param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                        }
+                        if name == "camera" {
+                            camera_buttons(ui, registry);
                         }
                     });
             }
@@ -842,9 +968,29 @@ impl Group<'_> {
 
 /// Split the registry by the first path segment, preserving registry order
 /// both within and between groups.
+/// Parameters that are transport, not look.
+///
+/// These drive *when* and *whether* something happens rather than what it
+/// looks like: which scene to fire, how long a blend takes, which preset
+/// to recall. They are real parameters — addressable over OSC, assignable
+/// to a fader, learnable — and they have proper controls on the
+/// performance layout, next to the grid they belong to.
+///
+/// They are hidden from this list because being here actively misled: a
+/// row called `time` or `bars` sitting among `size`, `morph` and `twist`
+/// reads as something that changes the picture, and people reasonably
+/// took them for point-cloud settings. A parameter in the wrong company
+/// is worse than a parameter you have to go one screen to find.
+fn is_transport(addr: &str) -> bool {
+    addr.starts_with("/scene/") || addr == "/preset/recall"
+}
+
 fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
     let mut out: Vec<Group<'_>> = Vec::new();
     for (id, def) in registry.iter() {
+        if is_transport(&def.addr) {
+            continue;
+        }
         let name = def
             .addr
             .trim_start_matches('/')
@@ -857,6 +1003,44 @@ fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
         }
     }
     out
+}
+
+/// Getting back to a known camera.
+///
+/// Two buttons rather than one, because they answer different questions.
+/// After pushing the subject off frame you want the framing back without
+/// losing a distance and lens you spent time on — that is `centre`.
+/// After an hour of experimenting you want the camera you started with —
+/// that is `reset`. Collapsing them into a single button would make the
+/// cheap, common recovery destroy work every time it was used.
+///
+/// Both write parameter targets, so the move is smoothed like any other
+/// and rides through OSC and recording rather than teleporting.
+fn camera_buttons(ui: &mut egui::Ui, registry: &ParamRegistry) {
+    ui.horizontal(|ui| {
+        if ui
+            .button("centre")
+            .on_hover_text("bring the subject back to the middle, keeping distance and lens")
+            .clicked()
+        {
+            for addr in ["/camera/pan_x", "/camera/pan_y"] {
+                if let Some(id) = registry.id(addr) {
+                    registry.set(id, 0.0);
+                }
+            }
+        }
+        if ui
+            .button("reset")
+            .on_hover_text("every camera control back to its default")
+            .clicked()
+        {
+            for (id, def) in registry.iter() {
+                if def.addr.starts_with("/camera/") {
+                    registry.set(id, def.default);
+                }
+            }
+        }
+    });
 }
 
 /// Approximate row height, for deciding whether the list will be cut.
