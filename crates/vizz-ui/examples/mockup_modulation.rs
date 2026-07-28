@@ -68,7 +68,7 @@ fn draw_matrix(ctx: &egui::Context, _w: f32, _h: f32) {
                 ui.small(detail);
             });
         }
-        if ui.small_button("+ source").clicked() {}
+        ui.small_button("+ source").clicked();
 
         ui.add_space(6.0);
         ui.separator();
@@ -81,7 +81,7 @@ fn draw_matrix(ctx: &egui::Context, _w: f32, _h: f32) {
         route_row(ui, "Level", "fx/trail", "0.30", None);
 
         ui.horizontal(|ui| {
-            if ui.small_button("+ route").clicked() {}
+            ui.small_button("+ route").clicked();
             if ui.small_button("+ operator").clicked() {}
         });
         ui.add_space(4.0);
@@ -265,7 +265,7 @@ fn draw_flat(ctx: &egui::Context, _w: f32, _h: f32) {
                     .show_ui(ui, |_| {});
             });
         }
-        if ui.small_button("+ route").clicked() {}
+        ui.small_button("+ route").clicked();
         ui.add_space(6.0);
         ui.small("A source still cannot feed another source —");
         ui.small("no LFO modulating an LFO's rate, no summing two bands.");

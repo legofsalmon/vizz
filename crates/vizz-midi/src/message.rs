@@ -20,7 +20,7 @@ pub enum MidiEvent {
 pub fn parse(bytes: &[u8]) -> Option<MidiEvent> {
     let status = *bytes.first()?;
     // Realtime/system messages (0xF8..) carry no channel and are ignored.
-    if status < 0x80 || status >= 0xF0 {
+    if !(0x80..0xF0).contains(&status) {
         return None;
     }
     let channel = status & 0x0F;

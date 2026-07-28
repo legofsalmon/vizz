@@ -355,8 +355,8 @@ pub fn normalize(points: &mut [Point]) {
     let extent = (0..3).fold(0.0f32, |m, i| m.max(hi[i] - lo[i]));
     let scale = if extent > 1e-9 { 2.0 / extent } else { 1.0 };
     for p in points.iter_mut() {
-        for i in 0..3 {
-            p.pos[i] = (p.pos[i] - centre[i]) * scale;
+        for (v, c) in p.pos.iter_mut().zip(centre) {
+            *v = (*v - c) * scale;
         }
     }
 }

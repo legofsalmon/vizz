@@ -111,6 +111,71 @@ pub fn resolved_path(name: &str) -> PathBuf {
     path_for(name)
 }
 
+/// Where the working modulation state is kept between launches.
+///
+/// Not in the patch directory: this is not a patch someone named and chose
+/// to keep, and putting it there would list it in the load menu as if it
+/// were one.
+fn session_path() -> PathBuf {
+    patch_dir()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default()
+        .join("modulation.json")
+}
+
+/// Write the whole modulation state — clock, LFOs, routes and graph.
+///
+/// Every other piece of user state in the app comes back on the next
+/// launch: the scene grids, the macro assignments, the slider ranges, the
+/// MIDI map, the palettes, the point clouds. Modulation did not. A patch
+/// could be saved *by name* from the canvas, which covers the graph and
+/// only if you thought to do it — and it covers none of the routes, which
+/// are made one click at a time from the parameter list and had no save of
+/// any kind. Quitting threw them away silently.
+///
+/// Temp file and rename, like every other persisted artefact here.
+pub fn save_session(engine: &crate::ModEngine) -> Result<()> {
+    let path = session_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(engine)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
+}
+
+/// Restore it. `None` on a fresh install, or if the file cannot be read —
+/// a corrupt session must start the app with defaults rather than refuse
+/// to start.
+pub fn load_session() -> Option<crate::ModEngine> {
+    let path = session_path();
+    let bytes = std::fs::read(&path).ok()?;
+    match serde_json::from_slice(&bytes) {
+        Ok(engine) => Some(engine),
+        Err(e) => {
+            log::warn!(
+                "could not read {}: {e:#} — starting with default modulation",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// The bytes `save_session` would write, for deciding whether it needs to.
+///
+/// The graph has a `dirty` flag but it belongs to the topological sort and
+/// is cleared by it, and neither it nor anything else is set when a node's
+/// parameters are edited or a node is dragged. Comparing what would be
+/// written catches every edit wherever it happens, which a flag threaded
+/// through the mutation sites would not — and a patch is small enough that
+/// serialising it a couple of times a minute costs nothing.
+pub fn session_bytes(engine: &crate::ModEngine) -> Vec<u8> {
+    serde_json::to_vec(engine).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -198,7 +263,7 @@ mod tests {
         std::fs::write(&path, b"{ this is not json").unwrap();
         assert!(load_session().is_none());
     }
-    use super::*;
+    
     use crate::graph::NodeKind;
 
     /// The important property: a hostile name cannot escape the patch
@@ -311,69 +376,4 @@ mod tests {
         assert!(load("nothing-here").is_err());
         assert!(!exists("nothing-here"));
     }
-}
-
-/// Where the working modulation state is kept between launches.
-///
-/// Not in the patch directory: this is not a patch someone named and chose
-/// to keep, and putting it there would list it in the load menu as if it
-/// were one.
-fn session_path() -> PathBuf {
-    patch_dir()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default()
-        .join("modulation.json")
-}
-
-/// Write the whole modulation state — clock, LFOs, routes and graph.
-///
-/// Every other piece of user state in the app comes back on the next
-/// launch: the scene grids, the macro assignments, the slider ranges, the
-/// MIDI map, the palettes, the point clouds. Modulation did not. A patch
-/// could be saved *by name* from the canvas, which covers the graph and
-/// only if you thought to do it — and it covers none of the routes, which
-/// are made one click at a time from the parameter list and had no save of
-/// any kind. Quitting threw them away silently.
-///
-/// Temp file and rename, like every other persisted artefact here.
-pub fn save_session(engine: &crate::ModEngine) -> Result<()> {
-    let path = session_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(engine)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
-}
-
-/// Restore it. `None` on a fresh install, or if the file cannot be read —
-/// a corrupt session must start the app with defaults rather than refuse
-/// to start.
-pub fn load_session() -> Option<crate::ModEngine> {
-    let path = session_path();
-    let bytes = std::fs::read(&path).ok()?;
-    match serde_json::from_slice(&bytes) {
-        Ok(engine) => Some(engine),
-        Err(e) => {
-            log::warn!(
-                "could not read {}: {e:#} — starting with default modulation",
-                path.display()
-            );
-            None
-        }
-    }
-}
-
-/// The bytes `save_session` would write, for deciding whether it needs to.
-///
-/// The graph has a `dirty` flag but it belongs to the topological sort and
-/// is cleared by it, and neither it nor anything else is set when a node's
-/// parameters are edited or a node is dragged. Comparing what would be
-/// written catches every edit wherever it happens, which a flag threaded
-/// through the mutation sites would not — and a patch is small enough that
-/// serialising it a couple of times a minute costs nothing.
-pub fn session_bytes(engine: &crate::ModEngine) -> Vec<u8> {
-    serde_json::to_vec(engine).unwrap_or_default()
 }

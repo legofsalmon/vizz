@@ -286,14 +286,13 @@ impl FrameEngine {
         // detector is sure. Ambient material still produces *a* peak, and
         // letting that retune the clock mid-set is worse than a tempo that
         // is slightly stale.
-        if let Ok(settings) = self.audio.settings.lock() {
-            if settings.auto_bpm {
+        if let Ok(settings) = self.audio.settings.lock()
+            && settings.auto_bpm {
                 let bpm = self.audio.state.bpm();
                 if bpm > 0.0 && self.audio.state.confidence() >= settings.min_confidence {
                     self.modulation.clock.bpm = bpm;
                 }
             }
-        }
         // Modulation is an offset on top of the stored targets, so a value
         // set by hand or by MIDI is never overwritten.
         let levels = AudioLevels {

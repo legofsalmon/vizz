@@ -140,7 +140,7 @@ mod tests {
         let rc = Version::parse("v0.2.0-rc1").unwrap();
         let release = Version::parse("v0.2.0").unwrap();
         assert_eq!(rc, release);
-        assert!(!(rc > release));
+        assert!((rc <= release));
     }
 
     #[test]
@@ -149,8 +149,8 @@ mod tests {
         assert!(v("v0.10.0") > v("v0.9.0"), "10 must beat 9, not sort before it");
         assert!(v("v1.0.0") > v("v0.99.99"));
         assert!(v("v0.1.10") > v("v0.1.9"));
-        assert!(!(v("v0.1.0") > v("v0.1.0")), "same version is not an update");
-        assert!(!(v("v0.0.9") > v("v0.1.0")), "older must never look newer");
+        assert!((v("v0.1.0") <= v("v0.1.0")), "same version is not an update");
+        assert!((v("v0.0.9") <= v("v0.1.0")), "older must never look newer");
     }
 
     #[test]

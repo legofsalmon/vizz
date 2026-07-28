@@ -683,7 +683,7 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
         (false, _) => label.to_string(),
     };
 
-    let size = vec2(ui.available_width().min(210.0).max(120.0), 26.0);
+    let size = vec2(ui.available_width().clamp(120.0, 210.0), 26.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter();
     p.rect_filled(rect, 4.0, if view.autopilot { AUTO_BED } else { EMPTY });

@@ -307,7 +307,7 @@ mod tests {
         let frame = wait_ready(&device, &mut ring).expect("frame never became ready");
         assert_eq!(frame.width, W);
         assert_eq!(frame.height, H);
-        assert!(frame.stride >= W * 4 && frame.stride % 256 == 0, "stride {}", frame.stride);
+        assert!(frame.stride >= W * 4 && frame.stride.is_multiple_of(256), "stride {}", frame.stride);
 
         frame
             .with_bytes(|bytes| {

@@ -163,6 +163,9 @@ fn bake_cosine(c: &Coeffs) -> Vec<u8> {
     let mut out = Vec::with_capacity(LUT_W * 4);
     for i in 0..LUT_W {
         let t = i as f32 / LUT_W as f32;
+        // Indexed rather than iterated: the channel indexes several
+        // parallel arrays at once, and zipping them reads worse.
+        #[allow(clippy::needless_range_loop)]
         for ch in 0..3 {
             let v = c[0][ch] + c[1][ch] * (TAU * (c[2][ch] * t + c[3][ch])).cos();
             out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -190,6 +193,9 @@ fn resample(stops: &[[f32; 3]]) -> Vec<u8> {
         let a = (scaled as usize) % n;
         let b = (a + 1) % n;
         let f = scaled - scaled.floor();
+        // Indexed rather than iterated: the channel indexes several
+        // parallel arrays at once, and zipping them reads worse.
+        #[allow(clippy::needless_range_loop)]
         for ch in 0..3 {
             let v = stops[a][ch] + (stops[b][ch] - stops[a][ch]) * f;
             out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);

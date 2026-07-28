@@ -32,6 +32,13 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      # Warnings are only useful if something fails on them. Everything the
+      # workspace had was either fixed or given a local allow with a reason
+      # on the spot, so this starts at zero — which is the only place a
+      # gate like this can start and stay meaningful. Tests and examples
+      # included, since that is where most of them had accumulated.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Verify NDI ABI against stub
         run: ./scripts/test-ndi-abi.sh
 

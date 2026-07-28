@@ -1055,9 +1055,11 @@ mod tests {
     /// view rather than dividing by nothing.
     #[test]
     fn fitting_an_empty_graph_returns_to_the_default_view() {
-        let mut view = GraphView::default();
-        view.pan = vec2(-5000.0, 5000.0);
-        view.zoom = 2.4;
+        let mut view = GraphView {
+            pan: vec2(-5000.0, 5000.0),
+            zoom: 2.4,
+            ..Default::default()
+        };
         view.fit(&NodeGraph::default(), Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0)));
         assert_eq!(view.zoom, 1.0);
         assert!(view.pan.x.is_finite() && view.pan.y.is_finite());

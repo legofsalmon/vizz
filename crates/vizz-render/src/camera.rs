@@ -161,7 +161,7 @@ mod tests {
     fn project(cam: &Camera, p: Vec3) -> Vec3 {
         let clip = Mat4::from_cols_array_2d(&cam.uniforms().view_proj) * p.extend(1.0);
         // Perspective divide into normalised device coordinates.
-        (clip.xyz() / clip.w).into()
+        clip.xyz() / clip.w
     }
 
     /// The origin must land in the middle of the frame at any orbit, or

@@ -1100,67 +1100,6 @@ fn name_clash<'a>(name: &str, presets: &'a [PresetEntry]) -> Option<Clash<'a>> {
 /// broke".
 const WARN_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
 
-#[cfg(test)]
-mod save_name_tests {
-    use super::*;
-
-    fn entries() -> Vec<PresetEntry> {
-        vec![
-            PresetEntry {
-                name: "Butterfly".into(),
-                builtin: true,
-                about: Some("a built-in".into()),
-            },
-            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None },
-            // As it appears on disk having been saved from "night/shift":
-            // the separator was rewritten on the way to a filename.
-            PresetEntry { name: "night_shift".into(), builtin: false, about: None },
-        ]
-    }
-
-    /// Saving used to overwrite in silence. A night's work is one
-    /// mistyped name away from gone, and the only warning was a line of
-    /// small print that said it happens in general rather than that it is
-    /// about to happen now.
-    #[test]
-    fn a_name_already_in_use_is_recognised() {
-        let e = entries();
-        assert!(matches!(name_clash("warehouse 2am", &e), Some(Clash::User(_))));
-        assert!(name_clash("warehouse 3am", &e).is_none());
-        // Nothing typed is not a collision with anything.
-        assert!(name_clash("", &e).is_none());
-        assert!(name_clash("   ", &e).is_none());
-    }
-
-    /// Two names are the same preset when they land on the same file, and
-    /// that is decided after tidying. Comparing the raw strings would miss
-    /// the one collision nobody could predict — a punctuation mark that
-    /// the filesystem will not take being rewritten onto an existing name.
-    #[test]
-    fn names_that_tidy_to_the_same_file_are_the_same_preset() {
-        let e = entries();
-        // Different punctuation, same file: both become "night_shift".
-        assert!(matches!(name_clash("night?shift", &e), Some(Clash::User(_))));
-        assert!(matches!(name_clash("night/shift", &e), Some(Clash::User(_))));
-        // And leading or trailing space is not a different preset.
-        assert!(matches!(name_clash("  warehouse 2am  ", &e), Some(Clash::User(_))));
-    }
-
-    /// A preset saved under a built-in's name writes successfully and can
-    /// then never be recalled: `by_name` prefers the built-in, so the file
-    /// is simply never looked at. Reported separately because "you will
-    /// replace this" and "this will do nothing" call for different
-    /// answers.
-    #[test]
-    fn a_builtins_name_is_flagged_as_unusable_rather_than_as_a_replacement() {
-        let e = entries();
-        match name_clash("Butterfly", &e) {
-            Some(Clash::Builtin(n)) => assert_eq!(n, "Butterfly"),
-            _ => panic!("a built-in's name was not recognised as one"),
-        }
-    }
-}
-
 /// Room for a handful of presets before the list scrolls. Smaller than the
 /// parameter list: presets are chosen, not scanned.
 const PRESET_LIST_H: f32 = 112.0;
@@ -1591,3 +1530,64 @@ const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
 /// unrelated things: one is "something else is moving this", the other is
 /// "nothing else will touch this".
 const GLOBAL_COLOR: egui::Color32 = egui::Color32::from_rgb(120, 170, 220);
+
+#[cfg(test)]
+mod save_name_tests {
+    use super::*;
+
+    fn entries() -> Vec<PresetEntry> {
+        vec![
+            PresetEntry {
+                name: "Butterfly".into(),
+                builtin: true,
+                about: Some("a built-in".into()),
+            },
+            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None },
+            // As it appears on disk having been saved from "night/shift":
+            // the separator was rewritten on the way to a filename.
+            PresetEntry { name: "night_shift".into(), builtin: false, about: None },
+        ]
+    }
+
+    /// Saving used to overwrite in silence. A night's work is one
+    /// mistyped name away from gone, and the only warning was a line of
+    /// small print that said it happens in general rather than that it is
+    /// about to happen now.
+    #[test]
+    fn a_name_already_in_use_is_recognised() {
+        let e = entries();
+        assert!(matches!(name_clash("warehouse 2am", &e), Some(Clash::User(_))));
+        assert!(name_clash("warehouse 3am", &e).is_none());
+        // Nothing typed is not a collision with anything.
+        assert!(name_clash("", &e).is_none());
+        assert!(name_clash("   ", &e).is_none());
+    }
+
+    /// Two names are the same preset when they land on the same file, and
+    /// that is decided after tidying. Comparing the raw strings would miss
+    /// the one collision nobody could predict — a punctuation mark that
+    /// the filesystem will not take being rewritten onto an existing name.
+    #[test]
+    fn names_that_tidy_to_the_same_file_are_the_same_preset() {
+        let e = entries();
+        // Different punctuation, same file: both become "night_shift".
+        assert!(matches!(name_clash("night?shift", &e), Some(Clash::User(_))));
+        assert!(matches!(name_clash("night/shift", &e), Some(Clash::User(_))));
+        // And leading or trailing space is not a different preset.
+        assert!(matches!(name_clash("  warehouse 2am  ", &e), Some(Clash::User(_))));
+    }
+
+    /// A preset saved under a built-in's name writes successfully and can
+    /// then never be recalled: `by_name` prefers the built-in, so the file
+    /// is simply never looked at. Reported separately because "you will
+    /// replace this" and "this will do nothing" call for different
+    /// answers.
+    #[test]
+    fn a_builtins_name_is_flagged_as_unusable_rather_than_as_a_replacement() {
+        let e = entries();
+        match name_clash("Butterfly", &e) {
+            Some(Clash::Builtin(n)) => assert_eq!(n, "Butterfly"),
+            _ => panic!("a built-in's name was not recognised as one"),
+        }
+    }
+}
