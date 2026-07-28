@@ -77,6 +77,13 @@ struct Args {
     #[arg(long)]
     list_audio: bool,
 
+    /// Print the NDI sources visible on the network and exit.
+    ///
+    /// Discovery is asynchronous, so this waits a moment for the first
+    /// announcements rather than reporting an empty network immediately.
+    #[arg(long)]
+    list_ndi: bool,
+
     /// Publish the output as an NDI source on the network. Requires the
     /// NDI runtime to be installed; logs a warning and carries on if not.
     #[arg(long)]
@@ -110,6 +117,18 @@ fn main() -> Result<()> {
     if args.list_audio {
         for name in vizz_audio::input_devices() {
             println!("{name}");
+        }
+        return Ok(());
+    }
+    if args.list_ndi {
+        // Two seconds: long enough for sources on a quiet LAN to
+        // announce, short enough not to feel hung.
+        match vizz_io::ndi_recv::sources(2000) {
+            Ok(names) if names.is_empty() => println!("no NDI sources found"),
+            Ok(names) => names.iter().for_each(|n| println!("{n}")),
+            // A missing runtime is the common case and its message names
+            // every path tried, so print it rather than a bare error.
+            Err(e) => println!("{e:#}"),
         }
         return Ok(());
     }

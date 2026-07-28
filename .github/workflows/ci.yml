@@ -35,6 +35,32 @@ jobs:
       - name: Verify NDI ABI against stub
         run: ./scripts/test-ndi-abi.sh
 
+  # Nothing in this codebase had ever been compiled on Windows. Spout is
+  # the remaining output gap and it cannot be written responsibly without
+  # a build gate on the platform it targets — and a Windows job earns its
+  # keep before Spout exists, because every dependency here (cpal on
+  # WASAPI, midir on WinMM, wgpu on DX12) takes a different path there.
+  #
+  # GPU tests are required rather than allowed to skip, for the same
+  # reason they are on the other two: a silently skipped GPU test looks
+  # exactly like a passing one. Windows runners expose WARP, D3D12's
+  # software rasterizer, which is enough for the readback ring.
+  windows:
+    runs-on: windows-latest
+    env:
+      VIZZ_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      # The NDI ABI stub is not run here yet: it builds a shared library
+      # with `cc -shared -fPIC` into a .so/.dylib, which needs a separate
+      # MSVC path to produce a .dll. Worth doing — the struct layout that
+      # test pins is exactly the sort of thing that differs on Windows —
+      # but it is its own change.
+
   # Real Apple Silicon with working Metal: this exercises the actual
   # Syphon publish path end-to-end, not just a compile check.
   macos:

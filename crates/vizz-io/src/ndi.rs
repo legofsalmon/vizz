@@ -133,7 +133,9 @@ fn load_library() -> Result<NdiLib> {
     ))
 }
 
-fn candidate_paths() -> Vec<PathBuf> {
+/// Shared with the receive path: both need the same search order, and
+/// two copies would drift the moment one platform's layout changed.
+pub(crate) fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(explicit) = std::env::var("VIZZ_NDI_RUNTIME") {
         paths.push(PathBuf::from(explicit));
