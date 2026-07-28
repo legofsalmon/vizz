@@ -250,6 +250,8 @@ impl FrameEngine {
             aspect,
             focus: self.snapshot.get(p.cam_focus),
             defocus: self.snapshot.get(p.cam_defocus),
+            pan_x: self.snapshot.get(p.cam_pan_x),
+            pan_y: self.snapshot.get(p.cam_pan_y),
         };
         let cam = camera.uniforms();
         let room_brightness = self.snapshot.get(p.room) * dim;

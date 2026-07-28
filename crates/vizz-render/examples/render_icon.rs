@@ -61,6 +61,10 @@ fn main() {
         // A little depth of field: the near particles soften and the core
         // stays sharp, which is what stops the orb reading as a flat disc.
         defocus: 0.22,
+        // Dead centre: an icon is cropped to a square by whatever draws it,
+        // so anything off-axis loses a limb.
+        pan_x: 0.0,
+        pan_y: 0.0,
     };
     let cam = camera.uniforms();
     // The room is off, but its placement still has to be supplied — with

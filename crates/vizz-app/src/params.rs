@@ -46,6 +46,8 @@ pub struct AppParams {
     pub room_vanish_y: ParamId,
     pub room_anchor: ParamId,
     pub room_embed: ParamId,
+    pub cam_pan_x: ParamId,
+    pub cam_pan_y: ParamId,
     pub bg_r: ParamId,
     pub bg_g: ParamId,
     pub bg_b: ParamId,
@@ -150,6 +152,12 @@ impl AppParams {
         // Focus is a distance, so its useful range tracks the camera's.
         let cam_focus = b.add(ParamDef::new("/camera/focus", 0.0, 12.0, 3.5).smooth(0.4));
         let cam_defocus = b.add(ParamDef::new("/camera/defocus", 0.0, 1.0, 0.0).smooth(0.3));
+        // Pan, in the camera's own screen plane. The range is roughly the
+        // width of the field at the default distance: enough to push the
+        // subject fully out of frame, which is a legitimate move, without
+        // a fader whose useful travel is the middle two percent.
+        let cam_pan_x = b.add(ParamDef::new("/camera/pan_x", -4.0, 4.0, 0.0).smooth(0.4));
+        let cam_pan_y = b.add(ParamDef::new("/camera/pan_y", -4.0, 4.0, 0.0).smooth(0.4));
         // Room. Off by default: it is a strong look, not a neutral one.
         let room = b.add(ParamDef::new("/room/brightness", 0.0, 1.0, 0.0).smooth(0.3));
         let room_depth = b.add(ParamDef::new("/room/depth", 1.0, 20.0, 7.0).smooth(0.4));
@@ -253,6 +261,8 @@ impl AppParams {
             room_vanish_y,
             room_anchor,
             room_embed,
+            cam_pan_x,
+            cam_pan_y,
             bg_r,
             bg_g,
             bg_b,

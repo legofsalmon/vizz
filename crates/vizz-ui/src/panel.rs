@@ -925,12 +925,16 @@ fn params_section(
             // closing any group by default hides whatever is inside it,
             // which for `master` would mean hiding the panic fader.
             for group in groups(registry) {
+                let name = group.name;
                 egui::CollapsingHeader::new(group.label(modulation, registry))
                     .id_salt(group.name)
                     .default_open(true)
                     .show(ui, |ui| {
                         for (id, def) in group.params {
                             param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                        }
+                        if name == "camera" {
+                            camera_buttons(ui, registry);
                         }
                     });
             }
@@ -999,6 +1003,44 @@ fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
         }
     }
     out
+}
+
+/// Getting back to a known camera.
+///
+/// Two buttons rather than one, because they answer different questions.
+/// After pushing the subject off frame you want the framing back without
+/// losing a distance and lens you spent time on — that is `centre`.
+/// After an hour of experimenting you want the camera you started with —
+/// that is `reset`. Collapsing them into a single button would make the
+/// cheap, common recovery destroy work every time it was used.
+///
+/// Both write parameter targets, so the move is smoothed like any other
+/// and rides through OSC and recording rather than teleporting.
+fn camera_buttons(ui: &mut egui::Ui, registry: &ParamRegistry) {
+    ui.horizontal(|ui| {
+        if ui
+            .button("centre")
+            .on_hover_text("bring the subject back to the middle, keeping distance and lens")
+            .clicked()
+        {
+            for addr in ["/camera/pan_x", "/camera/pan_y"] {
+                if let Some(id) = registry.id(addr) {
+                    registry.set(id, 0.0);
+                }
+            }
+        }
+        if ui
+            .button("reset")
+            .on_hover_text("every camera control back to its default")
+            .clicked()
+        {
+            for (id, def) in registry.iter() {
+                if def.addr.starts_with("/camera/") {
+                    registry.set(id, def.default);
+                }
+            }
+        }
+    });
 }
 
 /// Approximate row height, for deciding whether the list will be cut.
