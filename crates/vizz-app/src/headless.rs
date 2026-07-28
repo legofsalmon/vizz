@@ -37,6 +37,8 @@ pub struct HeadlessOpts {
     pub audio_device: Option<String>,
     /// Point clouds to load into the loadable slots, in order.
     pub clouds: Vec<PathBuf>,
+    /// Live point-cloud stream feeding the last slot, if any.
+    pub live_cloud: Option<vizz_render::plystream::Source>,
 }
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
@@ -56,9 +58,42 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         opts.height,
         opts.frames
     );
+    // Headless takes the stream too: it is how a live source gets tested
+    // without a display, and how vizz runs as a windowless NDI/Syphon
+    // relay for someone else's scanner.
+    let live = opts.live_cloud.clone().and_then(|source| {
+        match vizz_render::plystream::LiveCloud::start(source) {
+            Ok(live) => {
+                log::info!("live cloud: {}", live.label());
+                Some(live)
+            }
+            Err(e) => {
+                log::warn!("could not start the live cloud: {e:#}");
+                None
+            }
+        }
+    });
+    let mut live_revision = 0u64;
     let run_start = Instant::now();
     for _ in 0..opts.frames {
         let frame_start = Instant::now();
+        if let Some(live) = &live {
+            let revision = live.revision();
+            if revision != live_revision
+                && live
+                    .with_latest(|points| {
+                        scene.set_cloud(
+                            &ctx,
+                            vizz_render::particles::ParticleScene::LIVE_SLOT,
+                            points,
+                            "live",
+                        );
+                    })
+                    .is_some()
+            {
+                live_revision = revision;
+            }
+        }
         let inputs = engine.begin_frame(output.aspect(), Some(fixed_dt));
         let mut encoder = ctx
             .device

@@ -40,6 +40,8 @@ pub struct WindowedOpts {
     pub audio_device: Option<String>,
     /// Point clouds to load into the loadable slots, in order.
     pub clouds: Vec<std::path::PathBuf>,
+    /// Live point-cloud stream feeding the last slot, if any.
+    pub live_cloud: Option<vizz_render::plystream::Source>,
 }
 
 struct RenderState {
@@ -81,6 +83,10 @@ struct App {
     /// `/` was pressed this frame: focus the panel's parameter filter.
     /// One-shot, cleared after the panel has drawn.
     focus_filter: bool,
+    /// Live point-cloud stream, if one was configured.
+    live: Option<vizz_render::plystream::LiveCloud>,
+    /// Revision last uploaded, so an unchanged stream costs nothing.
+    live_revision: u64,
 }
 
 impl App {
@@ -145,6 +151,17 @@ impl App {
         // to the master: feedback needs somewhere to accumulate.
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
+        // A stream that will not start is a warning, never a startup
+        // failure — the same trade as a cloud file that will not parse.
+        if let Some(source) = self.opts.live_cloud.clone() {
+            match vizz_render::plystream::LiveCloud::start(source) {
+                Ok(live) => {
+                    log::info!("live cloud: {}", live.label());
+                    self.live = Some(live);
+                }
+                Err(e) => log::warn!("could not start the live cloud: {e:#}"),
+            }
+        }
         let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
@@ -171,6 +188,27 @@ impl App {
     fn redraw(&mut self) {
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
+        // Upload a new stream frame before drawing, and only when the
+        // revision moved: re-uploading an unchanged cloud every frame
+        // would cost a texture write for nothing.
+        if let Some(live) = &self.live {
+            let revision = live.revision();
+            if revision != self.live_revision {
+                let uploaded = live.with_latest(|points| {
+                    state.scene.set_cloud(
+                        &state.ctx,
+                        ParticleScene::LIVE_SLOT,
+                        points,
+                        "live",
+                    );
+                });
+                // Only advance when the slot was actually free; otherwise
+                // this frame is skipped and the next one retries.
+                if uploaded.is_some() {
+                    self.live_revision = revision;
+                }
+            }
+        }
 
         use wgpu::CurrentSurfaceTexture as Cst;
         let frame = match state.surface.get_current_texture() {
@@ -556,6 +594,8 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
         audio_auto_bpm: false,
         tap: vizz_audio::TapTempo::new(),
         focus_filter: false,
+        live: None,
+        live_revision: 0,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

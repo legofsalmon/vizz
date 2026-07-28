@@ -12,6 +12,7 @@ pub mod blit;
 pub mod camera;
 pub mod output;
 pub mod particles;
+pub mod plystream;
 pub mod pointcloud;
 pub mod post;
 pub mod room;

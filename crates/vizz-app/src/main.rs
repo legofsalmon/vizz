@@ -64,6 +64,13 @@ struct Args {
     #[arg(long)]
     cloud: Vec<PathBuf>,
 
+    /// Live point-cloud stream: `tcp://host:port`, `listen://host:port`,
+    /// a bare `host:port`, or a path to a `.ply` file that is rewritten in
+    /// place. Frames land in the last cloud slot; select it with
+    /// `/cloud/a` or `/cloud/b` and set `/shape/mode 7`.
+    #[arg(long)]
+    live_cloud: Option<String>,
+
     /// Audio input device to analyse, matched as a substring of the device
     /// name. Omit to use the system default; `--list-audio` shows names.
     #[arg(long)]
@@ -140,6 +147,13 @@ fn main() -> Result<()> {
         args.audio_device.clone()
     };
 
+    // Parsed once here so a malformed source is a clear startup error
+    // rather than a warning buried in the log of a running show.
+    let live_cloud = match args.live_cloud.as_deref() {
+        Some(spec) => Some(spec.parse::<vizz_render::plystream::Source>()?),
+        None => None,
+    };
+
     let params = Arc::new(AppParams::build());
 
     // OSC failing to bind is degraded, not fatal: visuals still run,
@@ -176,6 +190,7 @@ fn main() -> Result<()> {
                 dump: args.dump,
                 audio_device,
                 clouds: args.cloud.clone(),
+                live_cloud: live_cloud.clone(),
                 report: args.report,
                 outputs: output_opts,
             },
@@ -200,6 +215,7 @@ fn main() -> Result<()> {
                 title,
                 audio_device,
                 clouds: args.cloud.clone(),
+                live_cloud: live_cloud.clone(),
                 outputs: output_opts,
             },
         )

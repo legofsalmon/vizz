@@ -4,7 +4,7 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 8 — presets and the panel rework.** A procedural particle field
+**Status: phase 9 — inputs.** A procedural particle field
 rendered into a fixed-resolution master texture and published over
 **Syphon** on macOS (zero-copy) and **NDI** on the network (async
 readback, never stalls the renderer).
@@ -29,7 +29,12 @@ parameters and marks the ones being modulated; the stripped-back
 screen. There is health monitoring and a headless benchmark mode, and both
 outputs work windowed *and* headless.
 
-Spout is the notable gap.
+It also **takes video and geometry in**, not just out: NDI video from
+another machine or app, and **live point clouds** streamed as PLY over TCP
+or watched from a file, which morph against loaded scans and attractors
+like any other cloud.
+
+Spout is the notable gap. Windows is built and tested in CI.
 
 ## Install (macOS, no developer tools)
 
@@ -138,6 +143,45 @@ stride all the way to the wire (NDI accepts a line stride), so pixels are
 never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
+
+### Live point clouds
+
+```sh
+vizz --live-cloud tcp://192.168.1.9:9000    # connect to a streaming app
+vizz --live-cloud listen://0.0.0.0:9000     # wait for one to connect here
+vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten
+```
+
+Frames land in the last cloud slot. Select it with `/cloud/a` or
+`/cloud/b` and set `/shape/mode 7`, and it morphs against a loaded scan or
+an attractor like any other cloud.
+
+**The framing needs no wrapper protocol.** An app that streams PLY just
+concatenates whole files onto a socket, and a PLY header already declares
+`element vertex N` and the properties each vertex carries — which is
+exactly enough to compute the body's size. The header is its own frame
+length, so anything that writes ordinary PLY files back to back works.
+
+Both ASCII and binary little-endian are handled. Handing the socket
+straight to the file parser would *not* have worked: its ASCII path reads
+to end of stream, so the first frame would have swallowed every frame
+after it. Binary would have framed correctly by accident, which is worse —
+it would have passed testing and failed on whichever app sends ASCII.
+
+The vertex count comes off the wire and sizes an allocation, so it is
+bounded, and a stream with no `end_header` in the first 64 KB is refused
+rather than read forever — pointing vizz at the wrong port should fail
+quickly, not hang.
+
+Same rules as every other input here: one slot rather than a queue,
+because the newest cloud is the only one worth drawing; `try_lock` on the
+render side, so a stalled sender costs a frame of staleness rather than
+vsync; and reconnection as the normal path, so restarting the streaming
+app does not mean restarting vizz.
+
+Uploads happen only when the frame actually changed, and the cloud is
+normalised on the way in exactly as a file is — so a stream in metres and
+a scan in millimetres land at the same size on screen.
 
 ### NDI input
 
