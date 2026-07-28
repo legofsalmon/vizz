@@ -45,6 +45,17 @@ pub struct Uniforms {
     /// The room's volume, so the field can be placed inside it rather than
     /// drawn in front of it.
     pub room: crate::room::Placement,
+    /// Gravity wells: `xyz` is the centre, `w` the signed strength —
+    /// positive pulls in, negative pushes away.
+    ///
+    /// `vec4` per well rather than a tighter packing because WGSL gives a
+    /// uniform array of `vec3` a 16-byte stride anyway; using the fourth
+    /// lane for the strength makes the padding carry something.
+    pub gravity: [[f32; 4]; 4],
+    /// Reach of each well.
+    pub gravity_radius: [f32; 4],
+    /// Master amount in `.x`; the rest is padding the alignment demands.
+    pub gravity_amount: [f32; 4],
 }
 
 pub struct ParticleScene {
@@ -415,6 +426,9 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
         };
         let mut encoder = ctx
             .device
@@ -449,6 +463,98 @@ mod tests {
             .count();
         drop(buffer);
         blown as f32 / (W * W) as f32
+    }
+
+    /// The uniform block has to stay 16-byte aligned where WGSL says it
+    /// is.
+    ///
+    /// A `vec4` array in a uniform block must start on a 16-byte boundary.
+    /// Get that wrong and nothing errors — the driver reads the fields at
+    /// the offsets *it* computed, so every value after the misalignment is
+    /// silently something else, which shows up as a scene that renders
+    /// but is subtly and inexplicably wrong.
+    #[test]
+    fn the_uniform_block_stays_aligned() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(offset_of!(Uniforms, gravity) % 16, 0, "gravity array is misaligned");
+        assert_eq!(
+            offset_of!(Uniforms, gravity_radius) % 16,
+            0,
+            "gravity radii are misaligned"
+        );
+        assert_eq!(size_of::<Uniforms>() % 16, 0, "the block is not a whole number of vec4s");
+        assert!(align_of::<Uniforms>() <= 16);
+    }
+
+    /// Gravity has to move particles, and the sign has to mean what the
+    /// words mean.
+    ///
+    /// A displacement that compiles and does nothing is the easy failure
+    /// here: the loop is guarded on the master amount, on each strength,
+    /// and on the uniform block being laid out where the shader thinks it
+    /// is. Any of those going wrong leaves a scene that renders perfectly
+    /// and simply ignores the layer.
+    #[test]
+    fn a_gravity_well_pulls_the_field_in_and_pushes_it_out() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+
+        // How tightly the lit pixels cluster around the centre of frame.
+        let spread = |px: &[u8]| {
+            let mut sum = 0f64;
+            let mut n = 0f64;
+            for (i, p) in px.chunks_exact(4).enumerate() {
+                if p[0].max(p[1]).max(p[2]) <= 24 {
+                    continue;
+                }
+                let x = (i % W as usize) as f64 - W as f64 / 2.0;
+                let y = (i / W as usize) as f64 - W as f64 / 2.0;
+                sum += (x * x + y * y).sqrt();
+                n += 1.0;
+            }
+            if n == 0.0 { 0.0 } else { sum / n }
+        };
+
+        let off = spread(&render_tuned(&ctx, &scene, SCENE_CLEAR, |_| {}));
+        // A strong well at the origin, wide enough to reach the whole
+        // field. Positive strength should gather it.
+        let pulled = spread(&render_tuned(&ctx, &scene, SCENE_CLEAR, |u| {
+            u.gravity[0] = [0.0, 0.0, 0.0, 2.0];
+            u.gravity_radius[0] = 4.0;
+            u.gravity_amount[0] = 1.0;
+        }));
+        // The same well, inverted, should scatter it.
+        let pushed = spread(&render_tuned(&ctx, &scene, SCENE_CLEAR, |u| {
+            u.gravity[0] = [0.0, 0.0, 0.0, -2.0];
+            u.gravity_radius[0] = 4.0;
+            u.gravity_amount[0] = 1.0;
+        }));
+
+        assert!(off > 0.0, "nothing rendered to measure");
+        assert!(
+            pulled < off * 0.95,
+            "a positive well did not gather the field: {off:.1} -> {pulled:.1}"
+        );
+        assert!(
+            pushed > off * 1.02,
+            "a negative well did not push the field out: {off:.1} -> {pushed:.1}"
+        );
+    }
+
+    /// The master amount must be a real bypass. It is the fader the whole
+    /// layer is brought in on, so at zero the field has to be pixel-for-
+    /// pixel what it is with no wells at all.
+    #[test]
+    fn gravity_at_zero_amount_changes_nothing() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        let plain = render_tuned(&ctx, &scene, SCENE_CLEAR, |_| {});
+        let bypassed = render_tuned(&ctx, &scene, SCENE_CLEAR, |u| {
+            u.gravity[0] = [0.4, 0.0, 0.0, 2.0];
+            u.gravity_radius[0] = 3.0;
+            u.gravity_amount[0] = 0.0;
+        });
+        assert_eq!(plain, bypassed, "wells acted with the master amount at zero");
     }
 
     /// The palette bank has to actually be read.
@@ -617,6 +723,9 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
         };
 
         let mut uniforms = uniforms;

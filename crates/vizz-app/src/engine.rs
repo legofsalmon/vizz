@@ -299,6 +299,22 @@ impl FrameEngine {
                 // Stepped like mirror: a value sliding between two drive
                 // modes is not a crossfade, it is a wrong third thing.
                 color_drive: self.snapshot.get(p.color_drive).round(),
+                gravity: std::array::from_fn(|i| match p.gravity.get(i) {
+                    Some(w) => [
+                        self.snapshot.get(w.x),
+                        self.snapshot.get(w.y),
+                        self.snapshot.get(w.z),
+                        self.snapshot.get(w.strength),
+                    ],
+                    None => [0.0; 4],
+                }),
+                gravity_radius: std::array::from_fn(|i| {
+                    p.gravity.get(i).map_or(1.0, |w| self.snapshot.get(w.radius))
+                }),
+                // The master dim does not scale gravity: it is a shape
+                // control, and fading the output to black should not also
+                // straighten the cloud out on the way down.
+                gravity_amount: [self.snapshot.get(p.gravity_amount), 0.0, 0.0, 0.0],
                 // Slot choice is stepped; the morph between them is not.
                 cloud_a: self.snapshot.get(p.cloud_a).round(),
                 cloud_b: self.snapshot.get(p.cloud_b).round(),

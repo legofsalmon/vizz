@@ -352,6 +352,9 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
         };
         let post_u = PostUniforms {
             trail,

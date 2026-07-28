@@ -6,6 +6,21 @@ use std::sync::Arc;
 
 use vizz_params::{ParamDef, ParamId, ParamRegistry};
 
+/// Gravity wells in the shader's uniform block. Four is what the block
+/// has room for without growing it, and is already more than anyone can
+/// place by hand mid-set.
+pub const GRAVITY_WELLS: usize = 4;
+
+/// The parameter ids for one well.
+#[derive(Debug, Clone, Copy)]
+pub struct GravityWell {
+    pub x: ParamId,
+    pub y: ParamId,
+    pub z: ParamId,
+    pub strength: ParamId,
+    pub radius: ParamId,
+}
+
 pub struct AppParams {
     /// Shared with control threads (OSC now, MIDI/UI later).
     pub registry: Arc<ParamRegistry>,
@@ -48,6 +63,8 @@ pub struct AppParams {
     pub room_embed: ParamId,
     pub cam_pan_x: ParamId,
     pub cam_pan_y: ParamId,
+    pub gravity_amount: ParamId,
+    pub gravity: Vec<GravityWell>,
     pub bg_r: ParamId,
     pub bg_g: ParamId,
     pub bg_b: ParamId,
@@ -202,6 +219,44 @@ impl AppParams {
         // like everything else, so it blends across a scene change and can
         // be pulled on a fader — fading the background out from under a
         // look is a transition in its own right.
+        // Gravity: four wells that bend the cloud around them.
+        //
+        // A layer over the shape rather than part of it. The shape decides
+        // what the field *is*; a well decides what happens to it on the
+        // way to the screen, which is why these are their own group and
+        // why they blend independently of the geometry.
+        //
+        // `amount` is the way in and out. Every well can be dialled in
+        // advance and the whole layer brought up on one fader, which is
+        // the control you actually want mid-set — reaching for four
+        // strengths at once is not playable.
+        let gravity_amount = b.add(ParamDef::new("/gravity/amount", 0.0, 1.0, 0.0).smooth(0.4));
+        let mut gravity = Vec::with_capacity(GRAVITY_WELLS);
+        for i in 0..GRAVITY_WELLS {
+            // Positions span rather more than the field's own extent, so a
+            // well can sit outside the cloud and pull it sideways — which
+            // is a different and more useful move than one buried in the
+            // middle of it.
+            let x = b.add(ParamDef::new(format!("/gravity/{i}/x"), -3.0, 3.0, 0.0).smooth(0.4));
+            let y = b.add(ParamDef::new(format!("/gravity/{i}/y"), -3.0, 3.0, 0.0).smooth(0.4));
+            let z = b.add(ParamDef::new(format!("/gravity/{i}/z"), -3.0, 3.0, 0.0).smooth(0.4));
+            // Signed, so one control is both an attractor and a deflector.
+            // Two separate controls would mean a well can be both at once,
+            // which is not a thing.
+            let strength = b.add(
+                ParamDef::new(format!("/gravity/{i}/strength"), -2.0, 2.0, 0.0).smooth(0.4),
+            );
+            let radius =
+                b.add(ParamDef::new(format!("/gravity/{i}/radius"), 0.05, 4.0, 1.0).smooth(0.4));
+            gravity.push(GravityWell {
+                x,
+                y,
+                z,
+                strength,
+                radius,
+            });
+        }
+
         let bg_r = b.add(ParamDef::new("/bg/red", 0.0, 1.0, 0.004).smooth(0.3));
         let bg_g = b.add(ParamDef::new("/bg/green", 0.0, 1.0, 0.004).smooth(0.3));
         let bg_b = b.add(ParamDef::new("/bg/blue", 0.0, 1.0, 0.008).smooth(0.3));
@@ -277,6 +332,8 @@ impl AppParams {
             room_embed,
             cam_pan_x,
             cam_pan_y,
+            gravity_amount,
+            gravity,
             bg_r,
             bg_g,
             bg_b,

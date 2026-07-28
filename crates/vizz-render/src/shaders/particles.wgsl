@@ -30,6 +30,12 @@ struct Uniforms {
     cloud_b: f32,       // slot index for the B cloud
     cloud_morph: f32,   // 0 = A, 1 = B
     room: RoomPlace,
+    // Gravity wells. xyz is the centre, w is the signed strength:
+    // positive pulls in, negative pushes away.
+    gravity: array<vec4<f32>, 4>,
+    // Reach of each well, and the master amount in .w of the second.
+    gravity_radius: vec4<f32>,
+    gravity_amount: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -382,6 +388,12 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let radius = length(p);
     p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
 
+    // Gravity. Applied after the shape is final and before the room, so
+    // it deforms the object rather than the set: a well that dragged the
+    // room's own geometry around would break the forced perspective, and
+    // the whole point of the layer is that it acts *on* the cloud.
+    p = apply_gravity(p);
+
     // Associate the object with the room. Done here, after the shape is
     // final and before the projection, so everything upstream — spin,
     // twist, breathing — still works in the object's own space and only
@@ -437,6 +449,50 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     out.pos = clip4;
     out.uv = off;
     out.color = col;
+    return out;
+}
+
+// Attractors and deflectors, as a displacement of the finished shape.
+//
+// A displacement rather than a simulation, deliberately. Every particle
+// here is derived from its index with no state carried between frames —
+// that is what makes the count free to change and the whole field
+// scrubbable — and integrating velocities would throw all of that away
+// for the sake of physics nobody is checking. What a VJ wants from a
+// gravity well is that the cloud bends around it, and bending is a
+// function of position.
+//
+// The falloff is `r^2 / (d^2 + r^2)`: one at the centre, a half at the
+// radius, and asymptotically nothing beyond. Smooth everywhere, no
+// singularity to divide by, and no discontinuity at the edge of the
+// well's reach — a hard cutoff shows up as a visible shell in the cloud.
+fn apply_gravity(p: vec3<f32>) -> vec3<f32> {
+    let amount = u.gravity_amount.x;
+    if (amount <= 0.001) {
+        return p;
+    }
+    var out = p;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let well = u.gravity[i];
+        let strength = well.w;
+        if (abs(strength) <= 0.001) {
+            continue;
+        }
+        let r = max(u.gravity_radius[i], 0.01);
+        let d = out - well.xyz;
+        let d2 = dot(d, d);
+        let falloff = (r * r) / (d2 + r * r);
+        // Normalising by the distance rather than with `normalize` keeps
+        // a particle sitting exactly on the centre from producing a NaN
+        // and taking the whole draw with it.
+        let dir = d / sqrt(max(d2, 1e-6));
+        // Positive strength pulls in, so the sign reads the way the word
+        // "attractor" does. Clamped to the distance so a strong well
+        // gathers particles at its centre instead of flinging them out
+        // the far side, which reads as an explosion rather than gravity.
+        let travel = min(strength * falloff * amount, sqrt(d2));
+        out = out - dir * travel;
+    }
     return out;
 }
 
