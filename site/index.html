@@ -223,6 +223,22 @@
     <p class="sub">Newest first. Full notes on each release page.</p>
 
     <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.6.1">0.6.1</a></div>
+      <ul>
+        <li><strong>Fixed: the Syphon output was a white box.</strong> The frame
+          was published as sRGB, so the receiver read it a second time. It now
+          goes out through a linear view of the same texture.</li>
+        <li><strong>Fixed: <code>mod</code> would not turn off.</strong> Each
+          press added another route on top of the last, so the modulation only
+          ever got deeper. It is a toggle now.</li>
+        <li><strong>Slider ranges can be narrowed.</strong> Zoom a parameter in
+          to the part of its range you are actually performing in.</li>
+        <li>The frame rate readout no longer nudges the status line when it
+          crosses 100.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.6.0">0.6.0</a></div>
       <ul>
         <li><strong>Live point clouds.</strong> Stream PLY over TCP, listen for a
