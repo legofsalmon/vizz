@@ -366,13 +366,37 @@ fn stream_from_listen(
     slot: &std::sync::Arc<Slot>,
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
+    use std::sync::atomic::Ordering;
     let listener = std::net::TcpListener::bind(addr)?;
     log::info!("live cloud: listening on {addr}");
-    // A read timeout on the accepted socket is what lets `stop` be
-    // noticed; accept itself blocks until someone connects, which is the
-    // intended behaviour for a source that has not started yet.
-    let (stream, peer) = listener.accept()?;
-    log::info!("live cloud: {peer} connected");
+    // Non-blocking, polled against `stop`.
+    //
+    // A blocking `accept` was the intended behaviour for a source that has
+    // not started yet, and it made quitting hang forever: `Drop` joins
+    // this thread unconditionally, and the flag is only observed inside
+    // `pump`. Any moment with no sender attached — before the first
+    // connection or after any disconnect, since the caller re-enters here
+    // — left the process alive after the window closed, still holding the
+    // port so the next launch could not bind it.
+    listener.set_nonblocking(true)?;
+    let stream = loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                log::info!("live cloud: {peer} connected");
+                break stream;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    // Back to blocking for the transfer itself; `pump` sets its own read
+    // timeout, which is what lets it notice `stop`.
+    stream.set_nonblocking(false)?;
     pump(stream, slot, stop)
 }
 

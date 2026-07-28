@@ -44,6 +44,13 @@ pub const EXCLUDED: &[&str] = &[
     "/scene/curve",
     "/scene/auto",
     "/scene/bars",
+    // The gravity grid's transport, for exactly the reasons above: a
+    // gravity preset holding "/gravity/fire" would fire itself forever.
+    "/gravity/fire",
+    "/gravity/time",
+    "/gravity/curve",
+    "/gravity/auto",
+    "/gravity/bars",
 ];
 
 fn excluded(addr: &str) -> bool {
@@ -63,12 +70,79 @@ pub struct Preset {
     pub values: BTreeMap<String, f32>,
 }
 
+/// Which layer a preset belongs to.
+///
+/// The two are independent on purpose. Gravity sits *over* the look: you
+/// pick a shape and a palette, and separately you decide what bends it.
+/// If a look captured the gravity parameters then firing a scene would
+/// silently reset the wells, and the layering would be a fiction — you
+/// would have two grids that fight each other rather than two that
+/// compose. So each kind captures only its own addresses, and neither can
+/// disturb the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Kind {
+    /// Shape, colour, camera, room, effects. Everything but gravity.
+    ///
+    /// The default, so a grid deserialised without one behaves as the
+    /// original single-layer grid did rather than as an empty gravity one.
+    #[default]
+    Look,
+    /// The gravity wells and nothing else.
+    Gravity,
+}
+
+impl Kind {
+    /// Whether this kind captures and applies the given parameter.
+    ///
+    /// Takes the definition rather than the address so transport comes
+    /// from [`ParamDef::transport`] — one source of truth, rather than the
+    /// hand-maintained list this used to consult and which had already
+    /// drifted once when a layer was added.
+    pub fn owns_def(self, def: &vizz_params::ParamDef) -> bool {
+        if def.transport || excluded(&def.addr) {
+            return false;
+        }
+        let gravity = def.addr.starts_with("/gravity/");
+        match self {
+            Kind::Look => !gravity,
+            Kind::Gravity => gravity,
+        }
+    }
+
+    /// Whether this kind captures and applies the given address.
+    pub fn owns(self, addr: &str) -> bool {
+        let gravity = addr.starts_with("/gravity/");
+        match self {
+            // The transport parameters are excluded from both: they say
+            // *when* things happen, not what anything looks like.
+            Kind::Look => !gravity && !excluded(addr),
+            Kind::Gravity => gravity && !excluded(addr),
+        }
+    }
+
+    pub fn dir(self) -> PathBuf {
+        let base = crate::library::patch_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        match self {
+            Kind::Look => base.join("presets"),
+            Kind::Gravity => base.join("gravity"),
+        }
+    }
+}
+
 impl Preset {
     /// Capture every parameter's current target.
     pub fn capture(reg: &ParamRegistry) -> Self {
+        Self::capture_kind(reg, Kind::Look)
+    }
+
+    /// Capture only the parameters belonging to one layer.
+    pub fn capture_kind(reg: &ParamRegistry, kind: Kind) -> Self {
         let values = reg
             .iter()
-            .filter(|(_, def)| !excluded(&def.addr))
+            .filter(|(_, def)| kind.owns_def(def))
             .map(|(id, def)| (def.addr.clone(), reg.target(id)))
             .collect();
         Self { values }
@@ -106,13 +180,22 @@ pub fn preset_dir() -> PathBuf {
 }
 
 fn path_for(name: &str) -> PathBuf {
-    preset_dir().join(format!("{}.json", crate::library::sanitize(name)))
+    path_for_kind(Kind::Look, name)
+}
+
+fn path_for_kind(kind: Kind, name: &str) -> PathBuf {
+    kind.dir().join(format!("{}.json", crate::library::sanitize(name)))
 }
 
 /// User preset names, alphabetical. Empty when the directory does not
 /// exist — a fresh install has no user presets and that is not an error.
 pub fn list() -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(preset_dir()) else {
+    list_kind(Kind::Look)
+}
+
+/// As [`list`], for one layer.
+pub fn list_kind(kind: Kind) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(kind.dir()) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
@@ -126,15 +209,122 @@ pub fn list() -> Vec<String> {
     names
 }
 
+/// How long a cached listing is trusted before the directory is read
+/// again. Only external changes — a file dropped into the folder by hand —
+/// need this at all; anything the app does refreshes the cache itself.
+const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A cached listing of the preset library.
+///
+/// The panel and both grids ask the same two questions every frame: what
+/// presets are there, and does this pad's preset still exist. Answered
+/// straight from the filesystem, the first is a directory scan per layer
+/// and the second was a file read *and a JSON parse* per filled pad —
+/// `by_name` loads the whole preset to decide whether it is there.
+///
+/// A full grid on both layers made that around fifty file operations per
+/// frame, on the render thread, sixty times a second, whether or not the
+/// panel was even on screen. On a laptop with the library on a network
+/// home directory that is not a micro-optimisation.
+///
+/// The library changes when the app saves or deletes something, which
+/// refreshes this directly, or when someone edits the folder behind its
+/// back, which the interval catches.
+pub struct Library {
+    looks: Vec<String>,
+    gravity: Vec<String>,
+    scanned: std::time::Instant,
+}
+
+impl Default for Library {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Library {
+    pub fn new() -> Self {
+        Self {
+            looks: list_kind(Kind::Look),
+            gravity: list_kind(Kind::Gravity),
+            scanned: std::time::Instant::now(),
+        }
+    }
+
+    /// Rescan if the listing is stale. Cheap enough to call every frame —
+    /// it is a clock comparison in all but one frame in a hundred and
+    /// twenty.
+    pub fn tick(&mut self) {
+        if self.scanned.elapsed() >= RESCAN {
+            self.refresh();
+        }
+    }
+
+    /// Rescan now. Called after the app itself writes to the library, so
+    /// a saved preset appears on the pads in the same frame rather than
+    /// whenever the interval next comes round.
+    pub fn refresh(&mut self) {
+        self.looks = list_kind(Kind::Look);
+        self.gravity = list_kind(Kind::Gravity);
+        self.scanned = std::time::Instant::now();
+    }
+
+    /// User preset names for one layer, alphabetical.
+    pub fn user(&self, kind: Kind) -> &[String] {
+        match kind {
+            Kind::Look => &self.looks,
+            Kind::Gravity => &self.gravity,
+        }
+    }
+
+    /// Everything a pad can name, in the order `/preset/recall` numbers
+    /// them: built-ins first, then what is on disk.
+    pub fn all(&self, kind: Kind) -> Vec<String> {
+        match kind {
+            Kind::Look => BUILTINS
+                .iter()
+                .map(|b| b.name.to_string())
+                .chain(self.looks.iter().cloned())
+                .collect(),
+            Kind::Gravity => self.gravity.clone(),
+        }
+    }
+
+    /// Can this name still be resolved? The question a pad asks to decide
+    /// whether it is pointing at nothing.
+    ///
+    /// Built-ins count for looks and are checked first, matching
+    /// [`by_name`] — a pad naming a built-in is never dangling, whatever
+    /// is on disk.
+    ///
+    /// The listing holds file stems, which are sanitised; a cell holds
+    /// whatever was typed. `load` sanitises on the way to a path, so
+    /// comparing the two directly would report every preset with a
+    /// character the filesystem does not take as missing — a pad outlined
+    /// in red that fires perfectly well.
+    pub fn has(&self, kind: Kind, name: &str) -> bool {
+        if kind == Kind::Look && BUILTINS.iter().any(|b| b.name == name) {
+            return true;
+        }
+        let wanted = crate::library::sanitize(name);
+        self.user(kind).iter().any(|n| *n == wanted)
+    }
+}
+
 /// Save under a sanitised name, returning the name actually used.
 ///
 /// Written to a temporary file and renamed, so a crash or a full disk
 /// part-way through cannot destroy the preset that was already there.
 pub fn save(name: &str, preset: &Preset) -> Result<String> {
-    let dir = preset_dir();
+    save_kind(Kind::Look, name, preset)
+}
+
+/// As [`save`], for one layer.
+pub fn save_kind(kind: Kind, name: &str, preset: &Preset) -> Result<String> {
+    let dir = kind.dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating {}", dir.display()))?;
-    let path = path_for(name);
+    let path = path_for_kind(kind, name);
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(preset)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
@@ -143,7 +333,12 @@ pub fn save(name: &str, preset: &Preset) -> Result<String> {
 }
 
 pub fn load(name: &str) -> Result<Preset> {
-    let path = path_for(name);
+    load_kind(Kind::Look, name)
+}
+
+/// As [`load`], for one layer.
+pub fn load_kind(kind: Kind, name: &str) -> Result<Preset> {
+    let path = path_for_kind(kind, name);
     let bytes =
         std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
@@ -383,6 +578,118 @@ pub fn by_index(i: usize) -> Option<(String, Preset)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The listing is of file *stems*, which are sanitised, while a pad
+    /// holds the name as it was typed. Comparing the two directly reports
+    /// every preset whose name has a character the filesystem will not
+    /// take as missing — a pad outlined in red, refusing to be played,
+    /// that would fire perfectly well if it were pressed.
+    #[test]
+    fn a_preset_whose_name_needed_sanitising_is_still_found() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-sanitise");
+        let name = "Warehouse: 2am";
+        let saved = save(name, &Preset { values: Default::default() }).unwrap();
+        assert_ne!(saved, name, "this test needs a name that gets rewritten");
+
+        let lib = Library::new();
+        assert!(lib.has(Kind::Look, name), "the name as typed was reported missing");
+        assert!(lib.has(Kind::Look, &saved), "the name as saved was reported missing");
+        // And it agrees with the slow path it replaced.
+        assert!(by_name(name).is_some());
+    }
+
+    /// A built-in is never dangling, whatever is on disk — matching
+    /// `by_name`, which prefers built-ins and cannot be shadowed.
+    #[test]
+    fn a_pad_naming_a_builtin_is_never_reported_missing() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-builtin");
+        let lib = Library::new();
+        let builtin = BUILTINS[0].name;
+        assert!(lib.has(Kind::Look, builtin));
+        assert!(!lib.has(Kind::Look, "nothing called this"));
+        // Built-ins are looks only: a gravity pad naming one is dangling,
+        // because gravity has no built-in library to resolve it against.
+        assert!(!lib.has(Kind::Gravity, builtin));
+    }
+
+    /// The cache exists so the panel stops reading the disk every frame;
+    /// it is only correct if a save the app itself makes shows up at once
+    /// rather than whenever the rescan interval next comes round.
+    #[test]
+    fn saving_a_preset_shows_up_after_a_refresh() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-refresh");
+        let mut lib = Library::new();
+        assert!(!lib.has(Kind::Look, "later"));
+
+        save("later", &Preset { values: Default::default() }).unwrap();
+        // Deliberately stale until told: this is what makes it a cache.
+        assert!(!lib.has(Kind::Look, "later"));
+        lib.refresh();
+        assert!(lib.has(Kind::Look, "later"));
+        assert!(lib.all(Kind::Look).iter().any(|n| n == "later"));
+    }
+
+    /// The two layers are separate libraries, and a cache that merged them
+    /// would put looks on the gravity pads' assign menu.
+    #[test]
+    fn the_cache_keeps_the_two_layers_apart() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-layers");
+        save_kind(Kind::Look, "a look", &Preset { values: Default::default() }).unwrap();
+        save_kind(Kind::Gravity, "a well", &Preset { values: Default::default() }).unwrap();
+        let lib = Library::new();
+
+        assert!(lib.has(Kind::Look, "a look"));
+        assert!(!lib.has(Kind::Look, "a well"));
+        assert!(lib.has(Kind::Gravity, "a well"));
+        assert!(!lib.has(Kind::Gravity, "a look"));
+        // Gravity has no built-ins, so its list is exactly what is on disk.
+        assert_eq!(lib.all(Kind::Gravity), vec!["a well".to_string()]);
+    }
+
+    /// The two layers must not be able to disturb each other.
+    ///
+    /// This is the property the whole idea rests on. Gravity sits *over*
+    /// the look: if a look captured the wells then firing a scene would
+    /// silently reset them, and two grids that were supposed to compose
+    /// would fight instead — with no way to tell from the screen which
+    /// one had won.
+    #[test]
+    fn a_look_and_a_gravity_preset_capture_disjoint_parameters() {
+        let mut b = ParamRegistry::builder();
+        b.add(vizz_params::ParamDef::new("/particles/size", 0.0, 1.0, 0.3));
+        b.add(vizz_params::ParamDef::new("/gravity/amount", 0.0, 1.0, 0.7));
+        b.add(vizz_params::ParamDef::new("/gravity/0/strength", -2.0, 2.0, 1.5));
+        b.add(vizz_params::ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
+        b.add(vizz_params::ParamDef::new("/gravity/fire", 0.0, 16.0, 3.0));
+        let reg = b.build();
+
+        let look = Preset::capture_kind(&reg, Kind::Look);
+        let gravity = Preset::capture_kind(&reg, Kind::Gravity);
+
+        assert!(look.values.contains_key("/particles/size"));
+        assert!(
+            !look.values.keys().any(|k| k.starts_with("/gravity/")),
+            "a look captured gravity: {:?}",
+            look.values.keys().collect::<Vec<_>>()
+        );
+
+        assert!(gravity.values.contains_key("/gravity/amount"));
+        assert!(gravity.values.contains_key("/gravity/0/strength"));
+        assert!(
+            gravity.values.keys().all(|k| k.starts_with("/gravity/")),
+            "a gravity preset captured something else: {:?}",
+            gravity.values.keys().collect::<Vec<_>>()
+        );
+
+        // Neither captures the panic fader or either transport, and the
+        // two sets share nothing at all.
+        assert!(!look.values.contains_key("/master/dim"));
+        assert!(!gravity.values.contains_key("/gravity/fire"));
+        assert!(
+            look.values.keys().all(|k| !gravity.values.contains_key(k)),
+            "the two layers overlap"
+        );
+    }
     use vizz_params::{ParamDef, ParamRegistry};
 
     fn registry() -> ParamRegistry {

@@ -45,6 +45,12 @@ pub struct FrameEngine {
     pub grid: vizz_mod::scene::Grid,
     /// Last `/scene/fire` slot acted on, edge-triggered like recall.
     last_scene: Option<usize>,
+    /// The gravity layer's own grid, sequencing gravity presets on its own
+    /// clock. A second instance of the same machine rather than a special
+    /// case: the grid already takes its preset lookup as a parameter, so
+    /// pointing one at a different library is all a second layer needs.
+    pub gravity_grid: vizz_mod::scene::Grid,
+    last_gravity: Option<usize>,
 }
 
 pub struct FrameInputs {
@@ -76,6 +82,8 @@ impl FrameEngine {
             last_preset: None,
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
+            gravity_grid: vizz_mod::scene::Grid::for_kind(vizz_mod::preset::Kind::Gravity),
+            last_gravity: None,
         }
     }
 
@@ -104,6 +112,25 @@ impl FrameEngine {
         );
         reg.set(self.params.scene_bars, grid.autopilot.bars);
         self.grid = grid;
+    }
+
+    /// As [`Self::adopt_grid`], for the gravity layer.
+    pub fn adopt_gravity_grid(&mut self, grid: vizz_mod::scene::Grid) {
+        let reg = &self.params.registry;
+        reg.set(self.params.gravity_time, grid.duration);
+        reg.set(
+            self.params.gravity_curve,
+            vizz_mod::scene::Curve::ALL
+                .iter()
+                .position(|c| *c == grid.curve)
+                .unwrap_or(1) as f32,
+        );
+        reg.set(
+            self.params.gravity_auto,
+            if grid.autopilot.enabled { 1.0 } else { 0.0 },
+        );
+        reg.set(self.params.gravity_bars, grid.autopilot.bars);
+        self.gravity_grid = grid;
     }
 
     /// Fire a scene when `/scene/fire` has moved, then advance the blend.
@@ -144,6 +171,29 @@ impl FrameEngine {
         }
         self.grid
             .tick(dt, self.modulation.clock.beats, reg, &presets);
+
+        // The gravity layer, on its own transport and its own library.
+        // Independent all the way down: a look firing cannot disturb the
+        // wells and a well firing cannot disturb the look, which is the
+        // whole reason the two are separate grids rather than one.
+        let gravity_presets =
+            |name: &str| vizz_mod::preset::load_kind(vizz_mod::preset::Kind::Gravity, name).ok();
+        if self.gravity_grid.in_flight().is_none() {
+            self.gravity_grid.duration = reg.target(p.gravity_time);
+        }
+        let gcurve = reg.target(p.gravity_curve).round().max(0.0) as usize;
+        self.gravity_grid.curve = Curve::ALL.get(gcurve).copied().unwrap_or_default();
+        self.gravity_grid.autopilot.enabled = reg.target(p.gravity_auto) >= 0.5;
+        self.gravity_grid.autopilot.bars = reg.target(p.gravity_bars);
+        let gslot = reg.target(p.gravity_fire).round().max(0.0) as usize;
+        if self.last_gravity != Some(gslot) {
+            self.last_gravity = Some(gslot);
+            if let Some(index) = gslot.checked_sub(1) {
+                self.gravity_grid.fire(index, reg, &gravity_presets);
+            }
+        }
+        self.gravity_grid
+            .tick(dt, self.modulation.clock.beats, reg, &gravity_presets);
     }
 
     /// Recall a preset when `/preset/recall` has moved to a new index.
@@ -299,6 +349,24 @@ impl FrameEngine {
                 // Stepped like mirror: a value sliding between two drive
                 // modes is not a crossfade, it is a wrong third thing.
                 color_drive: self.snapshot.get(p.color_drive).round(),
+                gravity: std::array::from_fn(|i| match p.gravity.get(i) {
+                    Some(w) => [
+                        self.snapshot.get(w.x),
+                        self.snapshot.get(w.y),
+                        self.snapshot.get(w.z),
+                        self.snapshot.get(w.strength),
+                    ],
+                    None => [0.0; 4],
+                }),
+                gravity_radius: std::array::from_fn(|i| {
+                    p.gravity.get(i).map_or(1.0, |w| self.snapshot.get(w.radius))
+                }),
+                // The master dim does not scale gravity: it is a shape
+                // control, and fading the output to black should not also
+                // straighten the cloud out on the way down.
+                gravity_amount: [self.snapshot.get(p.gravity_amount), 0.0, 0.0, 0.0],
+                // Filled by the caller, which owns the palette bank.
+                palette_rows: [4.0, 0.0, 0.0, 0.0],
                 // Slot choice is stepped; the morph between them is not.
                 cloud_a: self.snapshot.get(p.cloud_a).round(),
                 cloud_b: self.snapshot.get(p.cloud_b).round(),

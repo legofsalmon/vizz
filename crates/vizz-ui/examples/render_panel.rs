@@ -102,7 +102,7 @@ fn main() {
             "/shape/mode" => def.labels(&[
                 "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
             ]),
-            "/fx/mirror" => def.labels(&["off", "x", "y", "quad"]),
+            "/fx/mirror" => def.labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
             "/scene/curve" => def.labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
@@ -143,9 +143,26 @@ fn main() {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         modulated: Vec::new(),
+        output: Default::default(),
+        palettes: vec![
+            "hsv".into(),
+            "warm".into(),
+            "ember".into(),
+            "ice".into(),
+            "neon".into(),
+            String::new(),
+            "warehouse".into(),
+        ],
+        clouds: vec![
+            "lorenz".into(),
+            "aizawa".into(),
+            "torso-scan".into(),
+            "empty".into(),
+        ],
         bpm: 128.0,
         focus_filter: false,
         grid: preview_grid(),
+        gravity_grid: None,
         expand_sections: expand,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
@@ -210,6 +227,13 @@ fn main() {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
         ctx.begin_pass(input);
+        // A name already in use, typed into the save field. Saving used to
+        // replace a preset in silence, and the warning that now says so is
+        // only reviewable if the preview renders the state it appears in —
+        // an empty field draws the one case where there is nothing to say.
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("preset-save-name"), "Warehouse 2".to_string())
+        });
         let _ = panel::draw(&ctx, &registry, &state, &mut modulation, &mut Default::default());
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);

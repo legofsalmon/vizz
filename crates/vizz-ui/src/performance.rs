@@ -72,6 +72,11 @@ pub struct PerformanceState<'a> {
     pub presets: &'a [String],
     /// The scene grid, laid out across the full width here.
     pub grid: &'a crate::grid_view::GridView,
+    /// The gravity grid, when there is anything in it. Hidden entirely
+    /// when empty: an unused second row of sixteen pads is a lot of
+    /// screen spent on a layer you are not using, and this screen's whole
+    /// argument is that what is on it is what you decided to reach for.
+    pub gravity: Option<&'a crate::grid_view::GridView>,
     /// MIDI, so a fader can show its binding and start a learn without
     /// leaving the layout.
     pub midi: &'a MidiView,
@@ -95,10 +100,17 @@ pub struct PerformanceActions {
     pub preset_slot: Option<u32>,
     /// What the scene grid asks for this frame.
     pub grid: crate::grid_view::GridActions,
-    /// Begin MIDI-learn for this parameter, or cancel with `None`.
-    pub set_learn_target: Option<Option<String>>,
+    /// What the gravity grid asks for this frame.
+    pub gravity: crate::grid_view::GridActions,
+    /// Begin MIDI-learn, or cancel with `None`.
+    pub set_learn_target: Option<Option<vizz_midi::LearnTarget>>,
     /// Remove the MIDI binding for this parameter.
     pub clear_binding: Option<String>,
+    /// Remove the MIDI trigger that recalls this preset slot. Separate
+    /// from `clear_binding` because a slot parameter carries many
+    /// bindings, and clearing the parameter would unmap every preset to
+    /// unmap one.
+    pub clear_slot_binding: Option<f32>,
 }
 
 pub fn draw(
@@ -136,6 +148,17 @@ pub fn draw(
                     actions.grid =
                         crate::grid_view::draw(ui, state.grid, crate::grid_view::Shape::Stage);
                     ui.add_space(10.0);
+
+                    if let Some(gravity) = state.gravity {
+                        section(ui, "GRAVITY");
+                        actions.gravity = crate::grid_view::draw_with_id(
+                            ui,
+                            gravity,
+                            crate::grid_view::Shape::Stage,
+                            "gravity-grid",
+                        );
+                        ui.add_space(10.0);
+                    }
 
                     if !state.presets.is_empty() {
                         section(ui, "PRESETS");
@@ -197,15 +220,62 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
             } else {
                 egui::RichText::new(name).size(14.0).color(INK)
             };
+            // A preset addresses a slot exactly as a scene pad does, so it
+            // maps the same way: the binding names the slot, and the
+            // button only says when. A plain binding on `/preset/recall`
+            // would spread a button across a 64-slot range and recall the
+            // last one every time.
+            let bound = state.midi.map.source_for_value(RECALL, slot as f32);
+            let waiting = state.midi.learning_value(RECALL, slot as f32);
             let button = egui::Button::new(label)
                 .min_size(vec2(0.0, 30.0))
-                .fill(Color32::from_rgb(36, 40, 48));
-            if ui.add(button).clicked() {
+                .fill(if waiting {
+                    LEARN
+                } else {
+                    Color32::from_rgb(36, 40, 48)
+                });
+            let response = ui.add(button);
+            if response.clicked() {
                 actions.preset_slot = Some(slot);
+            }
+            let response = match (&bound, waiting) {
+                (_, true) => response.on_hover_text("press a button on your controller"),
+                (Some(s), _) => response.on_hover_text(format!("recall {name}  ·  {}", s.label())),
+                (None, _) => response.on_hover_text(format!("recall {name}")),
+            };
+            if state.midi.available {
+                response.context_menu(|ui| match (&bound, waiting) {
+                    (Some(s), _) => {
+                        if ui.button(format!("unmap {}", s.label())).clicked() {
+                            actions.clear_slot_binding = Some(slot as f32);
+                            ui.close();
+                        }
+                    }
+                    (None, true) => {
+                        if ui.button("cancel MIDI learn").clicked() {
+                            actions.set_learn_target = Some(None);
+                            ui.close();
+                        }
+                    }
+                    (None, false) => {
+                        if ui.button("MIDI learn").clicked() {
+                            actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::value(
+                                RECALL,
+                                slot as f32,
+                                format!("preset {slot}"),
+                            )));
+                            ui.close();
+                        }
+                    }
+                });
             }
         }
     });
 }
+
+/// The preset recall address. Bindings name a parameter by address rather
+/// than by id, since they outlive the process.
+pub(crate) const RECALL: &str = "/preset/recall";
 
 fn status_strip(
     ui: &mut egui::Ui,
@@ -352,10 +422,30 @@ fn faders(
     width: f32,
     height: f32,
 ) {
-    let rows = MACRO_COUNT.div_ceil(PER_ROW);
+    // How many rows the height can actually carry.
+    //
+    // Two rows of eight need `2 * (FADER_MIN_H + chrome)` plus spacing;
+    // below that the second row was simply painted outside the window —
+    // an `Area` at a fixed position with no scroll area and no clipping,
+    // so slots 9-16 were not drawn at all, with no scrollbar and nothing
+    // on screen to say eight assigned faders existed. At the app's own
+    // default of 1280x720 with the gravity grid shown, that was the
+    // normal case.
+    //
+    // One wide row of sixteen instead. Narrower columns are a real cost,
+    // but a fader you can see and hit badly beats one that is not there —
+    // and scrolling is not an answer on stage.
+    let chrome_h = 17.0 * 3.0 + 2.0 * 3.0;
+    let two_rows = 2.0 * (FADER_MIN_H + chrome_h) + 8.0;
+    let rows = if height >= two_rows {
+        MACRO_COUNT.div_ceil(PER_ROW)
+    } else {
+        1
+    };
+    let per_row = MACRO_COUNT.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
-    let cols = PER_ROW + 1;
+    let cols = per_row + 1;
     let w = ((width - (cols as f32 - 1.0) * 6.0) / cols as f32).clamp(FADER_MIN_W, FADER_MAX_W);
     // Value, name and binding under each track, plus the spacing between
     // them. Measured rather than guessed: underestimating this is what
@@ -364,6 +454,7 @@ fn faders(
     const LABEL_H: f32 = 17.0;
     const LABEL_GAP: f32 = 2.0;
     let chrome = LABEL_H * 3.0 + LABEL_GAP * 3.0;
+    debug_assert!((chrome - chrome_h).abs() < 0.01, "row-fit and layout disagree");
     let h = ((height / rows as f32) - chrome - 6.0).max(FADER_MIN_H);
 
     for row in 0..rows {
@@ -372,8 +463,8 @@ fn faders(
             // gap is right for a form and far too loose for three lines
             // that belong to one control.
             ui.spacing_mut().item_spacing.y = LABEL_GAP;
-            for col in 0..PER_ROW {
-                let slot = row * PER_ROW + col;
+            for col in 0..per_row {
+                let slot = row * per_row + col;
                 if slot >= MACRO_COUNT {
                     break;
                 }
@@ -505,7 +596,7 @@ fn midi_chip(
         ui.label(egui::RichText::new(" ").size(11.0));
         return;
     }
-    let learning = state.midi.learn_target.as_deref() == Some(addr);
+    let learning = state.midi.learning(addr);
     match state.midi.map.source_for(addr) {
         Some(source) => {
             if ui
@@ -545,7 +636,7 @@ fn midi_chip(
                 .on_hover_text("bind the next control you move to this fader")
                 .clicked()
             {
-                actions.set_learn_target = Some(Some(addr.to_string()));
+                actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::param(addr)));
             }
         }
     }
@@ -839,6 +930,7 @@ mod tests {
             bar_phase: 0.1,
             presets: &names,
             grid: &grid,
+            gravity: None,
             midi,
             values,
         };
@@ -955,7 +1047,7 @@ mod tests {
             },
             "/particles/size",
         );
-        midi.learn_target = Some("/fx/glow".into());
+        midi.learn_target = Some(vizz_midi::LearnTarget::param("/fx/glow"));
 
         let text = render_with(&mut macros, &reg, &midi, None);
         assert!(

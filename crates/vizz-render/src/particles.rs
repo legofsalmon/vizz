@@ -6,6 +6,29 @@
 
 use crate::{GpuContext, attractor::Attractors};
 
+/// The shader's per-particle hash, mirrored on the CPU.
+///
+/// Kept here so the property that matters — that distinct indices give
+/// distinct particles across the whole count range — is testable without
+/// a GPU. The float version this replaced could not: at index 500,000 its
+/// intermediate landed where the f32 ulp is 2^-8, so `fract` had at most
+/// 256 values to return and the field collapsed to repeats.
+///
+/// Must stay identical to `hash_u32`/`hash01` in particles.wgsl.
+pub fn hash_u32(x: u32) -> u32 {
+    let mut h = x;
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    h
+}
+
+pub fn hash01(pi: u32, stream: u32) -> f32 {
+    (hash_u32(pi.wrapping_mul(4).wrapping_add(stream)) >> 8) as f32 / 16_777_216.0
+}
+
 /// What an empty frame looks like. Matches the room's clear colour, so
 /// turning the room on and off does not change the background.
 pub const SCENE_CLEAR: wgpu::Color = wgpu::Color { r: 0.004, g: 0.004, b: 0.008, a: 1.0 };
@@ -45,6 +68,20 @@ pub struct Uniforms {
     /// The room's volume, so the field can be placed inside it rather than
     /// drawn in front of it.
     pub room: crate::room::Placement,
+    /// Gravity wells: `xyz` is the centre, `w` the signed strength —
+    /// positive pulls in, negative pushes away.
+    ///
+    /// `vec4` per well rather than a tighter packing because WGSL gives a
+    /// uniform array of `vec3` a 16-byte stride anyway; using the fourth
+    /// lane for the strength makes the padding carry something.
+    pub gravity: [[f32; 4]; 4],
+    /// Reach of each well.
+    pub gravity_radius: [f32; 4],
+    /// Master amount in `.x`; the rest is padding the alignment demands.
+    pub gravity_amount: [f32; 4],
+    /// Highest written palette row in `.x`, so the colour index saturates
+    /// on a real ramp instead of sweeping into empty rows.
+    pub palette_rows: [f32; 4],
 }
 
 pub struct ParticleScene {
@@ -54,12 +91,17 @@ pub struct ParticleScene {
     /// The cloud bank. Kept for the bind group's texture view, and
     /// mutated when a cloud is loaded.
     attractors: Attractors,
+    /// The colour ramps, likewise.
+    pub palettes: crate::palette::Palettes,
+    /// How many palettes have been loaded, for choosing the next row.
+    loaded_palettes: usize,
 }
 
 impl ParticleScene {
     pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
         let device = &ctx.device;
         let attractors = Attractors::new(ctx);
+        let palettes = crate::palette::Palettes::new(ctx);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particles"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particles.wgsl").into()),
@@ -99,6 +141,18 @@ impl ParticleScene {
                     },
                     count: None,
                 },
+                // The palette bank. Read with `textureLoad`, so it needs
+                // no sampler and no filterable format.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -113,6 +167,10 @@ impl ParticleScene {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&attractors.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&palettes.view),
                 },
             ],
         });
@@ -168,7 +226,29 @@ impl ParticleScene {
             uniforms,
             bind_group,
             attractors,
+            palettes,
+            loaded_palettes: 0,
         }
+    }
+
+    /// Load a palette file into the next free row, returning its name and
+    /// the index `/color/palette` addresses it by.
+    ///
+    /// The row is chosen here rather than by the caller because the rows
+    /// below [`crate::palette::FIRST_USER`] are the shipped gradients and
+    /// are fixed forever — a preset saved with palette 3 must still be
+    /// "ice" in every future build.
+    pub fn load_palette(
+        &mut self,
+        ctx: &GpuContext,
+        path: &std::path::Path,
+    ) -> anyhow::Result<(String, usize)> {
+        let (stops, name) = crate::palette::parse(path)?;
+        let row = self.palettes.next_user_row(self.loaded_palettes);
+        self.palettes.load_slot(ctx, row, &stops, &name);
+        self.loaded_palettes += 1;
+        log::info!("palette {row}: {name} ({} colours)", stops.len());
+        Ok((name, row))
     }
 
     /// Names of the four cloud slots, for the UI.
@@ -182,33 +262,53 @@ impl ParticleScene {
     /// arriving at a venue to find the app refuses to open because a scan
     /// has a malformed header is precisely the wrong trade.
     pub fn load_clouds(&mut self, ctx: &GpuContext, paths: &[std::path::PathBuf]) {
-        use crate::attractor::{SLOT_AIZAWA, SLOTS};
-        // Slots 0 and 1 hold the built-in attractors.
-        let first_free = SLOT_AIZAWA + 1;
         for (i, path) in paths.iter().enumerate() {
-            let slot = first_free + i;
-            if slot >= SLOTS {
+            let Some(slot) = Self::loadable_slot(i) else {
                 log::warn!(
                     "ignoring {}: only {} loadable cloud slots",
                     path.display(),
-                    SLOTS - first_free
+                    Self::LOADABLE
                 );
                 break;
-            }
-            match crate::pointcloud::load(path) {
-                Ok(mut points) => {
-                    crate::pointcloud::normalize(&mut points);
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("cloud")
-                        .to_string();
-                    log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
-                    self.attractors.load_slot(ctx, slot, &points, &name);
-                }
-                Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+            };
+            if let Err(e) = self.load_cloud(ctx, slot, path) {
+                log::warn!("could not load {}: {e:#}", path.display());
             }
         }
+    }
+
+    /// How many slots can hold a file. The first two are the built-in
+    /// attractors and are generated, not loaded.
+    pub const LOADABLE: usize = crate::attractor::SLOTS - (crate::attractor::SLOT_AIZAWA + 1);
+
+    /// The slot holding the `i`th loadable cloud, if there is one.
+    pub fn loadable_slot(i: usize) -> Option<usize> {
+        let slot = crate::attractor::SLOT_AIZAWA + 1 + i;
+        (slot < crate::attractor::SLOTS).then_some(slot)
+    }
+
+    /// Load one file into one slot, returning the name it was given.
+    ///
+    /// Split out of [`Self::load_clouds`] so a cloud can arrive after
+    /// startup — dropped onto the window — through exactly the same path
+    /// as one named on the command line. Two routes to the same thing
+    /// drift apart, and then only one of them gets the bug fix.
+    pub fn load_cloud(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        path: &std::path::Path,
+    ) -> anyhow::Result<String> {
+        let mut points = crate::pointcloud::load(path)?;
+        crate::pointcloud::normalize(&mut points);
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("cloud")
+            .to_string();
+        log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
+        self.attractors.load_slot(ctx, slot, &points, &name);
+        Ok(name)
     }
 
     /// Replace one cloud slot's contents, for a live stream.
@@ -248,8 +348,14 @@ impl ParticleScene {
         clear: bool,
         background: wgpu::Color,
     ) {
+        // The caller does not own the palette bank, so the occupied-row
+        // count is filled in here rather than being threaded through the
+        // engine. It changes whenever a palette is dropped, which is why
+        // it is read per frame rather than captured once.
+        let mut uniforms = *uniforms;
+        uniforms.palette_rows[0] = self.palettes.occupied() as f32;
         ctx.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particles"),
@@ -278,6 +384,21 @@ impl ParticleScene {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
+        // Six vertices per particle as one flat triangle list, not four as
+        // an instanced strip.
+        //
+        // The strip is the obvious optimisation — a third fewer vertex
+        // invocations, each of which recomputes the whole particle — and it
+        // was tried. It measured *slower*: 108ms to 116ms a frame at 1080p,
+        // repeatably, both directions. Four vertices is far too small an
+        // instance to keep a vertex pipeline fed, and the per-instance
+        // overhead costs more than the two invocations it saves.
+        //
+        // Measured on a software rasteriser, which is what this machine
+        // has, so the size of the effect will differ on real hardware —
+        // but the direction is a known trap rather than an artefact, and
+        // "fewer invocations" is not on its own a reason to expect a win.
+        // Anyone re-attempting this should benchmark before believing it.
         pass.draw(0..count * 6, 0..1);
     }
 }
@@ -352,6 +473,10 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
         };
         let mut encoder = ctx
             .device
@@ -386,6 +511,232 @@ mod tests {
             .count();
         drop(buffer);
         blown as f32 / (W * W) as f32
+    }
+
+    /// The uniform block has to stay 16-byte aligned where WGSL says it
+    /// is.
+    ///
+    /// A `vec4` array in a uniform block must start on a 16-byte boundary.
+    /// Get that wrong and nothing errors — the driver reads the fields at
+    /// the offsets *it* computed, so every value after the misalignment is
+    /// silently something else, which shows up as a scene that renders
+    /// but is subtly and inexplicably wrong.
+    #[test]
+    fn the_uniform_block_stays_aligned() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(offset_of!(Uniforms, gravity) % 16, 0, "gravity array is misaligned");
+        assert_eq!(
+            offset_of!(Uniforms, gravity_radius) % 16,
+            0,
+            "gravity radii are misaligned"
+        );
+        assert_eq!(size_of::<Uniforms>() % 16, 0, "the block is not a whole number of vec4s");
+        assert!(align_of::<Uniforms>() <= 16);
+    }
+
+    /// Gravity has to move particles, and the sign has to mean what the
+    /// words mean.
+    ///
+    /// A displacement that compiles and does nothing is the easy failure
+    /// here: the loop is guarded on the master amount, on each strength,
+    /// and on the uniform block being laid out where the shader thinks it
+    /// is. Any of those going wrong leaves a scene that renders perfectly
+    /// and simply ignores the layer.
+    #[test]
+    fn a_gravity_well_pulls_the_field_in_and_pushes_it_out() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+
+        // How tightly the lit pixels cluster around the centre of frame.
+        let spread = |px: &[u8]| {
+            let mut sum = 0f64;
+            let mut n = 0f64;
+            for (i, p) in px.chunks_exact(4).enumerate() {
+                if p[0].max(p[1]).max(p[2]) <= 24 {
+                    continue;
+                }
+                let x = (i % W as usize) as f64 - W as f64 / 2.0;
+                let y = (i / W as usize) as f64 - W as f64 / 2.0;
+                sum += (x * x + y * y).sqrt();
+                n += 1.0;
+            }
+            if n == 0.0 { 0.0 } else { sum / n }
+        };
+
+        let off = spread(&render_tuned(&ctx, &scene, SCENE_CLEAR, |_| {}));
+        // A strong well at the origin, wide enough to reach the whole
+        // field. Positive strength should gather it.
+        let pulled = spread(&render_tuned(&ctx, &scene, SCENE_CLEAR, |u| {
+            u.gravity[0] = [0.0, 0.0, 0.0, 2.0];
+            u.gravity_radius[0] = 4.0;
+            u.gravity_amount[0] = 1.0;
+        }));
+        // The same well, inverted, should scatter it.
+        let pushed = spread(&render_tuned(&ctx, &scene, SCENE_CLEAR, |u| {
+            u.gravity[0] = [0.0, 0.0, 0.0, -2.0];
+            u.gravity_radius[0] = 4.0;
+            u.gravity_amount[0] = 1.0;
+        }));
+
+        assert!(off > 0.0, "nothing rendered to measure");
+        assert!(
+            pulled < off * 0.95,
+            "a positive well did not gather the field: {off:.1} -> {pulled:.1}"
+        );
+        assert!(
+            pushed > off * 1.02,
+            "a negative well did not push the field out: {off:.1} -> {pushed:.1}"
+        );
+    }
+
+    /// The master amount must be a real bypass. It is the fader the whole
+    /// layer is brought in on, so at zero the field has to be pixel-for-
+    /// pixel what it is with no wells at all.
+    #[test]
+    fn gravity_at_zero_amount_changes_nothing() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        let plain = render_tuned(&ctx, &scene, SCENE_CLEAR, |_| {});
+        let bypassed = render_tuned(&ctx, &scene, SCENE_CLEAR, |u| {
+            u.gravity[0] = [0.4, 0.0, 0.0, 2.0];
+            u.gravity_radius[0] = 3.0;
+            u.gravity_amount[0] = 0.0;
+        });
+        assert_eq!(plain, bypassed, "wells acted with the master amount at zero");
+    }
+
+    /// The palette bank has to actually be read.
+    ///
+    /// Every other GPU test here renders at palette 0, which is the
+    /// procedural HSV path and never touches the texture — so the entire
+    /// lookup could return black and nothing would fail. A broken
+    /// `textureLoad`, a bank that was never written, or a bind group
+    /// missing its third entry all produce exactly that.
+    #[test]
+    fn a_built_in_palette_paints_something_and_differs_from_hsv() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+
+        let lit = |px: &[u8]| {
+            px.chunks_exact(4)
+                .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
+                .count()
+        };
+        let hsv = render_palette(&ctx, &scene, 0.0);
+        let warm = render_palette(&ctx, &scene, 1.0);
+        let ice = render_palette(&ctx, &scene, 3.0);
+
+        assert!(lit(&warm) > 0, "palette 1 rendered nothing — the bank is black");
+        assert!(lit(&ice) > 0, "palette 3 rendered nothing — the bank is black");
+        // And the rows are distinct from each other and from HSV, so the
+        // index is really selecting a row rather than being ignored.
+        assert_ne!(warm, hsv, "palette 1 painted the same as HSV");
+        assert_ne!(warm, ice, "two different palettes painted identically");
+    }
+
+    /// Render one frame at a given palette index.
+    fn render_palette(ctx: &GpuContext, scene: &ParticleScene, palette: f32) -> Vec<u8> {
+        render_tuned(ctx, scene, SCENE_CLEAR, |u| {
+            u.palette = palette;
+            // Spread the drive across the ramp so more than one texel of
+            // the row is read.
+            u.color_spread = 1.0;
+        })
+    }
+
+    /// Every particle must be a distinct particle.
+    ///
+    /// The count control is the headline knob and it silently stopped
+    /// working above about fifty thousand: the float hash's intermediate
+    /// ran out of f32 precision, so `fract` returned one of a few hundred
+    /// values and the four streams — being the same function of the same
+    /// index — collapsed together. Pushing the count higher bought
+    /// repeats drawn exactly on top of each other, which with additive
+    /// blending made the field hotter rather than denser. A shipped preset
+    /// sits at 260,000, deep into that.
+    #[test]
+    fn the_particle_hash_does_not_collapse_at_high_counts() {
+        use std::collections::HashSet;
+        for count in [60_000u32, 260_000, 500_000] {
+            let mut seen = HashSet::with_capacity(count as usize);
+            for pi in 0..count {
+                // The whole tuple, since a particle is only a repeat if
+                // every stream repeats.
+                seen.insert((
+                    hash01(pi, 0).to_bits(),
+                    hash01(pi, 1).to_bits(),
+                    hash01(pi, 2).to_bits(),
+                    hash01(pi, 3).to_bits(),
+                ));
+            }
+            assert_eq!(
+                seen.len() as u32,
+                count,
+                "{count} particles collapsed to {} distinct",
+                seen.len()
+            );
+        }
+    }
+
+    /// And the streams must be independent of each other, or a particle's
+    /// position and its colour move together and the field reads as a
+    /// pattern rather than a cloud.
+    #[test]
+    fn the_hash_streams_are_uncorrelated() {
+        let n = 20_000u32;
+        let mean = |f: &dyn Fn(u32) -> f32| {
+            (0..n).map(|i| f(i) as f64).sum::<f64>() / n as f64
+        };
+        let m0 = mean(&|i| hash01(i, 0));
+        let m1 = mean(&|i| hash01(i, 1));
+        // Uniform on 0..1 means a mean near 0.5.
+        assert!((m0 - 0.5).abs() < 0.01, "stream 0 is not uniform: {m0}");
+        assert!((m1 - 0.5).abs() < 0.01, "stream 1 is not uniform: {m1}");
+
+        let cov: f64 = (0..n)
+            .map(|i| (hash01(i, 0) as f64 - m0) * (hash01(i, 1) as f64 - m1))
+            .sum::<f64>()
+            / n as f64;
+        // Uniform variance is 1/12, so normalise by that for a correlation.
+        let corr = cov / (1.0 / 12.0);
+        assert!(corr.abs() < 0.03, "streams 0 and 1 are correlated: {corr}");
+    }
+
+    /// The colour fader must not sweep into empty palette rows.
+    ///
+    /// The parameter's range covers the whole bank, but only the built-ins
+    /// are written on a fresh install — the rest fill as palettes are
+    /// dropped. An unwritten row reads back as zeroed texels, so before
+    /// the clamp the top two-thirds of a default macro fader's throw faded
+    /// the field to black and held it there, with the readout showing a
+    /// plausible "7.00" and nothing saying the row was empty.
+    #[test]
+    fn the_colour_index_saturates_on_the_last_real_palette() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        assert_eq!(
+            scene.palettes.occupied(),
+            4,
+            "a fresh bank should hold hsv plus four built-ins"
+        );
+
+        let lit = |px: &[u8]| {
+            px.chunks_exact(4)
+                .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
+                .count()
+        };
+        let last = render_palette(&ctx, &scene, 4.0);
+        // Well past the written rows — this used to be black.
+        let past = render_palette(&ctx, &scene, 12.0);
+        assert!(lit(&last) > 0, "the last built-in rendered nothing");
+        assert!(
+            lit(&past) > 0,
+            "sweeping past the written rows blacked the field out"
+        );
+        assert_eq!(
+            last, past,
+            "the index did not saturate: past the last palette should hold it"
+        );
     }
 
     /// Transparency has to reach the pixels, not just the clear call.
@@ -459,6 +810,18 @@ mod tests {
         shape: f32,
         background: wgpu::Color,
     ) -> Vec<u8> {
+        render_tuned(ctx, scene, background, |u| u.shape = shape)
+    }
+
+    /// The one place a frame is actually encoded, with the uniforms open
+    /// for a test to adjust.
+    fn render_tuned(
+        ctx: &GpuContext,
+        scene: &ParticleScene,
+        background: wgpu::Color,
+        tune: impl FnOnce(&mut Uniforms),
+    ) -> Vec<u8> {
+        let shape = 0.0;
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("particle-test-target"),
             size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
@@ -503,7 +866,14 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
         };
+
+        let mut uniforms = uniforms;
+        tune(&mut uniforms);
 
         let mut encoder = ctx
             .device

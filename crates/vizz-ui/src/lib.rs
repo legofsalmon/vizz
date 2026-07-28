@@ -22,12 +22,21 @@ use winit::window::Window;
 
 pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
-pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState, PresetEntry};
+pub use panel::{
+    AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
+    PresetEntry,
+};
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
 /// the same code the app runs rather than a copy of it.
 pub fn draw_shortcuts_for_preview(ctx: &egui::Context, open: &mut bool) {
     shortcuts_overlay(ctx, open);
+}
+
+/// As above, for the quit confirmation — which appears over a running set
+/// and so is worth looking at rather than only reasoning about.
+pub fn draw_quit_prompt_for_preview(ctx: &egui::Context) {
+    quit_prompt(ctx);
 }
 
 /// Keyboard shortcuts, on screen rather than only in the README.
@@ -49,7 +58,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
                 ("P", "performance layout"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
-                ("Esc", "quit"),
+                ("Esc", "quit — twice, to mean it"),
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(
@@ -61,6 +70,40 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
             }
             ui.separator();
             ui.small("right-click any slider to reset it to its default");
+        });
+}
+
+/// "Press Escape again to quit."
+///
+/// Escape used to quit on the first press. On a laptop driving a projector
+/// that is one stray keystroke — a hand on the wrong part of the keyboard,
+/// a habit from dismissing something — between a running set and a black
+/// screen with no way back. Nothing else in the app is destructive on one
+/// key, and this was the most destructive thing in it.
+///
+/// Drawn centre-screen and drawn *whatever else is hidden*, because the
+/// press it answers is one that would otherwise have ended the show.
+fn quit_prompt(ctx: &egui::Context) {
+    egui::Area::new(egui::Id::new("quit-prompt"))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(120, 40, 36))
+                .inner_margin(egui::Margin::symmetric(22, 16))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("press Esc again to quit")
+                            .size(20.0)
+                            .color(egui::Color32::from_rgb(255, 240, 236)),
+                    );
+                    ui.label(
+                        egui::RichText::new("any other key carries on")
+                            .size(13.0)
+                            .color(egui::Color32::from_rgb(240, 200, 194)),
+                    );
+                });
         });
 }
 
@@ -83,6 +126,9 @@ pub struct Gui {
     /// Keyboard-shortcut overlay, toggled with `?`. Shortcuts that are
     /// only in the README are shortcuts nobody uses.
     pub shortcuts_open: bool,
+    /// Escape has been pressed once and is waiting for a second press.
+    /// Owned by the app, which holds the timer; this is just told.
+    pub quit_armed: bool,
     /// `/` was pressed; the panel focuses its filter next frame.
     pub focus_filter: bool,
     /// A number key was pressed: fire this preset slot.
@@ -115,6 +161,7 @@ impl Gui {
             graph_open: false,
             performance: false,
             shortcuts_open: false,
+            quit_armed: false,
             focus_filter: false,
             preset_key: None,
             graph_view: graph_view::GraphView::default(),
@@ -122,6 +169,18 @@ impl Gui {
             ranges: vizz_mod::ranges::Ranges::load(),
             history: Vec::with_capacity(HISTORY),
         }
+    }
+
+    /// Will `render` put anything on screen this frame?
+    ///
+    /// Asked *before* building the state to hand it, because gathering
+    /// that state is not free — a health snapshot, the preset listing,
+    /// both grids resolved, the MIDI map cloned, one float per parameter —
+    /// and `render` returning early after all of it had been assembled
+    /// meant paying for a panel nobody could see. Which is the state a set
+    /// is actually played in.
+    pub fn will_draw(&self) -> bool {
+        self.visible || self.graph_open || self.performance || self.shortcuts_open || self.quit_armed
     }
 
     /// Feed a window event to egui. Returns `true` if egui consumed it,
@@ -209,7 +268,10 @@ impl Gui {
         // meant `?` did nothing with everything hidden — which is exactly
         // the moment you press it, having forgotten how to get the panel
         // back.
-        if !self.visible && !self.graph_open && !self.performance && !self.shortcuts_open {
+        // Callers are expected to check `will_draw` and skip assembling
+        // the state entirely; this stays as the backstop that keeps the
+        // two from disagreeing.
+        if !self.will_draw() {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
@@ -224,6 +286,9 @@ impl Gui {
         // where a shortcut list is most wanted.
         if self.shortcuts_open {
             shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
+        }
+        if self.quit_armed {
+            quit_prompt(&self.ctx);
         }
         if self.performance {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
@@ -292,6 +357,8 @@ impl Gui {
             bar_phase: state.bar_phase,
             presets: &preset_names,
             grid: &state.grid,
+            // Only shown when the layer is in use.
+            gravity: state.gravity_grid.as_ref(),
             midi: &state.midi,
             values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
         };
@@ -324,11 +391,13 @@ impl Gui {
         // The grid on the performance layout drives the same actions the
         // panel's does, so storing a scene mid-set works from either.
         actions.grid = perf.grid;
+        actions.gravity = perf.gravity;
         // Learn and unbind are handled identically to the panel's, so a
         // controller mapped from the performance layout and one mapped
         // from the parameter list end up in the same map by the same path.
         actions.set_learn_target = perf.set_learn_target;
         actions.clear_binding = perf.clear_binding;
+        actions.clear_slot_binding = perf.clear_slot_binding.map(|v| (performance::RECALL.to_string(), v));
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -375,6 +444,10 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -409,6 +482,10 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 120.0,
             focus_filter: false,
             grid: Default::default(),
@@ -446,6 +523,10 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -485,6 +566,10 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -526,6 +611,10 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 128.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -595,13 +684,17 @@ mod tests {
                 available: true,
                 connected: vec!["Launch Control XL".into()],
                 map,
-                learn_target: Some("/particles/count".into()),
+                learn_target: Some(vizz_midi::LearnTarget::param("/particles/count")),
                 last_source: Some(vizz_midi::Source::Note { channel: 9, note: 36 }),
             },
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -633,6 +726,10 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,

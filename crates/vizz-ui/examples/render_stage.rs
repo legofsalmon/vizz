@@ -70,6 +70,15 @@ fn main() {
 
     let audio = audio_view();
     let grid = stage_grid();
+    // The gravity row, unless the caller asks for it to be absent. The
+    // harness used to hardcode `None`, so the layout was never once
+    // rendered in the configuration a prepared set actually runs in — and
+    // that is exactly where the fader row overflowed the window.
+    let gravity = if std::env::args().any(|a| a == "no-gravity") {
+        None
+    } else {
+        Some(gravity_grid())
+    };
     // One fader already bound and one mid-learn, so the preview shows both
     // states of the MIDI chip rather than eight identical "learn" links.
     let mut midi = vizz_ui::MidiView {
@@ -90,7 +99,7 @@ fn main() {
         },
         "/fx/glow",
     );
-    midi.learn_target = Some("/fx/trail".into());
+    midi.learn_target = Some(vizz_midi::LearnTarget::param("/fx/trail"));
     // Two parameters pushed away from where their faders sit, so the
     // modulation marks are visible in the preview — that mark is the whole
     // reason this screen can be trusted while an LFO is running.
@@ -129,6 +138,7 @@ fn main() {
         bar_phase: 0.12,
         presets: &presets,
         grid: &grid,
+        gravity: gravity.as_ref(),
         midi: &midi,
         values: Some(&modulated),
     };
@@ -241,7 +251,7 @@ fn registry() -> ParamRegistry {
     ] {
         let def = ParamDef::new(addr, 0.0, 1.0, 0.4);
         b.add(match addr {
-            "/fx/mirror" => ParamDef::new(addr, 0.0, 3.0, 0.0).labels(&["off", "x", "y", "quad"]),
+            "/fx/mirror" => ParamDef::new(addr, 0.0, 3.0, 0.0).labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/palette" => {
                 ParamDef::new(addr, 0.0, 4.0, 0.0).labels(&["hsv", "warm", "ember", "ice", "neon"])
             }
@@ -266,6 +276,29 @@ fn audio_view() -> vizz_ui::AudioView {
         detected_bpm: 128.0,
         confidence: 0.71,
         dropped: 0,
+    }
+}
+
+/// A second grid for the gravity layer, so the preview shows the shape a
+/// prepared set actually has.
+fn gravity_grid() -> vizz_ui::grid_view::GridView {
+    let mut names = vec![None; vizz_ui::grid_view::SLOTS];
+    for (slot, name) in [(0, "still"), (1, "pull in"), (4, "burst")] {
+        names[slot] = Some(name.to_string());
+    }
+    vizz_ui::grid_view::GridView {
+        names,
+        current: Some(1),
+        curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        // The gravity row says "gravity", not "scene". Rendering both rows
+        // is what makes a wrong noun visible rather than only wrong.
+        noun: "gravity",
+        midi: midi_labels(&[(1, "ch1 note52")]),
+        midi_available: true,
+        ..Default::default()
     }
 }
 
@@ -295,8 +328,25 @@ fn stage_grid() -> vizz_ui::grid_view::GridView {
         bars: 4.0,
         auto_phase: Some(0.42),
         upcoming: Some(6),
+        // Half the row mapped to a controller and one pad mid-learn. A
+        // prepared set has most of the grid under a controller's fingers,
+        // and drawing it unmapped is drawing a shape nobody plays — the
+        // same blind spot that hid the fader overflow when this harness
+        // hardcoded an empty gravity layer.
+        midi: midi_labels(&[(0, "ch1 note36"), (1, "ch1 note37"), (2, "ch1 note38"), (6, "ch1 note42")]),
+        learning: Some(9),
+        midi_available: true,
         ..Default::default()
     }
+}
+
+/// Binding labels for the slots named, empty elsewhere.
+fn midi_labels(bound: &[(usize, &str)]) -> Vec<Option<String>> {
+    let mut out = vec![None; vizz_ui::grid_view::SLOTS];
+    for (slot, label) in bound {
+        out[*slot] = Some((*label).to_string());
+    }
+    out
 }
 
 fn gpu() -> (wgpu::Device, wgpu::Queue) {

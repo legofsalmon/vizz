@@ -23,18 +23,46 @@ use anyhow::{Context as _, Result};
 use midir::{MidiInput, MidiInputConnection};
 use vizz_params::ParamRegistry;
 
-pub use mapping::{Binding, Dispatcher, MidiMap, Source};
+pub use mapping::{Binding, Dispatcher, MidiMap, Source, Update};
 pub use message::MidiEvent;
 
 /// How often to rescan for newly plugged-in controllers.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 
+/// What a pending learn will bind the next control to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearnTarget {
+    /// Parameter address to bind.
+    pub param: String,
+    /// The fixed value a press should send, for a control that addresses a
+    /// slot rather than sweeping a range. See [`Binding::value`].
+    pub value: Option<f32>,
+    /// What to call this while the learn is waiting. The address is right
+    /// for a slider — it is what the row is labelled with — but "waiting
+    /// for a control to bind to /scene/fire = 5" is not how anyone thinks
+    /// about the pad they just armed.
+    pub label: String,
+}
+
+impl LearnTarget {
+    /// Learn a control that sweeps the parameter's range.
+    pub fn param(param: impl Into<String>) -> Self {
+        let param = param.into();
+        Self { label: param.clone(), param, value: None }
+    }
+
+    /// Learn a button that jumps the parameter to one value.
+    pub fn value(param: impl Into<String>, value: f32, label: impl Into<String>) -> Self {
+        Self { param: param.into(), value: Some(value), label: label.into() }
+    }
+}
+
 /// State shared between the MIDI thread and the UI.
 #[derive(Default)]
 pub struct MidiState {
     pub map: MidiMap,
-    /// Parameter address awaiting a control, set by the GUI's Learn button.
-    pub learn_target: Option<String>,
+    /// What is awaiting a control, set by the GUI's Learn button.
+    pub learn_target: Option<LearnTarget>,
     /// Names of currently connected input ports.
     pub connected: Vec<String>,
     /// Last source seen, for "is it even sending?" feedback while learning.
@@ -47,10 +75,24 @@ impl MidiState {
     /// Bind the learn target if one is pending. Returns true if a binding
     /// was made.
     fn apply_learn(&mut self, source: Source) -> bool {
-        let Some(param) = self.learn_target.take() else { return false };
-        self.map.bind(source, param);
+        let Some(target) = self.learn_target.take() else { return false };
+        match target.value {
+            Some(v) => self.map.bind_value(source, target.param, v),
+            None => self.map.bind(source, target.param),
+        }
         self.revision += 1;
         true
+    }
+
+    /// Is a sweep learn pending for this parameter? Used to light the
+    /// control's own learn button.
+    pub fn learning(&self, param: &str) -> bool {
+        matches!(&self.learn_target, Some(t) if t.param == param && t.value.is_none())
+    }
+
+    /// Is a trigger learn pending for this value of this parameter?
+    pub fn learning_value(&self, param: &str, value: f32) -> bool {
+        matches!(&self.learn_target, Some(t) if t.param == param && t.value == Some(value))
     }
 }
 
@@ -189,10 +231,16 @@ fn handle_message(
     let resolved = dispatcher.resolve(event, &state.map);
     drop(state); // release before touching the registry
 
-    if let Some((param, value)) = resolved
+    if let Some((param, update)) = resolved
         && let Some(id) = registry.id(&param)
     {
-        registry.set_normalized(id, value);
+        match update {
+            Update::Range(t) => registry.set_normalized(id, t),
+            // Straight through. `set` clamps to the parameter's range, so
+            // a binding left behind by a parameter that has since shrunk
+            // lands somewhere valid rather than being dropped.
+            Update::Absolute(v) => registry.set(id, v),
+        }
     }
 }
 
@@ -220,7 +268,14 @@ pub fn save_map(path: &Path, map: &MidiMap) -> Result<()> {
             .with_context(|| format!("creating {}", dir.display()))?;
     }
     let text = serde_json::to_string_pretty(map)?;
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+    // Temp file then rename, matching every other persisted artefact in
+    // the workspace. A plain write truncates first, so a crash, a power
+    // loss or a full disk during it leaves an empty or half-written file,
+    // `load_map` fails, and the app starts with no mappings — losing the
+    // most laborious setup in the app to the narrowest of windows.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))
 }
 
 #[cfg(test)]
@@ -232,6 +287,8 @@ mod tests {
         let mut b = ParamRegistry::builder();
         b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
         b.add(ParamDef::new("/particles/hue", 0.0, 1.0, 0.5));
+        // A slot parameter, to stand in for the real `/scene/fire`.
+        b.add(ParamDef::new("/scene/fire", 0.0, 16.0, 0.0));
         Arc::new(b.build())
     }
 
@@ -259,7 +316,7 @@ mod tests {
     fn learn_binds_the_next_control_and_does_not_also_move_it() {
         let reg = registry();
         let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
-        shared.lock().unwrap().learn_target = Some("/particles/hue".into());
+        shared.lock().unwrap().learn_target = Some(LearnTarget::param("/particles/hue"));
         let mut d = Dispatcher::default();
 
         let before = reg.target(reg.id("/particles/hue").unwrap());
@@ -276,6 +333,30 @@ mod tests {
         // value — otherwise learning snaps the parameter wherever the
         // knob happened to be.
         assert_eq!(reg.target(reg.id("/particles/hue").unwrap()), before);
+    }
+
+    /// The whole path, because the bug lived in the seam between
+    /// resolving an event and writing it: `resolve` returned a position
+    /// and the writer spread it across the range, so a button on a slot
+    /// parameter could only ever reach the top.
+    #[test]
+    fn a_learned_pad_writes_its_own_slot_and_not_the_top_of_the_range() {
+        let reg = registry();
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        let fire = reg.id("/scene/fire").unwrap();
+        shared.lock().unwrap().learn_target =
+            Some(LearnTarget::value("/scene/fire", 3.0, "scene 3"));
+        let mut d = Dispatcher::default();
+
+        // Learn from note 36, full velocity.
+        handle_message(&[0x90, 36, 127], &reg, &shared, &mut d);
+        assert!(shared.lock().unwrap().learn_target.is_none());
+
+        // Now press it for real. A plain note binding would land on 16.
+        handle_message(&[0x90, 36, 127], &reg, &shared, &mut d);
+        assert_eq!(reg.target(fire), 3.0);
+        handle_message(&[0x80, 36, 0], &reg, &shared, &mut d);
+        assert_eq!(reg.target(fire), 0.0, "release should rest at nothing-selected");
     }
 
     #[test]

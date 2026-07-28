@@ -24,18 +24,33 @@ pub struct MidiView {
     pub available: bool,
     pub connected: Vec<String>,
     pub map: MidiMap,
-    pub learn_target: Option<String>,
+    pub learn_target: Option<vizz_midi::LearnTarget>,
     pub last_source: Option<Source>,
+}
+
+impl MidiView {
+    /// Is a sweep learn pending for this parameter?
+    pub fn learning(&self, param: &str) -> bool {
+        matches!(&self.learn_target, Some(t) if t.param == param && t.value.is_none())
+    }
+
+    /// Is a trigger learn pending for this value of this parameter?
+    pub fn learning_value(&self, param: &str, value: f32) -> bool {
+        matches!(&self.learn_target, Some(t) if t.param == param && t.value == Some(value))
+    }
 }
 
 /// What the panel asks the app to do. Returned rather than applied
 /// directly so the panel keeps no privileged access of its own.
 #[derive(Default)]
 pub struct PanelActions {
-    /// Begin MIDI-learn for this parameter (or cancel, with None).
-    pub set_learn_target: Option<Option<String>>,
+    /// Begin MIDI-learn (or cancel, with None).
+    pub set_learn_target: Option<Option<vizz_midi::LearnTarget>>,
     /// Remove the MIDI binding for this parameter.
     pub clear_binding: Option<String>,
+    /// Remove the MIDI trigger for one value of a parameter, leaving the
+    /// other values of it mapped.
+    pub clear_slot_binding: Option<(String, f32)>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
     /// Recall this preset by name.
@@ -48,6 +63,30 @@ pub struct PanelActions {
     pub ranges_changed: bool,
     /// What the scene grid asks for this frame.
     pub grid: crate::grid_view::GridActions,
+    /// Output size, render scale and master precision, when changed.
+    pub output_setup: Option<OutputSetup>,
+    /// What the gravity grid asks for this frame.
+    pub gravity: crate::grid_view::GridActions,
+}
+
+/// How big the output is and how hard it is worked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutputSetup {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub wide: bool,
+}
+
+impl Default for OutputSetup {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+            wide: false,
+        }
+    }
 }
 
 /// One entry in the preset list.
@@ -82,6 +121,15 @@ pub struct PanelState {
     /// Empty when nothing is reporting, in which case controls fall back
     /// to drawing only what the user set.
     pub modulated: Vec<f32>,
+    /// Name of the cloud in each slot, in slot order. Lets the panel say
+    /// what `/cloud/a` and `/cloud/b` are actually selecting — the numbers
+    /// alone are meaningless once anything has been loaded.
+    pub clouds: Vec<String>,
+    /// Current output size, render scale and precision.
+    pub output: OutputSetup,
+    /// Palette name per row, so `/color/palette` can be read as colours
+    /// rather than as a number. Empty entries are unused rows.
+    pub palettes: Vec<String>,
     /// Beat clock, mirrored for the performance layout (which does not get
     /// a mutable ModEngine).
     pub bpm: f32,
@@ -90,6 +138,9 @@ pub struct PanelState {
     pub presets: Vec<PresetEntry>,
     /// The scene grid as it stands this frame.
     pub grid: crate::grid_view::GridView,
+    /// The gravity grid, when the layer is in use. `None` hides it from
+    /// the performance layout entirely.
+    pub gravity_grid: Option<crate::grid_view::GridView>,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
     /// Draw every collapsible section open.
@@ -160,7 +211,19 @@ pub fn draw(
             egui::CollapsingHeader::new("outputs")
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| outputs_section(ui, state));
+                .show(ui, |ui| {
+                    outputs_section(ui, state);
+                    ui.separator();
+                    output_setup_section(ui, state, &mut actions);
+                });
+            egui::CollapsingHeader::new("clouds")
+                .id_salt("clouds")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| {
+                    clouds_section(ui, state);
+                    ui.separator();
+                    palettes_section(ui, state);
+                });
             egui::CollapsingHeader::new("background")
                 .id_salt("background")
                 .default_open(state.expand_sections)
@@ -269,6 +332,47 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
     ui.separator();
 }
 
+/// What is in each cloud slot, and how to put something there.
+///
+/// `/cloud/a` and `/cloud/b` are indices, and an index is unreadable once
+/// anything has been loaded — "2" says nothing about whether that is the
+/// torso scan or the room. This is the legend for those two sliders.
+///
+/// The drop hint is here rather than nowhere because a gesture with no
+/// visible affordance is a gesture nobody discovers. That was the whole
+/// lesson of the rename living only on a right-click menu.
+fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
+    for (i, name) in state.clouds.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.small(format!("{i}"));
+            ui.label(name);
+        });
+    }
+    if state.clouds.is_empty() {
+        ui.small("no cloud slots");
+    }
+    ui.small("drag a .ply, .xyz, .csv or .pts onto the window to load one");
+}
+
+/// The colour ramps, by the index `/color/palette` uses.
+///
+/// Same reason as the cloud list: the parameter is a number, and past the
+/// four shipped names a number says nothing at all about what is in the
+/// slot. Unused rows are left out rather than listed as blanks — sixteen
+/// entries of which twelve are empty is a worse legend than four.
+fn palettes_section(ui: &mut egui::Ui, state: &PanelState) {
+    for (i, name) in state.palettes.iter().enumerate() {
+        if name.is_empty() {
+            continue;
+        }
+        ui.horizontal(|ui| {
+            ui.small(format!("{i}"));
+            ui.label(name);
+        });
+    }
+    ui.small("drag a .gpl or a list of hex colours onto the window to add one");
+}
+
 /// The background colour, and whether there is one at all.
 ///
 /// A swatch rather than three sliders, because nobody picks a colour by
@@ -360,7 +464,7 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             .unwrap_or_else(|| "nothing yet".into());
         ui.colored_label(
             egui::Color32::from_rgb(255, 200, 90),
-            format!("learning {target} — move a control (seen: {seen})"),
+            format!("learning {} — move a control (seen: {seen})", target.label),
         );
     }
 }
@@ -413,6 +517,32 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
 /// venue, with the wrong input already on screen. The list is read when
 /// the menu is opened rather than every frame: enumerating devices talks
 /// to CoreAudio/WASAPI and is far too expensive to do at 60 Hz.
+/// How long an enumerated device list is reused. Long enough that holding
+/// the menu open is not an audio-API call per frame, short enough that
+/// something plugged in while the menu is open still turns up.
+const DEVICE_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The input devices, enumerated at most once a second.
+///
+/// This only runs while the menu is open — a combo box does not draw its
+/// body otherwise — but open at sixty frames a second it was sixty device
+/// enumerations a second, on the render thread. Asking CoreAudio for the
+/// device list is not a cheap call, and the answer does not change sixty
+/// times a second.
+fn device_list(ui: &egui::Ui) -> Vec<String> {
+    let id = egui::Id::new("audio-device-list");
+    let cached: Option<(std::time::Instant, Vec<String>)> =
+        ui.data(|d| d.get_temp(id));
+    if let Some((at, names)) = cached
+        && at.elapsed() < DEVICE_LIST_TTL
+    {
+        return names;
+    }
+    let names = vizz_audio::input_devices();
+    ui.data_mut(|d| d.insert_temp(id, (std::time::Instant::now(), names.clone())));
+    names
+}
+
 fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let current = state.audio.device.as_deref().unwrap_or("no input");
     ui.horizontal(|ui| {
@@ -428,7 +558,7 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                     actions.audio.device = Some(None);
                 }
                 ui.separator();
-                for name in vizz_audio::input_devices() {
+                for name in device_list(ui) {
                     let selected = state.audio.device.as_deref() == Some(name.as_str());
                     if ui.selectable_label(selected, &name).clicked() {
                         actions.audio.device = Some(Some(name.clone()));
@@ -751,6 +881,78 @@ fn sparkline(ui: &mut egui::Ui, samples: &[f32], budget_ms: f32) {
     ));
 }
 
+/// Output size, render scale, and how many bits the master carries.
+///
+/// The two sizes are genuinely different things and were conflated into
+/// one before: what receivers get, and how hard the renderer works to
+/// produce it. Above 1× the extra pixels are thrown away by the downscale
+/// into the master, which is exactly the point — that averaging is the
+/// only thing that reliably cleans up a field of one-pixel sprites, and it
+/// costs fill rate rather than complexity.
+fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let mut next = state.output;
+
+    ui.horizontal(|ui| {
+        ui.label("output");
+        ui.add(
+            egui::DragValue::new(&mut next.width)
+                .range(160..=7680)
+                .speed(8.0),
+        );
+        ui.label("x");
+        ui.add(
+            egui::DragValue::new(&mut next.height)
+                .range(160..=7680)
+                .speed(8.0),
+        );
+    });
+    // The sizes people actually output at, because typing 3840 by dragging
+    // a spinner is nobody's idea of a control.
+    ui.horizontal(|ui| {
+        for (label, w, h) in [
+            ("720p", 1280, 720),
+            ("1080p", 1920, 1080),
+            ("1440p", 2560, 1440),
+            ("4K", 3840, 2160),
+        ] {
+            if ui.small_button(label).clicked() {
+                next.width = w;
+                next.height = h;
+            }
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("render");
+        ui.add(
+            egui::Slider::new(&mut next.scale, 0.25..=2.0)
+                .suffix("x")
+                .clamping(egui::SliderClamping::Always),
+        )
+        .on_hover_text("above 1 supersamples: draw larger, let the downscale anti-alias");
+    });
+    // Say the resulting size out loud. A multiplier is easy to set and
+    // hard to picture, and the number that matters for whether the machine
+    // will hold 60 fps is the pixel count, not the factor.
+    let rw = (next.width as f32 * next.scale) as u32;
+    let rh = (next.height as f32 * next.scale) as u32;
+    ui.small(format!("drawing {rw} x {rh}"));
+
+    ui.checkbox(&mut next.wide, "16-bit float master")
+        .on_hover_text("smoother gradients, at double the master's bandwidth");
+    if next.wide {
+        // Not a warning about something broken — a statement of what it
+        // costs. Syphon and NDI are BGRA8 by definition, so this cannot
+        // reach them without a conversion, and pretending otherwise would
+        // be discovered as a black frame at a venue.
+        ui.small("Syphon and NDI still receive 8-bit; a conversion pass is added for them");
+    }
+
+    if next != state.output {
+        actions.output_setup = Some(next);
+    }
+}
+
 fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     ui.label(egui::RichText::new("Outputs").strong());
     if state.outputs.is_empty() {
@@ -813,9 +1015,10 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
             }
         });
 
+    let id = egui::Id::new("preset-save-name");
+    let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+    let clash = name_clash(&name, &state.presets);
     ui.horizontal(|ui| {
-        let id = egui::Id::new("preset-save-name");
-        let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
         let editing = ui.add(
             egui::TextEdit::singleline(&mut name)
                 .hint_text("name")
@@ -824,14 +1027,138 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         // Enter saves, so the whole thing is type-and-go rather than
         // type-then-aim.
         let entered = editing.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let clicked = ui.button("save").on_hover_text("store the current look").clicked();
-        if (entered || clicked) && !name.trim().is_empty() {
+        // The button says which of the two things it is about to do. A
+        // button labelled "save" that silently replaces a night's work is
+        // the failure this is here to prevent, and a confirmation dialog
+        // is the wrong shape for it — this screen is used with one hand
+        // while something is on the projector.
+        let (label, hover) = match clash {
+            Some(Clash::Builtin(n)) => (
+                "save",
+                format!("{n} is a built-in and cannot be replaced — choose another name"),
+            ),
+            Some(Clash::User(n)) => ("replace", format!("overwrite the saved look {n}")),
+            None => ("save", "store the current look".to_string()),
+        };
+        // Blocked rather than warned when it would be useless: a preset
+        // saved under a built-in's name is written to disk successfully
+        // and can then never be recalled, because `by_name` prefers the
+        // built-in. Succeeding and doing nothing is worse than refusing.
+        let blocked = matches!(clash, Some(Clash::Builtin(_)));
+        let button = ui.add_enabled(!blocked, egui::Button::new(label)).on_hover_text(hover);
+        if (entered || button.clicked()) && !blocked && !name.trim().is_empty() {
             actions.preset_save = Some(name.clone());
             name.clear();
         }
-        ui.memory_mut(|m| m.data.insert_temp(id, name));
     });
-    ui.small("saving overwrites a preset of the same name; built-ins cannot be replaced");
+    match clash {
+        Some(Clash::Builtin(n)) => ui.colored_label(
+            WARN_COLOR,
+            format!("{n} is a built-in — saving over it would hide your look, not replace it"),
+        ),
+        Some(Clash::User(n)) => {
+            ui.colored_label(WARN_COLOR, format!("this replaces the saved look {n}"))
+        }
+        None => ui.small("names are tidied for the filesystem, so \"a/b\" becomes \"a_b\""),
+    };
+    ui.memory_mut(|m| m.data.insert_temp(id, name));
+}
+
+/// What an existing preset of the same name is.
+enum Clash<'a> {
+    /// A user preset, which saving replaces.
+    User(&'a str),
+    /// A built-in, which saving cannot replace — `by_name` prefers
+    /// built-ins, so the saved file would simply never be found.
+    Builtin(&'a str),
+}
+
+/// Does this name already belong to something?
+///
+/// Compared through the same tidying `save` applies on the way to a
+/// filename, because that is what decides whether two names are the same
+/// file. Comparing the raw strings would miss "my look?" landing on top of
+/// "my look_" — which is exactly the collision nobody would predict.
+fn name_clash<'a>(name: &str, presets: &'a [PresetEntry]) -> Option<Clash<'a>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let wanted = vizz_mod::library::sanitize(name);
+    let hit = presets
+        .iter()
+        .find(|p| vizz_mod::library::sanitize(&p.name) == wanted)?;
+    Some(if hit.builtin {
+        Clash::Builtin(&hit.name)
+    } else {
+        Clash::User(&hit.name)
+    })
+}
+
+/// Warnings in the panel. Warm, matching the modulation marker's family
+/// rather than shouting red — this is "look at this", not "something
+/// broke".
+const WARN_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+
+#[cfg(test)]
+mod save_name_tests {
+    use super::*;
+
+    fn entries() -> Vec<PresetEntry> {
+        vec![
+            PresetEntry {
+                name: "Butterfly".into(),
+                builtin: true,
+                about: Some("a built-in".into()),
+            },
+            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None },
+            // As it appears on disk having been saved from "night/shift":
+            // the separator was rewritten on the way to a filename.
+            PresetEntry { name: "night_shift".into(), builtin: false, about: None },
+        ]
+    }
+
+    /// Saving used to overwrite in silence. A night's work is one
+    /// mistyped name away from gone, and the only warning was a line of
+    /// small print that said it happens in general rather than that it is
+    /// about to happen now.
+    #[test]
+    fn a_name_already_in_use_is_recognised() {
+        let e = entries();
+        assert!(matches!(name_clash("warehouse 2am", &e), Some(Clash::User(_))));
+        assert!(name_clash("warehouse 3am", &e).is_none());
+        // Nothing typed is not a collision with anything.
+        assert!(name_clash("", &e).is_none());
+        assert!(name_clash("   ", &e).is_none());
+    }
+
+    /// Two names are the same preset when they land on the same file, and
+    /// that is decided after tidying. Comparing the raw strings would miss
+    /// the one collision nobody could predict — a punctuation mark that
+    /// the filesystem will not take being rewritten onto an existing name.
+    #[test]
+    fn names_that_tidy_to_the_same_file_are_the_same_preset() {
+        let e = entries();
+        // Different punctuation, same file: both become "night_shift".
+        assert!(matches!(name_clash("night?shift", &e), Some(Clash::User(_))));
+        assert!(matches!(name_clash("night/shift", &e), Some(Clash::User(_))));
+        // And leading or trailing space is not a different preset.
+        assert!(matches!(name_clash("  warehouse 2am  ", &e), Some(Clash::User(_))));
+    }
+
+    /// A preset saved under a built-in's name writes successfully and can
+    /// then never be recalled: `by_name` prefers the built-in, so the file
+    /// is simply never looked at. Reported separately because "you will
+    /// replace this" and "this will do nothing" call for different
+    /// answers.
+    #[test]
+    fn a_builtins_name_is_flagged_as_unusable_rather_than_as_a_replacement() {
+        let e = entries();
+        match name_clash("Butterfly", &e) {
+            Some(Clash::Builtin(n)) => assert_eq!(n, "Butterfly"),
+            _ => panic!("a built-in's name was not recognised as one"),
+        }
+    }
 }
 
 /// Room for a handful of presets before the list scrolls. Smaller than the
@@ -857,7 +1184,7 @@ fn params_section(
     // whole fits rather than the list merely being bounded — a window
     // that runs past the bottom edge hides its own footer too.
     let screen_h = ui.ctx().input(|i| i.raw.screen_rect).map_or(720.0, |r| r.height());
-    let total = registry.iter().filter(|(_, d)| !is_transport(&d.addr)).count();
+    let total = registry.iter().filter(|(_, d)| !is_transport(d)).count();
     // Provisional, only to decide whether to say "scroll for more"; the
     // binding measurement happens below, once the header has been laid
     // out and the cursor is where the list will actually start.
@@ -936,6 +1263,9 @@ fn params_section(
                         if name == "camera" {
                             camera_buttons(ui, registry);
                         }
+                        if name == "room" {
+                            room_buttons(ui, registry);
+                        }
                     });
             }
         });
@@ -981,14 +1311,14 @@ impl Group<'_> {
 /// reads as something that changes the picture, and people reasonably
 /// took them for point-cloud settings. A parameter in the wrong company
 /// is worse than a parameter you have to go one screen to find.
-fn is_transport(addr: &str) -> bool {
-    addr.starts_with("/scene/") || addr == "/preset/recall"
+fn is_transport(def: &vizz_params::ParamDef) -> bool {
+    def.transport
 }
 
 fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
     let mut out: Vec<Group<'_>> = Vec::new();
     for (id, def) in registry.iter() {
-        if is_transport(&def.addr) {
+        if is_transport(def) {
             continue;
         }
         let name = def
@@ -1043,6 +1373,55 @@ fn camera_buttons(ui: &mut egui::Ui, registry: &ParamRegistry) {
     });
 }
 
+/// The room's canonical setup: the screen *is* the front face.
+///
+/// The room's half-extents are already derived from the camera's frustum,
+/// so its opening tracks the output aspect automatically — change the
+/// output size and the front face still lands exactly on the frame edge,
+/// with no numbers to redial.
+///
+/// What that derivation cannot do is fix where you are standing. The
+/// illusion is that the frame edge is the opening, and it only reads that
+/// way square-on: orbit or pan away and you are looking at a box from an
+/// angle, which is a different and perfectly good look but not this one.
+/// So the button neutralises the camera as well as setting the room —
+/// setting half of it and leaving the illusion broken would make the
+/// button look like it does not work.
+fn room_buttons(ui: &mut egui::Ui, registry: &ParamRegistry) {
+    if !ui
+        .button("screen is the front face")
+        .on_hover_text(
+            "square the camera up and open the room to exactly the frame — \
+             follows the output size on its own",
+        )
+        .clicked()
+    {
+        return;
+    }
+    for (addr, value) in [
+        // Square-on: the only orientation where the frame edge and the
+        // opening coincide.
+        ("/camera/orbit", 0.0),
+        ("/camera/elevation", 0.0),
+        ("/camera/pan_x", 0.0),
+        ("/camera/pan_y", 0.0),
+        // Visible, and a box rather than a tunnel.
+        ("/room/brightness", 0.7),
+        ("/room/converge", 0.35),
+        // A vanishing point off-centre is the other way to break the
+        // window reading.
+        ("/room/vanish_x", 0.0),
+        ("/room/vanish_y", 0.0),
+        // Cloud inside the room rather than pressed against its face.
+        ("/room/anchor", 0.35),
+        ("/room/embed", 1.0),
+    ] {
+        if let Some(id) = registry.id(addr) {
+            registry.set(id, value);
+        }
+    }
+}
+
 /// Approximate row height, for deciding whether the list will be cut.
 /// Only drives a label, so being a pixel or two out costs nothing.
 const PARAM_ROW_H: f32 = 21.0;
@@ -1073,6 +1452,18 @@ fn param_row(
         // slider needs; filtered results are flat, so they keep it.
         let label = def.addr.trim_start_matches('/');
         let short = label.split_once('/').map_or(label, |(_, rest)| rest);
+
+        // Global rather than part of a look. A preset does not capture
+        // these and recalling one leaves them alone, which is correct —
+        // the master and the blend time belong to the performer and the
+        // room, not to the picture — but entirely invisible until now.
+        // "Why didn't my preset restore the master" is a bug report about
+        // a feature working as designed, and this line is the answer.
+        if vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()) {
+            ui.colored_label(GLOBAL_COLOR, "g").on_hover_text(
+                "global — presets and scenes leave this alone, so it stays where you put it",
+            );
+        }
 
         let driven = modulation.drives(&def.addr);
         if driven {
@@ -1121,9 +1512,9 @@ fn param_row(
         if def.labels.is_none() {
             let narrowed = ranges.is_narrowed(&def.addr);
             let (label, hint) = if narrowed {
-                ("↔", "restore the full range")
+                ("<>", "restore the full range")
             } else {
-                ("→←", "narrow the slider around this value for finer control")
+                ("><", "narrow the slider around this value for finer control")
             };
             if ui
                 .add(egui::Button::new(label).small().selected(narrowed))
@@ -1148,18 +1539,24 @@ fn param_row(
         } else {
             "route lfo1 to this parameter"
         };
-        if ui
+    // Modulation cannot reach transport: the engine reads fire, blend time,
+    // curve and autopilot from `target()`, which modulation never touches,
+    // so a route there is inert. Offering the button and then drawing the
+    // "modulated" marker beside it was the app claiming to do something it
+    // had no path to do.
+    if !is_transport(def)
+        && ui
             .add(egui::Button::new("mod").small().selected(routed))
             .on_hover_text(hint)
             .clicked()
-        {
-            modulation.toggle_route(lfo1, &def.addr, 0.25);
-        }
+    {
+        modulation.toggle_route(lfo1, &def.addr, 0.25);
+    }
 
         if !state.midi.available {
             return;
         }
-        let learning = state.midi.learn_target.as_deref() == Some(def.addr.as_str());
+        let learning = state.midi.learning(&def.addr);
         match state.midi.map.source_for(&def.addr) {
             Some(source) => {
                 if ui
@@ -1177,7 +1574,8 @@ fn param_row(
             }
             None => {
                 if ui.small_button("learn").clicked() {
-                    actions.set_learn_target = Some(Some(def.addr.clone()));
+                    actions.set_learn_target =
+                        Some(Some(vizz_midi::LearnTarget::param(def.addr.clone())));
                 }
             }
         }
@@ -1187,3 +1585,9 @@ fn param_row(
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
 /// as "something else is touching this" at a glance.
 const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+
+/// Marks a parameter that presets do not capture. Cool against the
+/// modulation marker's warm, since the two appear side by side and mean
+/// unrelated things: one is "something else is moving this", the other is
+/// "nothing else will touch this".
+const GLOBAL_COLOR: egui::Color32 = egui::Color32::from_rgb(120, 170, 220);

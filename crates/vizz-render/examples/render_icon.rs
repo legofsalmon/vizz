@@ -101,6 +101,10 @@ fn main() {
         cloud_b: 1.0,
         cloud_morph: 0.0,
         room: room.placement(0.35, 0.0),
+        gravity: Default::default(),
+        gravity_radius: Default::default(),
+        gravity_amount: Default::default(),
+        palette_rows: [4.0, 0.0, 0.0, 0.0],
     };
     let post_uniforms = PostUniforms {
         trail: 0.0,

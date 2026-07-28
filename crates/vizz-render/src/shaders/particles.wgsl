@@ -30,6 +30,16 @@ struct Uniforms {
     cloud_b: f32,       // slot index for the B cloud
     cloud_morph: f32,   // 0 = A, 1 = B
     room: RoomPlace,
+    // Gravity wells. xyz is the centre, w is the signed strength:
+    // positive pulls in, negative pushes away.
+    gravity: array<vec4<f32>, 4>,
+    // Reach of each well, and the master amount in .w of the second.
+    gravity_radius: vec4<f32>,
+    gravity_amount: vec4<f32>,
+    /// How many palette rows hold a real ramp. Rows past this are empty
+    /// and read back black, so the index saturates here rather than
+    /// sweeping the field into one.
+    palette_rows: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -79,6 +89,11 @@ fn room_place(p: vec3<f32>) -> vec4<f32> {
 }
 // Trajectory lookup: one texel per point, row-major, attractors stacked.
 @group(0) @binding(1) var t_attractor: texture_2d<f32>;
+/// Colour ramps, one row per palette. Must match `palette::LUT_W` and
+/// `palette::PALETTES`.
+const PALETTE_W: u32 = 256u;
+const PALETTE_ROWS: u32 = 16u;
+@group(0) @binding(2) var t_palette: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -88,12 +103,42 @@ struct VsOut {
 
 const TAU: f32 = 6.28318530718;
 
-// Dave Hoskins-style hash without sine: stable across GPUs.
-fn hash11(p: f32) -> f32 {
-    var x = fract(p * 0.1031);
-    x = x * (x + 33.33);
-    x = x * (x + x);
-    return fract(x);
+// Per-particle randomness, hashed from the *integer* index.
+//
+// This was a float hash, `fract(p * 0.1031)` with `p` the particle index
+// as an f32, and it collapsed. At index 500,000 the product is around
+// 51,550, where the f32 ulp is 2^-8 — so `fract` can take at most 256
+// distinct values there, on any conforming GPU. All four hashes were the
+// same function of the same index, so they collapsed together: measured
+// 37.3k distinct particles out of 60k at the default count, and 52.2k out
+// of 500,000. Above roughly fifty thousand the count control bought no
+// new particles at all, only repeats drawn exactly on top of each other —
+// which, with additive blending, made the field hotter rather than denser
+// and pushed it into the tone-map shoulder.
+//
+// An integer mixer has no such cliff: every index gives a distinct hash
+// across the whole range, and it costs about what the float multiplies
+// did. Stable across GPUs, which is why it is a mixer rather than
+// anything involving sine.
+fn hash_u32(x: u32) -> u32 {
+    var h = x;
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return h;
+}
+
+// One of four independent streams for a particle, in 0..1.
+//
+// Interleaved as `pi * 4 + stream` rather than hashing the index four
+// times with different salts: the mixer decorrelates adjacent inputs, so
+// consecutive slots give independent results, and one multiply-add is
+// cheaper than four different constants. 24 bits of mantissa is well
+// past what any of these drive.
+fn hash01(pi: u32, stream: u32) -> f32 {
+    return f32(hash_u32(pi * 4u + stream) >> 8u) * (1.0 / 16777216.0);
 }
 
 fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
@@ -253,32 +298,32 @@ fn slot_tint(mode: u32, h: f32, t: f32) -> vec3<f32> {
 
 // --- Colour -----------------------------------------------------------
 
-// Inigo Quilez cosine gradients: color = a + b*cos(TAU*(c*t + d)). Four
-// coefficients describe a whole smooth ramp, it costs one cosine, and it
-// loops seamlessly — which matters because the drive value wraps.
+// One row of the palette bank, read by index.
+//
+// These were four cosine gradients written into this function. The maths
+// was elegant and the format was useless: `a + b*cos(TAU*(c*t + d))`
+// describes a ramp beautifully and nobody can export one, while every
+// palette anyone actually has is a list of colours. The built-ins are now
+// baked from exactly those coefficients into the same texture a loaded
+// palette lands in, so the shipped looks are unchanged and the shader
+// cannot tell the two apart.
+//
+// `textureLoad` with a manual lerp rather than a filtered sample: this
+// runs in the vertex stage, where filtered sampling is the restricted
+// path and a plain load is not, and it saves a bind-group entry.
 fn cos_palette(id: u32, t: f32) -> vec3<f32> {
-    switch id {
-        // Full spectrum.
-        case 1u: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(1.0) * t + vec3<f32>(0.0, 0.33, 0.67)));
-        }
-        // Amber through magenta: warm, reads well on a dark stage.
-        case 2u: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(1.0) * t + vec3<f32>(0.0, 0.10, 0.20)));
-        }
-        // Teal / green / gold.
-        case 3u: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(1.0, 1.0, 0.5) * t + vec3<f32>(0.8, 0.90, 0.30)));
-        }
-        // Two-tone red/blue: the most graphic of the set.
-        default: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(2.0, 1.0, 0.0) * t + vec3<f32>(0.5, 0.20, 0.25)));
-        }
-    }
+    let w = f32(PALETTE_W);
+    // The drive value wraps, so the ramp has to as well — sampling past
+    // the end must come back to the start rather than clamp, or a slow
+    // gradient shows a hard seam once per revolution.
+    let x = fract(t) * w;
+    let i0 = u32(floor(x)) % PALETTE_W;
+    let i1 = (i0 + 1u) % PALETTE_W;
+    let f = x - floor(x);
+    let row = i32(min(id, max(u32(u.palette_rows.x), 1u)));
+    let a = textureLoad(t_palette, vec2<i32>(i32(i0), row), 0).rgb;
+    let b = textureLoad(t_palette, vec2<i32>(i32(i1), row), 0).rgb;
+    return mix(a, b, f);
 }
 
 // Cosine palettes are fully saturated by construction, so
@@ -292,7 +337,12 @@ fn mix_sat(c: vec3<f32>, sat: f32) -> vec3<f32> {
 // Palette 0 is the original HSV colouring, so the default look is
 // unchanged and `/particles/hue` still means what it used to. Above 0 the
 // index crossfades on through the cosine gradients.
-fn palette_color(idx: f32, t: f32, sat: f32, hue: f32) -> vec3<f32> {
+fn palette_color(idx_raw: f32, t: f32, sat: f32, hue: f32) -> vec3<f32> {
+    // Saturate on the last written row. Without this the fader's upper
+    // travel crossfades into unwritten rows, which are zeroed texels — the
+    // field fades to black over most of the control's throw and there is
+    // nothing on screen to say the rows are empty.
+    let idx = clamp(idx_raw, 0.0, u.palette_rows.x);
     let hsv = hsv2rgb(vec3<f32>(fract(hue + t), sat, 1.0));
     if (idx <= 0.0) {
         return hsv;
@@ -330,11 +380,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     );
     let off = offsets[corner];
 
-    let fpi = f32(pi);
-    let h1 = hash11(fpi + 0.123);
-    let h2 = hash11(fpi + 7.456);
-    let h3 = hash11(fpi + 3.789);
-    let h4 = hash11(fpi + 9.321);
+    let h1 = hash01(pi, 0u);
+    let h2 = hash01(pi, 1u);
+    let h3 = hash01(pi, 2u);
+    let h4 = hash01(pi, 3u);
 
     // Blend between adjacent modes so `shape` sweeps continuously rather
     // than cutting — a swept knob is playable, a stepped one is not.
@@ -376,6 +425,12 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // Slow breathing keeps the field alive with every control parked.
     let radius = length(p);
     p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
+
+    // Gravity. Applied after the shape is final and before the room, so
+    // it deforms the object rather than the set: a well that dragged the
+    // room's own geometry around would break the forced perspective, and
+    // the whole point of the layer is that it acts *on* the cloud.
+    p = apply_gravity(p);
 
     // Associate the object with the room. Done here, after the shape is
     // final and before the projection, so everything upstream — spin,
@@ -432,6 +487,50 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     out.pos = clip4;
     out.uv = off;
     out.color = col;
+    return out;
+}
+
+// Attractors and deflectors, as a displacement of the finished shape.
+//
+// A displacement rather than a simulation, deliberately. Every particle
+// here is derived from its index with no state carried between frames —
+// that is what makes the count free to change and the whole field
+// scrubbable — and integrating velocities would throw all of that away
+// for the sake of physics nobody is checking. What a VJ wants from a
+// gravity well is that the cloud bends around it, and bending is a
+// function of position.
+//
+// The falloff is `r^2 / (d^2 + r^2)`: one at the centre, a half at the
+// radius, and asymptotically nothing beyond. Smooth everywhere, no
+// singularity to divide by, and no discontinuity at the edge of the
+// well's reach — a hard cutoff shows up as a visible shell in the cloud.
+fn apply_gravity(p: vec3<f32>) -> vec3<f32> {
+    let amount = u.gravity_amount.x;
+    if (amount <= 0.001) {
+        return p;
+    }
+    var out = p;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let well = u.gravity[i];
+        let strength = well.w;
+        if (abs(strength) <= 0.001) {
+            continue;
+        }
+        let r = max(u.gravity_radius[i], 0.01);
+        let d = out - well.xyz;
+        let d2 = dot(d, d);
+        let falloff = (r * r) / (d2 + r * r);
+        // Normalising by the distance rather than with `normalize` keeps
+        // a particle sitting exactly on the centre from producing a NaN
+        // and taking the whole draw with it.
+        let dir = d / sqrt(max(d2, 1e-6));
+        // Positive strength pulls in, so the sign reads the way the word
+        // "attractor" does. Clamped to the distance so a strong well
+        // gathers particles at its centre instead of flinging them out
+        // the far side, which reads as an explosion rather than gravity.
+        let travel = min(strength * falloff * amount, sqrt(d2));
+        out = out - dir * travel;
+    }
     return out;
 }
 
