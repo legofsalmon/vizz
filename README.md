@@ -4,7 +4,7 @@ Realtime generative visuals for VJing. Native Rust + wgpu (Metal on macOS,
 Vulkan/DX12 on Windows), built to feed Resolume / TouchDesigner / MadMapper
 over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 
-**Status: phase 8 — presets and the panel rework.** A procedural particle field
+**Status: phase 9 — inputs.** A procedural particle field
 rendered into a fixed-resolution master texture and published over
 **Syphon** on macOS (zero-copy) and **NDI** on the network (async
 readback, never stalls the renderer).
@@ -29,7 +29,12 @@ parameters and marks the ones being modulated; the stripped-back
 screen. There is health monitoring and a headless benchmark mode, and both
 outputs work windowed *and* headless.
 
-Spout is the notable gap.
+It also **takes video and geometry in**, not just out: NDI video from
+another machine or app, and **live point clouds** streamed as PLY over TCP
+or watched from a file, which morph against loaded scans and attractors
+like any other cloud.
+
+Spout is the notable gap. Windows is built and tested in CI.
 
 ## Install (macOS, no developer tools)
 
