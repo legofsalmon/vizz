@@ -140,10 +140,27 @@ fn candidate_paths() -> Vec<PathBuf> {
 }
 
 /// A running Syphon server publishing vizz's master texture.
+/// `MTLPixelFormatBGRA8Unorm`. The non-sRGB sibling of the master
+/// texture's format, which is what Syphon receivers expect.
+const MTL_PIXEL_FORMAT_BGRA8UNORM: usize = 80;
+
 pub struct SyphonSender {
     server: *mut AnyObject,
     name: String,
     flipped: bool,
+    /// Non-sRGB view of the master texture, created once and reused.
+    ///
+    /// Syphon's convention is that a published texture holds display-ready
+    /// bytes and receivers sample it as plain BGRA8. The master texture is
+    /// `Bgra8UnormSrgb`, so publishing it directly tells the receiver the
+    /// bytes are sRGB: it linearises them, its own output re-encodes, and
+    /// that double decode turns bright additive output into a white
+    /// rectangle. The window preview looked correct throughout, because
+    /// nothing about the render was wrong.
+    ///
+    /// A view of the same memory with the format Metal reports as plain
+    /// BGRA8 hands over exactly the bytes we wrote.
+    linear_view: *mut AnyObject,
 }
 
 // The raw pointer blocks the auto-impl. Syphon servers are documented
@@ -181,6 +198,7 @@ impl SyphonSender {
             server,
             name: name.to_owned(),
             flipped,
+            linear_view: std::ptr::null_mut(),
         })
     }
 }
@@ -212,6 +230,18 @@ impl FrameSender for SyphonSender {
         let queue_ptr = hal_queue.as_raw() as *const _ as *mut AnyObject;
         let texture_ptr = hal_texture.raw_handle() as *const _ as *mut AnyObject;
 
+        // Created on first publish and kept: the master texture lives for
+        // the run, and building a view every frame would be pure waste.
+        if self.linear_view.is_null() {
+            self.linear_view = unsafe {
+                msg_send![texture_ptr, newTextureViewWithPixelFormat: MTL_PIXEL_FORMAT_BGRA8UNORM]
+            };
+            if self.linear_view.is_null() {
+                bail!("could not create a non-sRGB Metal view for Syphon");
+            }
+        }
+        let publish_ptr = self.linear_view;
+
         autoreleasepool(|_| unsafe {
             let cmd_buf: *mut AnyObject = msg_send![queue_ptr, commandBuffer];
             if cmd_buf.is_null() {
@@ -219,7 +249,7 @@ impl FrameSender for SyphonSender {
             }
             let _: () = msg_send![
                 self.server,
-                publishFrameTexture: texture_ptr,
+                publishFrameTexture: publish_ptr,
                 onCommandBuffer: cmd_buf,
                 imageRegion: region,
                 flipped: Bool::new(self.flipped),
@@ -233,6 +263,10 @@ impl FrameSender for SyphonSender {
 impl Drop for SyphonSender {
     fn drop(&mut self) {
         autoreleasepool(|_| unsafe {
+            // `newTextureView…` returns +1, so this owns a reference.
+            if !self.linear_view.is_null() {
+                let _: () = msg_send![self.linear_view, release];
+            }
             let _: () = msg_send![self.server, stop];
             let _: () = msg_send![self.server, release];
         });
