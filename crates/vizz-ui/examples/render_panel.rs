@@ -227,6 +227,13 @@ fn main() {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
         ctx.begin_pass(input);
+        // A name already in use, typed into the save field. Saving used to
+        // replace a preset in silence, and the warning that now says so is
+        // only reviewable if the preview renders the state it appears in —
+        // an empty field draws the one case where there is nothing to say.
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("preset-save-name"), "Warehouse 2".to_string())
+        });
         let _ = panel::draw(&ctx, &registry, &state, &mut modulation, &mut Default::default());
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);

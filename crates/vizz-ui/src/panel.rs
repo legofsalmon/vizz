@@ -989,9 +989,10 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
             }
         });
 
+    let id = egui::Id::new("preset-save-name");
+    let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+    let clash = name_clash(&name, &state.presets);
     ui.horizontal(|ui| {
-        let id = egui::Id::new("preset-save-name");
-        let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
         let editing = ui.add(
             egui::TextEdit::singleline(&mut name)
                 .hint_text("name")
@@ -1000,14 +1001,138 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         // Enter saves, so the whole thing is type-and-go rather than
         // type-then-aim.
         let entered = editing.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let clicked = ui.button("save").on_hover_text("store the current look").clicked();
-        if (entered || clicked) && !name.trim().is_empty() {
+        // The button says which of the two things it is about to do. A
+        // button labelled "save" that silently replaces a night's work is
+        // the failure this is here to prevent, and a confirmation dialog
+        // is the wrong shape for it — this screen is used with one hand
+        // while something is on the projector.
+        let (label, hover) = match clash {
+            Some(Clash::Builtin(n)) => (
+                "save",
+                format!("{n} is a built-in and cannot be replaced — choose another name"),
+            ),
+            Some(Clash::User(n)) => ("replace", format!("overwrite the saved look {n}")),
+            None => ("save", "store the current look".to_string()),
+        };
+        // Blocked rather than warned when it would be useless: a preset
+        // saved under a built-in's name is written to disk successfully
+        // and can then never be recalled, because `by_name` prefers the
+        // built-in. Succeeding and doing nothing is worse than refusing.
+        let blocked = matches!(clash, Some(Clash::Builtin(_)));
+        let button = ui.add_enabled(!blocked, egui::Button::new(label)).on_hover_text(hover);
+        if (entered || button.clicked()) && !blocked && !name.trim().is_empty() {
             actions.preset_save = Some(name.clone());
             name.clear();
         }
-        ui.memory_mut(|m| m.data.insert_temp(id, name));
     });
-    ui.small("saving overwrites a preset of the same name; built-ins cannot be replaced");
+    match clash {
+        Some(Clash::Builtin(n)) => ui.colored_label(
+            WARN_COLOR,
+            format!("{n} is a built-in — saving over it would hide your look, not replace it"),
+        ),
+        Some(Clash::User(n)) => {
+            ui.colored_label(WARN_COLOR, format!("this replaces the saved look {n}"))
+        }
+        None => ui.small("names are tidied for the filesystem, so \"a/b\" becomes \"a_b\""),
+    };
+    ui.memory_mut(|m| m.data.insert_temp(id, name));
+}
+
+/// What an existing preset of the same name is.
+enum Clash<'a> {
+    /// A user preset, which saving replaces.
+    User(&'a str),
+    /// A built-in, which saving cannot replace — `by_name` prefers
+    /// built-ins, so the saved file would simply never be found.
+    Builtin(&'a str),
+}
+
+/// Does this name already belong to something?
+///
+/// Compared through the same tidying `save` applies on the way to a
+/// filename, because that is what decides whether two names are the same
+/// file. Comparing the raw strings would miss "my look?" landing on top of
+/// "my look_" — which is exactly the collision nobody would predict.
+fn name_clash<'a>(name: &str, presets: &'a [PresetEntry]) -> Option<Clash<'a>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let wanted = vizz_mod::library::sanitize(name);
+    let hit = presets
+        .iter()
+        .find(|p| vizz_mod::library::sanitize(&p.name) == wanted)?;
+    Some(if hit.builtin {
+        Clash::Builtin(&hit.name)
+    } else {
+        Clash::User(&hit.name)
+    })
+}
+
+/// Warnings in the panel. Warm, matching the modulation marker's family
+/// rather than shouting red — this is "look at this", not "something
+/// broke".
+const WARN_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+
+#[cfg(test)]
+mod save_name_tests {
+    use super::*;
+
+    fn entries() -> Vec<PresetEntry> {
+        vec![
+            PresetEntry {
+                name: "Butterfly".into(),
+                builtin: true,
+                about: Some("a built-in".into()),
+            },
+            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None },
+            // As it appears on disk having been saved from "night/shift":
+            // the separator was rewritten on the way to a filename.
+            PresetEntry { name: "night_shift".into(), builtin: false, about: None },
+        ]
+    }
+
+    /// Saving used to overwrite in silence. A night's work is one
+    /// mistyped name away from gone, and the only warning was a line of
+    /// small print that said it happens in general rather than that it is
+    /// about to happen now.
+    #[test]
+    fn a_name_already_in_use_is_recognised() {
+        let e = entries();
+        assert!(matches!(name_clash("warehouse 2am", &e), Some(Clash::User(_))));
+        assert!(name_clash("warehouse 3am", &e).is_none());
+        // Nothing typed is not a collision with anything.
+        assert!(name_clash("", &e).is_none());
+        assert!(name_clash("   ", &e).is_none());
+    }
+
+    /// Two names are the same preset when they land on the same file, and
+    /// that is decided after tidying. Comparing the raw strings would miss
+    /// the one collision nobody could predict — a punctuation mark that
+    /// the filesystem will not take being rewritten onto an existing name.
+    #[test]
+    fn names_that_tidy_to_the_same_file_are_the_same_preset() {
+        let e = entries();
+        // Different punctuation, same file: both become "night_shift".
+        assert!(matches!(name_clash("night?shift", &e), Some(Clash::User(_))));
+        assert!(matches!(name_clash("night/shift", &e), Some(Clash::User(_))));
+        // And leading or trailing space is not a different preset.
+        assert!(matches!(name_clash("  warehouse 2am  ", &e), Some(Clash::User(_))));
+    }
+
+    /// A preset saved under a built-in's name writes successfully and can
+    /// then never be recalled: `by_name` prefers the built-in, so the file
+    /// is simply never looked at. Reported separately because "you will
+    /// replace this" and "this will do nothing" call for different
+    /// answers.
+    #[test]
+    fn a_builtins_name_is_flagged_as_unusable_rather_than_as_a_replacement() {
+        let e = entries();
+        match name_clash("Butterfly", &e) {
+            Some(Clash::Builtin(n)) => assert_eq!(n, "Butterfly"),
+            _ => panic!("a built-in's name was not recognised as one"),
+        }
+    }
 }
 
 /// Room for a handful of presets before the list scrolls. Smaller than the
