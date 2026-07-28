@@ -143,6 +143,7 @@ fn main() {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         modulated: Vec::new(),
+        output: Default::default(),
         clouds: vec![
             "lorenz".into(),
             "aizawa".into(),

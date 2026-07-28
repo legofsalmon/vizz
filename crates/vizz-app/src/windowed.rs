@@ -57,6 +57,13 @@ struct RenderState {
     senders: Vec<Box<dyn vizz_io::FrameSender>>,
     post: PostChain,
     gui: Gui,
+    /// Eight-bit copy of the master, present only when the master is
+    /// wide. Syphon and NDI are BGRA8 by definition, so a float master has
+    /// to be converted before it can leave — and doing that here, once,
+    /// keeps every sender unaware that the option exists.
+    publish: Option<OutputTarget>,
+    /// Blit used for that conversion, with its bind group.
+    publish_blit: Option<(BlitPass, wgpu::BindGroup)>,
 }
 
 struct App {
@@ -150,11 +157,29 @@ impl App {
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&ctx.device, &config);
 
-        // Scenes draw into the master target at the fixed output resolution;
-        // the swapchain only ever sees the preview blit.
-        let output = OutputTarget::new(&ctx.device, self.opts.width, self.opts.height);
-        let post = PostChain::new(&ctx, self.opts.width, self.opts.height,
-            vizz_render::output::OUTPUT_FORMAT);
+        // Render size and output size are separate things.
+        //
+        // The output is what receivers get and what the aspect is judged
+        // against. The render size is how large the scene and the post
+        // chain actually work, and above 1× the downscale into the master
+        // is free anti-aliasing — which is the only thing that reliably
+        // cleans up a field of one-pixel sprites. Below 1× it buys frame
+        // rate on a machine that cannot hold the budget.
+        let s = crate::settings::load();
+        let [ow, oh] = s.output_or([self.opts.width, self.opts.height]);
+        let [rw, rh] = s.render_size([ow, oh]);
+        let master_format = if s.wide_output {
+            vizz_render::output::WIDE_FORMAT
+        } else {
+            vizz_render::output::OUTPUT_FORMAT
+        };
+        log::info!(
+            "output {ow}x{oh} ({}), rendering at {rw}x{rh} ({:.2}x)",
+            if s.wide_output { "16-bit float" } else { "8-bit" },
+            s.scale()
+        );
+        let output = OutputTarget::with_format(&ctx.device, ow, oh, master_format);
+        let post = PostChain::new(&ctx, rw, rh, master_format);
         // The scene draws into the post chain's HDR buffer, not straight
         // to the master: feedback needs somewhere to accumulate.
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
@@ -173,6 +198,17 @@ impl App {
         let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
+        // Only allocated when it is needed: an eight-bit master is already
+        // publishable, and a second full-size texture is not something to
+        // carry for a setting that is off.
+        let (publish, publish_blit) = if output.publishable() {
+            (None, None)
+        } else {
+            let target = OutputTarget::new(&ctx.device, ow, oh);
+            let pass = BlitPass::new(&ctx.device, vizz_render::output::OUTPUT_FORMAT);
+            let bind = pass.bind(&ctx.device, &output.view);
+            (Some(target), Some((pass, bind)))
+        };
         let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
         let mut gui = Gui::new(&window, &ctx.device, config.format);
         gui.visible = self.opts.show_gui;
@@ -190,7 +226,61 @@ impl App {
             senders,
             post,
             gui,
+            publish,
+            publish_blit,
         })
+    }
+
+    /// Rebuild the master, the post chain and the publish path.
+    ///
+    /// Done between frames, not during one: every texture here is bound
+    /// into pipelines that this frame's encoder may already reference, and
+    /// swapping one mid-frame is a use-after-free the validation layer
+    /// catches and a release build does not.
+    ///
+    /// Rebuilding rather than requiring a restart because output
+    /// resolution is a thing you get wrong once at a venue, and finding
+    /// out means relaunching into whatever the app opens with.
+    fn apply_output_setup(&mut self, setup: vizz_ui::OutputSetup) {
+        let Some(state) = &mut self.state else { return };
+        let ow = setup.width.clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        let oh = setup.height.clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        let scale = setup
+            .scale
+            .clamp(crate::settings::MIN_SCALE, crate::settings::MAX_SCALE);
+        let rw = ((ow as f32 * scale) as u32).clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        let rh = ((oh as f32 * scale) as u32).clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        let format = if setup.wide {
+            vizz_render::output::WIDE_FORMAT
+        } else {
+            vizz_render::output::OUTPUT_FORMAT
+        };
+
+        state.output = OutputTarget::with_format(&state.ctx.device, ow, oh, format);
+        state.post = PostChain::new(&state.ctx, rw, rh, format);
+        state.blit_bind = state.blit.bind(&state.ctx.device, &state.output.view);
+        let (publish, publish_blit) = if state.output.publishable() {
+            (None, None)
+        } else {
+            let target = OutputTarget::new(&state.ctx.device, ow, oh);
+            let pass = BlitPass::new(&state.ctx.device, vizz_render::output::OUTPUT_FORMAT);
+            let bind = pass.bind(&state.ctx.device, &state.output.view);
+            (Some(target), Some((pass, bind)))
+        };
+        state.publish = publish;
+        state.publish_blit = publish_blit;
+
+        let mut s = crate::settings::load();
+        s.output_size = Some([ow, oh]);
+        s.render_scale = Some(scale);
+        s.wide_output = setup.wide;
+        if let Err(e) = crate::settings::save(&s) {
+            log::warn!("could not remember the output setup: {e:#}");
+        }
+        log::info!(
+            "output now {ow}x{oh} ({}), rendering at {rw}x{rh} ({scale:.2}x)",
+            if setup.wide { "16-bit float" } else { "8-bit" }
+        );
     }
 
     fn load_dropped_cloud(&mut self, path: std::path::PathBuf) {
@@ -324,6 +414,14 @@ impl App {
         // `&mut state.gui` and reading `state.scene` inside its argument
         // list would borrow the same struct twice.
         let cloud_names: Vec<String> = state.scene.cloud_names().to_vec();
+        // What the panel shows as current, so the controls reflect what is
+        // actually allocated rather than what was last typed.
+        let output_setup = vizz_ui::OutputSetup {
+            width: state.output.width,
+            height: state.output.height,
+            scale: crate::settings::load().scale(),
+            wide: !state.output.publishable(),
+        };
         let panel_state = PanelState {
             // try_lock: the update thread holds this for microseconds, but
             // the render thread still never waits on it.
@@ -354,6 +452,7 @@ impl App {
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
             clouds: cloud_names,
+            output: output_setup,
             // What the renderer is actually using this frame, so a fader
             // whose parameter is being modulated can show where the value
             // has really gone rather than only where its handle sits.
@@ -382,6 +481,7 @@ impl App {
             &mut self.engine.modulation,
             [state.config.width, state.config.height],
         );
+        let mut pending_output = None;
         match actions {
             Ok(actions) => {
                 apply_audio_actions(
@@ -401,6 +501,10 @@ impl App {
                         .registry
                         .set(self.params.preset_recall, slot as f32);
                 }
+                // Deferred to after this frame: rebuilding the master
+                // mid-encoder would swap a texture the encoder already
+                // references.
+                pending_output = actions.output_setup;
                 apply_panel_actions(
                     actions,
                     &self.midi_shared,
@@ -412,14 +516,37 @@ impl App {
             Err(e) => log::error!("GUI draw failed: {e:#}"),
         }
 
+        // Convert the wide master down for the senders, in this frame's
+        // encoder so it is ordered behind the render that produced it.
+        if let (Some(target), Some((pass, bind))) = (&state.publish, &state.publish_blit) {
+            pass.draw(
+                &mut encoder,
+                &target.view,
+                bind,
+                state.output.aspect(),
+                target.width,
+                target.height,
+            );
+        }
+
         state.ctx.queue.submit([encoder.finish()]);
 
         // After submit: senders enqueue work ordered behind this frame.
+        //
+        // A wide master cannot be published directly — Syphon hands out an
+        // IOSurface and NDI's fourcc is literally BGRA — so it is
+        // converted into an eight-bit copy first. The conversion is the
+        // same blit the preview uses, which is why it costs one pass and
+        // no new shader.
+        let publish = match &state.publish {
+            Some(p) => &p.texture,
+            None => &state.output.texture,
+        };
         outputs::publish_all(
             &mut state.senders,
             &state.ctx.device,
             &state.ctx.queue,
-            &state.output.texture,
+            publish,
         );
 
         state.window.pre_present_notify();
@@ -431,6 +558,11 @@ impl App {
             log::info!("{}", snap.log_line());
         }
         state.window.request_redraw();
+        // Now that the frame is presented and its encoder is retired,
+        // it is safe to swap the textures out from under the next one.
+        if let Some(setup) = pending_output {
+            self.apply_output_setup(setup);
+        }
     }
 }
 

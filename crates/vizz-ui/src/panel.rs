@@ -48,6 +48,28 @@ pub struct PanelActions {
     pub ranges_changed: bool,
     /// What the scene grid asks for this frame.
     pub grid: crate::grid_view::GridActions,
+    /// Output size, render scale and master precision, when changed.
+    pub output_setup: Option<OutputSetup>,
+}
+
+/// How big the output is and how hard it is worked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutputSetup {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub wide: bool,
+}
+
+impl Default for OutputSetup {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+            wide: false,
+        }
+    }
 }
 
 /// One entry in the preset list.
@@ -86,6 +108,8 @@ pub struct PanelState {
     /// what `/cloud/a` and `/cloud/b` are actually selecting — the numbers
     /// alone are meaningless once anything has been loaded.
     pub clouds: Vec<String>,
+    /// Current output size, render scale and precision.
+    pub output: OutputSetup,
     /// Beat clock, mirrored for the performance layout (which does not get
     /// a mutable ModEngine).
     pub bpm: f32,
@@ -164,7 +188,11 @@ pub fn draw(
             egui::CollapsingHeader::new("outputs")
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| outputs_section(ui, state));
+                .show(ui, |ui| {
+                    outputs_section(ui, state);
+                    ui.separator();
+                    output_setup_section(ui, state, &mut actions);
+                });
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
@@ -781,6 +809,78 @@ fn sparkline(ui: &mut egui::Ui, samples: &[f32], budget_ms: f32) {
     ));
 }
 
+/// Output size, render scale, and how many bits the master carries.
+///
+/// The two sizes are genuinely different things and were conflated into
+/// one before: what receivers get, and how hard the renderer works to
+/// produce it. Above 1× the extra pixels are thrown away by the downscale
+/// into the master, which is exactly the point — that averaging is the
+/// only thing that reliably cleans up a field of one-pixel sprites, and it
+/// costs fill rate rather than complexity.
+fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let mut next = state.output;
+
+    ui.horizontal(|ui| {
+        ui.label("output");
+        ui.add(
+            egui::DragValue::new(&mut next.width)
+                .range(160..=7680)
+                .speed(8.0),
+        );
+        ui.label("x");
+        ui.add(
+            egui::DragValue::new(&mut next.height)
+                .range(160..=7680)
+                .speed(8.0),
+        );
+    });
+    // The sizes people actually output at, because typing 3840 by dragging
+    // a spinner is nobody's idea of a control.
+    ui.horizontal(|ui| {
+        for (label, w, h) in [
+            ("720p", 1280, 720),
+            ("1080p", 1920, 1080),
+            ("1440p", 2560, 1440),
+            ("4K", 3840, 2160),
+        ] {
+            if ui.small_button(label).clicked() {
+                next.width = w;
+                next.height = h;
+            }
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("render");
+        ui.add(
+            egui::Slider::new(&mut next.scale, 0.25..=2.0)
+                .suffix("x")
+                .clamping(egui::SliderClamping::Always),
+        )
+        .on_hover_text("above 1 supersamples: draw larger, let the downscale anti-alias");
+    });
+    // Say the resulting size out loud. A multiplier is easy to set and
+    // hard to picture, and the number that matters for whether the machine
+    // will hold 60 fps is the pixel count, not the factor.
+    let rw = (next.width as f32 * next.scale) as u32;
+    let rh = (next.height as f32 * next.scale) as u32;
+    ui.small(format!("drawing {rw} x {rh}"));
+
+    ui.checkbox(&mut next.wide, "16-bit float master")
+        .on_hover_text("smoother gradients, at double the master's bandwidth");
+    if next.wide {
+        // Not a warning about something broken — a statement of what it
+        // costs. Syphon and NDI are BGRA8 by definition, so this cannot
+        // reach them without a conversion, and pretending otherwise would
+        // be discovered as a black frame at a venue.
+        ui.small("Syphon and NDI still receive 8-bit; a conversion pass is added for them");
+    }
+
+    if next != state.output {
+        actions.output_setup = Some(next);
+    }
+}
+
 fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     ui.label(egui::RichText::new("Outputs").strong());
     if state.outputs.is_empty() {
@@ -966,6 +1066,9 @@ fn params_section(
                         if name == "camera" {
                             camera_buttons(ui, registry);
                         }
+                        if name == "room" {
+                            room_buttons(ui, registry);
+                        }
                     });
             }
         });
@@ -1071,6 +1174,55 @@ fn camera_buttons(ui: &mut egui::Ui, registry: &ParamRegistry) {
             }
         }
     });
+}
+
+/// The room's canonical setup: the screen *is* the front face.
+///
+/// The room's half-extents are already derived from the camera's frustum,
+/// so its opening tracks the output aspect automatically — change the
+/// output size and the front face still lands exactly on the frame edge,
+/// with no numbers to redial.
+///
+/// What that derivation cannot do is fix where you are standing. The
+/// illusion is that the frame edge is the opening, and it only reads that
+/// way square-on: orbit or pan away and you are looking at a box from an
+/// angle, which is a different and perfectly good look but not this one.
+/// So the button neutralises the camera as well as setting the room —
+/// setting half of it and leaving the illusion broken would make the
+/// button look like it does not work.
+fn room_buttons(ui: &mut egui::Ui, registry: &ParamRegistry) {
+    if !ui
+        .button("screen is the front face")
+        .on_hover_text(
+            "square the camera up and open the room to exactly the frame — \
+             follows the output size on its own",
+        )
+        .clicked()
+    {
+        return;
+    }
+    for (addr, value) in [
+        // Square-on: the only orientation where the frame edge and the
+        // opening coincide.
+        ("/camera/orbit", 0.0),
+        ("/camera/elevation", 0.0),
+        ("/camera/pan_x", 0.0),
+        ("/camera/pan_y", 0.0),
+        // Visible, and a box rather than a tunnel.
+        ("/room/brightness", 0.7),
+        ("/room/converge", 0.35),
+        // A vanishing point off-centre is the other way to break the
+        // window reading.
+        ("/room/vanish_x", 0.0),
+        ("/room/vanish_y", 0.0),
+        // Cloud inside the room rather than pressed against its face.
+        ("/room/anchor", 0.35),
+        ("/room/embed", 1.0),
+    ] {
+        if let Some(id) = registry.id(addr) {
+            registry.set(id, value);
+        }
+    }
 }
 
 /// Approximate row height, for deciding whether the list will be cut.

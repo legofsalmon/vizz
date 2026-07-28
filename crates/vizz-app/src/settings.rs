@@ -33,6 +33,56 @@ pub struct Settings {
     /// honest outcome — the alternative is a copy that silently stops
     /// matching the file it came from.
     pub clouds: Vec<String>,
+    /// What receivers get, in pixels. `None` keeps whatever the command
+    /// line asked for, so a scripted venue is not overridden by a choice
+    /// made on a laptop last week.
+    pub output_size: Option<[u32; 2]>,
+    /// Internal render resolution as a multiple of the output.
+    ///
+    /// Above 1 is supersampling: draw larger and let the downscale do the
+    /// anti-aliasing, which is the one thing that reliably cleans up a
+    /// field of one-pixel sprites. Below 1 buys frame rate on a machine
+    /// that cannot hold the budget. 1.0 renders at output size.
+    pub render_scale: Option<f32>,
+    /// Sixteen-bit float master instead of eight-bit.
+    ///
+    /// Off by default and deliberately so: it doubles the master's
+    /// bandwidth, and neither Syphon nor NDI can publish it without a
+    /// conversion pass, so it costs on both sides for a difference only
+    /// visible in slow gradients.
+    pub wide_output: bool,
+}
+
+/// Clamps for the settings above.
+///
+/// Bounds rather than free numbers because these allocate GPU memory: a
+/// mistyped 100000 would try to allocate forty gigabytes and take the app
+/// down, at which point the setting that did it is already saved and it
+/// fails again on the next launch.
+pub const MIN_DIM: u32 = 160;
+pub const MAX_DIM: u32 = 7680;
+pub const MIN_SCALE: f32 = 0.25;
+pub const MAX_SCALE: f32 = 2.0;
+
+impl Settings {
+    /// Output size, clamped, falling back to the caller's default.
+    pub fn output_or(&self, fallback: [u32; 2]) -> [u32; 2] {
+        let [w, h] = self.output_size.unwrap_or(fallback);
+        [w.clamp(MIN_DIM, MAX_DIM), h.clamp(MIN_DIM, MAX_DIM)]
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.render_scale.unwrap_or(1.0).clamp(MIN_SCALE, MAX_SCALE)
+    }
+
+    /// Internal render size for a given output size.
+    pub fn render_size(&self, output: [u32; 2]) -> [u32; 2] {
+        let s = self.scale();
+        [
+            ((output[0] as f32 * s) as u32).clamp(MIN_DIM, MAX_DIM),
+            ((output[1] as f32 * s) as u32).clamp(MIN_DIM, MAX_DIM),
+        ]
+    }
 }
 
 pub fn path() -> PathBuf {
@@ -110,6 +160,7 @@ mod tests {
         save(&Settings {
             audio_device: Some("Scarlett 2i2".into()),
             clouds: vec!["/scans/torso.ply".into()],
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(load().audio_device.as_deref(), Some("Scarlett 2i2"));
@@ -126,5 +177,29 @@ mod tests {
         assert_eq!(load(), Settings::default());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sizes allocate GPU memory, so nothing may reach the renderer
+    /// unclamped. A mistyped dimension that got through would fail to
+    /// allocate, take the app down, and — because the setting is already
+    /// saved — do it again on every launch after that.
+    #[test]
+    fn sizes_are_clamped_before_they_reach_the_renderer() {
+        let wild = Settings {
+            output_size: Some([100_000, 1]),
+            render_scale: Some(50.0),
+            ..Default::default()
+        };
+        let out = wild.output_or([1920, 1080]);
+        assert_eq!(out, [MAX_DIM, MIN_DIM]);
+        assert_eq!(wild.scale(), MAX_SCALE);
+        let render = wild.render_size(out);
+        assert!(render.iter().all(|d| (MIN_DIM..=MAX_DIM).contains(d)), "{render:?}");
+
+        // And an untouched settings file renders at exactly the size asked
+        // for, so this whole mechanism is invisible until used.
+        let plain = Settings::default();
+        assert_eq!(plain.output_or([1920, 1080]), [1920, 1080]);
+        assert_eq!(plain.render_size([1920, 1080]), [1920, 1080]);
     }
 }

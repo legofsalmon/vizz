@@ -22,7 +22,10 @@ use winit::window::Window;
 
 pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
-pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState, PresetEntry};
+pub use panel::{
+    AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
+    PresetEntry,
+};
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
 /// the same code the app runs rather than a copy of it.
@@ -376,6 +379,7 @@ mod tests {
             audio_auto_bpm: false,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -411,6 +415,7 @@ mod tests {
             audio_auto_bpm: false,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 120.0,
             focus_filter: false,
             grid: Default::default(),
@@ -449,6 +454,7 @@ mod tests {
             audio_auto_bpm: false,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -489,6 +495,7 @@ mod tests {
             audio_auto_bpm: false,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -531,6 +538,7 @@ mod tests {
             audio_auto_bpm: true,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 128.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -608,6 +616,7 @@ mod tests {
             audio_auto_bpm: false,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -640,6 +649,7 @@ mod tests {
             audio_auto_bpm: false,
             modulated: Vec::new(),
             clouds: Vec::new(),
+            output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
