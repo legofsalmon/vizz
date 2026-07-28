@@ -143,6 +143,12 @@ fn main() {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         modulated: Vec::new(),
+        clouds: vec![
+            "lorenz".into(),
+            "aizawa".into(),
+            "torso-scan".into(),
+            "empty".into(),
+        ],
         bpm: 128.0,
         focus_filter: false,
         grid: preview_grid(),

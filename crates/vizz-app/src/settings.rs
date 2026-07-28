@@ -25,6 +25,14 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     /// Input device name, or `None` for the system default.
     pub audio_device: Option<String>,
+    /// Point clouds loaded into the loadable slots, in slot order.
+    ///
+    /// Paths rather than the point data: a scan is megabytes and the file
+    /// is the thing the user actually owns. The cost is that moving or
+    /// deleting the file empties the slot on next start, which is the
+    /// honest outcome — the alternative is a copy that silently stops
+    /// matching the file it came from.
+    pub clouds: Vec<String>,
 }
 
 pub fn path() -> PathBuf {
@@ -77,6 +85,15 @@ pub fn save_audio_device(name: Option<&str>) -> Result<()> {
     save(&s)
 }
 
+/// Remember which cloud is in which slot. Same read-modify-write reason as
+/// the audio device: this is called from a drop handler, and dropping a
+/// scan onto the window should not forget your soundcard.
+pub fn save_clouds(clouds: &[String]) -> Result<()> {
+    let mut s = load();
+    s.clouds = clouds.to_vec();
+    save(&s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +109,7 @@ mod tests {
 
         save(&Settings {
             audio_device: Some("Scarlett 2i2".into()),
+            clouds: vec!["/scans/torso.ply".into()],
         })
         .unwrap();
         assert_eq!(load().audio_device.as_deref(), Some("Scarlett 2i2"));
@@ -100,6 +118,8 @@ mod tests {
         // never having chosen.
         save_audio_device(None).unwrap();
         assert_eq!(load().audio_device, None);
+        // ...and the unrelated field it did not mention survived.
+        assert_eq!(load().clouds, vec!["/scans/torso.ply".to_string()]);
 
         // A corrupt file falls back rather than refusing to start.
         std::fs::write(path(), b"{not json").unwrap();

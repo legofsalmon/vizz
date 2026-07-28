@@ -182,33 +182,53 @@ impl ParticleScene {
     /// arriving at a venue to find the app refuses to open because a scan
     /// has a malformed header is precisely the wrong trade.
     pub fn load_clouds(&mut self, ctx: &GpuContext, paths: &[std::path::PathBuf]) {
-        use crate::attractor::{SLOT_AIZAWA, SLOTS};
-        // Slots 0 and 1 hold the built-in attractors.
-        let first_free = SLOT_AIZAWA + 1;
         for (i, path) in paths.iter().enumerate() {
-            let slot = first_free + i;
-            if slot >= SLOTS {
+            let Some(slot) = Self::loadable_slot(i) else {
                 log::warn!(
                     "ignoring {}: only {} loadable cloud slots",
                     path.display(),
-                    SLOTS - first_free
+                    Self::LOADABLE
                 );
                 break;
-            }
-            match crate::pointcloud::load(path) {
-                Ok(mut points) => {
-                    crate::pointcloud::normalize(&mut points);
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("cloud")
-                        .to_string();
-                    log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
-                    self.attractors.load_slot(ctx, slot, &points, &name);
-                }
-                Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+            };
+            if let Err(e) = self.load_cloud(ctx, slot, path) {
+                log::warn!("could not load {}: {e:#}", path.display());
             }
         }
+    }
+
+    /// How many slots can hold a file. The first two are the built-in
+    /// attractors and are generated, not loaded.
+    pub const LOADABLE: usize = crate::attractor::SLOTS - (crate::attractor::SLOT_AIZAWA + 1);
+
+    /// The slot holding the `i`th loadable cloud, if there is one.
+    pub fn loadable_slot(i: usize) -> Option<usize> {
+        let slot = crate::attractor::SLOT_AIZAWA + 1 + i;
+        (slot < crate::attractor::SLOTS).then_some(slot)
+    }
+
+    /// Load one file into one slot, returning the name it was given.
+    ///
+    /// Split out of [`Self::load_clouds`] so a cloud can arrive after
+    /// startup — dropped onto the window — through exactly the same path
+    /// as one named on the command line. Two routes to the same thing
+    /// drift apart, and then only one of them gets the bug fix.
+    pub fn load_cloud(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        path: &std::path::Path,
+    ) -> anyhow::Result<String> {
+        let mut points = crate::pointcloud::load(path)?;
+        crate::pointcloud::normalize(&mut points);
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("cloud")
+            .to_string();
+        log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
+        self.attractors.load_slot(ctx, slot, &points, &name);
+        Ok(name)
     }
 
     /// Replace one cloud slot's contents, for a live stream.

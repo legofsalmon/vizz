@@ -87,6 +87,14 @@ struct App {
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
     live_revision: u64,
+    /// Paths currently in the loadable cloud slots, in slot order.
+    /// Mirrors what is on the GPU so a drop can be persisted without
+    /// asking the renderer what it is holding.
+    clouds: Vec<String>,
+    /// Which loadable slot the next drop fills. Round-robin, so dropping
+    /// repeatedly cycles through the slots rather than always replacing
+    /// the same one — the point of having two is comparing them.
+    next_cloud: usize,
 }
 
 impl App {
@@ -185,6 +193,39 @@ impl App {
         })
     }
 
+    fn load_dropped_cloud(&mut self, path: std::path::PathBuf) {
+        let Some(state) = &mut self.state else { return };
+        let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
+            return;
+        };
+        match state.scene.load_cloud(&state.ctx, slot, &path) {
+            Ok(name) => {
+                // A dropped file that will not parse is a warning, never a
+                // crash — the same trade the command-line path makes.
+                // Arriving at a venue and having the app die because a
+                // scan has a malformed header is the wrong failure.
+                let text = path.display().to_string();
+                if self.clouds.len() <= self.next_cloud {
+                    self.clouds.resize(self.next_cloud + 1, String::new());
+                }
+                self.clouds[self.next_cloud] = text;
+                self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
+                if let Err(e) = crate::settings::save_clouds(&self.clouds) {
+                    log::warn!("could not remember the loaded clouds: {e:#}");
+                }
+                log::info!("loaded {name} into cloud slot {slot}");
+                // Point the shape at what just arrived, so a drop shows
+                // something. Loading a cloud nobody can see is the same as
+                // not loading it, and hunting for the slot index
+                // afterwards is exactly the fiddling a drop avoids.
+                let p = &*self.params;
+                p.registry.set(p.cloud_a, slot as f32);
+                p.registry.set(p.cloud_morph, 0.0);
+            }
+            Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+        }
+    }
+
     fn redraw(&mut self) {
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
@@ -279,6 +320,10 @@ impl App {
             .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
             .collect();
         refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+        // Collected before the panel draws: the render call takes
+        // `&mut state.gui` and reading `state.scene` inside its argument
+        // list would borrow the same struct twice.
+        let cloud_names: Vec<String> = state.scene.cloud_names().to_vec();
         let panel_state = PanelState {
             // try_lock: the update thread holds this for microseconds, but
             // the render thread still never waits on it.
@@ -308,6 +353,7 @@ impl App {
             },
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
+            clouds: cloud_names,
             // What the renderer is actually using this frame, so a fader
             // whose parameter is being modulated can show where the value
             // has really gone rather than only where its handle sits.
@@ -432,6 +478,14 @@ impl ApplicationHandler for App {
                     state.surface.configure(&state.ctx.device, &state.config);
                 }
             }
+            // Drag a cloud onto the window and it loads.
+            //
+            // A drop rather than a file dialog, for two reasons. It is the
+            // gesture people already use for this — you have the scan in a
+            // folder and you want it in the visualiser — and a dialog
+            // would mean a new dependency that pulls GTK in on Linux, for
+            // a modal window that is strictly more work to operate.
+            WindowEvent::DroppedFile(path) => self.load_dropped_cloud(path),
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
@@ -698,7 +752,7 @@ fn apply_panel_actions(
     }
 }
 
-pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
+pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // MIDI mappings load before the engine starts so a learned setup is
     // live from the first frame.
     let map = match vizz_midi::load_map(&opts.midi_map_path) {
@@ -729,6 +783,18 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
     let event_loop = EventLoop::new()?;
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
+    // A file that has since been moved or deleted is dropped from the list
+    // rather than being retried and warned about on every start.
+    let cloud_paths: Vec<String> = if opts.clouds.is_empty() {
+        crate::settings::load()
+            .clouds
+            .into_iter()
+            .filter(|p| std::path::Path::new(p).exists())
+            .collect()
+    } else {
+        opts.clouds.iter().map(|p| p.display().to_string()).collect()
+    };
+    opts.clouds = cloud_paths.iter().map(std::path::PathBuf::from).collect();
     let mut engine = FrameEngine::new(
         Arc::clone(&params),
         vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
@@ -748,6 +814,10 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
         focus_filter: false,
         live: None,
         live_revision: 0,
+        // Clouds named on the command line win; otherwise restore whatever
+        // was last dropped, so a set survives a restart.
+        clouds: cloud_paths,
+        next_cloud: 0,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

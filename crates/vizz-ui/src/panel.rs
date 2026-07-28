@@ -82,6 +82,10 @@ pub struct PanelState {
     /// Empty when nothing is reporting, in which case controls fall back
     /// to drawing only what the user set.
     pub modulated: Vec<f32>,
+    /// Name of the cloud in each slot, in slot order. Lets the panel say
+    /// what `/cloud/a` and `/cloud/b` are actually selecting — the numbers
+    /// alone are meaningless once anything has been loaded.
+    pub clouds: Vec<String>,
     /// Beat clock, mirrored for the performance layout (which does not get
     /// a mutable ModEngine).
     pub bpm: f32,
@@ -161,6 +165,10 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| outputs_section(ui, state));
+            egui::CollapsingHeader::new("clouds")
+                .id_salt("clouds")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| clouds_section(ui, state));
             egui::CollapsingHeader::new("background")
                 .id_salt("background")
                 .default_open(state.expand_sections)
@@ -267,6 +275,28 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
         ui.hyperlink_to("download", vizz_update::RELEASES_URL);
     });
     ui.separator();
+}
+
+/// What is in each cloud slot, and how to put something there.
+///
+/// `/cloud/a` and `/cloud/b` are indices, and an index is unreadable once
+/// anything has been loaded — "2" says nothing about whether that is the
+/// torso scan or the room. This is the legend for those two sliders.
+///
+/// The drop hint is here rather than nowhere because a gesture with no
+/// visible affordance is a gesture nobody discovers. That was the whole
+/// lesson of the rename living only on a right-click menu.
+fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
+    for (i, name) in state.clouds.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.small(format!("{i}"));
+            ui.label(name);
+        });
+    }
+    if state.clouds.is_empty() {
+        ui.small("no cloud slots");
+    }
+    ui.small("drag a .ply, .xyz, .csv or .pts onto the window to load one");
 }
 
 /// The background colour, and whether there is one at all.
@@ -1074,6 +1104,18 @@ fn param_row(
         let label = def.addr.trim_start_matches('/');
         let short = label.split_once('/').map_or(label, |(_, rest)| rest);
 
+        // Global rather than part of a look. A preset does not capture
+        // these and recalling one leaves them alone, which is correct —
+        // the master and the blend time belong to the performer and the
+        // room, not to the picture — but entirely invisible until now.
+        // "Why didn't my preset restore the master" is a bug report about
+        // a feature working as designed, and this line is the answer.
+        if vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()) {
+            ui.colored_label(GLOBAL_COLOR, "g").on_hover_text(
+                "global — presets and scenes leave this alone, so it stays where you put it",
+            );
+        }
+
         let driven = modulation.drives(&def.addr);
         if driven {
             // A slider that will not stay where you put it is otherwise
@@ -1187,3 +1229,9 @@ fn param_row(
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
 /// as "something else is touching this" at a glance.
 const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+
+/// Marks a parameter that presets do not capture. Cool against the
+/// modulation marker's warm, since the two appear side by side and mean
+/// unrelated things: one is "something else is moving this", the other is
+/// "nothing else will touch this".
+const GLOBAL_COLOR: egui::Color32 = egui::Color32::from_rgb(120, 170, 220);
