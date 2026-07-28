@@ -4,11 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vizz — realtime generative visuals for VJing</title>
+<link rel="icon" type="image/png" href="/img/icon.png">
+<link rel="apple-touch-icon" href="/img/icon.png">
 <meta name="description" content="Realtime generative visuals for VJing. Native Rust and wgpu, feeding Resolume, TouchDesigner and MadMapper over Syphon and NDI, played live over OSC and MIDI.">
 <meta property="og:title" content="vizz">
 <meta property="og:description" content="Realtime generative visuals for VJing. Syphon and NDI out, OSC and MIDI in, live point clouds.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='11' fill='none' stroke='%237fb5ff' stroke-width='3'/></svg>">
 <style>
   /* One file, no build step, no CDN: Vercel serves it as-is and the page
      works offline and on a venue's hostile wifi. */
@@ -51,7 +52,13 @@
     -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), transparent 92%);
   }
   header > .wrap { position: relative; }
-  h1 { font-size: 56px; letter-spacing: -.03em; margin: 0 0 8px; }
+  /* The app icon beside the wordmark: the same picture the Dock shows, so
+     the download and the thing downloaded are recognisably one item. */
+  h1 {
+    font-size: 56px; letter-spacing: -.03em; margin: 0 0 8px;
+    display: flex; align-items: center; gap: .3em;
+  }
+  .mark { width: 1em; height: 1em; border-radius: 22%; flex: none; }
   .tag { font-size: 20px; color: var(--dim); margin: 0 0 32px; max-width: 42em; }
   .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .btn {
@@ -125,7 +132,8 @@
 
 <header>
   <div class="wrap">
-    <h1>vizz</h1>
+    <h1><img class="mark" src="img/icon.png" width="256" height="256"
+      alt="" decoding="async">vizz</h1>
     <p class="tag">Realtime generative visuals for VJing. Native Rust and wgpu,
       feeding Resolume, TouchDesigner and MadMapper over Syphon and NDI,
       played live over OSC and MIDI.</p>
@@ -221,6 +229,21 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.7.0">0.7.0</a></div>
+      <ul>
+        <li><strong>The scene grid.</strong> Sixteen pads, and moving between
+          two of them takes musical time rather than a frame. The blend is in
+          the parameters and the point-cloud geometry, not a dissolve between
+          two renders — one field moving, not two at half opacity. Beat-synced
+          autopilot walks the filled pads on its own.</li>
+        <li><strong>Audio sensitivity in decibels</strong>, and much higher by
+          default — the top band barely moved before. <code>fit</code> sets
+          every band from what is actually arriving.</li>
+        <li><strong>An app icon</strong>, rendered by vizz itself.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.6.1">0.6.1</a></div>

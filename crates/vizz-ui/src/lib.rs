@@ -7,6 +7,7 @@
 //! and never introduces a synchronisation point.
 
 pub mod graph_view;
+pub mod grid_view;
 pub mod panel;
 pub mod performance;
 mod renderer;
@@ -290,6 +291,7 @@ impl Gui {
             bpm: state.bpm,
             bar_phase: state.bar_phase,
             presets: &preset_names,
+            grid: &state.grid,
         };
         let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         if perf.exit {
@@ -317,6 +319,9 @@ impl Gui {
         // the same path the app already handles.
         let mut actions = PanelActions::default();
         actions.audio.tapped = perf.tapped;
+        // The grid on the performance layout drives the same actions the
+        // panel's does, so storing a scene mid-set works from either.
+        actions.grid = perf.grid;
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -365,6 +370,7 @@ mod tests {
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
             bar_phase: 0.0,
         };
@@ -396,6 +402,7 @@ mod tests {
             audio_auto_bpm: false,
             bpm: 120.0,
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
         presets: vec![
                 PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) },
@@ -432,6 +439,7 @@ mod tests {
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
             bar_phase: 0.0,
         };
@@ -469,6 +477,7 @@ mod tests {
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
             bar_phase: 0.0,
         };
@@ -497,6 +506,7 @@ mod tests {
                 device: Some("Scarlett 2i2".into()),
                 bands: [0.8, 0.4, 0.2, 0.1],
                 raw: [0.13, 0.1, 0.05, 0.01],
+                raw_peak: [0.21, 0.16, 0.08, 0.02],
                 level: 0.2,
                 detected_bpm: 128.0,
                 confidence: 0.7,
@@ -507,6 +517,7 @@ mod tests {
             bpm: 128.0,
             presets: Vec::new(),
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
             bar_phase: 0.05,
         };
@@ -516,6 +527,22 @@ mod tests {
         assert!(text.contains("tap"), "tap tempo missing: {text}");
         // Band edges are the filter control; they must be editable numbers.
         assert!(text.contains("30 Hz") && text.contains("110 Hz"), "band edges missing: {text}");
+        // Sensitivity reads in decibels, at the value the band actually
+        // carries. "×10" is not a quantity anyone can act on, and it was
+        // the thing that made the gain control look like it meant nothing.
+        // Asserting the number as well as the unit ties this to the
+        // shipped defaults, so raising one without the other is caught.
+        //
+        // Whitespace is collapsed first: egui emits a spin box's number
+        // and its suffix as separate galleys, so the collected text has
+        // them a couple of spaces apart rather than as one string.
+        let squashed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let first_band_db = format!("{:.1} dB", vizz_audio::default_bands()[0].gain_db());
+        assert!(
+            squashed.contains(&first_band_db),
+            "gain is not shown as {first_band_db}: {text}"
+        );
+        assert!(text.contains("fit"), "no way to set the gains from the input: {text}");
 
         // Disconnected must say so and explain the fix rather than showing
         // four dead meters.
@@ -556,6 +583,7 @@ mod tests {
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
             bar_phase: 0.0,
         };
@@ -585,6 +613,7 @@ mod tests {
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
+            grid: Default::default(),
             expand_sections: true,
             bar_phase: 0.0,
         };
@@ -602,16 +631,21 @@ mod tests {
 
     /// Drive the panel and return every string it drew.
     ///
-    /// Two details this has to get right, both learned the hard way:
-    /// without a `screen_rect` egui clips the whole window away and emits
-    /// nothing, and the first pass over a freshly-created Window only
-    /// measures it — real shapes appear on the second. The live app
-    /// renders continuously so it never notices, but a one-shot test does.
+    /// Three details this has to get right, all learned the hard way.
+    /// Without a `screen_rect` egui clips the whole window away and emits
+    /// nothing. The first pass over a freshly-created Window only measures
+    /// it — real shapes appear on the second; the live app renders
+    /// continuously so it never notices, but a one-shot test does. And the
+    /// screen has to be tall enough for the whole panel with every section
+    /// open at once, which no real window ever is: an egui window sizes to
+    /// its content and anything past the bottom edge is not drawn at all,
+    /// so a short screen here reports controls as missing that merely sit
+    /// below the fold.
     fn run_panel(ctx: &egui::Context, reg: &ParamRegistry, state: &PanelState) -> String {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
-                egui::vec2(900.0, 700.0),
+                egui::vec2(900.0, 1000.0),
             )),
             ..Default::default()
         };

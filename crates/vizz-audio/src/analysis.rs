@@ -38,22 +38,91 @@ impl Band {
     pub const fn new(lo_hz: f32, hi_hz: f32) -> Self {
         Self { lo_hz, hi_hz, gain: 1.0, attack: 0.005, release: 0.12 }
     }
+
+    /// A band whose sensitivity is given in decibels.
+    pub fn at_db(lo_hz: f32, hi_hz: f32, db: f32) -> Self {
+        Self { gain: db_to_linear(db), ..Self::new(lo_hz, hi_hz) }
+    }
+
+    pub fn gain_db(&self) -> f32 {
+        linear_to_db(self.gain)
+    }
+
+    pub fn set_gain_db(&mut self, db: f32) {
+        self.gain = db_to_linear(db);
+    }
+}
+
+/// Quietest gain the control offers. A band turned fully down should be
+/// off, not merely quiet, so this is far enough below unity to be silent
+/// against anything.
+pub const MIN_GAIN_DB: f32 = -24.0;
+/// Loudest. A line input running at a fraction of full scale needs a great
+/// deal of gain in the top band — see [`default_bands`] — and a ceiling
+/// that cannot reach it is a ceiling that makes the feature look broken.
+pub const MAX_GAIN_DB: f32 = 54.0;
+
+/// Where a band should peak once its gain is set: high enough to use the
+/// range, short of the clamp so transients still have somewhere to go.
+pub const TARGET_PEAK: f32 = 0.9;
+
+pub fn db_to_linear(db: f32) -> f32 {
+    10.0f32.powf(db.clamp(MIN_GAIN_DB, MAX_GAIN_DB) / 20.0)
+}
+
+/// Linear gain as decibels. Guards zero, which has no logarithm and would
+/// otherwise put `-inf` in a spin box.
+pub fn linear_to_db(gain: f32) -> f32 {
+    if gain <= 0.0 {
+        return MIN_GAIN_DB;
+    }
+    (20.0 * gain.log10()).clamp(MIN_GAIN_DB, MAX_GAIN_DB)
 }
 
 /// Four bands rather than a full analyser: enough to drive different
 /// parameters from different parts of a mix, few enough to stay playable.
+///
+/// The gains are in decibels because that is the unit a sensitivity
+/// control is read in everywhere else in audio, and because it is the unit
+/// that makes these numbers comparable to each other: the top band is not
+/// "ten" against the kick band's "six", it is fifteen decibels hotter, and
+/// that is a statement about how mixes are built rather than an arbitrary
+/// multiplier.
+///
+/// They are set so a band peaks near [`TARGET_PEAK`] on a track at a
+/// healthy input level. A band's RMS is a small fraction of full scale
+/// once the spectrum is split four ways — a few percent for the top band —
+/// so these are much larger than they look. Erring high is deliberate:
+/// too much gain shows up as a clipped meter you turn down, while too
+/// little shows up as visuals that barely move, which reads as the audio
+/// input not working at all. The `fit` button sets them from what is
+/// actually arriving, which is the answer for any particular rig.
 pub fn default_bands() -> [Band; BAND_COUNT] {
     [
         // Kick and sub. Narrow on purpose — widening this is the fastest
         // way to make everything pump at once.
-        Band { gain: 6.0, ..Band::new(30.0, 110.0) },
+        Band::at_db(30.0, 110.0, 18.0),
         // Bassline and low body.
-        Band { gain: 4.0, ..Band::new(110.0, 400.0) },
+        Band::at_db(110.0, 400.0, 18.0),
         // Vocals, snare, most melodic content.
-        Band { gain: 5.0, ..Band::new(400.0, 2000.0) },
-        // Hats and air. Quiet in most mixes, so it gets more gain.
-        Band { gain: 10.0, ..Band::new(2000.0, 12000.0) },
+        Band::at_db(400.0, 2000.0, 24.0),
+        // Hats and air. A few percent of full scale in most mixes, so it
+        // needs far more than the rest — this was the band that looked
+        // dead at the old defaults.
+        Band::at_db(2000.0, 12000.0, 34.0),
     ]
+}
+
+/// The gain that would put `peak` at [`TARGET_PEAK`], in decibels.
+///
+/// Returns `None` for a band with nothing in it: a silent input would
+/// otherwise ask for infinite gain, and the useful behaviour is to leave
+/// that band exactly as the performer set it.
+pub fn fit_gain_db(peak: f32) -> Option<f32> {
+    if !(peak > 1e-5) {
+        return None;
+    }
+    Some(linear_to_db(TARGET_PEAK / peak))
 }
 
 pub const BAND_COUNT: usize = 4;
@@ -302,5 +371,79 @@ mod tests {
         assert!(onset > 0.1, "onset produced no flux: {onset}");
         assert!(sustain < onset * 0.2, "sustain looked like an onset: {sustain} vs {onset}");
         assert!(release < onset * 0.2, "release looked like an onset: {release} vs {onset}");
+    }
+
+    /// The anchors anyone reading a dB number relies on: unity is 0, twice
+    /// is 6, ten times is 20. Get these wrong and every gain in the panel
+    /// is quietly mislabelled.
+    #[test]
+    fn decibels_convert_the_way_decibels_do() {
+        assert!((linear_to_db(1.0)).abs() < 1e-4, "unity is 0 dB");
+        assert!((linear_to_db(2.0) - 6.0206).abs() < 1e-3);
+        assert!((linear_to_db(10.0) - 20.0).abs() < 1e-3);
+        assert!((db_to_linear(0.0) - 1.0).abs() < 1e-4);
+        assert!((db_to_linear(20.0) - 10.0).abs() < 1e-3);
+        for db in [MIN_GAIN_DB, -6.0, 0.0, 12.0, 33.0, MAX_GAIN_DB] {
+            let round_trip = linear_to_db(db_to_linear(db));
+            assert!((round_trip - db).abs() < 1e-3, "{db} dB came back as {round_trip}");
+        }
+    }
+
+    /// Zero has no logarithm. A band dragged to the bottom, or one that has
+    /// never seen signal, must not put `-inf` in a spin box.
+    #[test]
+    fn a_silent_gain_has_a_finite_label() {
+        assert_eq!(linear_to_db(0.0), MIN_GAIN_DB);
+        assert!(linear_to_db(-1.0).is_finite());
+        assert!(db_to_linear(f32::NEG_INFINITY).is_finite());
+        assert!(db_to_linear(1e9).is_finite());
+    }
+
+    /// `fit` has to actually land the band where it says: feed it a peak,
+    /// apply the gain it asks for, and the peak should sit at the target.
+    #[test]
+    fn fitting_a_gain_puts_the_peak_where_it_belongs() {
+        for peak in [0.5f32, 0.12, 0.02, 0.004] {
+            let db = fit_gain_db(peak).expect("a real peak should fit");
+            let landed = peak * db_to_linear(db);
+            assert!(
+                (landed - TARGET_PEAK).abs() < 0.02,
+                "peak {peak} fitted to {db} dB landed at {landed}"
+            );
+        }
+    }
+
+    /// Silence asks for infinite gain. The useful answer is to leave the
+    /// band alone rather than to drive noise up to full scale.
+    #[test]
+    fn fitting_silence_changes_nothing() {
+        assert_eq!(fit_gain_db(0.0), None);
+        assert_eq!(fit_gain_db(1e-9), None);
+        assert_eq!(fit_gain_db(-1.0), None);
+        assert_eq!(fit_gain_db(f32::NAN), None);
+    }
+
+    /// The complaint that started this: at the shipped gains the top band
+    /// barely moved on real material, so anything routed from it looked
+    /// broken. A band fed a level typical of its part of the spectrum has
+    /// to reach a useful fraction of the range — a modulation source stuck
+    /// near zero is one you cannot hear working.
+    #[test]
+    fn every_default_band_reaches_a_useful_level_on_a_typical_mix() {
+        // Rough per-band RMS for a track at a healthy input level. The top
+        // band really is this quiet, which is the whole point.
+        let typical = [0.10f32, 0.085, 0.055, 0.012];
+        for (i, band) in default_bands().iter().enumerate() {
+            let level = (typical[i] * band.gain).clamp(0.0, 1.0);
+            assert!(
+                level > 0.45,
+                "band {i} ({}–{} Hz, {:.0} dB) only reaches {level:.2}",
+                band.lo_hz,
+                band.hi_hz,
+                band.gain_db()
+            );
+            // And not so hot that it is pinned before the music starts.
+            assert!(level < 1.0, "band {i} is already clipped at typical levels");
+        }
     }
 }

@@ -376,14 +376,34 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     let audio = vizz_ui::AudioView {
         connected: true,
         device: Some("Scarlett 2i2".into()),
-        bands: [0.85, 0.42, 0.3, 0.12],
-        raw: [0.14, 0.1, 0.06, 0.01],
+        bands: [0.79, 0.67, 0.87, 0.60],
+        raw: [0.10, 0.085, 0.055, 0.012],
+        raw_peak: [0.16, 0.14, 0.09, 0.02],
         level: 0.22,
         detected_bpm: 128.0,
         confidence: 0.72,
         dropped: 0,
     };
+    // A grid part-way through a blend, so the preview shows the pad fill
+    // and the two highlights doing something rather than sixteen blanks.
+    let grid = {
+        let mut names = vec![None; vizz_ui::grid_view::SLOTS];
+        for (slot, name) in [(0, "intro"), (1, "build"), (2, "drop"), (3, "break"), (8, "outro")] {
+            names[slot] = Some(name.to_string());
+        }
+        vizz_ui::grid_view::GridView {
+            names,
+            current: Some(1),
+            in_flight: Some((2, 0.62)),
+            curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ..Default::default()
+        }
+    };
     let state = vizz_ui::PerformanceState {
+        grid: &grid,
         outputs: &[
             vizz_ui::OutputStatus { name: "syphon:vizz".into(), live: true },
             vizz_ui::OutputStatus { name: "ndi:vizz".into(), live: true },

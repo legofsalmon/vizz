@@ -12,15 +12,35 @@ use vizz_health::{HealthConfig, HealthMonitor};
 use vizz_params::{ParamDef, ParamRegistry};
 use vizz_ui::{MidiView, OutputStatus, PanelState, PresetEntry, panel};
 
-const W: u32 = 460;
+const DEFAULT_W: u32 = 460;
 /// A tall-ish window on a modest display. The panel has to stay usable at
 /// this height — the parameter list only ever grows, and a control you
 /// cannot scroll to is a control you do not have.
-const H: u32 = 900;
+const DEFAULT_H: u32 = 900;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Window size and whether to open every section, both overridable.
+///
+/// The tests draw the panel with all its sections open on a screen no real
+/// window matches. When one of them says a control is missing, the fastest
+/// way to find out whether it is missing or merely below the fold is to
+/// render at that exact size and look at it.
+///
+///     cargo run -p vizz-ui --example render_panel -- short.png 900 700 expand
+fn options() -> (u32, u32, bool) {
+    let arg = |n: usize, fallback: u32| {
+        std::env::args()
+            .nth(n)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(fallback)
+    };
+    let expand = std::env::args().any(|a| a == "expand");
+    (arg(2, DEFAULT_W), arg(3, DEFAULT_H), expand)
+}
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "panel.png".into());
+    let (w, h, expand) = options();
 
     // Mirrors the app's parameter table. Duplicated because it lives in
     // the binary crate, so keep it in step — the point of this preview is
@@ -65,6 +85,11 @@ fn main() {
         "/room/anchor",
         "/room/embed",
         "/master/dim",
+        "/scene/fire",
+        "/scene/time",
+        "/scene/curve",
+        "/scene/auto",
+        "/scene/bars",
     ] {
         // Labels where the app has them, so the preview shows names under
         // the stepped controls rather than a number that says nothing.
@@ -76,6 +101,8 @@ fn main() {
             "/fx/mirror" => def.labels(&["off", "x", "y", "quad"]),
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
+            "/scene/curve" => def.labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
+            "/scene/auto" => def.labels(&["off", "on"]),
             _ => def,
         });
     }
@@ -103,21 +130,13 @@ fn main() {
         midi: midi_view(),
         // A plausible live reading, so the preview shows the meters doing
         // something rather than four empty bars.
-        audio: vizz_ui::AudioView {
-            connected: true,
-            device: Some("Scarlett 2i2".into()),
-            bands: [0.82, 0.44, 0.31, 0.12],
-            raw: [0.14, 0.11, 0.06, 0.012],
-            level: 0.21,
-            detected_bpm: 128.0,
-            confidence: 0.71,
-            dropped: 0,
-        },
+        audio: audio_view(),
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         bpm: 128.0,
         focus_filter: false,
-        expand_sections: false,
+        grid: preview_grid(),
+        expand_sections: expand,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
             PresetEntry { name: "Butterfly".into(), builtin: true, about: None },
@@ -129,7 +148,7 @@ fn main() {
     let (device, queue) = gpu();
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("panel"),
-        size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -167,7 +186,7 @@ fn main() {
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),
-            egui::vec2(W as f32, H as f32),
+            egui::vec2(w as f32, h as f32),
         )),
         ..Default::default()
     };
@@ -191,12 +210,12 @@ fn main() {
 
     let mut enc = device.create_command_encoder(&Default::default());
     renderer
-        .render(&device, &queue, &mut enc, &view, &primitives, [W, H], out.pixels_per_point)
+        .render(&device, &queue, &mut enc, &view, &primitives, [w, h], out.pixels_per_point)
         .expect("panel render failed");
     queue.submit([enc.finish()]);
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
-    save_png(&device, &queue, &target, &path);
+    save_png(&device, &queue, &target, &path, w, h);
     println!("wrote {path}");
 }
 
@@ -220,12 +239,19 @@ fn gpu() -> (wgpu::Device, wgpu::Queue) {
     .expect("no device")
 }
 
-fn save_png(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, path: &str) {
+fn save_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    tex: &wgpu::Texture,
+    path: &str,
+    w: u32,
+    h: u32,
+) {
     const ALIGN: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded = (W * 4).div_ceil(ALIGN) * ALIGN;
+    let padded = (w * 4).div_ceil(ALIGN) * ALIGN;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("panel-readback"),
-        size: (padded * H) as u64,
+        size: (padded * h) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -240,7 +266,7 @@ fn save_png(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, pat
                 rows_per_image: None,
             },
         },
-        wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
     queue.submit([enc.finish()]);
 
@@ -252,14 +278,59 @@ fn save_png(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, pat
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.recv().unwrap().unwrap();
     let data = slice.get_mapped_range().unwrap();
-    let mut pixels = Vec::with_capacity((W * H * 4) as usize);
-    for row in 0..H as usize {
+    let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+    for row in 0..h as usize {
         let start = row * padded as usize;
-        pixels.extend_from_slice(&data[start..start + (W * 4) as usize]);
+        pixels.extend_from_slice(&data[start..start + (w * 4) as usize]);
     }
     drop(data);
     buffer.unmap();
-    image::RgbaImage::from_raw(W, H, pixels).unwrap().save(path).unwrap();
+    image::RgbaImage::from_raw(w, h, pixels).unwrap().save(path).unwrap();
+}
+
+/// A plausible live audio reading.
+///
+/// The envelopes are *computed* from the raw levels and the shipped gains
+/// rather than typed in beside them. Two hand-written arrays drift apart
+/// the moment a default changes, and a preview whose meters disagree with
+/// its own gain figures is worse than no preview — it is the one thing
+/// this is supposed to let you check.
+fn audio_view() -> vizz_ui::AudioView {
+    // Rough per-band RMS for a track at a healthy input level.
+    let raw = [0.10f32, 0.085, 0.055, 0.012];
+    let gains = vizz_audio::default_bands();
+    vizz_ui::AudioView {
+        connected: true,
+        device: Some("Scarlett 2i2".into()),
+        bands: std::array::from_fn(|i| (raw[i] * gains[i].gain).clamp(0.0, 1.0)),
+        raw,
+        // Peaks run a little above the running level, as they do live.
+        raw_peak: std::array::from_fn(|i| raw[i] * 1.6),
+        level: 0.21,
+        detected_bpm: 128.0,
+        confidence: 0.71,
+        dropped: 0,
+    }
+}
+
+/// A grid part-way through a blend, so the preview shows a filled pad, the
+/// arrived-at highlight and the fill of a transition in flight rather than
+/// sixteen identical blanks.
+fn preview_grid() -> vizz_ui::grid_view::GridView {
+    let mut names = vec![None; vizz_ui::grid_view::SLOTS];
+    for (slot, name) in [(0, "intro"), (1, "build"), (2, "drop"), (6, "outro")] {
+        names[slot] = Some(name.to_string());
+    }
+    vizz_ui::grid_view::GridView {
+        names,
+        current: Some(1),
+        in_flight: Some((2, 0.62)),
+        curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        ..Default::default()
+    }
 }
 
 /// A representative MIDI state for the preview: one device connected and

@@ -28,7 +28,23 @@ use vizz_params::ParamRegistry;
 ///
 /// `/preset/recall` is excluded because a preset containing it would fire
 /// another preset on load.
-pub const EXCLUDED: &[&str] = &["/master/dim", "/preset/recall"];
+///
+/// The `/scene/*` controls are excluded for the same reason and one worse.
+/// A scene cell is a captured preset, so a cell storing `/scene/fire`
+/// would fire a scene the moment it arrived — including itself, forever.
+/// The rest of them describe *how* you move between scenes, which belongs
+/// to the performer and the track rather than to the look being moved to:
+/// a scene that reset your blend time every time you reached it would be
+/// unplayable.
+pub const EXCLUDED: &[&str] = &[
+    "/master/dim",
+    "/preset/recall",
+    "/scene/fire",
+    "/scene/time",
+    "/scene/curve",
+    "/scene/auto",
+    "/scene/bars",
+];
 
 fn excluded(addr: &str) -> bool {
     EXCLUDED.contains(&addr)

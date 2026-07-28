@@ -47,6 +47,11 @@ pub struct AppParams {
     pub room_anchor: ParamId,
     pub room_embed: ParamId,
     pub preset_recall: ParamId,
+    pub scene_fire: ParamId,
+    pub scene_time: ParamId,
+    pub scene_curve: ParamId,
+    pub scene_auto: ParamId,
+    pub scene_bars: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
@@ -57,6 +62,11 @@ pub const MAX_PARTICLES: f32 = 500_000.0;
 /// parameter set is built once at startup and saving a preset must not
 /// reshape the registry underneath a running show.
 pub const MAX_PRESET_SLOT: f32 = 64.0;
+
+/// Highest slot `/scene/fire` will address. Slot 0 is "none" and the grid
+/// runs from 1, exactly as preset recall does, so a control resting at
+/// zero cannot fire a scene on the first frame.
+pub const SCENE_SLOTS: f32 = vizz_mod::scene::SLOTS as f32;
 
 impl AppParams {
     pub fn build() -> Self {
@@ -156,6 +166,28 @@ impl AppParams {
         // OSC for free.
         let preset_recall =
             b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
+        // The scene grid. Parameters rather than plain settings for the
+        // same reason recall is one: a pad controller addresses them for
+        // free, and there is one path to firing a scene rather than a UI
+        // path and a control path that can drift apart.
+        //
+        // Unsmoothed, all of them: a glided fire sweeps through every slot
+        // between here and there, firing each on the way.
+        let scene_fire = b.add(ParamDef::new("/scene/fire", 0.0, SCENE_SLOTS, 0.0));
+        // Transition length. Zero is a cut, which is why the range starts
+        // there rather than at some minimum that would put cuts out of a
+        // fader's reach.
+        let scene_time = b.add(ParamDef::new("/scene/time", 0.0, 30.0, 2.0));
+        let scene_curve = b.add(
+            ParamDef::new("/scene/curve", 0.0, 4.0, 1.0)
+                .labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
+        );
+        let scene_auto =
+            b.add(ParamDef::new("/scene/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
+        // Bars between autopilot steps. Down to a quarter bar, because a
+        // scene change on every beat is a legitimate effect and a minimum
+        // of one bar would rule it out.
+        let scene_bars = b.add(ParamDef::new("/scene/bars", 0.25, 16.0, 4.0));
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -198,6 +230,11 @@ impl AppParams {
             room_anchor,
             room_embed,
             preset_recall,
+            scene_fire,
+            scene_time,
+            scene_curve,
+            scene_auto,
+            scene_bars,
         }
     }
 }
@@ -244,7 +281,51 @@ mod tests {
                 "EXCLUDED names {addr}, which is not a parameter"
             );
         }
-        assert_eq!(vizz_mod::preset::EXCLUDED, &["/master/dim", "/preset/recall"]);
+        assert_eq!(
+            vizz_mod::preset::EXCLUDED,
+            &[
+                "/master/dim",
+                "/preset/recall",
+                "/scene/fire",
+                "/scene/time",
+                "/scene/curve",
+                "/scene/auto",
+                "/scene/bars",
+            ]
+        );
+    }
+
+    /// A scene cell is a captured preset, so anything that fires or shapes
+    /// a scene has to be excluded or the grid feeds itself. This is the
+    /// test that catches a `/scene/*` parameter added later and not
+    /// excluded — the failure mode there is a cell that re-fires on
+    /// arrival, which is a hung show rather than a wrong colour.
+    #[test]
+    fn nothing_that_drives_the_grid_is_stored_in_a_scene() {
+        let p = AppParams::build();
+        for (_, def) in p.registry.iter() {
+            if def.addr.starts_with("/scene/") {
+                assert!(
+                    vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()),
+                    "{} would be captured into a scene cell",
+                    def.addr
+                );
+            }
+        }
+    }
+
+    /// Firing must rest at "nothing selected" and must not glide, for the
+    /// same two reasons recall must: a fresh start cannot fire slot 0 over
+    /// your defaults, and a smoothed fire sweeps through every slot in
+    /// between, firing each on the way.
+    #[test]
+    fn scene_fire_rests_at_nothing_and_does_not_glide() {
+        let p = AppParams::build();
+        let def = &p.registry.defs()[p.scene_fire.index()];
+        assert_eq!(def.default, 0.0);
+        assert_eq!(def.min, 0.0);
+        assert_eq!(def.smooth, 0.0);
+        assert_eq!(def.max, vizz_mod::scene::SLOTS as f32, "not every pad is reachable");
     }
 
     /// Recall must reach every preset the app can list. The range is

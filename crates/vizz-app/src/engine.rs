@@ -39,6 +39,12 @@ pub struct FrameEngine {
     /// a controller parked on an index does not re-apply it every frame
     /// and fight whatever you are adjusting by hand.
     last_preset: Option<usize>,
+    /// The scene grid and the blend between its cells. Lives here rather
+    /// than in the UI because it writes parameter targets every frame and
+    /// has to keep doing so with the panel hidden.
+    pub grid: vizz_mod::scene::Grid,
+    /// Last `/scene/fire` slot acted on, edge-triggered like recall.
+    last_scene: Option<usize>,
 }
 
 pub struct FrameInputs {
@@ -64,7 +70,67 @@ impl FrameEngine {
             last_frame: None,
             last_log: Instant::now(),
             last_preset: None,
+            grid: vizz_mod::scene::Grid::new(),
+            last_scene: None,
         }
+    }
+
+    /// Adopt a grid loaded from disk, pushing its stored transition
+    /// settings out to the parameters that drive them.
+    ///
+    /// Those settings live in two places by necessity — in the grid,
+    /// because a `Grid` has to be usable and testable on its own, and in
+    /// the parameter store, because that is what gives them OSC, MIDI
+    /// learn and a fader. The parameters are the authority from here on,
+    /// so the saved values have to be written *into* them at load or they
+    /// would be silently replaced by the defaults on the first frame.
+    pub fn adopt_grid(&mut self, grid: vizz_mod::scene::Grid) {
+        let reg = &self.params.registry;
+        reg.set(self.params.scene_time, grid.duration);
+        reg.set(
+            self.params.scene_curve,
+            vizz_mod::scene::Curve::ALL
+                .iter()
+                .position(|c| *c == grid.curve)
+                .unwrap_or(1) as f32,
+        );
+        reg.set(self.params.scene_auto, if grid.autopilot.enabled { 1.0 } else { 0.0 });
+        reg.set(self.params.scene_bars, grid.autopilot.bars);
+        self.grid = grid;
+    }
+
+    /// Fire a scene when `/scene/fire` has moved, then advance the blend.
+    ///
+    /// Edge-triggered for the same reason recall is: a pad controller
+    /// holding a slot down must not restart the transition every frame.
+    /// Slot 0 is "nothing selected" and the grid runs from 1, so a fresh
+    /// start cannot fire cell 0 over your defaults.
+    ///
+    /// The transition settings are read from the parameters every frame,
+    /// so a knob or an OSC message changes them mid-set. `duration` is
+    /// only read *between* transitions — changing the blend time while one
+    /// is running would make the transition already in flight jump.
+    fn tick_grid(&mut self, dt: f32) {
+        use vizz_mod::scene::Curve;
+        let p = Arc::clone(&self.params);
+        let reg = &p.registry;
+
+        if self.grid.in_flight().is_none() {
+            self.grid.duration = reg.target(p.scene_time);
+        }
+        let curve = reg.target(p.scene_curve).round().max(0.0) as usize;
+        self.grid.curve = Curve::ALL.get(curve).copied().unwrap_or_default();
+        self.grid.autopilot.enabled = reg.target(p.scene_auto) >= 0.5;
+        self.grid.autopilot.bars = reg.target(p.scene_bars);
+
+        let slot = reg.target(p.scene_fire).round().max(0.0) as usize;
+        if self.last_scene != Some(slot) {
+            self.last_scene = Some(slot);
+            if let Some(index) = slot.checked_sub(1) {
+                self.grid.fire(index, reg);
+            }
+        }
+        self.grid.tick(dt, self.modulation.clock.beats, reg);
     }
 
     /// Recall a preset when `/preset/recall` has moved to a new index.
@@ -124,6 +190,11 @@ impl FrameEngine {
         // advances, so a preset's values are targets for this same frame
         // and the glide starts immediately rather than one frame late.
         self.apply_pending_preset();
+        // Then the grid, so a scene fired on this frame starts blending on
+        // it — and so a transition in flight wins over a preset recalled
+        // underneath it, which is the order you would expect from the
+        // thing you most recently touched.
+        self.tick_grid(dt_s);
         let p = Arc::clone(&self.params);
         let p = &*p;
         for (i, b) in self.bands.iter_mut().enumerate() {

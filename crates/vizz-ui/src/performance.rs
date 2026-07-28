@@ -30,6 +30,8 @@ pub struct PerformanceState<'a> {
     /// Preset names in slot order, so the row can be numbered to match
     /// `/preset/recall` and the number keys.
     pub presets: &'a [String],
+    /// The scene grid, laid out across the full width here.
+    pub grid: &'a crate::grid_view::GridView,
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +44,8 @@ pub struct PerformanceActions {
     pub exit: bool,
     /// Fire this preset slot (1-based, matching `/preset/recall`).
     pub preset_slot: Option<u32>,
+    /// What the scene grid asks for this frame.
+    pub grid: crate::grid_view::GridActions,
 }
 
 pub fn draw(
@@ -62,6 +66,12 @@ pub fn draw(
             ui.set_min_size(full);
             status_strip(ui, state, &mut actions);
             ui.add_space(6.0);
+            // The grid above the presets: this is the thing you play, and
+            // sixteen across is what it is for. The preset row stays,
+            // because a preset is still the fastest way to a known look
+            // when a transition is the wrong answer.
+            actions.grid = crate::grid_view::draw(ui, state.grid, crate::grid_view::Shape::Stage);
+            ui.add_space(8.0);
             preset_row(ui, state, &mut actions);
             ui.add_space(10.0);
             faders(ui, registry, macros, &mut actions);
@@ -421,6 +431,7 @@ mod tests {
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
+        let grid = crate::grid_view::GridView::default();
         let state = PerformanceState {
             outputs: &[OutputStatus { name: "syphon:vizz".into(), live: true }],
             audio: &audio,
@@ -429,6 +440,7 @@ mod tests {
             bpm: 128.0,
             bar_phase: 0.1,
             presets: &names,
+            grid: &grid,
         };
         let mut text = String::new();
         for i in 0..8 {

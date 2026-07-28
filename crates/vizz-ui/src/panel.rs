@@ -46,6 +46,8 @@ pub struct PanelActions {
     pub preset_delete: Option<String>,
     /// Slider working ranges changed and should be persisted.
     pub ranges_changed: bool,
+    /// What the scene grid asks for this frame.
+    pub grid: crate::grid_view::GridActions,
 }
 
 /// One entry in the preset list.
@@ -79,6 +81,8 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// The scene grid as it stands this frame.
+    pub grid: crate::grid_view::GridView,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
     /// Draw every collapsible section open.
@@ -99,6 +103,8 @@ pub struct AudioView {
     pub bands: [f32; 4],
     /// Pre-gain levels, for setting the gain against real material.
     pub raw: [f32; 4],
+    /// Decaying peak of `raw`, which is what `fit` divides into.
+    pub raw_peak: [f32; 4],
     pub level: f32,
     pub detected_bpm: f32,
     pub confidence: f32,
@@ -157,6 +163,25 @@ pub fn draw(
                 .id_salt("modulation")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| modulation_section(ui, registry, modulation));
+            ui.separator();
+            // Scenes above presets, because the grid is the thing you play
+            // and the preset list is where looks are built. A preset is one
+            // press and you are there; a scene is one press and you arrive
+            // over four bars.
+            //
+            // Pads only: the blend time, the curve and the autopilot are
+            // parameters like everything else and already have rows in the
+            // list below. Drawing them here as well would give the panel
+            // two controls for one value — and the height. The full row,
+            // sixteen across and with its settings, is on the performance
+            // layout, which has the width for it.
+            egui::CollapsingHeader::new("scenes")
+                .id_salt("scenes")
+                .default_open(true)
+                .show(ui, |ui| {
+                    actions.grid =
+                        crate::grid_view::draw(ui, &state.grid, crate::grid_view::Shape::Panel);
+                });
             ui.separator();
             presets_section(ui, state, &mut actions);
             ui.separator();
@@ -351,14 +376,60 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                     .range(20.0..=20_000.0)
                     .suffix("Hz"),
             );
-            ui.add(
-                egui::DragValue::new(&mut band.gain)
-                    .speed(0.1)
-                    .range(0.1..=60.0)
-                    .prefix("×"),
-            );
+            // Decibels, not a multiplier. "×10" is not a quantity anyone
+            // can act on — it does not say whether the band is hot or
+            // quiet, and it is not comparable with the number in the row
+            // above unless you do the arithmetic. Decibels are the unit
+            // every other gain control in a studio is read in, and they
+            // make the four rows comparable at a glance.
+            let mut db = band.gain_db();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut db)
+                        .speed(0.5)
+                        .range(vizz_audio::MIN_GAIN_DB..=vizz_audio::MAX_GAIN_DB)
+                        .fixed_decimals(1)
+                        .suffix(" dB"),
+                )
+                .on_hover_text("sensitivity — how hard this band drives modulation")
+                .changed()
+            {
+                band.set_gain_db(db);
+            }
         });
     }
+    // One press, and every band is scaled to what is actually arriving.
+    //
+    // This is the honest answer to "what should the default gain be": it
+    // depends on the interface, the track and how hard it is being driven,
+    // and no shipped number is right for two rigs. A default can only be a
+    // starting point; this is the thing that finishes the job.
+    ui.horizontal(|ui| {
+        if ui
+            .button("fit")
+            .on_hover_text("set every band's gain from the last few seconds of audio")
+            .clicked()
+        {
+            let mut fitted = bands;
+            for (i, band) in fitted.iter_mut().enumerate() {
+                // A silent band keeps whatever it had: dividing into
+                // nothing would ask for infinite gain, and a band nobody
+                // is feeding is not evidence of anything.
+                if let Some(db) = vizz_audio::fit_gain_db(a.raw_peak[i]) {
+                    band.set_gain_db(db);
+                }
+            }
+            bands = fitted;
+        }
+        if ui
+            .button("reset")
+            .on_hover_text("back to the shipped bands and gains")
+            .clicked()
+        {
+            bands = vizz_audio::default_bands();
+        }
+        ui.small("play something first — fit reads the last few seconds");
+    });
     // A band whose high edge is under its low edge would silently read
     // zero; clamp on edit rather than letting a drag produce a dead band.
     for b in &mut bands {

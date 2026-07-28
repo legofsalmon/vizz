@@ -300,6 +300,27 @@ receives, the bottom is what is arriving at the input, and the gap between
 them is the gain. Levels are deliberately not auto-normalised — no
 automatic gain survives a track that opens on silence.
 
+**Gain is in decibels**, because that is the unit a sensitivity control is
+read in everywhere else and because it is the unit that makes the four
+rows comparable: the top band is not "ten" against the kick band's "six",
+it is fifteen decibels hotter, which is a statement about how mixes are
+built rather than an arbitrary multiplier.
+
+The shipped gains are much larger than they look — a band's RMS is a few
+percent of full scale once the spectrum is split four ways, and the top
+band is the quietest of all — and they err high on purpose. Too much gain
+shows up as a clipped meter you turn down; too little shows up as visuals
+that barely move, which reads as the audio input not working.
+
+**`fit` sets every band from what is actually arriving.** Play something,
+press it, and each gain is scaled so that band peaks just short of the
+clamp. This is the honest answer to "what should the default be": it
+depends on the interface, the track and how hard it is driven, so no
+shipped number is right for two rigs. The measurement is a peak held over
+roughly the last four seconds, so a kick from a moment ago still counts. A
+band with nothing in it is left exactly as you set it rather than having
+its noise floor driven up to full scale.
+
 Envelopes are asymmetric one-poles, fast up and slow down, so a kick lands
 on the frame it happened but the value stays usable as a modulator rather
 than a strobe. Audio sources are unipolar: they push a parameter up from
@@ -655,6 +676,57 @@ it was and where it is going, firing each preset on the way.
 
 Built-ins come first and keep their order, so a slot learned onto a MIDI
 button keeps meaning the same preset after you save your own.
+
+## The scene grid
+
+```
+/scene/fire        0 = none, 1..16 = the pads
+/scene/time        transition length in seconds; 0 is a cut
+/scene/curve       linear · smooth · ease in · ease out · cut
+/scene/auto        autopilot off/on
+/scene/bars        bars between autopilot steps
+```
+
+Sixteen pads, laid out the way a sequencer is. A preset recalled by number
+is a cut; firing a scene is the other thing you want during a set, where
+moving from one look to the next takes musical time. Store the current
+look into a pad with `store`, then press pads to travel between them.
+
+**The blend is in the data, not in the picture.** The obvious way to cross
+between two looks is to render both and dissolve the textures, and it is
+the wrong way: two pictures of a particle field at half opacity is a double
+image that reads as a mistake. Interpolating the *parameters* gives one
+field whose settings are somewhere between the two — still one of
+everything, still particles, and it looks like the material moving rather
+than like a mixer. Point clouds go through the pair-morph above, so every
+particle travels from where it sat in the outgoing cloud to where it sits
+in the incoming one.
+
+Two things do not interpolate. **Switches jump at the half-way point** —
+`/fx/mirror` has an off, an x and a quad and nothing sensible between them,
+and sweeping one would spend the transition showing states neither scene
+asked for. **Cloud slots are never blended**, because the shader truncates
+them to an index: half way between slot 0 and slot 2 is slot 1, a different
+cloud entirely, which would flash on screen part-way through every move.
+`/shape/mode` *does* sweep, because it is declared as a sweep and the
+shader blends adjacent forms.
+
+Firing during a transition re-aims from wherever the blend has reached, so
+you are never locked out until the last move finishes.
+
+**Autopilot** walks the filled pads in time with the beat clock, every
+`/scene/bars` bars. It fires on the boundary and never on the frame you
+switch it on — switching it on mid-bar and having the scene change
+instantly is what would make it unusable in time.
+
+The transition settings are ordinary parameters, which is what gets them
+OSC and MIDI learn. All of them are excluded from presets, and so is
+`/scene/fire`: a scene cell *is* a captured preset, so a cell holding the
+fire control would fire itself the moment it arrived, forever.
+
+The grid is drawn four by four in the control panel and sixteen across on
+the performance layout, which has the width for the shape it wants. It is
+saved to `~/.config/vizz/grid.json` beside the presets and the MIDI map.
 
 ## Point clouds
 
