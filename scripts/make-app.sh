@@ -24,6 +24,34 @@ if [ ! -d vendor/Syphon.framework ]; then
 fi
 cp -R vendor/Syphon.framework "$app/Contents/Frameworks/Syphon.framework"
 
+# The icon. Derived here from the committed 1024 master rather than
+# committing ten PNGs: sips and iconutil are both part of macOS, and an
+# .icns is the one format the Dock will read.
+#
+# Non-fatal on purpose. A bundle without an icon is ugly; a release that
+# did not build because of one is worse.
+icon_src="assets/icon-1024.png"
+if [ -f "$icon_src" ] && command -v iconutil >/dev/null; then
+    iconset="$(mktemp -d)/vizz.iconset"
+    mkdir -p "$iconset"
+    # Each size twice, at 1x and at 2x of the size below it — that pairing
+    # is what iconutil expects, and a missing member fails the whole set.
+    for size in 16 32 128 256 512; do
+        sips -s format png -z "$size" "$size" "$icon_src" \
+            --out "$iconset/icon_${size}x${size}.png" >/dev/null
+        sips -s format png -z "$((size * 2))" "$((size * 2))" "$icon_src" \
+            --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    if iconutil -c icns "$iconset" -o "$app/Contents/Resources/vizz.icns"; then
+        echo "Built vizz.icns from $icon_src"
+    else
+        echo "warning: iconutil failed — bundling without an icon" >&2
+    fi
+    rm -rf "$(dirname "$iconset")"
+else
+    echo "warning: no $icon_src or no iconutil — bundling without an icon" >&2
+fi
+
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -33,6 +61,10 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleDisplayName</key><string>vizz</string>
     <key>CFBundleIdentifier</key><string>com.colmhewson.vizz</string>
     <key>CFBundleExecutable</key><string>vizz</string>
+    <!-- Names Resources/vizz.icns. Harmless if the icon step above was
+         skipped: the Dock falls back to the generic app icon rather than
+         refusing to launch. -->
+    <key>CFBundleIconFile</key><string>vizz</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
