@@ -24,6 +24,11 @@ const PORT_R: f32 = 4.5;
 /// Generous relative to the drawn radius: ports are the smallest target on
 /// the canvas and the most costly to miss mid-set.
 const PORT_HIT_R: f32 = 9.0;
+/// Zoom bounds, shared by the scroll-wheel and by fit-to-view so the two
+/// cannot disagree about how far out is too far.
+const MIN_ZOOM: f32 = 0.35;
+const MAX_ZOOM: f32 = 2.5;
+
 /// Height reserved for the selected-node inspector below the canvas.
 const INSPECTOR_H: f32 = 62.0;
 /// Width of the node palette strip.
@@ -117,6 +122,9 @@ enum Drag {
 pub struct GraphView {
     pub pan: Vec2,
     pub zoom: f32,
+    /// A fit was asked for. Applied inside `canvas`, which is the only
+    /// place that knows how big the viewport is.
+    fit_requested: bool,
     pub selected: Option<NodeId>,
     drag: Drag,
     /// Where a right-click opened the add menu, in graph space, so a node
@@ -135,6 +143,7 @@ impl Default for GraphView {
         Self {
             pan: vec2(40.0, 40.0),
             zoom: 1.0,
+            fit_requested: false,
             selected: None,
             drag: Drag::None,
             add_at: [0.0, 0.0],
@@ -233,6 +242,13 @@ impl GraphView {
                         }
                     }
                 });
+            if ui
+                .button("fit")
+                .on_hover_text("frame every node — the way back from panning into empty space")
+                .clicked()
+            {
+                self.fit_requested = true;
+            }
             if ui.button("new").on_hover_text("clear the graph").clicked() {
                 *graph = NodeGraph::default();
                 self.selected = None;
@@ -299,6 +315,43 @@ impl GraphView {
         changed
     }
 
+    /// Frame every node in the viewport.
+    ///
+    /// An infinite canvas has an unrecoverable state: pan far enough and
+    /// there is nothing on screen and nothing pointing back, and at low
+    /// zoom the way home can be a very long drag. This is the way back.
+    /// Also the fastest way to see a patch you have just loaded, whose
+    /// layout came from someone else's screen.
+    fn fit(&mut self, graph: &NodeGraph, rect: Rect) {
+        // Nothing to frame: return to the default view rather than
+        // dividing by an empty bounding box.
+        if graph.nodes.is_empty() {
+            self.pan = vec2(40.0, 40.0);
+            self.zoom = 1.0;
+            return;
+        }
+        let (mut lo, mut hi) = (pos2(f32::MAX, f32::MAX), pos2(f32::MIN, f32::MIN));
+        for node in &graph.nodes {
+            lo.x = lo.x.min(node.pos[0]);
+            lo.y = lo.y.min(node.pos[1]);
+            // Nodes are anchored top-left, so the far corner has to
+            // include the node's own size or the rightmost one is cut.
+            hi.x = hi.x.max(node.pos[0] + NODE_W);
+            hi.y = hi.y.max(node.pos[1] + TITLE_H + ROW_H * 3.0);
+        }
+        let span = vec2((hi.x - lo.x).max(1.0), (hi.y - lo.y).max(1.0));
+        let margin = 32.0;
+        let fit = ((rect.width() - margin) / span.x).min((rect.height() - margin) / span.y);
+        // Never zoom *in* past 1:1 — a two-node patch blown up to fill the
+        // screen is disorienting rather than helpful.
+        self.zoom = fit.clamp(MIN_ZOOM, 1.0);
+        let centre = pos2((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+        self.pan = vec2(
+            rect.width() * 0.5 / self.zoom - centre.x,
+            rect.height() * 0.5 / self.zoom - centre.y,
+        );
+    }
+
     fn canvas(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph, registry: &ParamRegistry) -> bool {
         let mut changed = false;
         // Reserve the inspector's strip before the canvas claims the space.
@@ -313,6 +366,9 @@ impl GraphView {
             (ui.available_height() - inspector_h).max(80.0),
         );
         let (rect, response) = ui.allocate_exact_size(canvas_size, Sense::click_and_drag());
+        if std::mem::take(&mut self.fit_requested) {
+            self.fit(graph, rect);
+        }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, Color32::from_rgb(24, 26, 30));
 
@@ -326,7 +382,7 @@ impl GraphView {
             let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.1 && let Some(p) = pointer {
                 let before = lay.to_graph(p);
-                self.zoom = (self.zoom * (1.0 + scroll * 0.002)).clamp(0.35, 2.5);
+                self.zoom = (self.zoom * (1.0 + scroll * 0.002)).clamp(MIN_ZOOM, MAX_ZOOM);
                 let after = self.layout(rect.min).to_graph(p);
                 self.pan += vec2(after[0] - before[0], after[1] - before[1]);
             }
@@ -963,4 +1019,48 @@ mod tests {
         assert!(two > one, "two-input node is not taller: {one} vs {two}");
         assert!(l.node_rect([0.0, 0.0], 2).y_range().contains(l.input_pos([0.0, 0.0], 2, 1).y));
     }
+    /// Fit must actually bring far-flung nodes back into view. An
+    /// infinite canvas otherwise has a state you cannot get out of: pan
+    /// far enough and there is nothing on screen and nothing pointing
+    /// home.
+    #[test]
+    fn fit_frames_every_node_however_far_you_have_panned() {
+        let mut view = GraphView::default();
+        let mut graph = NodeGraph::default();
+        graph.add(NodeKind::Constant(0.3), [0.0, 0.0]);
+        graph.add(NodeKind::Level, [1800.0, 1200.0]);
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+
+        // Lost in empty space, zoomed right out.
+        view.pan = vec2(-90_000.0, 70_000.0);
+        view.zoom = 0.35;
+        view.fit(&graph, rect);
+
+        let lay = Layout { origin: rect.min, pan: view.pan, zoom: view.zoom };
+        for node in &graph.nodes {
+            let p = lay.to_screen(node.pos);
+            assert!(
+                rect.expand(1.0).contains(p),
+                "node at {:?} landed off-canvas at {p:?}",
+                node.pos
+            );
+        }
+        // And never zoomed past 1:1 — blowing a two-node patch up to fill
+        // the screen is disorienting rather than helpful.
+        assert!(view.zoom <= 1.0, "fit zoomed in past 1:1: {}", view.zoom);
+        assert!(view.zoom >= MIN_ZOOM, "fit zoomed out past the limit: {}", view.zoom);
+    }
+
+    /// An empty graph has no bounding box; fit must return to the default
+    /// view rather than dividing by nothing.
+    #[test]
+    fn fitting_an_empty_graph_returns_to_the_default_view() {
+        let mut view = GraphView::default();
+        view.pan = vec2(-5000.0, 5000.0);
+        view.zoom = 2.4;
+        view.fit(&NodeGraph::default(), Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0)));
+        assert_eq!(view.zoom, 1.0);
+        assert!(view.pan.x.is_finite() && view.pan.y.is_finite());
+    }
+
 }

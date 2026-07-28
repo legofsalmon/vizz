@@ -292,7 +292,11 @@ for the canvas.
 Node kinds: LFO, audio band, level, phasor and constant (sources); curve,
 math, scale, smooth, quantise and sample & hold (operators); parameter
 (sink). Drag from an output port to an input to wire; drag an input away
-to unplug; right-click for the add menu; Delete removes the selected node.
+to unplug; right-click for the add menu; Delete removes the selected node. **fit**
+frames every node — an infinite canvas otherwise has a state you cannot
+get out of, where you have panned far enough that nothing is on screen and
+nothing points home. It is also the fastest way to read a patch you have
+just loaded, whose layout came from someone else's screen.
 Scroll zooms about the cursor. Node positions save with the patch.
 
 Three behaviours worth knowing:
