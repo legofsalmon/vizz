@@ -20,11 +20,33 @@ struct Room {
     front_z: f32,
     brightness: f32,
     fade: f32,
-    lines: f32,
-    _pad: f32,
+    // Back rect relative to the front: size, and centre offset. Together
+    // these are the perspective controls — see room.rs.
+    converge: f32,
+    vanish_x: f32,
+    vanish_y: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Room;
+
+/// Half-extents and centre of the cross-section at depth `t` (0 at the
+/// opening, 1 at the back wall).
+///
+/// Interpolating the *rectangle* rather than drawing a box is what lets the
+/// perspective be steered independently of the lens: the opening stays
+/// pinned to the frame while the far end shrinks and slides.
+fn section(t: f32) -> vec4<f32> {
+    let scale = mix(1.0, u.converge, t);
+    return vec4<f32>(
+        u.half_x * scale,
+        u.half_y * scale,
+        u.vanish_x * u.half_x * t,
+        u.vanish_y * u.half_y * t,
+    );
+}
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -41,8 +63,6 @@ const N: u32 = 10u;
 /// ones that converge toward a vanishing point and tell the eye how far
 /// away the back wall is. Cross lines mostly measure the depth lines.
 fn line_endpoints(i: u32) -> array<vec3<f32>, 2> {
-    let hx = u.half_x;
-    let hy = u.half_y;
     let front = u.front_z;
     let back = u.front_z - u.depth;
 
@@ -55,42 +75,59 @@ fn line_endpoints(i: u32) -> array<vec3<f32>, 2> {
     let a = -1.0 + 2.0 * t;
     let z = mix(front, back, t);
 
+    // Front and back sections, plus the one at this cross line's depth.
+    let f = section(0.0);
+    let b = section(1.0);
+    let m = section(t);
+
     switch face {
         // Floor.
         case 0u: {
             if (is_cross) {
-                return array(vec3(-hx, -hy, z), vec3(hx, -hy, z));
+                return array(vec3(m.z - m.x, m.w - m.y, z), vec3(m.z + m.x, m.w - m.y, z));
             }
-            return array(vec3(a * hx, -hy, front), vec3(a * hx, -hy, back));
+            return array(
+                vec3(f.z + a * f.x, f.w - f.y, front),
+                vec3(b.z + a * b.x, b.w - b.y, back),
+            );
         }
         // Ceiling.
         case 1u: {
             if (is_cross) {
-                return array(vec3(-hx, hy, z), vec3(hx, hy, z));
+                return array(vec3(m.z - m.x, m.w + m.y, z), vec3(m.z + m.x, m.w + m.y, z));
             }
-            return array(vec3(a * hx, hy, front), vec3(a * hx, hy, back));
+            return array(
+                vec3(f.z + a * f.x, f.w + f.y, front),
+                vec3(b.z + a * b.x, b.w + b.y, back),
+            );
         }
         // Left wall.
         case 2u: {
             if (is_cross) {
-                return array(vec3(-hx, -hy, z), vec3(-hx, hy, z));
+                return array(vec3(m.z - m.x, m.w - m.y, z), vec3(m.z - m.x, m.w + m.y, z));
             }
-            return array(vec3(-hx, a * hy, front), vec3(-hx, a * hy, back));
+            return array(
+                vec3(f.z - f.x, f.w + a * f.y, front),
+                vec3(b.z - b.x, b.w + a * b.y, back),
+            );
         }
         // Right wall.
         case 3u: {
             if (is_cross) {
-                return array(vec3(hx, -hy, z), vec3(hx, hy, z));
+                return array(vec3(m.z + m.x, m.w - m.y, z), vec3(m.z + m.x, m.w + m.y, z));
             }
-            return array(vec3(hx, a * hy, front), vec3(hx, a * hy, back));
+            return array(
+                vec3(f.z + f.x, f.w + a * f.y, front),
+                vec3(b.z + b.x, b.w + a * b.y, back),
+            );
         }
-        // Back wall: a flat grid, which is what the depth lines converge
-        // onto and therefore what sets the sense of distance.
+        // Back wall: the grid the depth lines converge onto, and therefore
+        // what sets the sense of distance.
         default: {
             if (is_cross) {
-                return array(vec3(-hx, a * hy, back), vec3(hx, a * hy, back));
+                return array(vec3(b.z - b.x, b.w + a * b.y, back), vec3(b.z + b.x, b.w + a * b.y, back));
             }
-            return array(vec3(a * hx, -hy, back), vec3(a * hx, hy, back));
+            return array(vec3(b.z + a * b.x, b.w - b.y, back), vec3(b.z + a * b.x, b.w + b.y, back));
         }
     }
 }

@@ -29,9 +29,54 @@ struct Uniforms {
     cloud_a: f32,       // slot index for the A cloud
     cloud_b: f32,       // slot index for the B cloud
     cloud_morph: f32,   // 0 = A, 1 = B
+    room: RoomPlace,
+};
+
+// The room's volume, so the cloud can be placed inside it. Layout must
+// match `Placement` in room.rs.
+struct RoomPlace {
+    front_z: f32,
+    depth: f32,
+    half_x: f32,
+    half_y: f32,
+    converge: f32,
+    vanish_x: f32,
+    vanish_y: f32,
+    anchor: f32,   // 0 at the opening, 1 at the back wall
+    embed: f32,    // 0 = independent object, 1 = part of the set
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+/// Place a point inside the room, returning the position in xyz and the
+/// scale it picked up in w.
+///
+/// Without this the cloud and the room are two objects in one frame: the
+/// walls converge, the cloud does not, and the eye reads it as a sprite
+/// over a backdrop. Taking the room's cross-section at each point's own
+/// depth compresses the object exactly as the set is compressed — near
+/// side larger than far side — so it belongs to the space.
+fn room_place(p: vec3<f32>) -> vec4<f32> {
+    // Uniform branch: costs nothing, and skips the work whenever the room
+    // is off, which is the default.
+    if (u.room.embed <= 0.001) {
+        return vec4<f32>(p, 1.0);
+    }
+    let depth = max(u.room.depth, 1e-4);
+    let centre_z = u.room.front_z - u.room.anchor * depth;
+    let z = centre_z + p.z;
+    let t = clamp((u.room.front_z - z) / depth, 0.0, 1.0);
+    let s = mix(1.0, u.room.converge, t);
+    let placed = vec3<f32>(
+        u.room.vanish_x * u.room.half_x * t + p.x * s,
+        u.room.vanish_y * u.room.half_y * t + p.y * s,
+        z,
+    );
+    return vec4<f32>(mix(p, placed, u.room.embed), mix(1.0, s, u.room.embed));
+}
 // Trajectory lookup: one texel per point, row-major, attractors stacked.
 @group(0) @binding(1) var t_attractor: texture_2d<f32>;
 
@@ -332,6 +377,13 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let radius = length(p);
     p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
 
+    // Associate the object with the room. Done here, after the shape is
+    // final and before the projection, so everything upstream — spin,
+    // twist, breathing — still works in the object's own space and only
+    // the result is fitted into the set.
+    let placed = room_place(p);
+    p = placed.xyz;
+
     // Real projection, so the camera can move and the room can line up
     // with the frame. The old fixed transform could not express either.
     let centre = u.view_proj * vec4<f32>(p, 1.0);
@@ -350,7 +402,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // closer to the real thing than a post-process blur and costs nothing.
     let dist = distance(p, u.cam_position);
     let coc = 1.0 + abs(dist - u.focus) * u.defocus * 2.5;
-    let half = u.size * coc;
+    // Sprites shrink with the object they belong to. Leaving them at a
+    // fixed size while the shape around them compresses is what gives a
+    // miniature away — the grain of the thing has to scale too.
+    let half = u.size * coc * placed.w;
 
     // Billboard in world space against the camera basis, so sprites face
     // the camera from any angle instead of only from straight on.

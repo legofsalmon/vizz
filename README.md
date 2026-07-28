@@ -371,6 +371,8 @@ few enough that each stays large and unambiguous under stage lighting.
 /camera/distance /camera/orbit /camera/elevation
 /camera/fov /camera/focus /camera/defocus
 /room/brightness /room/depth /room/fade
+/room/converge /room/vanish_x /room/vanish_y
+/room/anchor /room/embed
 ```
 
 The camera used to be four hardcoded lines in the vertex shader. It is now
@@ -407,6 +409,53 @@ fixed in world space, so the illusion is exact only at
 edges — but that is also what produces the parallax. Orienting the room to
 the camera instead would keep the illusion everywhere and eliminate the
 parallax entirely, which would defeat the purpose.
+
+The opening actually reaches 1% past the frame. Landing it exactly on the
+edge puts its outline at clip ±1, where whether a pixel draws is a coin
+flip, and the glow pass smears the resulting ragged line into a soft bar
+down the border. The walls should run *off* the edge of the frame; nobody
+needs to see the opening's outline.
+
+### Steering the perspective
+
+`/room/converge` is the room's own angle of view, and it is separate from
+the lens on purpose. `/camera/fov` decides what the frame contains;
+converge decides how deep it feels. At `1.0` the walls are physically
+parallel and you get only the perspective the projection gives you; lower
+values pull the far end in, which is the forced-perspective exaggeration a
+stage set does with physical scenery. At `0` the back wall collapses to a
+point.
+
+`/room/vanish_x` and `/room/vanish_y` slide the far end around, in units
+of the opening's half-size — `±1` puts the vanishing point on the frame
+edge. **The opening never moves**, whatever these do. That is the property
+worth protecting: the far end is free to swing, the frame edge stays the
+room edge, and there is no setting that unsticks the two. Vertically it is
+the difference between looking along a floor and looking along a ceiling.
+
+Both are ordinary parameters, so an LFO on `vanish_x` swings the whole
+space while the frame stays locked.
+
+### Putting the cloud in the room
+
+Drawing the room and the cloud with the same camera gives you two objects
+in one frame, not an object in a space — the walls converge, the cloud
+does not, and the eye reads it as a sprite pasted over a backdrop.
+
+`/room/embed` fixes that by handing the room's volume to the particle
+shader. At `1` the cloud takes the same compression as the walls, read at
+each point's own depth, so its near side stays larger than its far side
+and it belongs to the set. Sprites scale with it: leaving the grain at a
+fixed size while the shape around it shrinks is what gives a miniature
+away.
+
+`/room/anchor` is where along the room's depth it sits — `0` at the
+opening, `1` against the back wall. Sweeping it walks the cloud into the
+distance, and it shrinks and drifts toward the vanishing point as it goes.
+
+`embed` defaults to `0`, so turning the room on never moves the cloud.
+Reaching for a control mid-set must not teleport the thing the audience is
+looking at.
 
 ## Point clouds
 

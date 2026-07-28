@@ -41,6 +41,11 @@ pub struct AppParams {
     pub room: ParamId,
     pub room_depth: ParamId,
     pub room_fade: ParamId,
+    pub room_converge: ParamId,
+    pub room_vanish_x: ParamId,
+    pub room_vanish_y: ParamId,
+    pub room_anchor: ParamId,
+    pub room_embed: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
@@ -103,6 +108,22 @@ impl AppParams {
         let room = b.add(ParamDef::new("/room/brightness", 0.0, 1.0, 0.0).smooth(0.3));
         let room_depth = b.add(ParamDef::new("/room/depth", 1.0, 20.0, 7.0).smooth(0.4));
         let room_fade = b.add(ParamDef::new("/room/fade", 0.0, 1.0, 0.75).smooth(0.3));
+        // The room's own angle of view, separate from the lens. 1.0 is a
+        // parallel-walled box, 0 collapses the far end to a point; a stage
+        // set built out of physical scenery lives somewhere in between.
+        // Having it apart from /camera/fov is the whole trick — the lens
+        // decides what the frame contains, this decides how deep it feels.
+        let room_converge = b.add(ParamDef::new("/room/converge", 0.0, 1.0, 0.35).smooth(0.4));
+        // Where the far end sits, in units of the opening's half-size. The
+        // opening never moves, so pushing these off centre skews the room
+        // without ever unsticking it from the frame edge.
+        let room_vanish_x = b.add(ParamDef::new("/room/vanish_x", -1.0, 1.0, 0.0).smooth(0.4));
+        let room_vanish_y = b.add(ParamDef::new("/room/vanish_y", -1.0, 1.0, 0.0).smooth(0.4));
+        // Where the field sits along the room's depth, and how much it
+        // belongs to the room. Embed is 0 by default so switching the room
+        // on never moves the cloud — see room.rs.
+        let room_anchor = b.add(ParamDef::new("/room/anchor", 0.0, 1.0, 0.35).smooth(0.4));
+        let room_embed = b.add(ParamDef::new("/room/embed", 0.0, 1.0, 0.0).smooth(0.4));
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -139,6 +160,11 @@ impl AppParams {
             room,
             room_depth,
             room_fade,
+            room_converge,
+            room_vanish_x,
+            room_vanish_y,
+            room_anchor,
+            room_embed,
         }
     }
 }

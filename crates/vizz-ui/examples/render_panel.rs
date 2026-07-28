@@ -13,22 +13,61 @@ use vizz_params::{ParamDef, ParamRegistry};
 use vizz_ui::{MidiView, OutputStatus, PanelState, panel};
 
 const W: u32 = 460;
-const H: u32 = 560;
+/// A tall-ish window on a modest display. The panel has to stay usable at
+/// this height — the parameter list only ever grows, and a control you
+/// cannot scroll to is a control you do not have.
+const H: u32 = 900;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "panel.png".into());
 
-    // The app's real parameter table, so the preview shows real controls.
+    // Mirrors the app's parameter table. Duplicated because it lives in
+    // the binary crate, so keep it in step — the point of this preview is
+    // that it shows the panel the app actually draws, and a short list
+    // would hide exactly the layout problems a long one causes.
     let mut b = ParamRegistry::builder();
-    b.add(ParamDef::new("/particles/count", 0.0, 500_000.0, 60_000.0));
-    b.add(ParamDef::new("/particles/size", 0.001, 0.2, 0.015));
-    b.add(ParamDef::new("/particles/speed", 0.0, 4.0, 0.6));
-    b.add(ParamDef::new("/particles/spread", 0.05, 3.0, 1.2));
-    b.add(ParamDef::new("/particles/hue", 0.0, 1.0, 0.58));
-    b.add(ParamDef::new("/particles/saturation", 0.0, 1.0, 0.8));
-    b.add(ParamDef::new("/particles/brightness", 0.0, 2.0, 1.0));
-    b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
+    for addr in [
+        "/particles/count",
+        "/particles/size",
+        "/particles/speed",
+        "/particles/spread",
+        "/particles/hue",
+        "/particles/saturation",
+        "/particles/brightness",
+        "/shape/mode",
+        "/shape/morph",
+        "/shape/twist",
+        "/fx/trail",
+        "/fx/zoom",
+        "/fx/spin",
+        "/fx/mirror",
+        "/fx/glow",
+        "/fx/shift",
+        "/color/palette",
+        "/color/spread",
+        "/color/drive",
+        "/cloud/a",
+        "/cloud/b",
+        "/cloud/morph",
+        "/camera/distance",
+        "/camera/orbit",
+        "/camera/elevation",
+        "/camera/fov",
+        "/camera/focus",
+        "/camera/defocus",
+        "/room/brightness",
+        "/room/depth",
+        "/room/fade",
+        "/room/converge",
+        "/room/vanish_x",
+        "/room/vanish_y",
+        "/room/anchor",
+        "/room/embed",
+        "/master/dim",
+    ] {
+        b.add(ParamDef::new(addr, 0.0, 1.0, 0.4));
+    }
     let registry = b.build();
 
     // Plausible live numbers, including one spike so the sparkline and
