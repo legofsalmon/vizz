@@ -178,25 +178,15 @@ pub fn draw(
                 .default_open(state.expand_sections)
                 .show(ui, |ui| modulation_section(ui, registry, modulation));
             ui.separator();
-            // Scenes above presets, because the grid is the thing you play
-            // and the preset list is where looks are built. A preset is one
-            // press and you are there; a scene is one press and you arrive
-            // over four bars.
+            // No scene grid here any more.
             //
-            // Pads only: the blend time, the curve and the autopilot are
-            // parameters like everything else and already have rows in the
-            // list below. Drawing them here as well would give the panel
-            // two controls for one value — and the height. The full row,
-            // sixteen across and with its settings, is on the performance
-            // layout, which has the width for it.
-            egui::CollapsingHeader::new("scenes")
-                .id_salt("scenes")
-                .default_open(true)
-                .show(ui, |ui| {
-                    actions.grid =
-                        crate::grid_view::draw(ui, &state.grid, crate::grid_view::Shape::Panel);
-                });
-            ui.separator();
+            // The two screens have distinct jobs: this one is for building
+            // a look, the performance layout is for playing looks in an
+            // order. The grid belongs entirely to the second, and a
+            // four-by-four copy of it here was both a duplicate control
+            // and — because it read as a row of sliders among the visual
+            // parameters — a thing people mistook for part of the look.
+            // The sixteen-across row on the performance layout is the one.
             presets_section(ui, state, &mut actions);
             ui.separator();
             params_section(ui, registry, state, modulation, ranges, &mut actions);
@@ -775,13 +765,22 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     }
 }
 
-/// Presets: recall a whole look, and store your own.
+/// The preset library: where looks are made, kept and thrown away.
 ///
-/// The list is deliberately above the parameter list rather than buried
-/// below it. Recalling a look is something you do mid-set with one hand;
-/// scrolling to find it is not.
+/// This is not the same control as the preset row on the performance
+/// layout, even though both list the same names. That one *fires* a look
+/// with one press during a set. This one is the library behind it —
+/// saving what is on screen, opening a saved look to keep working on it,
+/// and deleting the ones that did not survive the night. Those are design
+/// activities, and this is the design screen; firing lives next to the
+/// grid that sequences them.
+///
+/// So the list stays here even though a version of it exists there: it is
+/// the only place a preset can be created or removed, and creating them is
+/// the entire purpose of this screen.
 fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     ui.label(egui::RichText::new("Presets").strong());
+    ui.small("click to open a look and keep editing it");
     egui::ScrollArea::vertical()
         .id_salt("presets")
         .max_height(PRESET_LIST_H)
@@ -858,7 +857,7 @@ fn params_section(
     // whole fits rather than the list merely being bounded — a window
     // that runs past the bottom edge hides its own footer too.
     let screen_h = ui.ctx().input(|i| i.raw.screen_rect).map_or(720.0, |r| r.height());
-    let total = registry.iter().count();
+    let total = registry.iter().filter(|(_, d)| !is_transport(&d.addr)).count();
     // Provisional, only to decide whether to say "scroll for more"; the
     // binding measurement happens below, once the header has been laid
     // out and the cursor is where the list will actually start.
@@ -900,6 +899,12 @@ fn params_section(
             if !needle.is_empty() {
                 // Filtering flattens: groups are for browsing, and when
                 // you have typed a name you already know what you want.
+                //
+                // Transport parameters *are* searchable here, unlike in the
+                // grouped list. Hiding them from the groups is about not
+                // putting them in misleading company; refusing to show one
+                // whose name has just been typed would be hiding it, which
+                // is a different and worse thing.
                 let mut hits = 0;
                 for (id, def) in registry.iter() {
                     if def.addr.to_ascii_lowercase().contains(&needle) {
@@ -959,9 +964,29 @@ impl Group<'_> {
 
 /// Split the registry by the first path segment, preserving registry order
 /// both within and between groups.
+/// Parameters that are transport, not look.
+///
+/// These drive *when* and *whether* something happens rather than what it
+/// looks like: which scene to fire, how long a blend takes, which preset
+/// to recall. They are real parameters — addressable over OSC, assignable
+/// to a fader, learnable — and they have proper controls on the
+/// performance layout, next to the grid they belong to.
+///
+/// They are hidden from this list because being here actively misled: a
+/// row called `time` or `bars` sitting among `size`, `morph` and `twist`
+/// reads as something that changes the picture, and people reasonably
+/// took them for point-cloud settings. A parameter in the wrong company
+/// is worse than a parameter you have to go one screen to find.
+fn is_transport(addr: &str) -> bool {
+    addr.starts_with("/scene/") || addr == "/preset/recall"
+}
+
 fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
     let mut out: Vec<Group<'_>> = Vec::new();
     for (id, def) in registry.iter() {
+        if is_transport(&def.addr) {
+            continue;
+        }
         let name = def
             .addr
             .trim_start_matches('/')
