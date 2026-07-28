@@ -78,6 +78,10 @@ struct App {
     /// Last MIDI snapshot the panel saw. Refreshed with try_lock so a
     /// busy MIDI thread can never stall the render thread.
     midi_view: MidiView,
+    /// Cached preset listing. The panel and both grids ask what is in the
+    /// library every frame; answering from disk made that dozens of file
+    /// operations on the render thread per frame.
+    library: vizz_mod::preset::Library,
     /// Revision last written to disk, so saves happen only on change.
     saved_revision: u64,
     update: SharedUpdate,
@@ -489,6 +493,11 @@ impl App {
             .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
             .collect();
         refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+        // Picks up presets added behind the app's back — dropped into the
+        // folder, or synced in. Anything the app writes refreshes this
+        // directly, so the interval only has to catch what it did not do
+        // itself.
+        self.library.tick();
         // Collected before the panel draws: the render call takes
         // `&mut state.gui` and reading `state.scene` inside its argument
         // list would borrow the same struct twice.
@@ -543,11 +552,13 @@ impl App {
                 .iter()
                 .map(|(id, _)| self.engine.snapshot.get(id))
                 .collect(),
-            presets: preset_entries(),
+            presets: preset_entries(&self.library),
             grid: grid_view(
                 &self.engine.grid,
                 self.engine.modulation.clock.beats,
                 &self.midi_view,
+                &self.library,
+                vizz_mod::preset::Kind::Look,
                 SCENE_FIRE,
                 "scene",
             ),
@@ -559,6 +570,7 @@ impl App {
                     &self.engine.gravity_grid,
                     self.engine.modulation.clock.beats,
                     &self.midi_view,
+                    &self.library,
                 )
             }),
             focus_filter: std::mem::take(&mut self.focus_filter),
@@ -588,13 +600,14 @@ impl App {
                     &mut self.audio_auto_bpm,
                     &mut self.tap,
                 );
-                apply_preset_actions(&actions, &self.params.registry);
+                apply_preset_actions(&actions, &self.params.registry, &mut self.library);
                 apply_grid_actions(
                     &actions.grid,
                     &self.params,
                     &mut self.engine.grid,
                     &GridBinding::scenes(&self.params),
                     &self.midi_shared,
+                    &mut self.library,
                 );
                 apply_grid_actions(
                     &actions.gravity,
@@ -602,6 +615,7 @@ impl App {
                     &mut self.engine.gravity_grid,
                     &GridBinding::gravity(&self.params),
                     &self.midi_shared,
+                    &mut self.library,
                 );
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
@@ -798,7 +812,7 @@ fn apply_audio_actions(
 
 /// The preset list the panel shows: built-ins first, then whatever is on
 /// disk, in the same order `/preset/recall` numbers them.
-fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
+fn preset_entries(library: &vizz_mod::preset::Library) -> Vec<vizz_ui::PresetEntry> {
     use vizz_mod::preset;
     preset::BUILTINS
         .iter()
@@ -807,11 +821,16 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
             builtin: true,
             about: Some(b.about.to_string()),
         })
-        .chain(preset::list().into_iter().map(|name| vizz_ui::PresetEntry {
-            name,
-            builtin: false,
-            about: None,
-        }))
+        .chain(
+            library
+                .user(preset::Kind::Look)
+                .iter()
+                .map(|name| vizz_ui::PresetEntry {
+                    name: name.clone(),
+                    builtin: false,
+                    about: None,
+                }),
+        )
         .collect()
 }
 
@@ -820,19 +839,17 @@ fn gravity_grid_view(
     grid: &vizz_mod::scene::Grid,
     beats: f64,
     midi: &MidiView,
+    library: &vizz_mod::preset::Library,
 ) -> vizz_ui::grid_view::GridView {
-    use vizz_mod::preset::Kind;
-    let mut view = grid_view(grid, beats, midi, GRAVITY_FIRE, "gravity");
-    view.presets = vizz_mod::preset::list_kind(Kind::Gravity);
-    view.missing = grid
-        .cells()
-        .iter()
-        .map(|c| {
-            c.as_ref()
-                .is_some_and(|c| vizz_mod::preset::load_kind(Kind::Gravity, &c.preset).is_err())
-        })
-        .collect();
-    view
+    grid_view(
+        grid,
+        beats,
+        midi,
+        library,
+        vizz_mod::preset::Kind::Gravity,
+        GRAVITY_FIRE,
+        "gravity",
+    )
 }
 
 /// The addresses a pad press writes. Named here because the grid view, the
@@ -855,6 +872,8 @@ fn grid_view(
     grid: &vizz_mod::scene::Grid,
     beats: f64,
     midi: &MidiView,
+    library: &vizz_mod::preset::Library,
+    kind: vizz_mod::preset::Kind,
     fire: &str,
     noun: &'static str,
 ) -> vizz_ui::grid_view::GridView {
@@ -882,15 +901,16 @@ fn grid_view(
             .collect(),
         // A pad whose preset has been deleted or renamed must say so
         // rather than looking filled and doing nothing when pressed.
+        //
+        // Asked of the cached listing rather than by loading each one:
+        // `by_name` parsed the whole preset to answer a question about
+        // whether a file exists, sixteen times a frame per layer.
         missing: grid
             .cells()
             .iter()
-            .map(|c| {
-                c.as_ref()
-                    .is_some_and(|c| vizz_mod::preset::by_name(&c.preset).is_none())
-            })
+            .map(|c| c.as_ref().is_some_and(|c| !library.has(kind, &c.preset)))
             .collect(),
-        presets: vizz_mod::preset::all_names(),
+        presets: library.all(kind),
         current: grid.current(),
         in_flight: grid.in_flight(),
         duration: grid.duration,
@@ -969,6 +989,7 @@ fn apply_grid_actions(
     grid: &mut vizz_mod::scene::Grid,
     b: &GridBinding,
     midi: &SharedMidi,
+    library: &mut vizz_mod::preset::Library,
 ) {
     let reg = &params.registry;
     let mut dirty = false;
@@ -1023,6 +1044,10 @@ fn apply_grid_actions(
         match vizz_mod::preset::save_kind(b.kind, &name, &captured) {
             Ok(saved) => {
                 grid.assign(slot, saved);
+                // The pad now names a preset that did not exist a moment
+                // ago; without this the cache says it is missing and the
+                // pad you just filled draws as broken.
+                library.refresh();
                 dirty = true;
             }
             // A failed save must not leave the pad pointing at a preset
@@ -1084,7 +1109,11 @@ fn apply_grid_actions(
 /// the panel so drawing stays free of side effects, and every failure is
 /// logged rather than propagated — losing a preset must not take the show
 /// with it.
-fn apply_preset_actions(actions: &vizz_ui::PanelActions, registry: &vizz_params::ParamRegistry) {
+fn apply_preset_actions(
+    actions: &vizz_ui::PanelActions,
+    registry: &vizz_params::ParamRegistry,
+    library: &mut vizz_mod::preset::Library,
+) {
     use vizz_mod::preset;
     if let Some(name) = &actions.preset_load {
         match preset::by_name(name) {
@@ -1092,16 +1121,25 @@ fn apply_preset_actions(actions: &vizz_ui::PanelActions, registry: &vizz_params:
             None => log::error!("preset {name} could not be read"),
         }
     }
+    // Both of these change what is on disk, so the cached listing is
+    // refreshed rather than left to the interval — a preset you just saved
+    // has to be on the assign menu now, not in up to two seconds.
     if let Some(name) = &actions.preset_save {
         let snapshot = preset::Preset::capture(registry);
         match preset::save(name, &snapshot) {
-            Ok(saved) => log::info!("saved preset {saved} ({} parameters)", snapshot.values.len()),
+            Ok(saved) => {
+                log::info!("saved preset {saved} ({} parameters)", snapshot.values.len());
+                library.refresh();
+            }
             Err(e) => log::error!("could not save preset {name}: {e:#}"),
         }
     }
     if let Some(name) = &actions.preset_delete {
         match preset::delete(name) {
-            Ok(()) => log::info!("deleted preset {name}"),
+            Ok(()) => {
+                log::info!("deleted preset {name}");
+                library.refresh();
+            }
             Err(e) => log::error!("could not delete preset {name}: {e:#}"),
         }
     }
@@ -1228,6 +1266,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         midi,
         midi_shared,
         midi_view: MidiView::default(),
+        library: vizz_mod::preset::Library::new(),
         saved_revision: 0,
         update,
     };

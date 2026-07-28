@@ -209,6 +209,108 @@ pub fn list_kind(kind: Kind) -> Vec<String> {
     names
 }
 
+/// How long a cached listing is trusted before the directory is read
+/// again. Only external changes — a file dropped into the folder by hand —
+/// need this at all; anything the app does refreshes the cache itself.
+const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A cached listing of the preset library.
+///
+/// The panel and both grids ask the same two questions every frame: what
+/// presets are there, and does this pad's preset still exist. Answered
+/// straight from the filesystem, the first is a directory scan per layer
+/// and the second was a file read *and a JSON parse* per filled pad —
+/// `by_name` loads the whole preset to decide whether it is there.
+///
+/// A full grid on both layers made that around fifty file operations per
+/// frame, on the render thread, sixty times a second, whether or not the
+/// panel was even on screen. On a laptop with the library on a network
+/// home directory that is not a micro-optimisation.
+///
+/// The library changes when the app saves or deletes something, which
+/// refreshes this directly, or when someone edits the folder behind its
+/// back, which the interval catches.
+pub struct Library {
+    looks: Vec<String>,
+    gravity: Vec<String>,
+    scanned: std::time::Instant,
+}
+
+impl Default for Library {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Library {
+    pub fn new() -> Self {
+        Self {
+            looks: list_kind(Kind::Look),
+            gravity: list_kind(Kind::Gravity),
+            scanned: std::time::Instant::now(),
+        }
+    }
+
+    /// Rescan if the listing is stale. Cheap enough to call every frame —
+    /// it is a clock comparison in all but one frame in a hundred and
+    /// twenty.
+    pub fn tick(&mut self) {
+        if self.scanned.elapsed() >= RESCAN {
+            self.refresh();
+        }
+    }
+
+    /// Rescan now. Called after the app itself writes to the library, so
+    /// a saved preset appears on the pads in the same frame rather than
+    /// whenever the interval next comes round.
+    pub fn refresh(&mut self) {
+        self.looks = list_kind(Kind::Look);
+        self.gravity = list_kind(Kind::Gravity);
+        self.scanned = std::time::Instant::now();
+    }
+
+    /// User preset names for one layer, alphabetical.
+    pub fn user(&self, kind: Kind) -> &[String] {
+        match kind {
+            Kind::Look => &self.looks,
+            Kind::Gravity => &self.gravity,
+        }
+    }
+
+    /// Everything a pad can name, in the order `/preset/recall` numbers
+    /// them: built-ins first, then what is on disk.
+    pub fn all(&self, kind: Kind) -> Vec<String> {
+        match kind {
+            Kind::Look => BUILTINS
+                .iter()
+                .map(|b| b.name.to_string())
+                .chain(self.looks.iter().cloned())
+                .collect(),
+            Kind::Gravity => self.gravity.clone(),
+        }
+    }
+
+    /// Can this name still be resolved? The question a pad asks to decide
+    /// whether it is pointing at nothing.
+    ///
+    /// Built-ins count for looks and are checked first, matching
+    /// [`by_name`] — a pad naming a built-in is never dangling, whatever
+    /// is on disk.
+    ///
+    /// The listing holds file stems, which are sanitised; a cell holds
+    /// whatever was typed. `load` sanitises on the way to a path, so
+    /// comparing the two directly would report every preset with a
+    /// character the filesystem does not take as missing — a pad outlined
+    /// in red that fires perfectly well.
+    pub fn has(&self, kind: Kind, name: &str) -> bool {
+        if kind == Kind::Look && BUILTINS.iter().any(|b| b.name == name) {
+            return true;
+        }
+        let wanted = crate::library::sanitize(name);
+        self.user(kind).iter().any(|n| *n == wanted)
+    }
+}
+
 /// Save under a sanitised name, returning the name actually used.
 ///
 /// Written to a temporary file and renamed, so a crash or a full disk
@@ -476,6 +578,73 @@ pub fn by_index(i: usize) -> Option<(String, Preset)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The listing is of file *stems*, which are sanitised, while a pad
+    /// holds the name as it was typed. Comparing the two directly reports
+    /// every preset whose name has a character the filesystem will not
+    /// take as missing — a pad outlined in red, refusing to be played,
+    /// that would fire perfectly well if it were pressed.
+    #[test]
+    fn a_preset_whose_name_needed_sanitising_is_still_found() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-sanitise");
+        let name = "Warehouse: 2am";
+        let saved = save(name, &Preset { values: Default::default() }).unwrap();
+        assert_ne!(saved, name, "this test needs a name that gets rewritten");
+
+        let lib = Library::new();
+        assert!(lib.has(Kind::Look, name), "the name as typed was reported missing");
+        assert!(lib.has(Kind::Look, &saved), "the name as saved was reported missing");
+        // And it agrees with the slow path it replaced.
+        assert!(by_name(name).is_some());
+    }
+
+    /// A built-in is never dangling, whatever is on disk — matching
+    /// `by_name`, which prefers built-ins and cannot be shadowed.
+    #[test]
+    fn a_pad_naming_a_builtin_is_never_reported_missing() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-builtin");
+        let lib = Library::new();
+        let builtin = BUILTINS[0].name;
+        assert!(lib.has(Kind::Look, builtin));
+        assert!(!lib.has(Kind::Look, "nothing called this"));
+        // Built-ins are looks only: a gravity pad naming one is dangling,
+        // because gravity has no built-in library to resolve it against.
+        assert!(!lib.has(Kind::Gravity, builtin));
+    }
+
+    /// The cache exists so the panel stops reading the disk every frame;
+    /// it is only correct if a save the app itself makes shows up at once
+    /// rather than whenever the rescan interval next comes round.
+    #[test]
+    fn saving_a_preset_shows_up_after_a_refresh() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-refresh");
+        let mut lib = Library::new();
+        assert!(!lib.has(Kind::Look, "later"));
+
+        save("later", &Preset { values: Default::default() }).unwrap();
+        // Deliberately stale until told: this is what makes it a cache.
+        assert!(!lib.has(Kind::Look, "later"));
+        lib.refresh();
+        assert!(lib.has(Kind::Look, "later"));
+        assert!(lib.all(Kind::Look).iter().any(|n| n == "later"));
+    }
+
+    /// The two layers are separate libraries, and a cache that merged them
+    /// would put looks on the gravity pads' assign menu.
+    #[test]
+    fn the_cache_keeps_the_two_layers_apart() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-layers");
+        save_kind(Kind::Look, "a look", &Preset { values: Default::default() }).unwrap();
+        save_kind(Kind::Gravity, "a well", &Preset { values: Default::default() }).unwrap();
+        let lib = Library::new();
+
+        assert!(lib.has(Kind::Look, "a look"));
+        assert!(!lib.has(Kind::Look, "a well"));
+        assert!(lib.has(Kind::Gravity, "a well"));
+        assert!(!lib.has(Kind::Gravity, "a look"));
+        // Gravity has no built-ins, so its list is exactly what is on disk.
+        assert_eq!(lib.all(Kind::Gravity), vec!["a well".to_string()]);
+    }
 
     /// The two layers must not be able to disturb each other.
     ///
