@@ -18,7 +18,7 @@ use crate::params::AppParams;
 
 pub struct FrameEngine {
     params: Arc<AppParams>,
-    snapshot: ParamSnapshot,
+    pub snapshot: ParamSnapshot,
     pub health: HealthMonitor,
     /// LFOs and the beat clock. Render-thread-owned: it ticks here and the
     /// panel (drawn on this thread) edits it directly.
@@ -94,7 +94,10 @@ impl FrameEngine {
                 .position(|c| *c == grid.curve)
                 .unwrap_or(1) as f32,
         );
-        reg.set(self.params.scene_auto, if grid.autopilot.enabled { 1.0 } else { 0.0 });
+        reg.set(
+            self.params.scene_auto,
+            if grid.autopilot.enabled { 1.0 } else { 0.0 },
+        );
         reg.set(self.params.scene_bars, grid.autopilot.bars);
         self.grid = grid;
     }
@@ -214,7 +217,10 @@ impl FrameEngine {
         }
         // Modulation is an offset on top of the stored targets, so a value
         // set by hand or by MIDI is never overwritten.
-        let levels = AudioLevels { bands: &self.bands, level: self.audio.state.level() };
+        let levels = AudioLevels {
+            bands: &self.bands,
+            level: self.audio.state.level(),
+        };
         let offsets = self.modulation.tick(dt_s, &p.registry, levels);
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
         self.vis_time += dt_s * self.snapshot.get(p.speed);
@@ -401,7 +407,10 @@ mod tests {
             "room still lit at {} with the master dim down",
             f.room.brightness
         );
-        assert!(!f.room_visible, "room pass still running with the master dim down");
+        assert!(
+            !f.room_visible,
+            "room pass still running with the master dim down"
+        );
     }
 
     /// An index past the end is ignored rather than applying whatever is

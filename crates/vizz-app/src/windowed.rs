@@ -307,8 +307,17 @@ impl App {
             },
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
+            // What the renderer is actually using this frame, so a fader
+            // whose parameter is being modulated can show where the value
+            // has really gone rather than only where its handle sits.
+            modulated: self
+                .params
+                .registry
+                .iter()
+                .map(|(id, _)| self.engine.snapshot.get(id))
+                .collect(),
             presets: preset_entries(),
-            grid: grid_view(&self.engine.grid),
+            grid: grid_view(&self.engine.grid, self.engine.modulation.clock.beats),
             focus_filter: std::mem::take(&mut self.focus_filter),
             expand_sections: false,
             bpm: self.engine.modulation.clock.bpm,
@@ -499,7 +508,10 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
 }
 
 /// The scene grid as the panel needs to see it.
-fn grid_view(grid: &vizz_mod::scene::Grid) -> vizz_ui::grid_view::GridView {
+///
+/// `beats` is the musical clock, so the autopilot switch can show how far
+/// through its step it is rather than only that it is on.
+fn grid_view(grid: &vizz_mod::scene::Grid, beats: f64) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
         names: grid.cells().iter().map(|c| c.as_ref().map(|c| c.name.clone())).collect(),
@@ -510,6 +522,8 @@ fn grid_view(grid: &vizz_mod::scene::Grid) -> vizz_ui::grid_view::GridView {
         curve_names: Curve::ALL.iter().map(|c| c.name().to_string()).collect(),
         autopilot: grid.autopilot.enabled,
         bars: grid.autopilot.bars,
+        auto_phase: grid.autopilot_phase(beats),
+        upcoming: grid.upcoming(),
     }
 }
 

@@ -71,7 +71,8 @@ pub const SCENE_SLOTS: f32 = vizz_mod::scene::SLOTS as f32;
 impl AppParams {
     pub fn build() -> Self {
         let mut b = ParamRegistry::builder();
-        let count = b.add(ParamDef::new("/particles/count", 0.0, MAX_PARTICLES, 60_000.0).smooth(0.2));
+        let count =
+            b.add(ParamDef::new("/particles/count", 0.0, MAX_PARTICLES, 60_000.0).smooth(0.2));
         let size = b.add(ParamDef::new("/particles/size", 0.001, 0.2, 0.015).smooth(0.1));
         let speed = b.add(ParamDef::new("/particles/speed", 0.0, 4.0, 0.6).smooth(0.25));
         let spread = b.add(ParamDef::new("/particles/spread", 0.05, 3.0, 1.2).smooth(0.3));
@@ -88,7 +89,14 @@ impl AppParams {
                 .smooth(0.4)
                 // The sweep wraps, so 8 is the sphere again coming round.
                 .labels(&[
-                    "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
+                    "sphere",
+                    "torus",
+                    "knot",
+                    "grid",
+                    "shell",
+                    "Lorenz",
+                    "Aizawa",
+                    "cloud pair",
                     "sphere",
                 ]),
         );
@@ -164,8 +172,7 @@ impl AppParams {
         // where it was and where it is going, firing each preset on the
         // way. Being an ordinary parameter is what gets it MIDI learn and
         // OSC for free.
-        let preset_recall =
-            b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
+        let preset_recall = b.add(ParamDef::new("/preset/recall", 0.0, MAX_PRESET_SLOT, 0.0));
         // The scene grid. Parameters rather than plain settings for the
         // same reason recall is one: a pad controller addresses them for
         // free, and there is one path to firing a scene rather than a UI
@@ -182,8 +189,7 @@ impl AppParams {
             ParamDef::new("/scene/curve", 0.0, 4.0, 1.0)
                 .labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
         );
-        let scene_auto =
-            b.add(ParamDef::new("/scene/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
+        let scene_auto = b.add(ParamDef::new("/scene/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
         // Bars between autopilot steps. Down to a quarter bar, because a
         // scene change on every beat is a legitimate effect and a minimum
         // of one bar would rule it out.
@@ -325,7 +331,11 @@ mod tests {
         assert_eq!(def.default, 0.0);
         assert_eq!(def.min, 0.0);
         assert_eq!(def.smooth, 0.0);
-        assert_eq!(def.max, vizz_mod::scene::SLOTS as f32, "not every pad is reachable");
+        assert_eq!(
+            def.max,
+            vizz_mod::scene::SLOTS as f32,
+            "not every pad is reachable"
+        );
     }
 
     /// Recall must reach every preset the app can list. The range is
@@ -339,7 +349,29 @@ mod tests {
             MAX_PRESET_SLOT >= builtins,
             "recall tops out at {MAX_PRESET_SLOT} but there are {builtins} built-ins"
         );
-        assert!(MAX_PRESET_SLOT >= builtins + 16.0, "no headroom for user presets");
+        assert!(
+            MAX_PRESET_SLOT >= builtins + 16.0,
+            "no headroom for user presets"
+        );
+    }
+
+    /// Every default fader assignment must name a real parameter.
+    ///
+    /// The shipped macro list lives in another crate, which cannot see this
+    /// registry, so a typo or a renamed address there produces a fader that
+    /// draws as an empty slot on a fresh install and is silent about why.
+    /// This is the only place both halves are visible at once.
+    #[test]
+    fn every_default_macro_names_a_real_parameter() {
+        let p = AppParams::build();
+        let macros = vizz_mod::perform::Macros::default();
+        for (slot, addr) in macros.slots.iter().enumerate() {
+            let Some(addr) = addr else { continue };
+            assert!(
+                p.registry.id(addr).is_some(),
+                "default fader {slot} points at {addr}, which is not a parameter"
+            );
+        }
     }
 
     /// Slot 0 must select nothing. It is the resting value, so anything
@@ -350,6 +382,9 @@ mod tests {
         let def = &p.registry.defs()[p.preset_recall.index()];
         assert_eq!(def.default, 0.0, "recall must rest at the empty slot");
         assert_eq!(def.min, 0.0);
-        assert_eq!(def.smooth, 0.0, "a smoothed recall glides through every slot on the way");
+        assert_eq!(
+            def.smooth, 0.0,
+            "a smoothed recall glides through every slot on the way"
+        );
     }
 }

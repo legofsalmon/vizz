@@ -133,6 +133,7 @@ fn main() {
         audio: audio_view(),
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
+        modulated: Vec::new(),
         bpm: 128.0,
         focus_filter: false,
         grid: preview_grid(),

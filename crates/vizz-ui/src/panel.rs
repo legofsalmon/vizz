@@ -75,6 +75,13 @@ pub struct PanelState {
     /// something to edit without locking the analysis thread while drawing.
     pub audio_bands: [vizz_audio::Band; 4],
     pub audio_auto_bpm: bool,
+    /// Live smoothed values including modulation, indexed by parameter
+    /// position. Owned rather than borrowed so this struct stays free of
+    /// lifetimes; it is one float per parameter, rebuilt each frame.
+    ///
+    /// Empty when nothing is reporting, in which case controls fall back
+    /// to drawing only what the user set.
+    pub modulated: Vec<f32>,
     /// Beat clock, mirrored for the performance layout (which does not get
     /// a mutable ModEngine).
     pub bpm: f32,

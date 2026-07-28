@@ -342,9 +342,36 @@ impl Grid {
         }
     }
 
+    /// How far through the current autopilot step the clock is, 0..1.
+    /// `None` when the autopilot is off.
+    ///
+    /// For the UI. A bright button says the autopilot is on; a button
+    /// filling towards the next fire says it is *working*, which is the
+    /// thing you actually want to know when nothing has changed on screen
+    /// for eight bars. It reads the clock rather than being told by the
+    /// tick, so it is right on a frame where nothing fired.
+    pub fn autopilot_phase(&self, beats: f64) -> Option<f32> {
+        if !self.autopilot.enabled {
+            return None;
+        }
+        let step = self.autopilot.step_beats();
+        // Same divisor `autopilot_step` uses, so the sweep reaches the end
+        // exactly when the fire happens rather than near it.
+        let phase = (beats / step).rem_euclid(1.0);
+        Some(phase as f32)
+    }
+
     /// The next filled slot after the one showing, wrapping. `None` when
     /// the grid is empty — an autopilot with nothing to play stays put
     /// instead of firing into space.
+    ///
+    /// Public so the UI can name the pad the autopilot will move to next:
+    /// during a set the useful question is "what is coming", and the grid
+    /// is the only thing that knows.
+    pub fn upcoming(&self) -> Option<usize> {
+        self.next_filled()
+    }
+
     fn next_filled(&self) -> Option<usize> {
         let from = self.transition.as_ref().map(|t| t.to_slot).or(self.current);
         let start = from.map_or(0, |s| s + 1);

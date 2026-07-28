@@ -292,6 +292,8 @@ impl Gui {
             bar_phase: state.bar_phase,
             presets: &preset_names,
             grid: &state.grid,
+            midi: &state.midi,
+            values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
         };
         let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         if perf.exit {
@@ -322,6 +324,11 @@ impl Gui {
         // The grid on the performance layout drives the same actions the
         // panel's does, so storing a scene mid-set works from either.
         actions.grid = perf.grid;
+        // Learn and unbind are handled identically to the panel's, so a
+        // controller mapped from the performance layout and one mapped
+        // from the parameter list end up in the same map by the same path.
+        actions.set_learn_target = perf.set_learn_target;
+        actions.clear_binding = perf.clear_binding;
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -367,6 +374,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -400,6 +408,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             focus_filter: false,
             grid: Default::default(),
@@ -436,6 +445,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -474,6 +484,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -514,6 +525,7 @@ mod tests {
             },
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
+            modulated: Vec::new(),
             bpm: 128.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -580,6 +592,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
@@ -610,6 +623,7 @@ mod tests {
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
+            modulated: Vec::new(),
             bpm: 120.0,
             presets: Vec::new(),
             focus_filter: false,
