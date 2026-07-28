@@ -591,6 +591,7 @@ impl App {
             [state.config.width, state.config.height],
         );
         let mut pending_output = None;
+        let mut pending_device = None;
         match actions {
             Ok(actions) => {
                 apply_audio_actions(
@@ -629,6 +630,9 @@ impl App {
                 // mid-encoder would swap a texture the encoder already
                 // references.
                 pending_output = actions.output_setup;
+                // Same deferral, for the same reason: see the bottom of
+                // this function.
+                pending_device = actions.audio.device.clone();
                 apply_panel_actions(
                     actions,
                     &self.midi_shared,
@@ -686,6 +690,33 @@ impl App {
         // it is safe to swap the textures out from under the next one.
         if let Some(setup) = pending_output {
             self.apply_output_setup(setup);
+        }
+        // Deferred for a different reason, to the same place. Closing one
+        // audio device and opening another is not a fast call — CoreAudio
+        // takes a good fraction of a second over it — and it was being
+        // made in the middle of the frame, with the surface texture
+        // already acquired and unpresented. Holding an acquired texture
+        // that long is how a compositor decides a window has stopped
+        // responding, and the projector shows whatever it decides to show.
+        //
+        // The gap is still there; it is now behind the frame that was
+        // already drawn rather than instead of it, so the last good frame
+        // stays on the projector while the device opens.
+        if let Some(want) = pending_device {
+            self.switch_audio_device(want);
+        }
+    }
+
+    /// Move to another input device, remembering the choice.
+    fn switch_audio_device(&mut self, want: Option<String>) {
+        // Reopen rather than rebuild: the band gains live in the settings
+        // the analysis thread shares, and rebuilding would reset the one
+        // thing the user tuned to their interface.
+        self.engine.audio.reopen(want.as_deref());
+        // Remember it, so plugging the same interface in tomorrow does not
+        // mean finding this menu again.
+        if let Err(e) = crate::settings::save_audio_device(want.as_deref()) {
+            log::warn!("could not remember the audio device: {e:#}");
         }
     }
 }
@@ -778,19 +809,8 @@ fn apply_audio_actions(
     tap: &mut vizz_audio::TapTempo,
 ) {
     let a = &actions.audio;
-    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped && a.device.is_none() {
+    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped {
         return;
-    }
-    if let Some(want) = &a.device {
-        // Reopen rather than rebuild: the band gains live in the settings
-        // the analysis thread shares, and rebuilding would reset the one
-        // thing the user tuned to their interface.
-        engine.audio.reopen(want.as_deref());
-        // Remember it, so plugging the same interface in tomorrow does not
-        // mean finding this menu again.
-        if let Err(e) = crate::settings::save_audio_device(want.as_deref()) {
-            log::warn!("could not remember the audio device: {e:#}");
-        }
     }
     if let Some(b) = a.bands {
         *bands = b;

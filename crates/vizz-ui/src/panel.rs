@@ -517,6 +517,32 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
 /// venue, with the wrong input already on screen. The list is read when
 /// the menu is opened rather than every frame: enumerating devices talks
 /// to CoreAudio/WASAPI and is far too expensive to do at 60 Hz.
+/// How long an enumerated device list is reused. Long enough that holding
+/// the menu open is not an audio-API call per frame, short enough that
+/// something plugged in while the menu is open still turns up.
+const DEVICE_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The input devices, enumerated at most once a second.
+///
+/// This only runs while the menu is open — a combo box does not draw its
+/// body otherwise — but open at sixty frames a second it was sixty device
+/// enumerations a second, on the render thread. Asking CoreAudio for the
+/// device list is not a cheap call, and the answer does not change sixty
+/// times a second.
+fn device_list(ui: &egui::Ui) -> Vec<String> {
+    let id = egui::Id::new("audio-device-list");
+    let cached: Option<(std::time::Instant, Vec<String>)> =
+        ui.data(|d| d.get_temp(id));
+    if let Some((at, names)) = cached
+        && at.elapsed() < DEVICE_LIST_TTL
+    {
+        return names;
+    }
+    let names = vizz_audio::input_devices();
+    ui.data_mut(|d| d.insert_temp(id, (std::time::Instant::now(), names.clone())));
+    names
+}
+
 fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let current = state.audio.device.as_deref().unwrap_or("no input");
     ui.horizontal(|ui| {
@@ -532,7 +558,7 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                     actions.audio.device = Some(None);
                 }
                 ui.separator();
-                for name in vizz_audio::input_devices() {
+                for name in device_list(ui) {
                     let selected = state.audio.device.as_deref() == Some(name.as_str());
                     if ui.selectable_label(selected, &name).clicked() {
                         actions.audio.device = Some(Some(name.clone()));
@@ -1518,14 +1544,13 @@ fn param_row(
     // so a route there is inert. Offering the button and then drawing the
     // "modulated" marker beside it was the app claiming to do something it
     // had no path to do.
-    if !is_transport(def) {
-        if ui
+    if !is_transport(def)
+        && ui
             .add(egui::Button::new("mod").small().selected(routed))
             .on_hover_text(hint)
             .clicked()
-        {
-            modulation.toggle_route(lfo1, &def.addr, 0.25);
-        }
+    {
+        modulation.toggle_route(lfo1, &def.addr, 0.25);
     }
 
         if !state.midi.available {
