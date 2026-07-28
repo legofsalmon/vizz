@@ -23,6 +23,12 @@ pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState, PresetEntry};
 
+/// Exposed for the offscreen preview, so the overlay is reviewed through
+/// the same code the app runs rather than a copy of it.
+pub fn draw_shortcuts_for_preview(ctx: &egui::Context, open: &mut bool) {
+    shortcuts_overlay(ctx, open);
+}
+
 /// Keyboard shortcuts, on screen rather than only in the README.
 ///
 /// A shortcut nobody can discover is a shortcut nobody uses, and the

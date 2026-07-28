@@ -33,6 +33,7 @@ fn main() {
         Shot { name: "graph_real", w: 900, h: 620, draw: draw_real_graph },
         Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
         Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
+        Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
     ];
 
     for s in shots {
@@ -335,6 +336,12 @@ fn draw_real_zoomed(ctx: &egui::Context, w: f32, h: f32) {
         ui.set_max_size(vec2(w, h));
         view.show(ui, &mut g, &reg);
     });
+}
+
+/// The `?` overlay, drawn through the real code path.
+fn draw_shortcuts(ctx: &egui::Context, _w: f32, _h: f32) {
+    let mut open = true;
+    vizz_ui::draw_shortcuts_for_preview(ctx, &mut open);
 }
 
 fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
