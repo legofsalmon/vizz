@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vizz — realtime generative visuals for VJing</title>
+<meta name="description" content="Realtime generative visuals for VJing. Native Rust and wgpu, feeding Resolume, TouchDesigner and MadMapper over Syphon and NDI, played live over OSC and MIDI.">
+<meta property="og:title" content="vizz">
+<meta property="og:description" content="Realtime generative visuals for VJing. Syphon and NDI out, OSC and MIDI in, live point clouds.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='11' fill='none' stroke='%237fb5ff' stroke-width='3'/></svg>">
+<style>
+  /* One file, no build step, no CDN: Vercel serves it as-is and the page
+     works offline and on a venue's hostile wifi. */
+  :root {
+    --bg: #0a0c12;
+    --panel: #12151d;
+    --line: #232838;
+    --text: #e8ecf5;
+    --dim: #97a0b5;
+    --accent: #7fb5ff;
+    --good: #78dca0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); }
+
+  /* Hero. The gradient stands in for the particle field rather than
+     shipping a screenshot that goes stale every release. */
+  header {
+    padding: 72px 0 56px;
+    background:
+      radial-gradient(60% 80% at 22% 8%, rgba(127,181,255,.16), transparent 60%),
+      radial-gradient(50% 70% at 82% 0%, rgba(190,140,255,.13), transparent 60%);
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 56px; letter-spacing: -.03em; margin: 0 0 8px; }
+  .tag { font-size: 20px; color: var(--dim); margin: 0 0 32px; max-width: 42em; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    display: inline-block; padding: 13px 22px; border-radius: 8px;
+    background: var(--accent); color: #08101c; font-weight: 650;
+    text-decoration: none; border: 1px solid transparent;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn.ghost { background: transparent; color: var(--text); border-color: var(--line); }
+  .note { color: var(--dim); font-size: 14px; margin-top: 14px; }
+
+  pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13.5px; margin: 14px 0;
+  }
+  code { font-size: .92em; }
+  p > code, li > code, td > code {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px;
+  }
+
+  section { padding: 52px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 26px; letter-spacing: -.02em; margin: 0 0 6px; }
+  h2 + .sub { color: var(--dim); margin: 0 0 26px; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px;
+  }
+  .card p { margin: 0; color: var(--dim); font-size: 14.5px; line-height: 1.6; }
+
+  /* Changelog. Newest first, and every entry links to the release it
+     describes so the detail lives with the artifact rather than here. */
+  .rel { display: flex; gap: 20px; padding: 20px 0; border-top: 1px solid var(--line); }
+  .rel:first-of-type { border-top: 0; }
+  .rel .v { flex: 0 0 92px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .rel .v a { text-decoration: none; }
+  .rel ul { margin: 0; padding-left: 18px; color: var(--dim); font-size: 14.5px; }
+  .rel li { margin-bottom: 4px; }
+  .rel li strong { color: var(--text); font-weight: 600; }
+
+  .pill {
+    display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim); vertical-align: 2px;
+  }
+  .pill.good { color: var(--good); border-color: rgba(120,220,160,.35); }
+
+  footer { padding: 40px 0 64px; color: var(--dim); font-size: 14px; }
+  footer a { margin-right: 18px; }
+
+  @media (max-width: 620px) {
+    h1 { font-size: 40px; }
+    .tag { font-size: 18px; }
+    .rel { flex-direction: column; gap: 6px; }
+    .rel .v { flex: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>vizz</h1>
+    <p class="tag">Realtime generative visuals for VJing. Native Rust and wgpu,
+      feeding Resolume, TouchDesigner and MadMapper over Syphon and NDI,
+      played live over OSC and MIDI.</p>
+    <div class="cta">
+      <!-- /releases/latest/download/ is a GitHub permalink to the newest
+           release's asset, so this page never needs republishing when a
+           release is cut. -->
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/latest/download/vizz.app.zip">Download for macOS</a>
+      <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
+      <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
+    </div>
+    <p class="note">
+      Apple Silicon and Intel. <span class="pill good">signed &amp; notarized</span>
+      — it opens with a normal double-click, checked with <code>spctl</code> in CI
+      before every release. Windows builds from source and is tested in CI;
+      there is no Windows installer yet.
+    </p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="sub">Or one line in a terminal, which puts it in Applications:</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/install.sh | bash</code></pre>
+    <p class="note">Syphon is embedded in the bundle — nothing else to install.
+      Double-clicking runs 1280×720 with OSC on udp/7000 and Syphon on.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="sub">Built to survive a live set: the render thread never waits on anything.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Out to your VJ software</h3>
+        <p>Syphon on macOS, zero-copy on the same Metal queue. NDI on the network,
+          with frames dropped rather than awaited — losing an NDI frame is
+          survivable, missing vsync is not.</p>
+      </div>
+      <div class="card">
+        <h3>Played, not configured</h3>
+        <p>OSC and MIDI on every parameter, with MIDI learn. Presets on the
+          number keys. A performance layout with eight assignable faders and
+          nothing else competing for the screen.</p>
+      </div>
+      <div class="card">
+        <h3>Modulation as a node graph</h3>
+        <p>LFOs, a beat clock, and four configurable audio bands with tempo
+          detection, wired on a pannable canvas. Modulation is an offset on top
+          of your value, so a fader you set stays where you set it.</p>
+      </div>
+      <div class="card">
+        <h3>Geometry</h3>
+        <p>Eight morphing modes including two strange attractors, plus PLY and
+          XYZ import with colour. A real camera with depth of field, and a
+          wireframe room sized to the frame for forced perspective.</p>
+      </div>
+      <div class="card">
+        <h3>Live point clouds</h3>
+        <p>Stream PLY in over TCP, or watch a file that gets rewritten. Frames
+          morph against loaded scans and attractors like any other cloud. No
+          wrapper protocol — a PLY header is its own frame length.</p>
+      </div>
+      <div class="card">
+        <h3>Honest about failure</h3>
+        <p>Every external dependency fails soft. Health monitoring with frame-time
+          percentiles, and a headless mode that renders the same frame path as a
+          live set for benchmarking.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Changelog</h2>
+    <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.6.0">0.6.0</a></div>
+      <ul>
+        <li><strong>Live point clouds.</strong> Stream PLY over TCP, listen for a
+          sender, or watch a file rewritten in place.</li>
+        <li><strong>NDI video input.</strong> Discovery, connection and capture.
+          Not drawn to screen yet.</li>
+        <li><strong>Windows built and tested in CI</strong>, on all three platforms now.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.5.1">0.5.1</a></div>
+      <ul>
+        <li>The <code>?</code> shortcut list now opens with the panel hidden and
+          from the performance layout — the two places you would ask for it.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.5.0">0.5.0</a></div>
+      <ul>
+        <li><strong>Fixed: the picture saturated to white within seconds.</strong>
+          With the room off — the default — the frame was never cleared. Present
+          in 0.3.0 and 0.4.0.</li>
+        <li><strong>Presets.</strong> Six built in, your own saved alongside, any
+          of the first ten on a number key, OSC or a MIDI button.</li>
+        <li><strong>Control panel rework.</strong> Status collapsed to one line,
+          parameters grouped and filterable with <code>/</code>, modulated ones
+          marked, stepped ones named rather than numbered.</li>
+        <li>Presets on the performance layout; <code>fit</code> on the node canvas.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.4.0">0.4.0</a></div>
+      <ul>
+        <li><strong>First signed and notarized release</strong> — no more
+          right-click → Open.</li>
+        <li><strong>Steerable room perspective.</strong> Depth, convergence and a
+          vanishing point that moves, with the opening staying locked to the
+          frame edge.</li>
+        <li>The point cloud can sit <em>inside</em> the room and take its
+          forced perspective.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.3.0">0.3.0</a></div>
+      <ul>
+        <li><strong>Point clouds.</strong> PLY and XYZ import with colour, and
+          morphing between two clouds.</li>
+        <li><strong>A real camera</strong> with orbit, field of view and depth of
+          field, and the wireframe room.</li>
+        <li>Patch storage, the node palette, and the performance layout.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.2.0">0.2.0</a></div>
+      <ul>
+        <li>The node canvas for modulation, and the release preflight.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.1.0">0.1.0</a></div>
+      <ul>
+        <li>First release: the particle field, Syphon and NDI output, OSC.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/legofsalmon/vizz">GitHub</a>
+    <a href="https://github.com/legofsalmon/vizz#readme">Documentation</a>
+    <a href="https://github.com/legofsalmon/vizz/releases">Releases</a>
+    <a href="https://github.com/legofsalmon/vizz/issues">Issues</a>
+  </div>
+</footer>
+
+</body>
+</html>
