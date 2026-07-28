@@ -171,6 +171,18 @@ impl Gui {
         }
     }
 
+    /// Will `render` put anything on screen this frame?
+    ///
+    /// Asked *before* building the state to hand it, because gathering
+    /// that state is not free — a health snapshot, the preset listing,
+    /// both grids resolved, the MIDI map cloned, one float per parameter —
+    /// and `render` returning early after all of it had been assembled
+    /// meant paying for a panel nobody could see. Which is the state a set
+    /// is actually played in.
+    pub fn will_draw(&self) -> bool {
+        self.visible || self.graph_open || self.performance || self.shortcuts_open || self.quit_armed
+    }
+
     /// Feed a window event to egui. Returns `true` if egui consumed it,
     /// in which case the caller should not act on it (so dragging a
     /// slider does not also trigger app shortcuts).
@@ -256,16 +268,10 @@ impl Gui {
         // meant `?` did nothing with everything hidden — which is exactly
         // the moment you press it, having forgotten how to get the panel
         // back.
-        // The quit prompt counts as something to draw, and it is the one
-        // that most has to: it appears in response to a key that would
-        // otherwise have ended the show, and it is worth nothing if it is
-        // invisible because the panel happened to be hidden.
-        if !self.visible
-            && !self.graph_open
-            && !self.performance
-            && !self.shortcuts_open
-            && !self.quit_armed
-        {
+        // Callers are expected to check `will_draw` and skip assembling
+        // the state entirely; this stays as the backstop that keeps the
+        // two from disagreeing.
+        if !self.will_draw() {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();

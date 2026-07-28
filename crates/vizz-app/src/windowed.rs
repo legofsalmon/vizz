@@ -492,14 +492,6 @@ impl App {
             state.config.width,
             state.config.height,
         );
-        // The panel composites over the preview, inside the same encoder,
-        // so it costs one extra pass and no synchronisation point.
-        let outputs_status: Vec<OutputStatus> = state
-            .senders
-            .iter()
-            .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
-            .collect();
-        refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
         // The prompt expires on its own as well as on a keystroke: an
         // Escape pressed and then walked away from must not leave the app
         // one key from quitting for the rest of the night.
@@ -507,103 +499,128 @@ impl App {
             self.quit_armed = None;
         }
         state.gui.quit_armed = self.quit_armed.is_some();
-        // Picks up presets added behind the app's back — dropped into the
-        // folder, or synced in. Anything the app writes refreshes this
-        // directly, so the interval only has to catch what it did not do
-        // itself.
-        self.library.tick();
-        // Collected before the panel draws: the render call takes
-        // `&mut state.gui` and reading `state.scene` inside its argument
-        // list would borrow the same struct twice.
-        let cloud_names: Vec<String> = state.scene.cloud_names().to_vec();
-        let palette_names: Vec<String> = state.scene.palettes.names.clone();
-        // What the panel shows as current, so the controls reflect what is
-        // actually allocated rather than what was last typed.
-        let output_setup = vizz_ui::OutputSetup {
-            width: state.output.width,
-            height: state.output.height,
-            scale: crate::settings::load().scale(),
-            wide: !state.output.publishable(),
-        };
-        let panel_state = PanelState {
-            // try_lock: the update thread holds this for microseconds, but
-            // the render thread still never waits on it.
-            update_available: self
-                .update
-                .try_lock()
-                .ok()
-                .and_then(|u| u.available.map(|v| v.to_string())),
-            health: Some(self.engine.health.snapshot()),
-            outputs: outputs_status,
-            frame_times_ms: Vec::new(),
-            frame_budget_ms: 1000.0 / 60.0,
-            midi: self.midi_view.clone(),
-            audio: {
-                let st = &self.engine.audio.state;
-                vizz_ui::AudioView {
-                    connected: st.connected(),
-                    device: self.engine.audio.device_name.clone(),
-                    bands: std::array::from_fn(|i| st.band(i)),
-                    raw: std::array::from_fn(|i| st.raw(i)),
-                    raw_peak: std::array::from_fn(|i| st.raw_peak(i)),
-                    level: st.level(),
-                    detected_bpm: st.bpm(),
-                    confidence: st.confidence(),
-                    dropped: st.dropped.load(std::sync::atomic::Ordering::Relaxed),
-                }
-            },
-            audio_bands: self.audio_bands,
-            audio_auto_bpm: self.audio_auto_bpm,
-            clouds: cloud_names,
-            palettes: palette_names,
-            output: output_setup,
-            // What the renderer is actually using this frame, so a fader
-            // whose parameter is being modulated can show where the value
-            // has really gone rather than only where its handle sits.
-            modulated: self
-                .params
-                .registry
+
+        // Everything below describes the app to a panel, and with nothing
+        // on screen it described it to nobody: a health snapshot sorting six
+        // hundred frame times, the settings file read and parsed, the MIDI
+        // map cloned, both grids resolved into vectors of strings, one float
+        // per parameter — every frame, all of it discarded by an early return
+        // inside `render`.
+        //
+        // Hidden is not the rare case. It is how the app is run once the look
+        // is built, which is to say for the whole of a set.
+        //
+        // The preset key is taken outside, because a number key fires a slot
+        // whether or not the panel is up — that is most of the point of it.
+        let preset_key = state.gui.preset_key.take();
+        let actions = if state.gui.will_draw() {
+            // The panel composites over the preview, inside the same encoder,
+            // so it costs one extra pass and no synchronisation point.
+            let outputs_status: Vec<OutputStatus> = state
+                .senders
                 .iter()
-                .map(|(id, _)| self.engine.snapshot.get(id))
-                .collect(),
-            presets: preset_entries(&self.library),
-            grid: grid_view(
-                &self.engine.grid,
-                self.engine.modulation.clock.beats,
-                &self.midi_view,
-                &self.library,
-                vizz_mod::preset::Kind::Look,
-                SCENE_FIRE,
-                "scene",
-            ),
-            // Shown only once the layer is in use. Sixteen empty pads for
-            // a layer nobody has touched is a lot of the performance
-            // screen spent saying nothing.
-            gravity_grid: (!self.engine.gravity_grid.is_empty()).then(|| {
-                gravity_grid_view(
-                    &self.engine.gravity_grid,
+                .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
+                .collect();
+            refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+            // Picks up presets added behind the app's back — dropped into the
+            // folder, or synced in. Anything the app writes refreshes this
+            // directly, so the interval only has to catch what it did not do
+            // itself.
+            self.library.tick();
+            // Collected before the panel draws: the render call takes
+            // `&mut state.gui` and reading `state.scene` inside its argument
+            // list would borrow the same struct twice.
+            let cloud_names: Vec<String> = state.scene.cloud_names().to_vec();
+            let palette_names: Vec<String> = state.scene.palettes.names.clone();
+            // What the panel shows as current, so the controls reflect what is
+            // actually allocated rather than what was last typed.
+            let output_setup = vizz_ui::OutputSetup {
+                width: state.output.width,
+                height: state.output.height,
+                scale: crate::settings::load().scale(),
+                wide: !state.output.publishable(),
+            };
+            let panel_state = PanelState {
+                // try_lock: the update thread holds this for microseconds, but
+                // the render thread still never waits on it.
+                update_available: self
+                    .update
+                    .try_lock()
+                    .ok()
+                    .and_then(|u| u.available.map(|v| v.to_string())),
+                health: Some(self.engine.health.snapshot()),
+                outputs: outputs_status,
+                frame_times_ms: Vec::new(),
+                frame_budget_ms: 1000.0 / 60.0,
+                midi: self.midi_view.clone(),
+                audio: {
+                    let st = &self.engine.audio.state;
+                    vizz_ui::AudioView {
+                        connected: st.connected(),
+                        device: self.engine.audio.device_name.clone(),
+                        bands: std::array::from_fn(|i| st.band(i)),
+                        raw: std::array::from_fn(|i| st.raw(i)),
+                        raw_peak: std::array::from_fn(|i| st.raw_peak(i)),
+                        level: st.level(),
+                        detected_bpm: st.bpm(),
+                        confidence: st.confidence(),
+                        dropped: st.dropped.load(std::sync::atomic::Ordering::Relaxed),
+                    }
+                },
+                audio_bands: self.audio_bands,
+                audio_auto_bpm: self.audio_auto_bpm,
+                clouds: cloud_names,
+                palettes: palette_names,
+                output: output_setup,
+                // What the renderer is actually using this frame, so a fader
+                // whose parameter is being modulated can show where the value
+                // has really gone rather than only where its handle sits.
+                modulated: self
+                    .params
+                    .registry
+                    .iter()
+                    .map(|(id, _)| self.engine.snapshot.get(id))
+                    .collect(),
+                presets: preset_entries(&self.library),
+                grid: grid_view(
+                    &self.engine.grid,
                     self.engine.modulation.clock.beats,
                     &self.midi_view,
                     &self.library,
-                )
-            }),
-            focus_filter: std::mem::take(&mut self.focus_filter),
-            expand_sections: false,
-            bpm: self.engine.modulation.clock.bpm,
-            bar_phase: self.engine.modulation.clock.bar_phase(4.0),
+                    vizz_mod::preset::Kind::Look,
+                    SCENE_FIRE,
+                    "scene",
+                ),
+                // Shown only once the layer is in use. Sixteen empty pads for
+                // a layer nobody has touched is a lot of the performance
+                // screen spent saying nothing.
+                gravity_grid: (!self.engine.gravity_grid.is_empty()).then(|| {
+                    gravity_grid_view(
+                        &self.engine.gravity_grid,
+                        self.engine.modulation.clock.beats,
+                        &self.midi_view,
+                        &self.library,
+                    )
+                }),
+                focus_filter: std::mem::take(&mut self.focus_filter),
+                expand_sections: false,
+                bpm: self.engine.modulation.clock.bpm,
+                bar_phase: self.engine.modulation.clock.bar_phase(4.0),
+            };
+            state.gui.render(
+                &state.window,
+                &state.ctx.device,
+                &state.ctx.queue,
+                &mut encoder,
+                &preview,
+                &self.params.registry,
+                panel_state,
+                &mut self.engine.modulation,
+                [state.config.width, state.config.height],
+            )
+        } else {
+            Ok(vizz_ui::PanelActions::default())
         };
-        let preset_key = state.gui.preset_key.take();
-        let actions = state.gui.render(
-            &state.window,
-            &state.ctx.device,
-            &state.ctx.queue,
-            &mut encoder,
-            &preview,
-            &self.params.registry,
-            panel_state,
-            &mut self.engine.modulation,
-            [state.config.width, state.config.height],
-        );
         let mut pending_output = None;
         let mut pending_device = None;
         match actions {
