@@ -32,15 +32,25 @@
   .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
   a { color: var(--accent); }
 
-  /* Hero. The gradient stands in for the particle field rather than
-     shipping a screenshot that goes stale every release. */
   header {
     padding: 72px 0 56px;
-    background:
-      radial-gradient(60% 80% at 22% 8%, rgba(127,181,255,.16), transparent 60%),
-      radial-gradient(50% 70% at 82% 0%, rgba(190,140,255,.13), transparent 60%);
+    position: relative;
+    overflow: hidden;
     border-bottom: 1px solid var(--line);
   }
+  /* A real frame behind the hero rather than a gradient standing in for
+     one. Rendered headlessly from the built-in "Tunnel" preset, so it is
+     the actual output and not an impression of it. Pushed well back so
+     the text stays the thing you read. */
+  header::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: url("img/tunnel.webp") center/cover no-repeat;
+    opacity: .3;
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), transparent 92%);
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), transparent 92%);
+  }
+  header > .wrap { position: relative; }
   h1 { font-size: 56px; letter-spacing: -.03em; margin: 0 0 8px; }
   .tag { font-size: 20px; color: var(--dim); margin: 0 0 32px; max-width: 42em; }
   .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
@@ -85,6 +95,14 @@
   .rel ul { margin: 0; padding-left: 18px; color: var(--dim); font-size: 14.5px; }
   .rel li { margin-bottom: 4px; }
   .rel li strong { color: var(--text); font-weight: 600; }
+
+  .shots { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .shots figure { margin: 0; }
+  .shots img {
+    width: 100%; height: auto; display: block;
+    border: 1px solid var(--line); border-radius: 10px; background: #05070c;
+  }
+  .shots figcaption { color: var(--dim); font-size: 13.5px; padding-top: 8px; }
 
   .pill {
     display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 999px;
@@ -179,6 +197,22 @@
           percentiles, and a headless mode that renders the same frame path as a
           live set for benchmarking.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The presets it ships with</h2>
+    <p class="sub">Six built in, on the number keys. Every one of these is a
+      real frame, rendered headlessly from the preset itself.</p>
+    <div class="shots">
+      <figure><img src="img/slow-bloom.webp" width="1024" height="576" loading="lazy" alt="A wide, warm sphere of particles"><figcaption>1 · Slow bloom</figcaption></figure>
+      <figure><img src="img/butterfly.webp" width="1024" height="576" loading="lazy" alt="The Lorenz attractor drawn in particles"><figcaption>2 · Butterfly</figcaption></figure>
+      <figure><img src="img/tunnel.webp" width="1024" height="576" loading="lazy" alt="A grid plane driven into a feedback vortex"><figcaption>3 · Tunnel</figcaption></figure>
+      <figure><img src="img/stage.webp" width="1024" height="576" loading="lazy" alt="A particle sphere inside a wireframe room in forced perspective"><figcaption>4 · Stage</figcaption></figure>
+      <figure><img src="img/confetti.webp" width="1024" height="576" loading="lazy" alt="Dense multicoloured particle speckle"><figcaption>5 · Confetti</figcaption></figure>
+      <figure><img src="img/ribbon.webp" width="1024" height="576" loading="lazy" alt="A mirrored torus sheared into ribbons"><figcaption>6 · Ribbon</figcaption></figure>
     </div>
   </div>
 </section>
