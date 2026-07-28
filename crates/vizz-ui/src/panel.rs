@@ -44,6 +44,8 @@ pub struct PanelActions {
     pub preset_save: Option<String>,
     /// Delete this user preset.
     pub preset_delete: Option<String>,
+    /// Slider working ranges changed and should be persisted.
+    pub ranges_changed: bool,
 }
 
 /// One entry in the preset list.
@@ -119,6 +121,7 @@ pub fn draw(
     registry: &ParamRegistry,
     state: &PanelState,
     modulation: &mut ModEngine,
+    ranges: &mut vizz_mod::ranges::Ranges,
 ) -> PanelActions {
     let mut actions = PanelActions::default();
     egui::Window::new("vizz")
@@ -157,7 +160,7 @@ pub fn draw(
             ui.separator();
             presets_section(ui, state, &mut actions);
             ui.separator();
-            params_section(ui, registry, state, modulation, &mut actions);
+            params_section(ui, registry, state, modulation, ranges, &mut actions);
             ui.separator();
             ui.small("Tab panel · G modulation · P performance · Esc quits");
         });
@@ -176,7 +179,11 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
             let over = h.over_budget_window_pct > 1.0;
             ui.colored_label(
                 if over { WARN } else { GOOD },
-                egui::RichText::new(format!("{:.0} fps", h.fps)).strong(),
+                // Monospace and padded: a proportional font makes "60"
+                // narrower than "137", so the whole status line reflowed
+                // every time the frame rate crossed 100. Padding alone
+                // does not fix it — a space is narrower than a digit.
+                egui::RichText::new(format!("{:>3.0} fps", h.fps)).strong().monospace(),
             )
             .on_hover_text(format!(
                 "frame avg {:.2} ms · p95 {:.2} ms · over budget {:.1}%",
@@ -191,7 +198,8 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         dot(ui, audio.connected, if audio.connected { GOOD } else { WARN })
             .on_hover_text(if audio.connected { "audio input" } else { "no audio input" });
         ui.small(audio.device.as_deref().unwrap_or("no audio"));
-        ui.small(format!("{:.1} bpm", state.bpm));
+        // Same reason: 99.5 and 128.0 are different widths otherwise.
+        ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
         if ui.small_button("tap").on_hover_text("tap the beat to set the tempo").clicked() {
             actions.audio.tapped = true;
         }
@@ -643,11 +651,13 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
 /// parameter list: presets are chosen, not scanned.
 const PRESET_LIST_H: f32 = 112.0;
 
+#[allow(clippy::too_many_arguments)]
 fn params_section(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
     state: &PanelState,
     modulation: &mut ModEngine,
+    ranges: &mut vizz_mod::ranges::Ranges,
     actions: &mut PanelActions,
 ) {
     // The one section that grows without bound — it gained the whole
@@ -706,7 +716,7 @@ fn params_section(
                 for (id, def) in registry.iter() {
                     if def.addr.to_ascii_lowercase().contains(&needle) {
                         hits += 1;
-                        param_row(ui, registry, id, def, state, modulation, actions);
+                        param_row(ui, registry, id, def, state, modulation, ranges, actions);
                     }
                 }
                 if hits == 0 {
@@ -727,7 +737,7 @@ fn params_section(
                     .default_open(true)
                     .show(ui, |ui| {
                         for (id, def) in group.params {
-                            param_row(ui, registry, id, def, state, modulation, actions);
+                            param_row(ui, registry, id, def, state, modulation, ranges, actions);
                         }
                     });
             }
@@ -791,6 +801,7 @@ const PARAM_LIST_MIN: f32 = 92.0;
 /// than one that changes height with the display.
 const PARAM_LIST_MAX: f32 = 320.0;
 
+#[allow(clippy::too_many_arguments)]
 fn param_row(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
@@ -798,6 +809,7 @@ fn param_row(
     def: &vizz_params::ParamDef,
     state: &PanelState,
     modulation: &mut ModEngine,
+    ranges: &mut vizz_mod::ranges::Ranges,
     actions: &mut PanelActions,
 ) {
     let mut value = registry.target(id);
@@ -818,10 +830,15 @@ fn param_row(
             ));
         }
 
+        // The slider covers the *working* range, which may be narrower
+        // than what the parameter accepts. OSC, MIDI and presets still
+        // address the full range — only the mouse is constrained, because
+        // the mouse is the control with a fixed number of pixels to spend.
+        let (lo, hi) = ranges.span(&def.addr, def.min, def.max);
         // A stepped parameter shows its position's name rather than a
         // number: `mode 5.000` says nothing, `mode Lorenz` says what is
         // on screen.
-        let mut slider = egui::Slider::new(&mut value, def.min..=def.max)
+        let mut slider = egui::Slider::new(&mut value, lo..=hi)
             .text(short)
             .clamping(egui::SliderClamping::Always);
         if def.labels.is_some() {
@@ -843,10 +860,45 @@ fn param_row(
             registry.set(id, def.default);
         }
 
-        // Route the first LFO to this parameter as a starting point;
-        // which LFO and how deep are then adjustable above.
-        if ui.small_button("mod").on_hover_text("route lfo1 to this parameter").clicked() {
-            modulation.add_route(vizz_mod::Source::Lfo(0), def.addr.clone(), 0.25);
+        // Zoom the slider around where it is now, or restore the full
+        // range. Stepped parameters are left alone: their whole range is
+        // a handful of positions and there is nothing to zoom into.
+        if def.labels.is_none() {
+            let narrowed = ranges.is_narrowed(&def.addr);
+            let (label, hint) = if narrowed {
+                ("↔", "restore the full range")
+            } else {
+                ("→←", "narrow the slider around this value for finer control")
+            };
+            if ui
+                .add(egui::Button::new(label).small().selected(narrowed))
+                .on_hover_text(hint)
+                .clicked()
+            {
+                if narrowed {
+                    ranges.clear(&def.addr);
+                } else {
+                    ranges.zoom_around(&def.addr, value, def.min, def.max, 0.1);
+                }
+                actions.ranges_changed = true;
+            }
+        }
+
+        // A toggle, and drawn as one. Routing the first LFO here is a
+        // starting point; which LFO and how deep are adjustable above.
+        let lfo1 = vizz_mod::Source::Lfo(0);
+        let routed = modulation.has_route(lfo1, &def.addr);
+        let hint = if routed {
+            "lfo1 is routed here — click to remove"
+        } else {
+            "route lfo1 to this parameter"
+        };
+        if ui
+            .add(egui::Button::new("mod").small().selected(routed))
+            .on_hover_text(hint)
+            .clicked()
+        {
+            modulation.toggle_route(lfo1, &def.addr, 0.25);
         }
 
         if !state.midi.available {
