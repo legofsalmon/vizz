@@ -6,6 +6,29 @@
 
 use crate::{GpuContext, attractor::Attractors};
 
+/// The shader's per-particle hash, mirrored on the CPU.
+///
+/// Kept here so the property that matters — that distinct indices give
+/// distinct particles across the whole count range — is testable without
+/// a GPU. The float version this replaced could not: at index 500,000 its
+/// intermediate landed where the f32 ulp is 2^-8, so `fract` had at most
+/// 256 values to return and the field collapsed to repeats.
+///
+/// Must stay identical to `hash_u32`/`hash01` in particles.wgsl.
+pub fn hash_u32(x: u32) -> u32 {
+    let mut h = x;
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    h
+}
+
+pub fn hash01(pi: u32, stream: u32) -> f32 {
+    (hash_u32(pi.wrapping_mul(4).wrapping_add(stream)) >> 8) as f32 / 16_777_216.0
+}
+
 /// What an empty frame looks like. Matches the room's clear colour, so
 /// turning the room on and off does not change the background.
 pub const SCENE_CLEAR: wgpu::Color = wgpu::Color { r: 0.004, g: 0.004, b: 0.008, a: 1.0 };
@@ -604,6 +627,64 @@ mod tests {
             // the row is read.
             u.color_spread = 1.0;
         })
+    }
+
+    /// Every particle must be a distinct particle.
+    ///
+    /// The count control is the headline knob and it silently stopped
+    /// working above about fifty thousand: the float hash's intermediate
+    /// ran out of f32 precision, so `fract` returned one of a few hundred
+    /// values and the four streams — being the same function of the same
+    /// index — collapsed together. Pushing the count higher bought
+    /// repeats drawn exactly on top of each other, which with additive
+    /// blending made the field hotter rather than denser. A shipped preset
+    /// sits at 260,000, deep into that.
+    #[test]
+    fn the_particle_hash_does_not_collapse_at_high_counts() {
+        use std::collections::HashSet;
+        for count in [60_000u32, 260_000, 500_000] {
+            let mut seen = HashSet::with_capacity(count as usize);
+            for pi in 0..count {
+                // The whole tuple, since a particle is only a repeat if
+                // every stream repeats.
+                seen.insert((
+                    hash01(pi, 0).to_bits(),
+                    hash01(pi, 1).to_bits(),
+                    hash01(pi, 2).to_bits(),
+                    hash01(pi, 3).to_bits(),
+                ));
+            }
+            assert_eq!(
+                seen.len() as u32,
+                count,
+                "{count} particles collapsed to {} distinct",
+                seen.len()
+            );
+        }
+    }
+
+    /// And the streams must be independent of each other, or a particle's
+    /// position and its colour move together and the field reads as a
+    /// pattern rather than a cloud.
+    #[test]
+    fn the_hash_streams_are_uncorrelated() {
+        let n = 20_000u32;
+        let mean = |f: &dyn Fn(u32) -> f32| {
+            (0..n).map(|i| f(i) as f64).sum::<f64>() / n as f64
+        };
+        let m0 = mean(&|i| hash01(i, 0));
+        let m1 = mean(&|i| hash01(i, 1));
+        // Uniform on 0..1 means a mean near 0.5.
+        assert!((m0 - 0.5).abs() < 0.01, "stream 0 is not uniform: {m0}");
+        assert!((m1 - 0.5).abs() < 0.01, "stream 1 is not uniform: {m1}");
+
+        let cov: f64 = (0..n)
+            .map(|i| (hash01(i, 0) as f64 - m0) * (hash01(i, 1) as f64 - m1))
+            .sum::<f64>()
+            / n as f64;
+        // Uniform variance is 1/12, so normalise by that for a correlation.
+        let corr = cov / (1.0 / 12.0);
+        assert!(corr.abs() < 0.03, "streams 0 and 1 are correlated: {corr}");
     }
 
     /// The colour fader must not sweep into empty palette rows.

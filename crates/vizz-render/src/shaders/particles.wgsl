@@ -103,12 +103,42 @@ struct VsOut {
 
 const TAU: f32 = 6.28318530718;
 
-// Dave Hoskins-style hash without sine: stable across GPUs.
-fn hash11(p: f32) -> f32 {
-    var x = fract(p * 0.1031);
-    x = x * (x + 33.33);
-    x = x * (x + x);
-    return fract(x);
+// Per-particle randomness, hashed from the *integer* index.
+//
+// This was a float hash, `fract(p * 0.1031)` with `p` the particle index
+// as an f32, and it collapsed. At index 500,000 the product is around
+// 51,550, where the f32 ulp is 2^-8 — so `fract` can take at most 256
+// distinct values there, on any conforming GPU. All four hashes were the
+// same function of the same index, so they collapsed together: measured
+// 37.3k distinct particles out of 60k at the default count, and 52.2k out
+// of 500,000. Above roughly fifty thousand the count control bought no
+// new particles at all, only repeats drawn exactly on top of each other —
+// which, with additive blending, made the field hotter rather than denser
+// and pushed it into the tone-map shoulder.
+//
+// An integer mixer has no such cliff: every index gives a distinct hash
+// across the whole range, and it costs about what the float multiplies
+// did. Stable across GPUs, which is why it is a mixer rather than
+// anything involving sine.
+fn hash_u32(x: u32) -> u32 {
+    var h = x;
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return h;
+}
+
+// One of four independent streams for a particle, in 0..1.
+//
+// Interleaved as `pi * 4 + stream` rather than hashing the index four
+// times with different salts: the mixer decorrelates adjacent inputs, so
+// consecutive slots give independent results, and one multiply-add is
+// cheaper than four different constants. 24 bits of mantissa is well
+// past what any of these drive.
+fn hash01(pi: u32, stream: u32) -> f32 {
+    return f32(hash_u32(pi * 4u + stream) >> 8u) * (1.0 / 16777216.0);
 }
 
 fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
@@ -350,11 +380,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     );
     let off = offsets[corner];
 
-    let fpi = f32(pi);
-    let h1 = hash11(fpi + 0.123);
-    let h2 = hash11(fpi + 7.456);
-    let h3 = hash11(fpi + 3.789);
-    let h4 = hash11(fpi + 9.321);
+    let h1 = hash01(pi, 0u);
+    let h2 = hash01(pi, 1u);
+    let h3 = hash01(pi, 2u);
+    let h4 = hash01(pi, 3u);
 
     // Blend between adjacent modes so `shape` sweeps continuously rather
     // than cutting — a swept knob is playable, a stepped one is not.
