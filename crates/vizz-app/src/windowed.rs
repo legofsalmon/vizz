@@ -307,6 +307,7 @@ impl App {
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
             presets: preset_entries(),
+            grid: grid_view(&self.engine.grid),
             focus_filter: std::mem::take(&mut self.focus_filter),
             expand_sections: false,
             bpm: self.engine.modulation.clock.bpm,
@@ -334,6 +335,7 @@ impl App {
                     &mut self.tap,
                 );
                 apply_preset_actions(&actions, &self.params.registry);
+                apply_grid_actions(&actions.grid, &self.params, &mut self.engine.grid);
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
                 // one recall path, not a second one that can drift.
@@ -495,6 +497,92 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
         .collect()
 }
 
+/// The scene grid as the panel needs to see it.
+fn grid_view(grid: &vizz_mod::scene::Grid) -> vizz_ui::grid_view::GridView {
+    use vizz_mod::scene::Curve;
+    vizz_ui::grid_view::GridView {
+        names: grid.cells().iter().map(|c| c.as_ref().map(|c| c.name.clone())).collect(),
+        current: grid.current(),
+        in_flight: grid.in_flight(),
+        duration: grid.duration,
+        curve: Curve::ALL.iter().position(|c| *c == grid.curve).unwrap_or(1),
+        curve_names: Curve::ALL.iter().map(|c| c.name().to_string()).collect(),
+        autopilot: grid.autopilot.enabled,
+        bars: grid.autopilot.bars,
+    }
+}
+
+/// Grid actions from the panel.
+///
+/// Firing goes through `/scene/fire` rather than calling `Grid::fire`
+/// directly, so a pad click, an OSC message and a MIDI note take the same
+/// path — the rule preset recall already follows, and for the same reason:
+/// two paths to the same thing drift apart, and then only one of them gets
+/// the bug fix.
+///
+/// The transition settings are parameters too, so the UI writes those
+/// rather than the grid's fields; the engine reads them back next frame.
+fn apply_grid_actions(
+    actions: &vizz_ui::grid_view::GridActions,
+    params: &crate::params::AppParams,
+    grid: &mut vizz_mod::scene::Grid,
+) {
+    let reg = &params.registry;
+    let mut dirty = false;
+    if let Some(slot) = actions.fire {
+        reg.set(params.scene_fire, slot as f32 + 1.0);
+    }
+    if let Some(slot) = actions.store {
+        // Keeps the name it had, or takes the pad's number. A scene with
+        // no name is a blank square you have to press to identify, which
+        // during a set means identifying it on the output.
+        let name = grid
+            .cell(slot)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| format!("scene {}", slot + 1));
+        grid.store(slot, name, reg);
+        dirty = true;
+    }
+    if let Some(slot) = actions.clear {
+        grid.clear(slot);
+        dirty = true;
+    }
+    if let Some((slot, name)) = &actions.rename
+        && let Some(cell) = grid.cell(*slot)
+    {
+        let preset = cell.preset.clone();
+        grid.put(*slot, name.clone(), preset);
+        dirty = true;
+    }
+    if let Some(v) = actions.set_duration {
+        reg.set(params.scene_time, v);
+        dirty = true;
+    }
+    if let Some(i) = actions.set_curve {
+        reg.set(params.scene_curve, i as f32);
+        dirty = true;
+    }
+    if let Some(on) = actions.set_autopilot {
+        reg.set(params.scene_auto, if on { 1.0 } else { 0.0 });
+        dirty = true;
+    }
+    if let Some(bars) = actions.set_bars {
+        reg.set(params.scene_bars, bars);
+        dirty = true;
+    }
+    if dirty || actions.changed {
+        // What the grid persists is read back from the parameters, so
+        // mirror them in before writing or the file keeps the values it
+        // was loaded with.
+        grid.duration = reg.target(params.scene_time);
+        grid.autopilot.bars = reg.target(params.scene_bars);
+        grid.autopilot.enabled = reg.target(params.scene_auto) >= 0.5;
+        if let Err(e) = vizz_mod::scene::save(grid) {
+            log::error!("could not save the scene grid: {e:#}");
+        }
+    }
+}
+
 /// Preset actions from the panel. Disk work happens here rather than in
 /// the panel so drawing stays free of side effects, and every failure is
 /// logged rather than propagated — losing a preset must not take the show
@@ -582,11 +670,16 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
     let event_loop = EventLoop::new()?;
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
+    let mut engine = FrameEngine::new(
+        Arc::clone(&params),
+        vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
+    );
+    // The grid is user state like the MIDI map and the macros, so it comes
+    // back with the app. A missing or unreadable file gives an empty grid
+    // rather than a startup failure — see `scene::load`.
+    engine.adopt_grid(vizz_mod::scene::load());
     let mut app = App {
-        engine: FrameEngine::new(
-            Arc::clone(&params),
-            vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
-        ),
+        engine,
         params,
         opts,
         state: None,

@@ -46,6 +46,8 @@ pub struct PanelActions {
     pub preset_delete: Option<String>,
     /// Slider working ranges changed and should be persisted.
     pub ranges_changed: bool,
+    /// What the scene grid asks for this frame.
+    pub grid: crate::grid_view::GridActions,
 }
 
 /// One entry in the preset list.
@@ -79,6 +81,8 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// The scene grid as it stands this frame.
+    pub grid: crate::grid_view::GridView,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
     /// Draw every collapsible section open.
@@ -157,6 +161,25 @@ pub fn draw(
                 .id_salt("modulation")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| modulation_section(ui, registry, modulation));
+            ui.separator();
+            // Scenes above presets, because the grid is the thing you play
+            // and the preset list is where looks are built. A preset is one
+            // press and you are there; a scene is one press and you arrive
+            // over four bars.
+            //
+            // Pads only: the blend time, the curve and the autopilot are
+            // parameters like everything else and already have rows in the
+            // list below. Drawing them here as well would give the panel
+            // two controls for one value — and the height. The full row,
+            // sixteen across and with its settings, is on the performance
+            // layout, which has the width for it.
+            egui::CollapsingHeader::new("scenes")
+                .id_salt("scenes")
+                .default_open(true)
+                .show(ui, |ui| {
+                    actions.grid =
+                        crate::grid_view::draw(ui, &state.grid, crate::grid_view::Shape::Panel);
+                });
             ui.separator();
             presets_section(ui, state, &mut actions);
             ui.separator();

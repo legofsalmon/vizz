@@ -51,6 +51,7 @@ pub mod library;
 pub mod perform;
 pub mod preset;
 pub mod ranges;
+pub mod scene;
 
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;

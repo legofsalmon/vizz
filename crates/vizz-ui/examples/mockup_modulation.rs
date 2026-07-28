@@ -383,7 +383,26 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         confidence: 0.72,
         dropped: 0,
     };
+    // A grid part-way through a blend, so the preview shows the pad fill
+    // and the two highlights doing something rather than sixteen blanks.
+    let grid = {
+        let mut names = vec![None; vizz_ui::grid_view::SLOTS];
+        for (slot, name) in [(0, "intro"), (1, "build"), (2, "drop"), (3, "break"), (8, "outro")] {
+            names[slot] = Some(name.to_string());
+        }
+        vizz_ui::grid_view::GridView {
+            names,
+            current: Some(1),
+            in_flight: Some((2, 0.62)),
+            curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ..Default::default()
+        }
+    };
     let state = vizz_ui::PerformanceState {
+        grid: &grid,
         outputs: &[
             vizz_ui::OutputStatus { name: "syphon:vizz".into(), live: true },
             vizz_ui::OutputStatus { name: "ndi:vizz".into(), live: true },
