@@ -211,6 +211,32 @@ impl ParticleScene {
         }
     }
 
+    /// Replace one cloud slot's contents, for a live stream.
+    ///
+    /// Normalised on the way in exactly as a loaded file is, so a stream
+    /// arriving in metres and a scan arriving in millimetres both land at
+    /// the same size on screen — otherwise switching source would be a
+    /// jump in scale rather than a change of subject.
+    pub fn set_cloud(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        points: &[crate::pointcloud::Point],
+        name: &str,
+    ) {
+        if points.is_empty() {
+            return;
+        }
+        let mut owned = points.to_vec();
+        crate::pointcloud::normalize(&mut owned);
+        self.attractors.load_slot(ctx, slot, &owned, name);
+    }
+
+    /// The slot a live stream writes into: the last loadable one, so a
+    /// `--cloud` file and a live feed can be held at once and morphed
+    /// between with `/cloud/morph`.
+    pub const LIVE_SLOT: usize = crate::attractor::SLOTS - 1;
+
     /// Encode one frame into `target`. `count` is the number of particles.
     pub fn render(
         &self,
