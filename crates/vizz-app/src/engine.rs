@@ -32,7 +32,22 @@ pub struct FrameEngine {
     bands: [f32; BAND_COUNT],
     /// Visual time, pre-integrated so `/particles/speed` changes modulate
     /// the rate without jumping the phase.
-    vis_time: f32,
+    ///
+    /// `f64` because this is a running sum with a small increment. In
+    /// `f32` the increment starts being lost into the accumulator's own
+    /// rounding as the total grows: with a 60 Hz frame and speed 1, the
+    /// step is about a sixtieth of a second against a value whose spacing
+    /// has widened to a comparable size after a few hours, and additions
+    /// go missing entirely at around six days of running. An installation
+    /// left up overnight is inside the first of those.
+    ///
+    /// This fixes the accumulator, not the shader. What is handed to the
+    /// GPU is still an `f32` of the same magnitude, so its own resolution
+    /// at large times is unchanged. Wrapping it would fix that too, and is
+    /// not available: the per-particle spin rate is a continuous range, so
+    /// the field has no period to wrap at and any wrap would jump it. That
+    /// is a look change rather than a bug fix, so it is not made here.
+    vis_time: f64,
     last_frame: Option<Instant>,
     last_log: Instant,
     /// Last `/preset/recall` index acted on. Presets fire on *change*, so
@@ -287,7 +302,7 @@ impl FrameEngine {
         };
         let offsets = self.modulation.tick(dt_s, &p.registry, levels);
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
-        self.vis_time += dt_s * self.snapshot.get(p.speed);
+        self.vis_time += (dt_s * self.snapshot.get(p.speed)) as f64;
 
         // Master dim multiplies *everything* that emits light. It is the
         // fader you grab when something is wrong on a big screen, so
@@ -338,7 +353,7 @@ impl FrameEngine {
                 defocus: camera.defocus,
                 cam_position: cam.position,
                 _pad_cam: 0.0,
-                time: self.vis_time,
+                time: self.vis_time as f32,
                 aspect,
                 size: self.snapshot.get(p.size),
                 spread: self.snapshot.get(p.spread),
@@ -423,6 +438,55 @@ impl FrameEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Visual time is a running sum of a small increment, which is the
+    /// shape that goes wrong quietly. In `f32` the additions start being
+    /// swallowed by the accumulator's own rounding as it grows, and an
+    /// installation left running overnight is inside the range where it
+    /// matters — but nothing shows it in the first minute of a test.
+    ///
+    /// So this integrates the arithmetic directly, at a magnitude it takes
+    /// hours to reach, and asserts the result is the sum rather than
+    /// something that stopped moving.
+    #[test]
+    fn visual_time_still_advances_after_days_of_running() {
+        // Six days at 60 Hz. Chosen because that is where an f32
+        // accumulator stops advancing at all.
+        const HZ: f64 = 60.0;
+        const HOURS: f64 = 146.0;
+        let step = 1.0 / HZ;
+
+        let mut f64_time: f64 = 0.0;
+        let mut f32_time: f32 = 0.0;
+        let frames = (HOURS * 3600.0 * HZ) as u64;
+        for _ in 0..frames {
+            f64_time += step;
+            f32_time += step as f32;
+        }
+        let want = frames as f64 * step;
+
+        // The accumulator this code uses lands on the answer.
+        assert!(
+            (f64_time - want).abs() < 1.0,
+            "f64 drifted: {f64_time} vs {want}"
+        );
+
+        // The one it replaced has stopped dead. Not merely inaccurate —
+        // frozen, pinned at a power of two, taking additions that change
+        // nothing. Another second of frames moves one and not the other,
+        // which is the whole failure in one assertion: on screen it is
+        // animation that simply stops while the app carries on running.
+        let (f64_before, f32_before) = (f64_time, f32_time);
+        for _ in 0..(HZ as u64) {
+            f64_time += step;
+            f32_time += step as f32;
+        }
+        assert!(f64_time > f64_before, "f64 stopped advancing");
+        assert_eq!(
+            f32_time, f32_before,
+            "f32 was expected to be frozen by now; it still moved"
+        );
+    }
 
     fn engine() -> FrameEngine {
         // "\0none" matches no device, so the engine takes its normal
