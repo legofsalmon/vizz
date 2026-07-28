@@ -50,6 +50,7 @@ pub(crate) mod test_env {
 pub mod library;
 pub mod perform;
 pub mod preset;
+pub mod ranges;
 
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;
@@ -391,6 +392,39 @@ impl ModEngine {
 
     pub fn add_route(&mut self, source: Source, param: impl Into<String>, depth: f32) {
         self.routes.push(Route { source, param: param.into(), depth, enabled: true });
+    }
+
+    /// Whether this exact source already drives this parameter.
+    pub fn has_route(&self, source: Source, param: &str) -> bool {
+        self.routes.iter().any(|r| r.source == source && r.param == param)
+    }
+
+    /// Route this source to this parameter, or unroute it if it is already
+    /// routed. Returns whether it is routed afterwards.
+    ///
+    /// The panel's `mod` button reads as a toggle, so it has to be one.
+    /// Before this it called `add_route` unconditionally: every press
+    /// stacked another identical route, each adding its own depth, so the
+    /// modulation deepened with each click and nothing in the panel could
+    /// undo it.
+    ///
+    /// Unrouting removes *every* matching route rather than the first, so
+    /// a parameter that already accumulated duplicates is cleaned up by
+    /// one press rather than needing one press per hidden duplicate.
+    pub fn toggle_route(&mut self, source: Source, param: &str, depth: f32) -> bool {
+        if self.has_route(source, param) {
+            self.routes
+                .retain(|r| !(r.source == source && r.param == param));
+            false
+        } else {
+            self.routes.push(Route {
+                source,
+                param: param.to_string(),
+                depth,
+                enabled: true,
+            });
+            true
+        }
     }
 
     /// Total modulation currently applied to a parameter, for showing the

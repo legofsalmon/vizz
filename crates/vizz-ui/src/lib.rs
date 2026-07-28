@@ -88,6 +88,8 @@ pub struct Gui {
     pub preset_key: Option<u32>,
     graph_view: graph_view::GraphView,
     macros: vizz_mod::perform::Macros,
+    /// Slider working ranges, loaded once and saved when they change.
+    ranges: vizz_mod::ranges::Ranges,
     history: Vec<f32>,
 }
 
@@ -116,6 +118,7 @@ impl Gui {
             preset_key: None,
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
+            ranges: vizz_mod::ranges::Ranges::load(),
             history: Vec::with_capacity(HISTORY),
         }
     }
@@ -225,10 +228,13 @@ impl Gui {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
         }
         let actions = if self.visible {
-            panel::draw(&self.ctx, registry, &state, modulation)
+            panel::draw(&self.ctx, registry, &state, modulation, &mut self.ranges)
         } else {
             PanelActions::default()
         };
+        if actions.ranges_changed && let Err(e) = self.ranges.save() {
+            log::error!("could not save slider ranges: {e:#}");
+        }
         if self.graph_open {
             let mut open = true;
             egui::Window::new("modulation")
@@ -612,7 +618,7 @@ mod tests {
         let mut text = String::new();
         for _ in 0..2 {
             ctx.begin_pass(input.clone());
-            let _ = panel::draw(ctx, reg, state, &mut vizz_mod::ModEngine::with_defaults());
+            let _ = panel::draw(ctx, reg, state, &mut vizz_mod::ModEngine::with_defaults(), &mut Default::default());
             text = collect_text(&ctx.end_pass().shapes);
         }
         text

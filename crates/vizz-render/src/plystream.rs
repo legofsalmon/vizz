@@ -641,36 +641,51 @@ mod tests {
 
     /// End to end over a real socket: a sender writing whole PLY files
     /// back to back, and the newest cloud landing in the slot.
+    ///
+    /// The slot keeps only the newest frame — that is the whole design —
+    /// so a sender that runs ahead is *allowed* to have a frame overwritten
+    /// before anyone looks at it. Sending on a timer and sampling on
+    /// another timer therefore tests the two timers, not the transport: a
+    /// loaded runner starts the reader late, the first frame is gone by the
+    /// first sample, and the test fails on behaviour that is correct. So
+    /// the reader acknowledges each frame and the sender waits for that
+    /// acknowledgement, keeping exactly one frame in flight. What is left
+    /// under test is the part that matters: that whole PLY files framed
+    /// back to back come out whole, in order, with the right vertex counts.
     #[test]
     fn frames_arrive_over_a_tcp_socket() {
         use std::io::Write;
+        use std::time::{Duration, Instant};
+
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel::<()>();
         let sender = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
             for n in [4u32, 9, 2] {
                 s.write_all(&binary_frame(n)).unwrap();
                 s.flush().unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(30));
+                ack_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the reader never picked up a frame");
             }
             // Hold the connection open briefly so the reader is not racing
             // a close it would report as a clean end of stream.
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(200));
         });
 
         let live = LiveCloud::start(Source::Connect(addr)).unwrap();
         let mut seen = Vec::new();
-        for _ in 0..100 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            if let Some(n) = live.with_latest(|p| p.len())
-                && seen.last() != Some(&n)
-                && n > 0
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while seen.len() < 3 && Instant::now() < deadline {
+            if live.revision() as usize > seen.len()
+                && let Some(n) = live.with_latest(|p| p.len())
             {
                 seen.push(n);
+                // Release the next frame only once this one is recorded.
+                ack_tx.send(()).unwrap();
             }
-            if seen.len() == 3 {
-                break;
-            }
+            std::thread::sleep(Duration::from_millis(2));
         }
         sender.join().unwrap();
         assert!(live.revision() >= 3, "only {} frames arrived", live.revision());

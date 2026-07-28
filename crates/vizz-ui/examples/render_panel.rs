@@ -181,7 +181,7 @@ fn main() {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
         ctx.begin_pass(input);
-        let _ = panel::draw(&ctx, &registry, &state, &mut modulation);
+        let _ = panel::draw(&ctx, &registry, &state, &mut modulation, &mut Default::default());
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);
         last = Some(out);
