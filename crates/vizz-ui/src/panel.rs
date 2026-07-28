@@ -77,6 +77,14 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// The `/` shortcut was pressed this frame; focus the parameter filter.
+    pub focus_filter: bool,
+    /// Draw every collapsible section open.
+    ///
+    /// For offscreen rendering — tests and the preview example — where
+    /// there is nobody to click a header, and asserting on content that
+    /// is one click away is still asserting on content that exists.
+    pub expand_sections: bool,
 }
 
 /// What the panel needs to know about audio this frame. A snapshot rather
@@ -119,15 +127,33 @@ pub fn draw(
         .resizable(true)
         .show(ctx, |ui| {
             update_banner(ui, state);
-            health_section(ui, state);
+            // One line of everything you need to glance at mid-set: is it
+            // keeping up, is it going out, is audio arriving, what tempo.
+            // The detail behind each is setup, not performance, so it
+            // folds away — before this the status blocks filled the panel
+            // and left the parameter list three rows tall.
+            status_strip(ui, state, &mut actions);
             ui.separator();
-            outputs_section(ui, state);
-            ui.separator();
-            midi_section(ui, state);
-            ui.separator();
-            audio_section(ui, state, &mut actions);
-            ui.separator();
-            modulation_section(ui, registry, modulation);
+            egui::CollapsingHeader::new("health")
+                .id_salt("health")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| health_section(ui, state));
+            egui::CollapsingHeader::new("outputs")
+                .id_salt("outputs")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| outputs_section(ui, state));
+            egui::CollapsingHeader::new("midi")
+                .id_salt("midi")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| midi_section(ui, state));
+            egui::CollapsingHeader::new("audio")
+                .id_salt("audio")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| audio_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("modulation")
+                .id_salt("modulation")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| modulation_section(ui, registry, modulation));
             ui.separator();
             presets_section(ui, state, &mut actions);
             ui.separator();
@@ -137,6 +163,60 @@ pub fn draw(
         });
     actions
 }
+
+/// The always-visible line: health, outputs, audio, tempo.
+///
+/// Everything here is something you would want to see without opening
+/// anything, mid-set, without looking away from the output for long. Tap
+/// tempo lives here rather than in the audio settings for the same reason
+/// — it is a thing you do while playing, not while setting up.
+fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    ui.horizontal_wrapped(|ui| {
+        if let Some(h) = &state.health {
+            let over = h.over_budget_window_pct > 1.0;
+            ui.colored_label(
+                if over { WARN } else { GOOD },
+                egui::RichText::new(format!("{:.0} fps", h.fps)).strong(),
+            )
+            .on_hover_text(format!(
+                "frame avg {:.2} ms · p95 {:.2} ms · over budget {:.1}%",
+                h.frame_avg_ms, h.frame_p95_ms, h.over_budget_window_pct
+            ));
+        }
+        for out in &state.outputs {
+            dot(ui, out.live, if out.live { GOOD } else { WARN }).on_hover_text(&out.name);
+            ui.small(&out.name);
+        }
+        let audio = &state.audio;
+        dot(ui, audio.connected, if audio.connected { GOOD } else { WARN })
+            .on_hover_text(if audio.connected { "audio input" } else { "no audio input" });
+        ui.small(audio.device.as_deref().unwrap_or("no audio"));
+        ui.small(format!("{:.1} bpm", state.bpm));
+        if ui.small_button("tap").on_hover_text("tap the beat to set the tempo").clicked() {
+            actions.audio.tapped = true;
+        }
+    });
+}
+
+/// A status dot, painted rather than written.
+///
+/// egui's default font has no U+25CF, so a text bullet renders as a
+/// missing-glyph box — which is exactly what happened the first time the
+/// status strip was written, despite the comment in `outputs_section`
+/// saying so. Filled means live, hollow means not.
+fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    if live {
+        ui.painter().circle_filled(rect.center(), 4.0, color);
+    } else {
+        ui.painter()
+            .circle_stroke(rect.center(), 4.0, egui::Stroke::new(1.0, color));
+    }
+    response
+}
+
+const GOOD: egui::Color32 = egui::Color32::from_rgb(120, 220, 160);
+const WARN: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
 
 /// Notify, never install: the link opens the release page and the user
 /// picks the moment. Nothing about a running show changes.
@@ -493,21 +573,7 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     }
     for out in &state.outputs {
         ui.horizontal(|ui| {
-            // Painted rather than a glyph: egui's default font has no
-            // U+25CF, so a text bullet renders as a missing-glyph box.
-            let color = if out.live {
-                egui::Color32::from_rgb(120, 220, 150)
-            } else {
-                egui::Color32::from_gray(120)
-            };
-            let size = egui::vec2(10.0, 10.0);
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-            let center = rect.center();
-            if out.live {
-                ui.painter().circle_filled(center, 4.0, color);
-            } else {
-                ui.painter().circle_stroke(center, 4.0, egui::Stroke::new(1.0, color));
-            }
+            dot(ui, out.live, if out.live { GOOD } else { egui::Color32::from_gray(120) });
             ui.label(&out.name);
         });
     }
@@ -600,27 +666,116 @@ fn params_section(
     // out and the cursor is where the list will actually start.
     let scrolls = total as f32 * PARAM_ROW_H > screen_h - ui.cursor().top();
 
+    // Filter first, because with nine groups the fastest route to a known
+    // parameter is typing its name, not opening headers until you find it.
+    let filter_id = egui::Id::new("param-filter");
+    let mut filter: String = ui.memory_mut(|m| m.data.get_temp(filter_id).unwrap_or_default());
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Parameters").strong());
-        // Say the count when the list is cut, because egui draws no
-        // scrollbar here and the truncation alone reads as "that's all
-        // there is". A control nobody knows exists is no better than one
-        // that will not fit — and the room and camera sets both live
-        // below the fold.
-        if scrolls {
-            ui.small(format!("{total} · scroll for more"));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut filter)
+                .hint_text("filter")
+                .desired_width(96.0),
+        );
+        // `/` focuses it, the way it does in every other list worth
+        // searching. Guarded on the field not already having focus, or
+        // typing a slash into it would re-grab and swallow the character.
+        if state.focus_filter && !response.has_focus() {
+            response.request_focus();
+        }
+        if !filter.is_empty() && ui.small_button("x").clicked() {
+            filter.clear();
+        }
+        if scrolls && filter.is_empty() {
+            ui.small(format!("{total}"));
         }
     });
-    // Measured here, not above: the header has been laid out by now, so
-    // this is where the list genuinely begins. Reading the cursor before
-    // drawing it leaves the panel a row over the bottom of the screen.
+    let needle = filter.trim().to_ascii_lowercase();
+    ui.memory_mut(|m| m.data.insert_temp(filter_id, filter));
+
     let height = (screen_h - ui.cursor().top() - PARAM_LIST_MARGIN)
         .clamp(PARAM_LIST_MIN, PARAM_LIST_MAX);
     egui::ScrollArea::vertical()
         .max_height(height)
         .auto_shrink([false, true])
-        .show(ui, |ui| params_rows(ui, registry, state, modulation, actions));
-    ui.small("right-click a slider to reset it · learn binds the next control you move");
+        .show(ui, |ui| {
+            if !needle.is_empty() {
+                // Filtering flattens: groups are for browsing, and when
+                // you have typed a name you already know what you want.
+                let mut hits = 0;
+                for (id, def) in registry.iter() {
+                    if def.addr.to_ascii_lowercase().contains(&needle) {
+                        hits += 1;
+                        param_row(ui, registry, id, def, state, modulation, actions);
+                    }
+                }
+                if hits == 0 {
+                    ui.small(format!("nothing matches {needle:?}"));
+                }
+                return;
+            }
+            // Grouped by the address's first segment, in registry order —
+            // which is the order they were authored in, and reads better
+            // than alphabetical. A flat list of thirty-seven means
+            // scrolling past everything to reach one control.
+            // All open by default. Collapsing is the user's call — and
+            // closing any group by default hides whatever is inside it,
+            // which for `master` would mean hiding the panic fader.
+            for group in groups(registry) {
+                egui::CollapsingHeader::new(group.label(modulation, registry))
+                    .id_salt(group.name)
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (id, def) in group.params {
+                            param_row(ui, registry, id, def, state, modulation, actions);
+                        }
+                    });
+            }
+        });
+    ui.small("right-click a slider to reset it · / filters · learn binds the next control you move");
+}
+
+/// One address-prefix group, e.g. everything under `/room/`.
+struct Group<'a> {
+    name: &'a str,
+    params: Vec<(vizz_params::ParamId, &'a vizz_params::ParamDef)>,
+}
+
+impl Group<'_> {
+    /// Header text: the group and how many of its parameters are being
+    /// modulated, so a collapsed group still says whether something inside
+    /// it is moving on its own.
+    fn label(&self, modulation: &ModEngine, _reg: &ParamRegistry) -> String {
+        let moving = self
+            .params
+            .iter()
+            .filter(|(_, d)| modulation.drives(&d.addr))
+            .count();
+        if moving > 0 {
+            format!("{}  ({} · {moving}~)", self.name, self.params.len())
+        } else {
+            format!("{}  ({})", self.name, self.params.len())
+        }
+    }
+}
+
+/// Split the registry by the first path segment, preserving registry order
+/// both within and between groups.
+fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
+    let mut out: Vec<Group<'_>> = Vec::new();
+    for (id, def) in registry.iter() {
+        let name = def
+            .addr
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .unwrap_or("other");
+        match out.iter_mut().find(|g| g.name == name) {
+            Some(g) => g.params.push((id, def)),
+            None => out.push(Group { name, params: vec![(id, def)] }),
+        }
+    }
+    out
 }
 
 /// Approximate row height, for deciding whether the list will be cut.
@@ -636,64 +791,81 @@ const PARAM_LIST_MIN: f32 = 92.0;
 /// than one that changes height with the display.
 const PARAM_LIST_MAX: f32 = 320.0;
 
-fn params_rows(
+fn param_row(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
+    id: vizz_params::ParamId,
+    def: &vizz_params::ParamDef,
     state: &PanelState,
     modulation: &mut ModEngine,
     actions: &mut PanelActions,
 ) {
-    for (id, def) in registry.iter() {
-        let mut value = registry.target(id);
-        ui.horizontal(|ui| {
-            // Strip the leading '/' and show the address as the label, so
-            // the panel doubles as live documentation of the OSC surface.
-            let label = def.addr.trim_start_matches('/');
-            let response = ui.add(
-                egui::Slider::new(&mut value, def.min..=def.max)
-                    .text(label)
-                    .clamping(egui::SliderClamping::Always),
-            );
-            if response.changed() {
-                registry.set(id, value);
-            }
-            // Right-click restores the default: the fastest way out of a
-            // mess mid-set, and it costs nothing to support.
-            if response.secondary_clicked() {
-                registry.set(id, def.default);
-            }
+    let mut value = registry.target(id);
+    ui.horizontal(|ui| {
+        // Inside a group the prefix is redundant and eats the width the
+        // slider needs; filtered results are flat, so they keep it.
+        let label = def.addr.trim_start_matches('/');
+        let short = label.split_once('/').map_or(label, |(_, rest)| rest);
 
-            // Route the first LFO to this parameter as a starting point;
-            // which LFO and how deep are then adjustable above.
-            if ui.small_button("mod").on_hover_text("route lfo1 to this parameter").clicked() {
-                modulation.add_route(vizz_mod::Source::Lfo(0), def.addr.clone(), 0.25);
-            }
+        let driven = modulation.drives(&def.addr);
+        if driven {
+            // A slider that will not stay where you put it is otherwise
+            // indistinguishable from a broken one. The value is still
+            // yours — modulation rides on top as an offset.
+            let offset = modulation.offset_for(registry, &def.addr);
+            ui.colored_label(MOD_COLOR, "~").on_hover_text(format!(
+                "modulated, currently {offset:+.2} of range"
+            ));
+        }
 
-            if !state.midi.available {
-                return;
+        let response = ui.add(
+            egui::Slider::new(&mut value, def.min..=def.max)
+                .text(short)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if response.changed() {
+            registry.set(id, value);
+        }
+        // Right-click restores the default: the fastest way out of a
+        // mess mid-set, and it costs nothing to support.
+        if response.secondary_clicked() {
+            registry.set(id, def.default);
+        }
+
+        // Route the first LFO to this parameter as a starting point;
+        // which LFO and how deep are then adjustable above.
+        if ui.small_button("mod").on_hover_text("route lfo1 to this parameter").clicked() {
+            modulation.add_route(vizz_mod::Source::Lfo(0), def.addr.clone(), 0.25);
+        }
+
+        if !state.midi.available {
+            return;
+        }
+        let learning = state.midi.learn_target.as_deref() == Some(def.addr.as_str());
+        match state.midi.map.source_for(&def.addr) {
+            Some(source) => {
+                if ui
+                    .small_button(source.label())
+                    .on_hover_text("click to clear this MIDI binding")
+                    .clicked()
+                {
+                    actions.clear_binding = Some(def.addr.clone());
+                }
             }
-            let learning = state.midi.learn_target.as_deref() == Some(def.addr.as_str());
-            match state.midi.map.source_for(&def.addr) {
-                Some(source) => {
-                    if ui
-                        .small_button(source.label())
-                        .on_hover_text("click to clear this MIDI binding")
-                        .clicked()
-                    {
-                        actions.clear_binding = Some(def.addr.clone());
-                    }
-                }
-                None if learning => {
-                    if ui.small_button("cancel").clicked() {
-                        actions.set_learn_target = Some(None);
-                    }
-                }
-                None => {
-                    if ui.small_button("learn").clicked() {
-                        actions.set_learn_target = Some(Some(def.addr.clone()));
-                    }
+            None if learning => {
+                if ui.small_button("cancel").clicked() {
+                    actions.set_learn_target = Some(None);
                 }
             }
-        });
-    }
+            None => {
+                if ui.small_button("learn").clicked() {
+                    actions.set_learn_target = Some(Some(def.addr.clone()));
+                }
+            }
+        }
+    });
 }
+
+/// Marks a modulated parameter. Warm against the panel's blues so it reads
+/// as "something else is touching this" at a glance.
+const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);

@@ -105,6 +105,8 @@ fn main() {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         bpm: 128.0,
+        focus_filter: false,
+        expand_sections: false,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
             PresetEntry { name: "Butterfly".into(), builtin: true, about: None },

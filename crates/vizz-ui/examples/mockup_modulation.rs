@@ -375,6 +375,14 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         over_budget: false,
         bpm: 128.0,
         bar_phase: 0.05,
+        presets: &[
+            "Slow bloom".into(),
+            "Butterfly".into(),
+            "Tunnel".into(),
+            "Stage".into(),
+            "Confetti".into(),
+            "Ribbon".into(),
+        ],
     };
     vizz_ui::performance::draw(ctx, &reg, &state, &mut macros);
 }
