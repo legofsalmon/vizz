@@ -162,6 +162,7 @@ fn main() {
         bpm: 128.0,
         focus_filter: false,
         grid: preview_grid(),
+        gravity_grid: None,
         expand_sections: expand,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },

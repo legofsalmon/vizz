@@ -295,6 +295,8 @@ impl Gui {
             bar_phase: state.bar_phase,
             presets: &preset_names,
             grid: &state.grid,
+            // Only shown when the layer is in use.
+            gravity: state.gravity_grid.as_ref(),
             midi: &state.midi,
             values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
         };
@@ -327,6 +329,7 @@ impl Gui {
         // The grid on the performance layout drives the same actions the
         // panel's does, so storing a scene mid-set works from either.
         actions.grid = perf.grid;
+        actions.gravity = perf.gravity;
         // Learn and unbind are handled identically to the panel's, so a
         // controller mapped from the performance layout and one mapped
         // from the parameter list end up in the same map by the same path.
@@ -380,6 +383,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
@@ -417,6 +421,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 120.0,
             focus_filter: false,
@@ -457,6 +462,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
@@ -499,6 +505,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
@@ -543,6 +550,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 128.0,
             presets: Vec::new(),
@@ -622,6 +630,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
@@ -656,6 +665,7 @@ mod tests {
             modulated: Vec::new(),
             clouds: Vec::new(),
             palettes: Vec::new(),
+            gravity_grid: None,
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),

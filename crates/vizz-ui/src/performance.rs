@@ -72,6 +72,11 @@ pub struct PerformanceState<'a> {
     pub presets: &'a [String],
     /// The scene grid, laid out across the full width here.
     pub grid: &'a crate::grid_view::GridView,
+    /// The gravity grid, when there is anything in it. Hidden entirely
+    /// when empty: an unused second row of sixteen pads is a lot of
+    /// screen spent on a layer you are not using, and this screen's whole
+    /// argument is that what is on it is what you decided to reach for.
+    pub gravity: Option<&'a crate::grid_view::GridView>,
     /// MIDI, so a fader can show its binding and start a learn without
     /// leaving the layout.
     pub midi: &'a MidiView,
@@ -95,6 +100,8 @@ pub struct PerformanceActions {
     pub preset_slot: Option<u32>,
     /// What the scene grid asks for this frame.
     pub grid: crate::grid_view::GridActions,
+    /// What the gravity grid asks for this frame.
+    pub gravity: crate::grid_view::GridActions,
     /// Begin MIDI-learn for this parameter, or cancel with `None`.
     pub set_learn_target: Option<Option<String>>,
     /// Remove the MIDI binding for this parameter.
@@ -136,6 +143,17 @@ pub fn draw(
                     actions.grid =
                         crate::grid_view::draw(ui, state.grid, crate::grid_view::Shape::Stage);
                     ui.add_space(10.0);
+
+                    if let Some(gravity) = state.gravity {
+                        section(ui, "GRAVITY");
+                        actions.gravity = crate::grid_view::draw_with_id(
+                            ui,
+                            gravity,
+                            crate::grid_view::Shape::Stage,
+                            "gravity-grid",
+                        );
+                        ui.add_space(10.0);
+                    }
 
                     if !state.presets.is_empty() {
                         section(ui, "PRESETS");
@@ -839,6 +857,7 @@ mod tests {
             bar_phase: 0.1,
             presets: &names,
             grid: &grid,
+            gravity: None,
             midi,
             values,
         };

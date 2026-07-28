@@ -187,7 +187,22 @@ pub struct GridState {
 /// This is exactly what egui's temporary storage is for, and it keeps the
 /// grid a drop-in widget rather than something with a lifetime.
 pub fn draw(ui: &mut egui::Ui, view: &GridView, shape: Shape) -> GridActions {
-    let id = ui.make_persistent_id("scene-grid");
+    draw_with_id(ui, view, shape, "scene-grid")
+}
+
+/// As [`draw`], under a distinct identity.
+///
+/// Two grids on one screen must not share their arm state: arming "store"
+/// on the scene row and then pressing a gravity pad would capture the
+/// wrong layer into the wrong slot, which is a data-loss bug rather than
+/// a cosmetic one.
+pub fn draw_with_id(
+    ui: &mut egui::Ui,
+    view: &GridView,
+    shape: Shape,
+    salt: &str,
+) -> GridActions {
+    let id = ui.make_persistent_id(salt);
     let mut state: GridState = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
     let actions = draw_with(ui, view, &mut state, shape);
     ui.data_mut(|d| d.insert_temp(id, state));

@@ -517,6 +517,15 @@ impl App {
                 .collect(),
             presets: preset_entries(),
             grid: grid_view(&self.engine.grid, self.engine.modulation.clock.beats),
+            // Shown only once the layer is in use. Sixteen empty pads for
+            // a layer nobody has touched is a lot of the performance
+            // screen spent saying nothing.
+            gravity_grid: (!self.engine.gravity_grid.is_empty()).then(|| {
+                gravity_grid_view(
+                    &self.engine.gravity_grid,
+                    self.engine.modulation.clock.beats,
+                )
+            }),
             focus_filter: std::mem::take(&mut self.focus_filter),
             expand_sections: false,
             bpm: self.engine.modulation.clock.bpm,
@@ -545,7 +554,18 @@ impl App {
                     &mut self.tap,
                 );
                 apply_preset_actions(&actions, &self.params.registry);
-                apply_grid_actions(&actions.grid, &self.params, &mut self.engine.grid);
+                apply_grid_actions(
+                    &actions.grid,
+                    &self.params,
+                    &mut self.engine.grid,
+                    &GridBinding::scenes(&self.params),
+                );
+                apply_grid_actions(
+                    &actions.gravity,
+                    &self.params,
+                    &mut self.engine.gravity_grid,
+                    &GridBinding::gravity(&self.params),
+                );
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
                 // one recall path, not a second one that can drift.
@@ -758,6 +778,25 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
         .collect()
 }
 
+/// The gravity grid, resolved against the gravity preset library.
+fn gravity_grid_view(
+    grid: &vizz_mod::scene::Grid,
+    beats: f64,
+) -> vizz_ui::grid_view::GridView {
+    use vizz_mod::preset::Kind;
+    let mut view = grid_view(grid, beats);
+    view.presets = vizz_mod::preset::list_kind(Kind::Gravity);
+    view.missing = grid
+        .cells()
+        .iter()
+        .map(|c| {
+            c.as_ref()
+                .is_some_and(|c| vizz_mod::preset::load_kind(Kind::Gravity, &c.preset).is_err())
+        })
+        .collect();
+    view
+}
+
 /// The scene grid as the panel needs to see it.
 ///
 /// `beats` is the musical clock, so the autopilot switch can show how far
@@ -803,15 +842,60 @@ fn grid_view(grid: &vizz_mod::scene::Grid, beats: f64) -> vizz_ui::grid_view::Gr
 ///
 /// The transition settings are parameters too, so the UI writes those
 /// rather than the grid's fields; the engine reads them back next frame.
+/// Which layer a grid belongs to, and the parameters that drive it.
+///
+/// The two grids are the same machine pointed at different libraries and
+/// different transport parameters. Passing that in rather than branching
+/// inside means there is one implementation of "what a pad press does",
+/// and the gravity grid cannot quietly drift away from the scene grid's
+/// behaviour as either changes.
+struct GridBinding {
+    kind: vizz_mod::preset::Kind,
+    fire: vizz_params::ParamId,
+    time: vizz_params::ParamId,
+    curve: vizz_params::ParamId,
+    auto: vizz_params::ParamId,
+    bars: vizz_params::ParamId,
+    /// What a captured pad is called when the slot was empty.
+    noun: &'static str,
+}
+
+impl GridBinding {
+    fn scenes(p: &crate::params::AppParams) -> Self {
+        Self {
+            kind: vizz_mod::preset::Kind::Look,
+            fire: p.scene_fire,
+            time: p.scene_time,
+            curve: p.scene_curve,
+            auto: p.scene_auto,
+            bars: p.scene_bars,
+            noun: "scene",
+        }
+    }
+
+    fn gravity(p: &crate::params::AppParams) -> Self {
+        Self {
+            kind: vizz_mod::preset::Kind::Gravity,
+            fire: p.gravity_fire,
+            time: p.gravity_time,
+            curve: p.gravity_curve,
+            auto: p.gravity_auto,
+            bars: p.gravity_bars,
+            noun: "gravity",
+        }
+    }
+}
+
 fn apply_grid_actions(
     actions: &vizz_ui::grid_view::GridActions,
     params: &crate::params::AppParams,
     grid: &mut vizz_mod::scene::Grid,
+    b: &GridBinding,
 ) {
     let reg = &params.registry;
     let mut dirty = false;
     if let Some(slot) = actions.fire {
-        reg.set(params.scene_fire, slot as f32 + 1.0);
+        reg.set(b.fire, slot as f32 + 1.0);
     }
     // Put an existing preset on a pad. The core gesture now that a scene
     // names a look rather than owning a copy of one.
@@ -829,9 +913,9 @@ fn apply_grid_actions(
         let name = grid
             .cell(slot)
             .map(|c| c.preset.clone())
-            .unwrap_or_else(|| format!("scene {}", slot + 1));
-        let captured = vizz_mod::preset::Preset::capture(reg);
-        match vizz_mod::preset::save(&name, &captured) {
+            .unwrap_or_else(|| format!("{} {}", b.noun, slot + 1));
+        let captured = vizz_mod::preset::Preset::capture_kind(reg, b.kind);
+        match vizz_mod::preset::save_kind(b.kind, &name, &captured) {
             Ok(saved) => {
                 grid.assign(slot, saved);
                 dirty = true;
@@ -839,7 +923,7 @@ fn apply_grid_actions(
             // A failed save must not leave the pad pointing at a preset
             // that was never written — that would be a pad which looks
             // filled and does nothing.
-            Err(e) => log::warn!("could not save scene {} as a preset: {e:#}", slot + 1),
+            Err(e) => log::warn!("could not save {} {} as a preset: {e:#}", b.noun, slot + 1),
         }
     }
     if let Some(slot) = actions.clear {
@@ -853,30 +937,30 @@ fn apply_grid_actions(
         dirty = true;
     }
     if let Some(v) = actions.set_duration {
-        reg.set(params.scene_time, v);
+        reg.set(b.time, v);
         dirty = true;
     }
     if let Some(i) = actions.set_curve {
-        reg.set(params.scene_curve, i as f32);
+        reg.set(b.curve, i as f32);
         dirty = true;
     }
     if let Some(on) = actions.set_autopilot {
-        reg.set(params.scene_auto, if on { 1.0 } else { 0.0 });
+        reg.set(b.auto, if on { 1.0 } else { 0.0 });
         dirty = true;
     }
     if let Some(bars) = actions.set_bars {
-        reg.set(params.scene_bars, bars);
+        reg.set(b.bars, bars);
         dirty = true;
     }
     if dirty || actions.changed {
         // What the grid persists is read back from the parameters, so
         // mirror them in before writing or the file keeps the values it
         // was loaded with.
-        grid.duration = reg.target(params.scene_time);
-        grid.autopilot.bars = reg.target(params.scene_bars);
-        grid.autopilot.enabled = reg.target(params.scene_auto) >= 0.5;
-        if let Err(e) = vizz_mod::scene::save(grid) {
-            log::error!("could not save the scene grid: {e:#}");
+        grid.duration = reg.target(b.time);
+        grid.autopilot.bars = reg.target(b.bars);
+        grid.autopilot.enabled = reg.target(b.auto) >= 0.5;
+        if let Err(e) = vizz_mod::scene::save_kind(b.kind, grid) {
+            log::error!("could not save the {} grid: {e:#}", b.noun);
         }
     }
 }
@@ -995,6 +1079,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // back with the app. A missing or unreadable file gives an empty grid
     // rather than a startup failure — see `scene::load`.
     engine.adopt_grid(vizz_mod::scene::load());
+    engine.adopt_gravity_grid(vizz_mod::scene::load_kind(vizz_mod::preset::Kind::Gravity));
     let mut app = App {
         engine,
         params,

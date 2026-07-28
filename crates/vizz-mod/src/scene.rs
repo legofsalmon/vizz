@@ -553,17 +553,61 @@ fn snaps(def: &ParamDef) -> bool {
 
 /// Where grids live, beside patches, presets and the MIDI map.
 pub fn grid_path() -> PathBuf {
-    crate::library::patch_dir()
+    path_for(crate::preset::Kind::Look)
+}
+
+/// One grid file per layer. Separate files rather than one with two
+/// sections, so a corrupt gravity grid cannot cost you your scene grid —
+/// the two are independent everywhere else and there is no reason for
+/// them to share a failure.
+pub fn path_for(kind: crate::preset::Kind) -> PathBuf {
+    let base = crate::library::patch_dir()
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_default()
-        .join("grid.json")
+        .unwrap_or_default();
+    match kind {
+        crate::preset::Kind::Look => base.join("grid.json"),
+        crate::preset::Kind::Gravity => base.join("gravity-grid.json"),
+    }
+}
+
+/// Save a grid for one layer.
+pub fn save_kind(kind: crate::preset::Kind, grid: &Grid) -> Result<()> {
+    write_grid(&path_for(kind), grid)
+}
+
+/// Load a grid for one layer. Same tolerance as [`load`]: a missing file
+/// is a first run, a corrupt one is logged and replaced.
+pub fn load_kind(kind: crate::preset::Kind) -> Grid {
+    let path = path_for(kind);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Grid::new();
+    };
+    match serde_json::from_slice::<Grid>(&bytes) {
+        Ok(mut grid) => {
+            grid.cells.resize(SLOTS, None);
+            grid.cells.truncate(SLOTS);
+            grid.duration = grid.duration.clamp(MIN_DURATION, MAX_DURATION);
+            grid
+        }
+        Err(e) => {
+            log::error!(
+                "could not read {}: {e:#} — starting with an empty grid",
+                path.display()
+            );
+            Grid::new()
+        }
+    }
 }
 
 /// Save the grid. Written and renamed, so a crash part-way cannot destroy
 /// the grid that was already there.
 pub fn save(grid: &Grid) -> Result<()> {
-    let path = grid_path();
+    write_grid(&grid_path(), grid)
+}
+
+fn write_grid(path: &std::path::Path, grid: &Grid) -> Result<()> {
+    let path = path.to_path_buf();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }

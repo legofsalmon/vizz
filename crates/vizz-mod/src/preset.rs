@@ -44,6 +44,13 @@ pub const EXCLUDED: &[&str] = &[
     "/scene/curve",
     "/scene/auto",
     "/scene/bars",
+    // The gravity grid's transport, for exactly the reasons above: a
+    // gravity preset holding "/gravity/fire" would fire itself forever.
+    "/gravity/fire",
+    "/gravity/time",
+    "/gravity/curve",
+    "/gravity/auto",
+    "/gravity/bars",
 ];
 
 fn excluded(addr: &str) -> bool {
@@ -63,12 +70,58 @@ pub struct Preset {
     pub values: BTreeMap<String, f32>,
 }
 
+/// Which layer a preset belongs to.
+///
+/// The two are independent on purpose. Gravity sits *over* the look: you
+/// pick a shape and a palette, and separately you decide what bends it.
+/// If a look captured the gravity parameters then firing a scene would
+/// silently reset the wells, and the layering would be a fiction — you
+/// would have two grids that fight each other rather than two that
+/// compose. So each kind captures only its own addresses, and neither can
+/// disturb the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Shape, colour, camera, room, effects. Everything but gravity.
+    Look,
+    /// The gravity wells and nothing else.
+    Gravity,
+}
+
+impl Kind {
+    /// Whether this kind captures and applies the given address.
+    pub fn owns(self, addr: &str) -> bool {
+        let gravity = addr.starts_with("/gravity/");
+        match self {
+            // The transport parameters are excluded from both: they say
+            // *when* things happen, not what anything looks like.
+            Kind::Look => !gravity && !excluded(addr),
+            Kind::Gravity => gravity && !excluded(addr),
+        }
+    }
+
+    pub fn dir(self) -> PathBuf {
+        let base = crate::library::patch_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        match self {
+            Kind::Look => base.join("presets"),
+            Kind::Gravity => base.join("gravity"),
+        }
+    }
+}
+
 impl Preset {
     /// Capture every parameter's current target.
     pub fn capture(reg: &ParamRegistry) -> Self {
+        Self::capture_kind(reg, Kind::Look)
+    }
+
+    /// Capture only the parameters belonging to one layer.
+    pub fn capture_kind(reg: &ParamRegistry, kind: Kind) -> Self {
         let values = reg
             .iter()
-            .filter(|(_, def)| !excluded(&def.addr))
+            .filter(|(_, def)| kind.owns(&def.addr))
             .map(|(id, def)| (def.addr.clone(), reg.target(id)))
             .collect();
         Self { values }
@@ -106,13 +159,22 @@ pub fn preset_dir() -> PathBuf {
 }
 
 fn path_for(name: &str) -> PathBuf {
-    preset_dir().join(format!("{}.json", crate::library::sanitize(name)))
+    path_for_kind(Kind::Look, name)
+}
+
+fn path_for_kind(kind: Kind, name: &str) -> PathBuf {
+    kind.dir().join(format!("{}.json", crate::library::sanitize(name)))
 }
 
 /// User preset names, alphabetical. Empty when the directory does not
 /// exist — a fresh install has no user presets and that is not an error.
 pub fn list() -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(preset_dir()) else {
+    list_kind(Kind::Look)
+}
+
+/// As [`list`], for one layer.
+pub fn list_kind(kind: Kind) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(kind.dir()) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
@@ -131,10 +193,15 @@ pub fn list() -> Vec<String> {
 /// Written to a temporary file and renamed, so a crash or a full disk
 /// part-way through cannot destroy the preset that was already there.
 pub fn save(name: &str, preset: &Preset) -> Result<String> {
-    let dir = preset_dir();
+    save_kind(Kind::Look, name, preset)
+}
+
+/// As [`save`], for one layer.
+pub fn save_kind(kind: Kind, name: &str, preset: &Preset) -> Result<String> {
+    let dir = kind.dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating {}", dir.display()))?;
-    let path = path_for(name);
+    let path = path_for_kind(kind, name);
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(preset)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
@@ -143,7 +210,12 @@ pub fn save(name: &str, preset: &Preset) -> Result<String> {
 }
 
 pub fn load(name: &str) -> Result<Preset> {
-    let path = path_for(name);
+    load_kind(Kind::Look, name)
+}
+
+/// As [`load`], for one layer.
+pub fn load_kind(kind: Kind, name: &str) -> Result<Preset> {
+    let path = path_for_kind(kind, name);
     let bytes =
         std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
@@ -383,6 +455,51 @@ pub fn by_index(i: usize) -> Option<(String, Preset)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two layers must not be able to disturb each other.
+    ///
+    /// This is the property the whole idea rests on. Gravity sits *over*
+    /// the look: if a look captured the wells then firing a scene would
+    /// silently reset them, and two grids that were supposed to compose
+    /// would fight instead — with no way to tell from the screen which
+    /// one had won.
+    #[test]
+    fn a_look_and_a_gravity_preset_capture_disjoint_parameters() {
+        let mut b = ParamRegistry::builder();
+        b.add(vizz_params::ParamDef::new("/particles/size", 0.0, 1.0, 0.3));
+        b.add(vizz_params::ParamDef::new("/gravity/amount", 0.0, 1.0, 0.7));
+        b.add(vizz_params::ParamDef::new("/gravity/0/strength", -2.0, 2.0, 1.5));
+        b.add(vizz_params::ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
+        b.add(vizz_params::ParamDef::new("/gravity/fire", 0.0, 16.0, 3.0));
+        let reg = b.build();
+
+        let look = Preset::capture_kind(&reg, Kind::Look);
+        let gravity = Preset::capture_kind(&reg, Kind::Gravity);
+
+        assert!(look.values.contains_key("/particles/size"));
+        assert!(
+            !look.values.keys().any(|k| k.starts_with("/gravity/")),
+            "a look captured gravity: {:?}",
+            look.values.keys().collect::<Vec<_>>()
+        );
+
+        assert!(gravity.values.contains_key("/gravity/amount"));
+        assert!(gravity.values.contains_key("/gravity/0/strength"));
+        assert!(
+            gravity.values.keys().all(|k| k.starts_with("/gravity/")),
+            "a gravity preset captured something else: {:?}",
+            gravity.values.keys().collect::<Vec<_>>()
+        );
+
+        // Neither captures the panic fader or either transport, and the
+        // two sets share nothing at all.
+        assert!(!look.values.contains_key("/master/dim"));
+        assert!(!gravity.values.contains_key("/gravity/fire"));
+        assert!(
+            look.values.keys().all(|k| !gravity.values.contains_key(k)),
+            "the two layers overlap"
+        );
+    }
     use vizz_params::{ParamDef, ParamRegistry};
 
     fn registry() -> ParamRegistry {

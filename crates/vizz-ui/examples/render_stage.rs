@@ -129,6 +129,7 @@ fn main() {
         bar_phase: 0.12,
         presets: &presets,
         grid: &grid,
+        gravity: None,
         midi: &midi,
         values: Some(&modulated),
     };

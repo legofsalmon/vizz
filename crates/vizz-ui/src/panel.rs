@@ -50,6 +50,8 @@ pub struct PanelActions {
     pub grid: crate::grid_view::GridActions,
     /// Output size, render scale and master precision, when changed.
     pub output_setup: Option<OutputSetup>,
+    /// What the gravity grid asks for this frame.
+    pub gravity: crate::grid_view::GridActions,
 }
 
 /// How big the output is and how hard it is worked.
@@ -121,6 +123,9 @@ pub struct PanelState {
     pub presets: Vec<PresetEntry>,
     /// The scene grid as it stands this frame.
     pub grid: crate::grid_view::GridView,
+    /// The gravity grid, when the layer is in use. `None` hides it from
+    /// the performance layout entirely.
+    pub gravity_grid: Option<crate::grid_view::GridView>,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
     /// Draw every collapsible section open.

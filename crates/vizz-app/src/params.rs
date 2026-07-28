@@ -65,6 +65,11 @@ pub struct AppParams {
     pub cam_pan_y: ParamId,
     pub gravity_amount: ParamId,
     pub gravity: Vec<GravityWell>,
+    pub gravity_fire: ParamId,
+    pub gravity_time: ParamId,
+    pub gravity_curve: ParamId,
+    pub gravity_auto: ParamId,
+    pub gravity_bars: ParamId,
     pub bg_r: ParamId,
     pub bg_g: ParamId,
     pub bg_b: ParamId,
@@ -257,6 +262,20 @@ impl AppParams {
             });
         }
 
+        // The gravity grid's transport, mirroring the scene grid's. Its
+        // own rather than shared, because the whole point of a second
+        // layer is that it moves on its own clock — a well arriving over
+        // eight bars under a look that cut is a normal thing to want.
+        let gravity_fire = b.add(ParamDef::new("/gravity/fire", 0.0, SCENE_SLOTS, 0.0));
+        let gravity_time = b.add(ParamDef::new("/gravity/time", 0.0, 30.0, 2.0));
+        let gravity_curve = b.add(
+            ParamDef::new("/gravity/curve", 0.0, 4.0, 1.0)
+                .labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
+        );
+        let gravity_auto =
+            b.add(ParamDef::new("/gravity/auto", 0.0, 1.0, 0.0).labels(&["off", "on"]));
+        let gravity_bars = b.add(ParamDef::new("/gravity/bars", 0.25, 16.0, 4.0));
+
         let bg_r = b.add(ParamDef::new("/bg/red", 0.0, 1.0, 0.004).smooth(0.3));
         let bg_g = b.add(ParamDef::new("/bg/green", 0.0, 1.0, 0.004).smooth(0.3));
         let bg_b = b.add(ParamDef::new("/bg/blue", 0.0, 1.0, 0.008).smooth(0.3));
@@ -334,6 +353,11 @@ impl AppParams {
             cam_pan_y,
             gravity_amount,
             gravity,
+            gravity_fire,
+            gravity_time,
+            gravity_curve,
+            gravity_auto,
+            gravity_bars,
             bg_r,
             bg_g,
             bg_b,
@@ -400,6 +424,14 @@ mod tests {
                 "/scene/curve",
                 "/scene/auto",
                 "/scene/bars",
+                // The gravity grid's transport, for the same reasons: a
+                // gravity preset holding its own fire control would fire
+                // itself on arrival, forever.
+                "/gravity/fire",
+                "/gravity/time",
+                "/gravity/curve",
+                "/gravity/auto",
+                "/gravity/bars",
             ]
         );
     }
