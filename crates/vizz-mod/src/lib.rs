@@ -395,6 +395,21 @@ impl ModEngine {
 
     /// Total modulation currently applied to a parameter, for showing the
     /// modulated position on its slider.
+    /// Whether anything is driving this parameter — an enabled route or a
+    /// graph sink pointed at it.
+    ///
+    /// The panel marks these, because a slider that will not stay where
+    /// you put it is otherwise indistinguishable from a broken one. The
+    /// value still belongs to you; modulation is an offset on top.
+    pub fn drives(&self, addr: &str) -> bool {
+        self.routes
+            .iter()
+            .any(|r| r.enabled && r.param == addr)
+            || self.graph.nodes.iter().any(|n| {
+                !n.bypass && matches!(&n.kind, graph::NodeKind::Param { addr: a, .. } if a == addr)
+            })
+    }
+
     pub fn offset_for(&self, registry: &ParamRegistry, param: &str) -> f32 {
         registry
             .id(param)

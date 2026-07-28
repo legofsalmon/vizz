@@ -27,6 +27,9 @@ pub struct PerformanceState<'a> {
     pub over_budget: bool,
     pub bpm: f32,
     pub bar_phase: f32,
+    /// Preset names in slot order, so the row can be numbered to match
+    /// `/preset/recall` and the number keys.
+    pub presets: &'a [String],
 }
 
 #[derive(Debug, Default)]
@@ -37,6 +40,8 @@ pub struct PerformanceActions {
     pub macros_changed: bool,
     /// Leave the performance layout.
     pub exit: bool,
+    /// Fire this preset slot (1-based, matching `/preset/recall`).
+    pub preset_slot: Option<u32>,
 }
 
 pub fn draw(
@@ -56,6 +61,8 @@ pub fn draw(
                 .unwrap_or_else(|| vec2(900.0, 520.0));
             ui.set_min_size(full);
             status_strip(ui, state, &mut actions);
+            ui.add_space(6.0);
+            preset_row(ui, state, &mut actions);
             ui.add_space(10.0);
             faders(ui, registry, macros, &mut actions);
             ui.add_space(14.0);
@@ -63,6 +70,36 @@ pub fn draw(
         });
 
     actions
+}
+
+/// Presets as a row of buttons, numbered to match the keyboard.
+///
+/// The whole point of the performance layout is that everything you play
+/// with is on one screen. Presets were the largest thing missing: without
+/// them, changing look meant leaving the layout, which is the one thing it
+/// exists to avoid. Numbered because the number keys fire the same slots,
+/// so the row doubles as the legend for the keyboard.
+fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut PerformanceActions) {
+    if state.presets.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for (i, name) in state.presets.iter().enumerate() {
+            let slot = i as u32 + 1;
+            // Only the first ten have a key; showing a number beside the
+            // eleventh would promise a shortcut that does not exist.
+            let label = if slot <= 10 {
+                format!("{}  {name}", slot % 10)
+            } else {
+                name.clone()
+            };
+            let button = egui::Button::new(egui::RichText::new(label).size(15.0))
+                .min_size(vec2(0.0, 30.0));
+            if ui.add(button).clicked() {
+                actions.preset_slot = Some(slot);
+            }
+        }
+    });
 }
 
 fn status_strip(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut PerformanceActions) {
@@ -184,7 +221,15 @@ fn fader(
             let value = registry.target(param);
             // Value under the fader rather than inside it: a number drawn
             // over a moving bar is unreadable at a glance.
-            ui.label(egui::RichText::new(format!("{value:.3}")).size(12.0).monospace());
+            //
+            // A stepped parameter shows its position's name. `5.000` under
+            // a fader called `mode` is unreadable in a different sense —
+            // it is legible and still tells you nothing.
+            let shown = def
+                .label_for(value)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{value:.2}"));
+            ui.label(egui::RichText::new(shown).size(12.0).monospace());
             // The short name is what identifies the fader; the full address
             // is only needed when reassigning.
             let short = addr.rsplit('/').next().unwrap_or(addr);
@@ -375,6 +420,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
+        let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let state = PerformanceState {
             outputs: &[OutputStatus { name: "syphon:vizz".into(), live: true }],
             audio: &audio,
@@ -382,6 +428,7 @@ mod tests {
             over_budget: false,
             bpm: 128.0,
             bar_phase: 0.1,
+            presets: &names,
         };
         let mut text = String::new();
         for i in 0..8 {
@@ -438,5 +485,20 @@ mod tests {
         let mut macros = Macros { slots: vec![None; MACRO_COUNT] };
         let text = render(&mut macros, &reg);
         assert!(text.contains("MASTER"), "got: {text}");
+    }
+
+    /// Presets must be on the performance surface and numbered to match
+    /// the keyboard. Without them, changing look means leaving the layout
+    /// — the one thing the layout exists to avoid.
+    #[test]
+    fn the_performance_layout_offers_presets_by_number() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let text = render(&mut macros, &reg);
+        assert!(text.contains("Slow bloom"), "preset missing: {text}");
+        assert!(text.contains("Butterfly"), "preset missing: {text}");
+        // Numbered, because the number keys fire the same slots and this
+        // row is the only place that says so.
+        assert!(text.contains("1  Slow bloom"), "slot numbers missing: {text}");
     }
 }

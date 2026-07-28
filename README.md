@@ -292,7 +292,11 @@ for the canvas.
 Node kinds: LFO, audio band, level, phasor and constant (sources); curve,
 math, scale, smooth, quantise and sample & hold (operators); parameter
 (sink). Drag from an output port to an input to wire; drag an input away
-to unplug; right-click for the add menu; Delete removes the selected node.
+to unplug; right-click for the add menu; Delete removes the selected node. **fit**
+frames every node — an infinite canvas otherwise has a state you cannot
+get out of, where you have panned far enough that nothing is on screen and
+nothing points home. It is also the fastest way to read a patch you have
+just loaded, whose layout came from someone else's screen.
 Scroll zooms about the cursor. Node positions save with the patch.
 
 Three behaviours worth knowing:
@@ -366,6 +370,11 @@ mid-set.
 
 Eight is a deliberate limit — enough for the things worth reaching for,
 few enough that each stays large and unambiguous under stage lighting.
+
+The preset row sits above the faders, numbered to match the number keys,
+so it doubles as the legend for them. Presets were the largest thing
+missing from this layout: without them, changing look meant leaving it,
+which is the one thing the layout exists to avoid.
 
 ## Camera and room
 
@@ -458,6 +467,54 @@ distance, and it shrinks and drifts toward the vanishing point as it goes.
 `embed` defaults to `0`, so turning the room on never moves the cloud.
 Reaching for a control mid-set must not teleport the thing the audience is
 looking at.
+
+## The control panel
+
+Everything the panel shows is generated from the parameter table, so
+registering a parameter gives it a control automatically and the GUI can
+never drift out of sync with the OSC surface.
+
+**One status line stays visible**: frame rate, an indicator per output,
+audio input, tempo, and tap. Everything behind it — health detail, output
+detail, MIDI devices, the band editors, the LFO editors — folds away,
+because it is setup rather than performance. Before that split the status
+blocks filled the panel and left the parameter list three rows tall.
+
+**Parameters are grouped by address prefix** — `particles`, `shape`, `fx`,
+`color`, `cloud`, `camera`, `room`, `preset`, `master` — with the count in
+each header, and a `~` count of how many inside are being modulated, so a
+collapsed group still says whether something in it is moving on its own.
+A flat list of thirty-seven meant scrolling past everything to reach one
+control.
+
+**A modulated parameter is marked**, and hovering the mark shows the
+current offset. A slider that will not stay where you put it is otherwise
+indistinguishable from a broken one — the value is still yours, modulation
+rides on top as an offset.
+
+**A stepped parameter reads as its position's name.** `/shape/mode` at
+`5.000` is legible and tells you nothing; `Lorenz` tells you what is on
+screen. Same for `/fx/mirror`, `/color/drive` and `/color/palette`. Only
+genuinely discrete controls get names — a swept one has none to give.
+
+**Press `/` to filter.** Typing flattens the groups, because when you have
+typed a name you already know what you want.
+
+### Keyboard
+
+```
+1 – 9, 0   fire preset slot 1–10
+Tab        show or hide the control panel
+G          modulation canvas
+P          performance layout
+/          filter the parameter list
+?          the shortcut list, on screen
+Esc        quit
+```
+
+`?` exists because a shortcut that lives only in a README is a shortcut
+nobody uses. The number keys write `/preset/recall` exactly as OSC or MIDI
+would, so there is one recall path rather than a second that can drift.
 
 ## Presets
 

@@ -23,6 +23,46 @@ pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{AudioEdits, AudioView, MidiView, OutputStatus, PanelActions, PanelState, PresetEntry};
 
+/// Exposed for the offscreen preview, so the overlay is reviewed through
+/// the same code the app runs rather than a copy of it.
+pub fn draw_shortcuts_for_preview(ctx: &egui::Context, open: &mut bool) {
+    shortcuts_overlay(ctx, open);
+}
+
+/// Keyboard shortcuts, on screen rather than only in the README.
+///
+/// A shortcut nobody can discover is a shortcut nobody uses, and the
+/// number keys in particular are the difference between presets being
+/// playable and being a menu.
+fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
+    egui::Window::new("shortcuts")
+        .open(open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            for (key, what) in [
+                ("1 – 9, 0", "fire preset slot 1–10"),
+                ("Tab", "show or hide the control panel"),
+                ("G", "modulation canvas"),
+                ("P", "performance layout"),
+                ("/", "filter the parameter list"),
+                ("?", "this list"),
+                ("Esc", "quit"),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [72.0, 18.0],
+                        egui::Label::new(egui::RichText::new(key).strong().monospace()),
+                    );
+                    ui.label(what);
+                });
+            }
+            ui.separator();
+            ui.small("right-click any slider to reset it to its default");
+        });
+}
+
 /// How many frame times the sparkline keeps.
 const HISTORY: usize = 240;
 
@@ -39,6 +79,13 @@ pub struct Gui {
     /// Performance layout: faders and status, nothing else. Off by
     /// default — you arrive wanting to build a look, not play one.
     pub performance: bool,
+    /// Keyboard-shortcut overlay, toggled with `?`. Shortcuts that are
+    /// only in the README are shortcuts nobody uses.
+    pub shortcuts_open: bool,
+    /// `/` was pressed; the panel focuses its filter next frame.
+    pub focus_filter: bool,
+    /// A number key was pressed: fire this preset slot.
+    pub preset_key: Option<u32>,
     graph_view: graph_view::GraphView,
     macros: vizz_mod::perform::Macros,
     history: Vec<f32>,
@@ -64,6 +111,9 @@ impl Gui {
             visible: true,
             graph_open: false,
             performance: false,
+            shortcuts_open: false,
+            focus_filter: false,
+            preset_key: None,
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             history: Vec::with_capacity(HISTORY),
@@ -94,6 +144,30 @@ impl Gui {
                 }
                 winit::keyboard::Key::Character("p") => {
                     self.performance = !self.performance;
+                    return true;
+                }
+                // `/` jumps to the parameter filter, as it does in every
+                // other searchable list. Consumed here so the character
+                // does not also land in the field it just focused.
+                winit::keyboard::Key::Character("/") => {
+                    self.visible = true;
+                    self.focus_filter = true;
+                    return true;
+                }
+                winit::keyboard::Key::Character("?") => {
+                    self.shortcuts_open = !self.shortcuts_open;
+                    return true;
+                }
+                // Number keys fire preset slots. This is the reason to
+                // have presets at all during a set: one keystroke, no
+                // pointer, no looking away from the output.
+                winit::keyboard::Key::Character(d)
+                    if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() =>
+                {
+                    let n = d.as_bytes()[0] - b'0';
+                    // 1..9 are slots 1..9; 0 is slot 10, matching how the
+                    // row reads left to right.
+                    self.preset_key = Some(if n == 0 { 10 } else { n as u32 });
                     return true;
                 }
                 _ => {}
@@ -131,6 +205,7 @@ impl Gui {
             return Ok(PanelActions::default());
         }
         state.frame_times_ms = self.history.clone();
+        state.focus_filter = std::mem::take(&mut self.focus_filter);
 
         let input = self.state.take_egui_input(window);
         // begin_pass/end_pass rather than run_ui: the panel builds its own
@@ -144,6 +219,9 @@ impl Gui {
         } else {
             PanelActions::default()
         };
+        if self.shortcuts_open {
+            shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
+        }
         if self.graph_open {
             let mut open = true;
             egui::Window::new("modulation")
@@ -190,6 +268,7 @@ impl Gui {
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
         let health = state.health.as_ref();
+        let preset_names: Vec<String> = state.presets.iter().map(|p| p.name.clone()).collect();
         let perf_state = performance::PerformanceState {
             outputs: &state.outputs,
             audio: &state.audio,
@@ -197,6 +276,7 @@ impl Gui {
             over_budget: health.map(|h| h.over_budget_window_pct > 1.0).unwrap_or(false),
             bpm: state.bpm,
             bar_phase: state.bar_phase,
+            presets: &preset_names,
         };
         let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         if perf.exit {
@@ -224,6 +304,12 @@ impl Gui {
         // the same path the app already handles.
         let mut actions = PanelActions::default();
         actions.audio.tapped = perf.tapped;
+        // Routed through the same one-shot the number keys use, so a
+        // click and a keystroke take an identical path to the recall
+        // parameter — one way to fire a preset, not two that can drift.
+        if let Some(slot) = perf.preset_slot {
+            self.preset_key = Some(slot);
+        }
         Ok(actions)
     }
 }
@@ -238,6 +324,40 @@ mod tests {
         b.add(ParamDef::new("/particles/count", 0.0, 100.0, 25.0));
         b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
         b.build()
+    }
+
+    /// A stepped parameter must read as its position's name. `mode 5.000`
+    /// is legible and still tells you nothing; `mode Lorenz` tells you
+    /// what is on screen, which in a dark room is the whole difference.
+    #[test]
+    fn stepped_parameters_read_as_names_not_numbers() {
+        let mut b = ParamRegistry::builder();
+        let mode = b.add(
+            ParamDef::new("/shape/mode", 0.0, 7.0, 0.0)
+                .labels(&["sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud"]),
+        );
+        let reg = b.build();
+        reg.set(mode, 5.0);
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            bpm: 120.0,
+            presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
+            bar_phase: 0.0,
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("Lorenz"), "stepped value not named: {text}");
+        assert!(!text.contains("5.000"), "raw number still shown: {text}");
     }
 
     /// The preset list has to render, including the slot numbers — they
@@ -262,7 +382,9 @@ mod tests {
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             bpm: 120.0,
-            presets: vec![
+            focus_filter: false,
+            expand_sections: true,
+        presets: vec![
                 PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) },
                 PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
             ],
@@ -296,15 +418,21 @@ mod tests {
             audio_auto_bpm: false,
             bpm: 120.0,
             presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
             bar_phase: 0.0,
         };
 
         let text = run_panel(&ctx, &reg, &state);
 
-        // Every parameter's label must appear in the emitted text.
+        // Every parameter must have a control. Rows inside a group show
+        // the short name — the prefix is the group header, and repeating
+        // it eats the width the slider needs — so check both halves.
         for (_, def) in reg.iter() {
-            let label = def.addr.trim_start_matches('/');
-            assert!(text.contains(label), "no control drawn for {label}; got: {text}");
+            let path = def.addr.trim_start_matches('/');
+            let (group, short) = path.split_once('/').unwrap_or(("", path));
+            assert!(text.contains(short), "no control drawn for {path}; got: {text}");
+            assert!(text.contains(group), "no group header for {path}; got: {text}");
         }
         assert!(text.contains("syphon:vizz"), "output status missing: {text}");
     }
@@ -327,6 +455,8 @@ mod tests {
             audio_auto_bpm: false,
             bpm: 120.0,
             presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -363,6 +493,8 @@ mod tests {
             audio_auto_bpm: true,
             bpm: 128.0,
             presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
             bar_phase: 0.05,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -410,6 +542,8 @@ mod tests {
             audio_auto_bpm: false,
             bpm: 120.0,
             presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -437,6 +571,8 @@ mod tests {
             audio_auto_bpm: false,
             bpm: 120.0,
             presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
             bar_phase: 0.0,
         };
 

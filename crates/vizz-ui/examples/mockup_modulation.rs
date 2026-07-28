@@ -33,6 +33,7 @@ fn main() {
         Shot { name: "graph_real", w: 900, h: 620, draw: draw_real_graph },
         Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
         Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
+        Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
     ];
 
     for s in shots {
@@ -337,21 +338,38 @@ fn draw_real_zoomed(ctx: &egui::Context, w: f32, h: f32) {
     });
 }
 
+/// The `?` overlay, drawn through the real code path.
+fn draw_shortcuts(ctx: &egui::Context, _w: f32, _h: f32) {
+    let mut open = true;
+    vizz_ui::draw_shortcuts_for_preview(ctx, &mut open);
+}
+
 fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     use vizz_params::ParamDef;
     let mut b = vizz_params::ParamRegistry::builder();
-    for (a, lo, hi, d) in [
-        ("/particles/size", 0.001, 0.2, 0.06),
-        ("/particles/speed", 0.0, 4.0, 1.4),
-        ("/shape/mode", 0.0, 7.0, 5.0),
-        ("/shape/morph", 0.0, 1.0, 0.3),
-        ("/fx/trail", 0.0, 0.98, 0.72),
-        ("/fx/glow", 0.0, 1.0, 0.55),
-        ("/fx/mirror", 0.0, 3.0, 2.0),
-        ("/particles/hue", 0.0, 1.0, 0.58),
-        ("/master/dim", 0.0, 1.0, 0.85),
+    // Labels included where the app has them, or the preview would show
+    // bare numbers under `mode` and `mirror` and hide the thing this
+    // layout most needs to get right.
+    const SHAPES: &[&str] = &[
+        "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
+    ];
+    const MIRRORS: &[&str] = &["off", "x", "y", "quad"];
+    for (a, lo, hi, d, labels) in [
+        ("/particles/size", 0.001, 0.2, 0.06, None),
+        ("/particles/speed", 0.0, 4.0, 1.4, None),
+        ("/shape/mode", 0.0, 7.0, 5.0, Some(SHAPES)),
+        ("/shape/morph", 0.0, 1.0, 0.3, None),
+        ("/fx/trail", 0.0, 0.98, 0.72, None),
+        ("/fx/glow", 0.0, 1.0, 0.55, None),
+        ("/fx/mirror", 0.0, 3.0, 2.0, Some(MIRRORS)),
+        ("/particles/hue", 0.0, 1.0, 0.58, None),
+        ("/master/dim", 0.0, 1.0, 0.85, None),
     ] {
-        b.add(ParamDef::new(a, lo, hi, d));
+        let def = ParamDef::new(a, lo, hi, d);
+        b.add(match labels {
+            Some(l) => def.labels(l),
+            None => def,
+        });
     }
     let reg = b.build();
     let mut macros = vizz_mod::perform::Macros::default();
@@ -375,6 +393,14 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         over_budget: false,
         bpm: 128.0,
         bar_phase: 0.05,
+        presets: &[
+            "Slow bloom".into(),
+            "Butterfly".into(),
+            "Tunnel".into(),
+            "Stage".into(),
+            "Confetti".into(),
+            "Ribbon".into(),
+        ],
     };
     vizz_ui::performance::draw(ctx, &reg, &state, &mut macros);
 }

@@ -78,6 +78,9 @@ struct App {
     audio_bands: [vizz_audio::Band; 4],
     audio_auto_bpm: bool,
     tap: vizz_audio::TapTempo,
+    /// `/` was pressed this frame: focus the panel's parameter filter.
+    /// One-shot, cleared after the panel has drawn.
+    focus_filter: bool,
 }
 
 impl App {
@@ -266,9 +269,12 @@ impl App {
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
             presets: preset_entries(),
+            focus_filter: std::mem::take(&mut self.focus_filter),
+            expand_sections: false,
             bpm: self.engine.modulation.clock.bpm,
             bar_phase: self.engine.modulation.clock.bar_phase(4.0),
         };
+        let preset_key = state.gui.preset_key.take();
         let actions = state.gui.render(
             &state.window,
             &state.ctx.device,
@@ -290,6 +296,14 @@ impl App {
                     &mut self.tap,
                 );
                 apply_preset_actions(&actions, &self.params.registry);
+                // A number key fires a slot by writing the recall
+                // parameter, exactly as OSC or MIDI would — so there is
+                // one recall path, not a second one that can drift.
+                if let Some(slot) = preset_key {
+                    self.params
+                        .registry
+                        .set(self.params.preset_recall, slot as f32);
+                }
                 apply_panel_actions(
                     actions,
                     &self.midi_shared,
@@ -541,6 +555,7 @@ pub fn run(params: Arc<AppParams>, opts: WindowedOpts) -> Result<()> {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: false,
         tap: vizz_audio::TapTempo::new(),
+        focus_filter: false,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

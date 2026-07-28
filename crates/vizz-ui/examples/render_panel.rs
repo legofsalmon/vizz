@@ -66,7 +66,18 @@ fn main() {
         "/room/embed",
         "/master/dim",
     ] {
-        b.add(ParamDef::new(addr, 0.0, 1.0, 0.4));
+        // Labels where the app has them, so the preview shows names under
+        // the stepped controls rather than a number that says nothing.
+        let def = ParamDef::new(addr, 0.0, 1.0, 0.4);
+        b.add(match addr {
+            "/shape/mode" => def.labels(&[
+                "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
+            ]),
+            "/fx/mirror" => def.labels(&["off", "x", "y", "quad"]),
+            "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
+            "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
+            _ => def,
+        });
     }
     let registry = b.build();
 
@@ -105,6 +116,8 @@ fn main() {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         bpm: 128.0,
+        focus_filter: false,
+        expand_sections: false,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
             PresetEntry { name: "Butterfly".into(), builtin: true, about: None },
