@@ -16,6 +16,7 @@ pub mod beat;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -85,6 +86,31 @@ impl AudioState {
     /// stale one would set every gain from a device that is gone.
     fn reset_peak(&self, i: usize) {
         Self::store(&self.raw_peak[i], 0.0);
+    }
+
+    /// The input has gone: say so, and drop the meters to nothing.
+    ///
+    /// Both halves matter. Leaving `connected` set means the panel shows a
+    /// green dot and a device name for an interface that is no longer in
+    /// the building, while every audio-reactive parameter sits frozen —
+    /// which during a set reads as the application having broken rather
+    /// than as a cable having come out, and sends the performer looking in
+    /// the wrong place. Leaving the meters up means the last levels before
+    /// it went stay painted, so the display insists audio is arriving.
+    pub fn disconnect(&self) {
+        self.connected.store(false, Ordering::Relaxed);
+        for i in 0..BAND_COUNT {
+            Self::store(&self.bands[i], 0.0);
+            Self::store(&self.raw[i], 0.0);
+            self.reset_peak(i);
+        }
+        Self::store(&self.level, 0.0);
+        Self::store(&self.confidence, 0.0);
+    }
+
+    /// Samples are arriving again.
+    pub fn reconnect(&self) {
+        self.connected.store(true, Ordering::Relaxed);
     }
 
     fn observe_peak(&self, i: usize, raw: f32, dt: f32) {
@@ -309,7 +335,14 @@ impl AudioEngine {
         let producer = ring.clone();
         let dropped = state.clone();
         let mut mono = Vec::new();
-        let err_fn = |e| log::warn!("audio stream error: {e}");
+        // The error callback is the one unambiguous "this device is gone"
+        // signal cpal offers, and it used to only write a line to a log
+        // nobody reads mid-set.
+        let err_state = state.clone();
+        let err_fn = move |e| {
+            log::warn!("audio stream error: {e} — input marked disconnected");
+            err_state.disconnect();
+        };
         let stream = device.build_input_stream(
             config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -348,6 +381,14 @@ impl Drop for AudioEngine {
     }
 }
 
+/// How long an input may deliver nothing before it is treated as gone.
+///
+/// Comfortably longer than any scheduling hiccup — a device that is really
+/// there never pauses for this long — and short enough that the panel is
+/// telling the truth well before anyone has finished wondering why the
+/// visuals stopped moving.
+const SILENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
 fn analysis_loop(
     ring: Arc<Ring>,
     state: Arc<AudioState>,
@@ -364,15 +405,38 @@ fn analysis_loop(
     let mut window = vec![0.0f32; FFT_SIZE];
     let mut incoming = vec![0.0f32; HOP];
     let dt = HOP as f32 / sample_rate;
+    let mut last_samples = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         if ring.pop(&mut incoming) < HOP {
+            // Starvation is not silence.
+            //
+            // A working input delivers samples continuously whether or not
+            // there is any sound in them — a quiet room is a stream of
+            // zeros, not an absent stream. So a gap this long means the
+            // device stopped delivering: unplugged, put to sleep, or the
+            // stream died without cpal raising an error, which is the
+            // usual shape of a USB interface being pulled on macOS.
+            //
+            // Checked here because this is the one place that knows, and
+            // it costs a clock read on a thread that was about to sleep.
+            if state.connected() && last_samples.elapsed() > SILENCE_TIMEOUT {
+                log::warn!("audio input stopped delivering — marking it disconnected");
+                state.disconnect();
+            }
             // Nothing ready. Sleeping a fraction of a hop keeps latency
             // well under a frame without spinning a core.
             std::thread::sleep(std::time::Duration::from_micros(
                 (dt * 250_000.0).max(200.0) as u64,
             ));
             continue;
+        }
+        // An interface that wakes up, or comes back on the same port,
+        // should light again without making the user re-pick it.
+        last_samples = Instant::now();
+        if !state.connected() {
+            log::info!("audio input delivering again");
+            state.reconnect();
         }
         window.copy_within(HOP.., 0);
         window[FFT_SIZE - HOP..].copy_from_slice(&incoming);
@@ -443,6 +507,70 @@ mod tests {
             assert_eq!(r.pop(&mut out), 4);
             assert_eq!(out.to_vec(), batch, "round {round}");
         }
+    }
+
+    /// The panel used to show a green dot and a device name for an
+    /// interface that had been unplugged, with every audio-reactive
+    /// parameter frozen at its last value — which mid-set reads as the app
+    /// having broken rather than as a cable having come out.
+    ///
+    /// Drives the real analysis loop rather than calling `disconnect`
+    /// directly, because the thing worth pinning is that starvation is
+    /// *detected*: a working input delivers zeros when the room is quiet,
+    /// so "no samples" and "no sound" are different conditions and only
+    /// one of them means the device is gone.
+    #[test]
+    fn an_input_that_stops_delivering_stops_claiming_to_be_connected() {
+        use analysis::{FFT_SIZE, HOP};
+
+        let ring = Arc::new(Ring::new(FFT_SIZE * 4));
+        let state = Arc::new(AudioState::default());
+        let settings = Arc::new(Mutex::new(AudioSettings::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        state.reconnect();
+
+        let loop_ring = ring.clone();
+        let loop_state = state.clone();
+        let loop_stop = stop.clone();
+        let handle = std::thread::spawn(move || {
+            analysis_loop(loop_ring, loop_state, settings, loop_stop, 48_000.0);
+        });
+
+        // Deliver a quiet room: real samples, all zero. This must NOT be
+        // mistaken for a missing device.
+        let quiet = vec![0.0f32; HOP];
+        let fed_until = Instant::now();
+        while fed_until.elapsed() < SILENCE_TIMEOUT * 2 {
+            ring.push(&quiet);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            state.connected(),
+            "a silent but working input was reported as disconnected"
+        );
+
+        // Now pull the interface: stop delivering anything at all.
+        let pulled = Instant::now();
+        while state.connected() && pulled.elapsed() < SILENCE_TIMEOUT * 4 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !state.connected(),
+            "an input that stopped delivering still claimed to be connected"
+        );
+
+        // And it comes back on its own when samples resume, rather than
+        // needing the device to be picked again.
+        ring.push(&quiet);
+        let back = Instant::now();
+        while !state.connected() && back.elapsed() < std::time::Duration::from_secs(2) {
+            ring.push(&quiet);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(state.connected(), "the input did not come back when samples resumed");
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
     }
 
     /// A missing device is a normal condition, not an error path.

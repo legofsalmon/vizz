@@ -73,7 +73,11 @@ impl FrameEngine {
             snapshot: ParamSnapshot::new(&params.registry),
             params,
             health: HealthMonitor::new(HealthConfig::default()),
-            modulation: ModEngine::with_defaults(),
+            // Whatever was on the rack last time. Every other piece of
+            // user state comes back on the next launch; this one used to
+            // be thrown away, routes and all.
+            modulation: vizz_mod::library::load_session()
+                .unwrap_or_else(ModEngine::with_defaults),
             audio,
             bands: [0.0; BAND_COUNT],
             vis_time: 0.0,

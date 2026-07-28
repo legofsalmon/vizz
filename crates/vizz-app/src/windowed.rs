@@ -110,7 +110,18 @@ struct App {
     palettes: Vec<String>,
     /// When Escape was first pressed, if it is waiting for a second.
     quit_armed: Option<Instant>,
+    /// The modulation state as last written, so the autosave can tell
+    /// whether anything actually changed.
+    saved_modulation: Vec<u8>,
+    /// When it was last compared. Comparing is cheap but not free, and
+    /// nothing here needs answering sixty times a second.
+    modulation_checked: Instant,
 }
+
+/// How often the modulation autosave looks for a change. Slow enough to be
+/// invisible, fast enough that a crash costs a few seconds of patching
+/// rather than an evening of it.
+const MODULATION_AUTOSAVE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long the quit confirmation stays armed. Long enough to be a
 /// deliberate second press, short enough that an Escape now and an Escape
@@ -499,6 +510,25 @@ impl App {
             self.quit_armed = None;
         }
         state.gui.quit_armed = self.quit_armed.is_some();
+        // Outside the panel guard below, deliberately: modulation keeps
+        // running with the panel closed, and OSC or a MIDI knob can change
+        // it there. Saving only while the canvas happened to be open would
+        // be the same mistake as the MIDI flush.
+        //
+        // Written out rather than a method call because `state` is already
+        // borrowed out of `self` for the rest of the frame.
+        if self.modulation_checked.elapsed() >= MODULATION_AUTOSAVE {
+            self.modulation_checked = Instant::now();
+            let now = vizz_mod::library::session_bytes(&self.engine.modulation);
+            if now != self.saved_modulation {
+                match vizz_mod::library::save_session(&self.engine.modulation) {
+                    Ok(()) => self.saved_modulation = now,
+                    // Kept at debug: a full disk would otherwise print this
+                    // every few seconds for the rest of the night.
+                    Err(e) => log::debug!("could not save the modulation state: {e:#}"),
+                }
+            }
+        }
 
         // Everything below describes the app to a panel, and with nothing
         // on screen it described it to nobody: a health snapshot sorting six
@@ -766,6 +796,21 @@ impl ApplicationHandler for App {
                 log::error!("failed to initialize window/GPU: {e:#}");
                 event_loop.exit();
             }
+        }
+    }
+
+    /// Last write before the process goes.
+    ///
+    /// winit calls this on the way out however the loop was ended — the
+    /// window closed, Escape confirmed, the platform's own quit — so the
+    /// few seconds since the last autosave are not lost to whichever route
+    /// out the user happened to take.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        let now = vizz_mod::library::session_bytes(&self.engine.modulation);
+        if now != self.saved_modulation
+            && let Err(e) = vizz_mod::library::save_session(&self.engine.modulation)
+        {
+            log::error!("could not save the modulation state on exit: {e:#}");
         }
     }
 
@@ -1321,6 +1366,10 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         Arc::clone(&params),
         vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
     );
+    // Taken before the engine moves into the app: the autosave compares
+    // against what was restored, so a launch that changes nothing leaves
+    // the file alone.
+    let restored_modulation = vizz_mod::library::session_bytes(&engine.modulation);
     // The grid is user state like the MIDI map and the macros, so it comes
     // back with the app. A missing or unreadable file gives an empty grid
     // rather than a startup failure — see `scene::load`.
@@ -1343,6 +1392,10 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         next_cloud: 0,
         palettes: palette_paths,
         quit_armed: None,
+        // Seeded from what was just restored, so a launch that changes
+        // nothing does not rewrite the file.
+        saved_modulation: restored_modulation,
+        modulation_checked: Instant::now(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),

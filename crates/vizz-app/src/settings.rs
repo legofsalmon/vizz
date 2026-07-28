@@ -63,15 +63,62 @@ pub struct Settings {
 /// down, at which point the setting that did it is already saved and it
 /// fails again on the next launch.
 pub const MIN_DIM: u32 = 160;
-pub const MAX_DIM: u32 = 7680;
+/// Longest side. 8192 is wgpu's default `max_texture_dimension_2d`, so
+/// this is the hardware's answer rather than a taste one — and it lets 8K
+/// DCI through, which 7680 did not.
+pub const MAX_DIM: u32 = 8192;
 pub const MIN_SCALE: f32 = 0.25;
 pub const MAX_SCALE: f32 = 2.0;
+
+/// Most pixels a target is allowed to be.
+///
+/// The per-dimension limits are not enough on their own, because they
+/// constrain the sides and the cost is the area. 7680 × 7680 sits inside
+/// both of them and is fifty-nine megapixels — with a 16-bit float master
+/// and the post chain's ping-pong buffers behind it, several gigabytes of
+/// GPU memory, reachable by typing a number into a box. A render scale of
+/// 2× on a merely large output gets there the same way without anyone
+/// typing anything unusual at all.
+///
+/// 8192 × 4320 is the widest format anyone actually drives, and lets every
+/// real shape through: 8K UHD, 8K DCI, and the very wide short canvases a
+/// multi-projector edge blend wants.
+pub const MAX_PIXELS: u64 = 8192 * 4320;
+
+/// Bring a size inside every limit at once, proportionally.
+///
+/// One factor, applied to both axes, rather than a clamp per axis. Clamping
+/// each side separately does not merely round the size off — it changes the
+/// *shape*: 7680 × 4320 at a 2× render scale clamps to 8192 × 8192, turning
+/// a 16:9 canvas into a square. The aspect is what the projector was set up
+/// for and what every framing decision was made against, so a size that has
+/// to come down comes down whole.
+fn fit([w, h]: [u32; 2]) -> [u32; 2] {
+    let (wf, hf) = (w.max(1) as f64, h.max(1) as f64);
+    let factor = (MAX_DIM as f64 / wf)
+        .min(MAX_DIM as f64 / hf)
+        .min((MAX_PIXELS as f64 / (wf * hf)).sqrt())
+        .min(1.0);
+    if factor >= 1.0 {
+        return [w.max(MIN_DIM), h.max(MIN_DIM)];
+    }
+    let fitted = [
+        ((wf * factor) as u32).max(MIN_DIM),
+        ((hf * factor) as u32).max(MIN_DIM),
+    ];
+    log::warn!(
+        "{w}x{h} ({:.0} megapixels) is past what vizz will allocate — using {}x{}",
+        wf * hf / 1e6,
+        fitted[0],
+        fitted[1]
+    );
+    fitted
+}
 
 impl Settings {
     /// Output size, clamped, falling back to the caller's default.
     pub fn output_or(&self, fallback: [u32; 2]) -> [u32; 2] {
-        let [w, h] = self.output_size.unwrap_or(fallback);
-        [w.clamp(MIN_DIM, MAX_DIM), h.clamp(MIN_DIM, MAX_DIM)]
+        fit(self.output_size.unwrap_or(fallback))
     }
 
     pub fn scale(&self) -> f32 {
@@ -81,10 +128,14 @@ impl Settings {
     /// Internal render size for a given output size.
     pub fn render_size(&self, output: [u32; 2]) -> [u32; 2] {
         let s = self.scale();
-        [
-            ((output[0] as f32 * s) as u32).clamp(MIN_DIM, MAX_DIM),
-            ((output[1] as f32 * s) as u32).clamp(MIN_DIM, MAX_DIM),
-        ]
+        // Fitted after scaling, not before and not per axis. This is the
+        // easier way to blow the budget and nobody types anything unusual
+        // to do it: 2× on a 4K output is sixteen times the pixels of
+        // 1080p.
+        fit([
+            (output[0] as f32 * s) as u32,
+            (output[1] as f32 * s) as u32,
+        ])
     }
 }
 
@@ -211,5 +262,60 @@ mod tests {
         let plain = Settings::default();
         assert_eq!(plain.output_or([1920, 1080]), [1920, 1080]);
         assert_eq!(plain.render_size([1920, 1080]), [1920, 1080]);
+    }
+
+    /// The side limits constrain the sides; the cost is the area. A square
+    /// at the maximum side length is inside every per-dimension check and
+    /// is fifty-nine megapixels — several gigabytes of GPU memory once the
+    /// float master and the post chain's buffers are behind it, and one
+    /// typed number away.
+    #[test]
+    fn a_size_inside_the_side_limits_can_still_be_too_many_pixels() {
+        let square = Settings {
+            output_size: Some([MAX_DIM, MAX_DIM]),
+            ..Default::default()
+        };
+        let out = square.output_or([1920, 1080]);
+        let pixels = out[0] as u64 * out[1] as u64;
+        assert!(pixels <= MAX_PIXELS, "{out:?} is {pixels} pixels");
+        // Squashed to fit would be a stranger surprise than smaller: the
+        // aspect is what every framing decision was made against.
+        assert_eq!(out[0], out[1], "a square output came back non-square: {out:?}");
+    }
+
+    /// The easier way to blow the budget, and nobody types anything odd to
+    /// do it: 2× render scale on a 4K output.
+    #[test]
+    fn the_render_scale_cannot_blow_the_pixel_budget_either() {
+        let hot = Settings {
+            output_size: Some([7680, 4320]),
+            render_scale: Some(2.0),
+            ..Default::default()
+        };
+        let out = hot.output_or([1920, 1080]);
+        let render = hot.render_size(out);
+        let pixels = render[0] as u64 * render[1] as u64;
+        assert!(pixels <= MAX_PIXELS, "render {render:?} is {pixels} pixels");
+        // Still 16:9, so the projector gets the shape it was set up for.
+        let asked = out[0] as f64 / out[1] as f64;
+        let got = render[0] as f64 / render[1] as f64;
+        assert!((asked - got).abs() < 0.01, "aspect changed: {asked} -> {got}");
+    }
+
+    /// Every real format has to fit, or the limit is in the wrong place.
+    #[test]
+    fn the_shapes_people_actually_drive_are_untouched() {
+        for size in [
+            [1920, 1080],
+            [3840, 2160],
+            [4096, 2160],
+            [7680, 4320],  // 8K UHD
+            [8192, 4320],  // 8K DCI
+            [7680, 1080],  // four projectors, edge blended
+            [1080, 1920],  // portrait
+        ] {
+            let s = Settings { output_size: Some(size), ..Default::default() };
+            assert_eq!(s.output_or([1920, 1080]), size, "{size:?} was resized");
+        }
     }
 }
