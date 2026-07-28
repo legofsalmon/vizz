@@ -93,6 +93,13 @@ const LABEL: Color32 = Color32::from_rgb(178, 187, 200);
 pub struct GridView {
     /// Cell names in slot order; `None` for an empty pad.
     pub names: Vec<Option<String>>,
+    /// Per slot: the pad is filled but its preset no longer exists.
+    /// A scene names a look rather than owning one, so a deleted or
+    /// renamed preset leaves a pad that would silently do nothing — the
+    /// kind of fault that gets blamed on the controller mid-set.
+    pub missing: Vec<bool>,
+    /// Presets available to put on a pad, for the assign menu.
+    pub presets: Vec<String>,
     /// The cell arrived at.
     pub current: Option<usize>,
     /// The cell being moved to, and how far along, 0..1.
@@ -115,6 +122,8 @@ impl Default for GridView {
     fn default() -> Self {
         Self {
             names: vec![None; SLOTS],
+            missing: vec![false; SLOTS],
+            presets: Vec::new(),
             current: None,
             in_flight: None,
             duration: 2.0,
@@ -147,8 +156,10 @@ pub struct GridActions {
     /// Fire this slot (0-based). The app turns it into a `/scene/fire`
     /// write so a click and a MIDI pad take the same path.
     pub fire: Option<usize>,
-    /// Capture the live parameters into this slot.
+    /// Capture the live parameters into this slot, as a new preset.
     pub store: Option<usize>,
+    /// Put an existing preset on this pad.
+    pub assign: Option<(usize, String)>,
     pub clear: Option<usize>,
     pub rename: Option<(usize, String)>,
     /// Transition settings the user moved. `Option` rather than a value so
@@ -252,7 +263,12 @@ fn pad(
         p.rect_filled(fill, 3.0, ARRIVING.gamma_multiply(0.5));
     }
 
-    let outline = if view.in_flight.map(|(to, _)| to) == Some(slot) {
+    // A dangling reference outranks every other outline: a pad that will
+    // not fire is more urgent than which pad you are on.
+    let broken = view.missing.get(slot).copied().unwrap_or(false);
+    let outline = if broken {
+        Some(ARMED)
+    } else if view.in_flight.map(|(to, _)| to) == Some(slot) {
         Some(ARRIVING)
     } else if view.current == Some(slot) {
         Some(CURRENT)
@@ -279,20 +295,28 @@ fn pad(
             egui::Align2::LEFT_CENTER,
             name,
             egui::FontId::proportional(11.0),
-            Color32::from_rgb(225, 228, 235),
+            if broken {
+                ARMED
+            } else {
+                Color32::from_rgb(225, 228, 235)
+            },
         );
     }
 
     let response = response.on_hover_text(match state.mode {
+        PadMode::Fire if broken => format!(
+            "{} — this preset no longer exists; right-click to pick another",
+            name.unwrap_or("scene")
+        ),
         PadMode::Fire => name.map_or_else(
-            || format!("scene {} — empty", slot + 1),
+            || format!("scene {} — empty; right-click to play a preset here", slot + 1),
             // The rename is advertised here because it was previously only
             // on the right-click menu, where nobody found it. A hover that
             // names the gesture is the cheapest possible fix, and the
             // double-click below is the gesture people try first.
             |n| format!("fire {n}  ·  double-click to rename"),
         ),
-        PadMode::Store => format!("store the current look in scene {}", slot + 1),
+        PadMode::Store => format!("capture the current look into scene {}", slot + 1),
         PadMode::Clear => format!("empty scene {}", slot + 1),
     });
     // Double-click to rename, which is where a name gets edited in every
@@ -319,7 +343,28 @@ fn pad(
         }
     }
     response.context_menu(|ui| {
-        if ui.button("store here").clicked() {
+        // Assignment first: a scene names a preset, so choosing which
+        // preset is the primary thing you do to a pad. Capture is below
+        // it, as the shortcut it now is.
+        ui.menu_button("play preset...", |ui| {
+            if view.presets.is_empty() {
+                ui.label("no presets saved yet");
+                return;
+            }
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for name in &view.presets {
+                    if ui.button(name).clicked() {
+                        actions.assign = Some((slot, name.clone()));
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if ui
+            .button("capture current look")
+            .on_hover_text("save what is on screen as a preset and play it here")
+            .clicked()
+        {
             actions.store = Some(slot);
             ui.close();
         }

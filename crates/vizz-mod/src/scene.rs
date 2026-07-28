@@ -118,12 +118,47 @@ impl Curve {
     }
 }
 
-/// One cell of the grid: a look, under a name.
+/// One cell of the grid: which preset this slot plays.
+///
+/// A reference, deliberately, not a copy. A preset is a look; the grid is
+/// the order you intend to play looks in. Keeping the cell as its own
+/// private snapshot made those two things independent, so refining a look
+/// left every scene still playing the version you had when you filled the
+/// pad — and there was no way to tell, because the pad looked the same.
+/// Pointing at the preset instead means you can prepare any number of
+/// looks and the set follows every edit.
+///
+/// The cost is that deleting a preset breaks the scenes using it. That is
+/// the correct behaviour for a reference and is surfaced rather than
+/// hidden: the pad says the preset is missing and firing it does nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
-    pub name: String,
-    pub preset: Preset,
+    /// Preset name, resolved through [`crate::preset::by_name`] so
+    /// built-ins and saved presets are equally addressable.
+    pub preset: String,
+    /// What the pad is called, when that should differ from the preset.
+    /// A set is sequenced by role as often as by look — the same
+    /// "Warehouse 2" can be the drop in one set and the outro in another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
+
+impl Cell {
+    /// What to show on the pad.
+    pub fn display(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.preset)
+    }
+}
+
+/// How the grid turns a preset name into a look.
+///
+/// Injected rather than called directly so the grid does not depend on the
+/// on-disk preset library. That keeps every test in this module free of
+/// the filesystem — the alternative was writing presets to a temporary
+/// directory to test a blend curve, which is the kind of coupling that
+/// makes a test suite slow and flaky in exactly the way this project has
+/// already been bitten by once.
+pub type Presets<'a> = &'a dyn Fn(&str) -> Option<Preset>;
 
 /// Walking the grid on its own, in time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,27 +274,28 @@ impl Grid {
         Some((t.to_slot, t.progress()))
     }
 
-    /// Capture the live parameter values into a slot.
-    pub fn store(&mut self, slot: usize, name: impl Into<String>, reg: &ParamRegistry) {
+    /// Point a slot at a preset. The core gesture: preparing looks and
+    /// deciding their order are separate activities, and this is the one
+    /// that joins them.
+    pub fn assign(&mut self, slot: usize, preset: impl Into<String>) {
         if slot >= self.cells.len() {
             return;
         }
         self.cells[slot] = Some(Cell {
-            name: name.into(),
-            preset: Preset::capture(reg),
+            preset: preset.into(),
+            label: None,
         });
     }
 
-    /// Put an existing preset into a slot — how a built-in or a saved
-    /// preset gets onto the grid without being recalled first.
-    pub fn put(&mut self, slot: usize, name: impl Into<String>, preset: Preset) {
-        if slot >= self.cells.len() {
-            return;
+    /// Rename the pad without changing which preset it plays.
+    pub fn relabel(&mut self, slot: usize, label: impl Into<String>) {
+        let label = label.into();
+        if let Some(Some(cell)) = self.cells.get_mut(slot) {
+            // An empty label, or one identical to the preset's name, means
+            // "no label" rather than a label that happens to match — so
+            // renaming the preset later still renames the pad.
+            cell.label = (!label.is_empty() && label != cell.preset).then_some(label);
         }
-        self.cells[slot] = Some(Cell {
-            name: name.into(),
-            preset,
-        });
     }
 
     /// Empty a slot. A transition already heading there is abandoned:
@@ -284,13 +320,25 @@ impl Grid {
     /// Firing during a transition re-aims from wherever the blend has
     /// reached, which is what makes the grid playable: you are never
     /// locked out until the last move finishes.
-    pub fn fire(&mut self, slot: usize, reg: &ParamRegistry) {
+    pub fn fire(&mut self, slot: usize, reg: &ParamRegistry, presets: Presets<'_>) {
         let Some(cell) = self.cells.get(slot).and_then(|c| c.as_ref()) else {
+            return;
+        };
+        // A pad whose preset has been deleted or renamed does nothing
+        // rather than firing into a half-resolved look. Logged once per
+        // press: silently ignoring a pad during a set is the kind of fault
+        // that gets blamed on the controller.
+        let Some(preset) = presets(&cell.preset) else {
+            log::warn!(
+                "scene {} plays preset {:?}, which no longer exists",
+                slot + 1,
+                cell.preset
+            );
             return;
         };
         let from = Preset::capture(reg).values;
         let mut to = from.clone();
-        for (addr, value) in &cell.preset.values {
+        for (addr, value) in &preset.values {
             to.insert(addr.clone(), *value);
         }
         let cloud = (effective_cloud(&from), effective_cloud(&to));
@@ -317,12 +365,12 @@ impl Grid {
     /// Values go in as parameter *targets*, so the store's own smoothing
     /// still rides on top; that softens the very start and end of a
     /// transition and is why the curve does not need to.
-    pub fn tick(&mut self, dt: f32, beats: f64, reg: &ParamRegistry) {
-        self.autopilot_step(beats, reg);
+    pub fn tick(&mut self, dt: f32, beats: f64, reg: &ParamRegistry, presets: Presets<'_>) {
+        self.autopilot_step(beats, reg, presets);
         self.advance(dt, reg);
     }
 
-    fn autopilot_step(&mut self, beats: f64, reg: &ParamRegistry) {
+    fn autopilot_step(&mut self, beats: f64, reg: &ParamRegistry, presets: Presets<'_>) {
         if !self.autopilot.enabled {
             // Forget where we were, so re-enabling waits for the next
             // boundary rather than firing on a stale step count.
@@ -335,7 +383,7 @@ impl Grid {
             Some(last) if step != last => {
                 self.last_step = Some(step);
                 if let Some(next) = self.next_filled() {
-                    self.fire(next, reg);
+                    self.fire(next, reg, presets);
                 }
             }
             Some(_) => {}
@@ -543,20 +591,121 @@ pub fn load() -> Grid {
             grid.duration = grid.duration.clamp(MIN_DURATION, MAX_DURATION);
             grid
         }
-        Err(e) => {
-            log::error!(
-                "could not read {}: {e:#} — starting with an empty grid",
-                path.display()
-            );
-            Grid::new()
-        }
+        Err(e) => match migrate_inline(&bytes) {
+            Some(grid) => grid,
+            None => {
+                log::error!(
+                    "could not read {}: {e:#} — starting with an empty grid",
+                    path.display()
+                );
+                Grid::new()
+            }
+        },
     }
+}
+
+/// Convert a grid written before cells referenced presets.
+///
+/// Cells used to carry their own copy of the parameters, so upgrading
+/// would otherwise silently empty someone's grid — the one file that
+/// represents an evening's preparation. Each old cell's snapshot is saved
+/// as a preset under the name the cell already had, which is a name the
+/// user chose, and the cell is pointed at it. Names that already exist are
+/// left alone rather than overwritten: an existing preset is more likely
+/// to be the good copy than a snapshot taken when the pad was filled.
+///
+/// Returns `None` when the file is not an old grid, so genuine corruption
+/// still reports as corruption.
+fn migrate_inline(bytes: &[u8]) -> Option<Grid> {
+    #[derive(Deserialize)]
+    struct OldCell {
+        name: String,
+        preset: Preset,
+    }
+    #[derive(Deserialize)]
+    struct OldGrid {
+        cells: Vec<Option<OldCell>>,
+        #[serde(default)]
+        duration: f32,
+        #[serde(default)]
+        curve: Curve,
+        #[serde(default)]
+        autopilot: Autopilot,
+    }
+
+    let old: OldGrid = serde_json::from_slice(bytes).ok()?;
+    let mut grid = Grid {
+        duration: if old.duration > 0.0 { old.duration } else { 2.0 },
+        curve: old.curve,
+        autopilot: old.autopilot,
+        ..Grid::new()
+    };
+    let mut converted = 0usize;
+    for (slot, cell) in old.cells.into_iter().enumerate() {
+        let Some(cell) = cell else { continue };
+        if slot >= SLOTS {
+            break;
+        }
+        // Find a name that will resolve back to *this* look.
+        //
+        // Naively reusing the cell's name loses data: `by_name` prefers
+        // built-ins and a user preset cannot shadow one, so a scene the
+        // user happened to call "Butterfly" would quietly start playing
+        // the shipped Butterfly instead of theirs. An identical preset
+        // already under that name is fine to reuse; anything else means
+        // this look needs a name of its own.
+        let name = match crate::preset::by_name(&cell.name) {
+            Some(existing) if existing == cell.preset => cell.name.clone(),
+            Some(_) => {
+                let mut n = 2;
+                loop {
+                    let candidate = format!("{} ({n})", cell.name);
+                    if crate::preset::by_name(&candidate).is_none() {
+                        break candidate;
+                    }
+                    n += 1;
+                    if n > 99 {
+                        break format!("{} (scene {})", cell.name, slot + 1);
+                    }
+                }
+            }
+            None => cell.name.clone(),
+        };
+        if crate::preset::by_name(&name).is_none() {
+            match crate::preset::save(&name, &cell.preset) {
+                Ok(_) => converted += 1,
+                Err(e) => {
+                    log::warn!("could not convert scene {} to a preset: {e:#}", slot + 1);
+                    continue;
+                }
+            }
+        }
+        grid.cells[slot] = Some(Cell {
+            // Keep the pad reading as it did even when the preset had to
+            // be renamed to avoid the collision.
+            label: (name != cell.name).then(|| cell.name.clone()),
+            preset: name,
+        });
+    }
+    grid.duration = grid.duration.clamp(MIN_DURATION, MAX_DURATION);
+    log::info!("migrated the scene grid to preset references ({converted} new presets)");
+    Some(grid)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use vizz_params::ParamId;
+
+
+    /// A preset source backed by a map.
+    ///
+    /// The grid takes its lookup as a parameter precisely so these tests
+    /// need no filesystem: checking a blend curve should not involve
+    /// writing presets to a temporary directory.
+    fn src(lib: &std::collections::BTreeMap<String, Preset>) -> impl Fn(&str) -> Option<Preset> + '_ {
+        move |name| lib.get(name).cloned()
+    }
 
     fn registry() -> (ParamRegistry, ParamId, ParamId, ParamId) {
         let mut b = ParamRegistry::builder();
@@ -577,16 +726,19 @@ mod tests {
     fn a_transition_lands_between_the_two_scenes() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(hue, 0.0);
-        grid.store(0, "dark", &reg);
+        lib.insert("dark".into(), Preset::capture(&reg));
+        grid.assign(0, "dark");
         reg.set(hue, 1.0);
-        grid.store(1, "bright", &reg);
+        lib.insert("bright".into(), Preset::capture(&reg));
+        grid.assign(1, "bright");
 
         reg.set(hue, 0.0);
         grid.duration = 1.0;
         grid.curve = Curve::Linear;
-        grid.fire(1, &reg);
-        grid.tick(0.5, 0.0, &reg);
+        grid.fire(1, &reg, &src(&lib));
+        grid.tick(0.5, 0.0, &reg, &src(&lib));
         let mid = reg.target(hue);
         assert!(
             (mid - 0.5).abs() < 1e-4,
@@ -598,14 +750,16 @@ mod tests {
     fn a_transition_ends_exactly_on_the_scene() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(hue, 0.37);
-        grid.store(3, "target", &reg);
+        lib.insert("target".into(), Preset::capture(&reg));
+        grid.assign(3, "target");
         reg.set(hue, 0.9);
 
         grid.duration = 0.5;
-        grid.fire(3, &reg);
+        grid.fire(3, &reg, &src(&lib));
         for _ in 0..40 {
-            grid.tick(1.0 / 60.0, 0.0, &reg);
+            grid.tick(1.0 / 60.0, 0.0, &reg, &src(&lib));
         }
         assert_eq!(
             reg.target(hue),
@@ -622,12 +776,14 @@ mod tests {
     fn a_cut_arrives_immediately() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(hue, 0.8);
-        grid.store(0, "look", &reg);
+        lib.insert("look".into(), Preset::capture(&reg));
+        grid.assign(0, "look");
         reg.set(hue, 0.1);
 
         grid.curve = Curve::Cut;
-        grid.fire(0, &reg);
+        grid.fire(0, &reg, &src(&lib));
         assert_eq!(reg.target(hue), 0.8);
         assert_eq!(grid.current(), Some(0));
     }
@@ -639,20 +795,22 @@ mod tests {
     fn a_stepped_parameter_flips_rather_than_sweeping() {
         let (reg, _, mirror, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(mirror, 3.0);
-        grid.store(0, "quad", &reg);
+        lib.insert("quad".into(), Preset::capture(&reg));
+        grid.assign(0, "quad");
         reg.set(mirror, 0.0);
 
         grid.duration = 1.0;
         grid.curve = Curve::Linear;
-        grid.fire(0, &reg);
-        grid.tick(0.25, 0.0, &reg);
+        grid.fire(0, &reg, &src(&lib));
+        grid.tick(0.25, 0.0, &reg, &src(&lib));
         assert_eq!(
             reg.target(mirror),
             0.0,
             "still the outgoing switch position"
         );
-        grid.tick(0.3, 0.0, &reg);
+        grid.tick(0.3, 0.0, &reg, &src(&lib));
         assert_eq!(
             reg.target(mirror),
             3.0,
@@ -660,9 +818,9 @@ mod tests {
         );
         // And never anything in between on any frame.
         reg.set(mirror, 0.0);
-        grid.fire(0, &reg);
+        grid.fire(0, &reg, &src(&lib));
         for _ in 0..60 {
-            grid.tick(1.0 / 60.0, 0.0, &reg);
+            grid.tick(1.0 / 60.0, 0.0, &reg, &src(&lib));
             let v = reg.target(mirror);
             assert!(v == 0.0 || v == 3.0, "mirror passed through {v}");
         }
@@ -678,18 +836,21 @@ mod tests {
         let b = reg.id(CLOUD_B).unwrap();
         let morph = reg.id(CLOUD_MORPH).unwrap();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
 
         // Scene 1 shows cloud 2, scene 0 shows cloud 0.
         reg.set(a, 2.0);
         reg.set(morph, 0.0);
-        grid.store(1, "two", &reg);
+        lib.insert("two".into(), Preset::capture(&reg));
+        grid.assign(1, "two");
         reg.set(a, 0.0);
-        grid.store(0, "zero", &reg);
+        lib.insert("zero".into(), Preset::capture(&reg));
+        grid.assign(0, "zero");
 
         grid.duration = 1.0;
         grid.curve = Curve::Linear;
-        grid.fire(1, &reg);
-        grid.tick(0.5, 0.0, &reg);
+        grid.fire(1, &reg, &src(&lib));
+        grid.tick(0.5, 0.0, &reg, &src(&lib));
         assert_eq!(reg.target(a), 0.0, "A stays on the outgoing cloud");
         assert_eq!(reg.target(b), 2.0, "B is the incoming cloud");
         assert!(
@@ -698,7 +859,7 @@ mod tests {
             reg.target(morph)
         );
 
-        grid.tick(0.6, 0.0, &reg);
+        grid.tick(0.6, 0.0, &reg, &src(&lib));
         assert_eq!(
             reg.target(a),
             2.0,
@@ -716,16 +877,18 @@ mod tests {
         let a = reg.id(CLOUD_A).unwrap();
         let b = reg.id(CLOUD_B).unwrap();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(a, 3.0);
         reg.set(b, 1.0);
-        grid.store(0, "far", &reg);
+        lib.insert("far".into(), Preset::capture(&reg));
+        grid.assign(0, "far");
         reg.set(a, 0.0);
         reg.set(b, 2.0);
 
         grid.duration = 1.0;
-        grid.fire(0, &reg);
+        grid.fire(0, &reg, &src(&lib));
         for _ in 0..70 {
-            grid.tick(1.0 / 60.0, 0.0, &reg);
+            grid.tick(1.0 / 60.0, 0.0, &reg, &src(&lib));
             for id in [a, b] {
                 let v = reg.target(id);
                 assert_eq!(v, v.round(), "cloud slot landed on {v}");
@@ -739,14 +902,16 @@ mod tests {
     fn a_scene_never_touches_the_master_dim() {
         let (reg, _, _, dim) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(dim, 1.0);
-        grid.store(0, "full", &reg);
+        lib.insert("full".into(), Preset::capture(&reg));
+        grid.assign(0, "full");
         reg.set(dim, 0.0);
 
         grid.duration = 0.2;
-        grid.fire(0, &reg);
+        grid.fire(0, &reg, &src(&lib));
         for _ in 0..30 {
-            grid.tick(1.0 / 60.0, 0.0, &reg);
+            grid.tick(1.0 / 60.0, 0.0, &reg, &src(&lib));
             assert_eq!(reg.target(dim), 0.0, "the blackout was undone");
         }
     }
@@ -758,12 +923,13 @@ mod tests {
     fn firing_an_empty_slot_does_nothing() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(hue, 0.25);
-        grid.fire(7, &reg);
+        grid.fire(7, &reg, &src(&lib));
         assert!(grid.in_flight().is_none());
         assert_eq!(grid.current(), None);
         assert_eq!(reg.target(hue), 0.25);
-        grid.fire(SLOTS + 5, &reg);
+        grid.fire(SLOTS + 5, &reg, &src(&lib));
         assert_eq!(reg.target(hue), 0.25);
     }
 
@@ -773,28 +939,31 @@ mod tests {
     fn firing_mid_transition_starts_from_where_the_blend_reached() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(hue, 0.0);
-        grid.store(0, "a", &reg);
+        lib.insert("a".into(), Preset::capture(&reg));
+        grid.assign(0, "a");
         reg.set(hue, 1.0);
-        grid.store(1, "b", &reg);
+        lib.insert("b".into(), Preset::capture(&reg));
+        grid.assign(1, "b");
 
         reg.set(hue, 0.0);
         grid.duration = 1.0;
         grid.curve = Curve::Linear;
-        grid.fire(1, &reg);
-        grid.tick(0.5, 0.0, &reg);
+        grid.fire(1, &reg, &src(&lib));
+        grid.tick(0.5, 0.0, &reg, &src(&lib));
         assert!((reg.target(hue) - 0.5).abs() < 1e-4);
 
         // Turn round and head back: the first frame must stay at 0.5,
         // not jump to either end.
-        grid.fire(0, &reg);
-        grid.tick(0.0, 0.0, &reg);
+        grid.fire(0, &reg, &src(&lib));
+        grid.tick(0.0, 0.0, &reg, &src(&lib));
         assert!(
             (reg.target(hue) - 0.5).abs() < 1e-4,
             "re-aiming jumped to {}",
             reg.target(hue)
         );
-        grid.tick(1.0, 0.0, &reg);
+        grid.tick(1.0, 0.0, &reg, &src(&lib));
         assert_eq!(reg.target(hue), 0.0);
     }
 
@@ -805,8 +974,11 @@ mod tests {
     fn autopilot_waits_for_the_next_boundary() {
         let (reg, _, _, _) = registry();
         let mut grid = Grid::new();
-        grid.store(0, "a", &reg);
-        grid.store(4, "b", &reg);
+        let mut lib = std::collections::BTreeMap::new();
+        lib.insert("a".into(), Preset::capture(&reg));
+        grid.assign(0, "a");
+        lib.insert("b".into(), Preset::capture(&reg));
+        grid.assign(4, "b");
         grid.curve = Curve::Cut;
         grid.autopilot = Autopilot {
             enabled: true,
@@ -815,15 +987,15 @@ mod tests {
         };
 
         // Switched on part-way through a bar.
-        grid.tick(0.0, 2.5, &reg);
+        grid.tick(0.0, 2.5, &reg, &src(&lib));
         assert_eq!(grid.current(), None, "fired the moment it was enabled");
-        grid.tick(0.0, 3.9, &reg);
+        grid.tick(0.0, 3.9, &reg, &src(&lib));
         assert_eq!(grid.current(), None, "fired before the boundary");
-        grid.tick(0.0, 4.1, &reg);
+        grid.tick(0.0, 4.1, &reg, &src(&lib));
         assert_eq!(grid.current(), Some(0), "missed the boundary");
-        grid.tick(0.0, 8.1, &reg);
+        grid.tick(0.0, 8.1, &reg, &src(&lib));
         assert_eq!(grid.current(), Some(4), "did not walk on");
-        grid.tick(0.0, 12.1, &reg);
+        grid.tick(0.0, 12.1, &reg, &src(&lib));
         assert_eq!(grid.current(), Some(0), "did not wrap");
     }
 
@@ -831,6 +1003,7 @@ mod tests {
     fn autopilot_with_an_empty_grid_stays_put() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         grid.autopilot = Autopilot {
             enabled: true,
             bars: 1.0,
@@ -838,7 +1011,7 @@ mod tests {
         };
         reg.set(hue, 0.6);
         for i in 0..40 {
-            grid.tick(1.0 / 60.0, i as f64, &reg);
+            grid.tick(1.0 / 60.0, i as f64, &reg, &src(&lib));
         }
         assert_eq!(grid.current(), None);
         assert_eq!(reg.target(hue), 0.6);
@@ -851,7 +1024,9 @@ mod tests {
     fn an_absurd_autopilot_rate_cannot_fire_every_frame() {
         let (reg, _, _, _) = registry();
         let mut grid = Grid::new();
-        grid.store(0, "a", &reg);
+        let mut lib = std::collections::BTreeMap::new();
+        lib.insert("a".into(), Preset::capture(&reg));
+        grid.assign(0, "a");
         grid.autopilot = Autopilot {
             enabled: true,
             bars: 0.0,
@@ -861,7 +1036,7 @@ mod tests {
         let mut fired = 0;
         let mut last = None;
         for i in 0..120 {
-            grid.tick(1.0 / 60.0, i as f64 * 0.001, &reg);
+            grid.tick(1.0 / 60.0, i as f64 * 0.001, &reg, &src(&lib));
             if grid.current() != last {
                 fired += 1;
                 last = grid.current();
@@ -877,16 +1052,18 @@ mod tests {
     fn clearing_the_destination_abandons_the_transition() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
         reg.set(hue, 1.0);
-        grid.store(2, "going", &reg);
+        lib.insert("going".into(), Preset::capture(&reg));
+        grid.assign(2, "going");
         reg.set(hue, 0.0);
         grid.duration = 1.0;
-        grid.fire(2, &reg);
-        grid.tick(0.25, 0.0, &reg);
+        grid.fire(2, &reg, &src(&lib));
+        grid.tick(0.25, 0.0, &reg, &src(&lib));
         grid.clear(2);
         assert!(grid.in_flight().is_none());
         let held = reg.target(hue);
-        grid.tick(0.5, 0.0, &reg);
+        grid.tick(0.5, 0.0, &reg, &src(&lib));
         assert_eq!(
             reg.target(hue),
             held,
@@ -926,8 +1103,11 @@ mod tests {
     fn a_grid_survives_a_round_trip_through_json() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
+        let mut lib: std::collections::BTreeMap<String, Preset> =
+            std::collections::BTreeMap::new();
         reg.set(hue, 0.42);
-        grid.store(9, "saved", &reg);
+        lib.insert("saved".into(), Preset::capture(&reg));
+        grid.assign(9, "saved");
         grid.duration = 3.5;
         grid.curve = Curve::EaseIn;
         grid.autopilot = Autopilot {
@@ -939,11 +1119,161 @@ mod tests {
         let json = serde_json::to_vec(&grid).unwrap();
         let back: Grid = serde_json::from_slice(&json).unwrap();
         assert_eq!(back.cells.len(), SLOTS);
-        assert_eq!(back.cell(9).map(|c| c.name.as_str()), Some("saved"));
-        assert_eq!(back.cell(9).unwrap().preset.values["/particles/hue"], 0.42);
+        assert_eq!(back.cell(9).map(|c| c.preset.as_str()), Some("saved"));
+        // The grid stores the reference, not the values. The look itself
+        // lives in the preset library — which is the point: editing it
+        // must change what this pad plays.
+        assert!(
+            !String::from_utf8_lossy(&json).contains("0.42"),
+            "the grid embedded a copy of the look instead of referring to it"
+        );
         assert_eq!(back.duration, 3.5);
         assert_eq!(back.curve, Curve::EaseIn);
         assert_eq!(back.autopilot.bars, 2.0);
+    }
+
+    /// The reason cells reference presets instead of copying them:
+    /// editing a look must change every scene that plays it.
+    ///
+    /// Under the old model a pad kept a private snapshot, so refining a
+    /// look left the set playing the version captured when the pad was
+    /// filled, with nothing on screen to say so.
+    #[test]
+    fn editing_a_preset_changes_every_scene_that_plays_it() {
+        let (reg, hue, _, _) = registry();
+        let mut grid = Grid::new();
+        let mut lib: BTreeMap<String, Preset> = BTreeMap::new();
+
+        reg.set(hue, 0.2);
+        lib.insert("house".into(), Preset::capture(&reg));
+        grid.assign(0, "house");
+        grid.assign(5, "house");
+
+        // Refine the look, as you would in the panel.
+        reg.set(hue, 0.9);
+        lib.insert("house".into(), Preset::capture(&reg));
+
+        grid.curve = Curve::Cut;
+        for slot in [0, 5] {
+            reg.set(hue, 0.0);
+            grid.fire(slot, &reg, &src(&lib));
+            grid.tick(0.0, 0.0, &reg, &src(&lib));
+            assert!(
+                (reg.target(hue) - 0.9).abs() < 1e-6,
+                "scene {slot} played a stale copy of the look: {}",
+                reg.target(hue)
+            );
+        }
+    }
+
+    /// A pad pointing at a deleted preset must do nothing, not fire a
+    /// half-resolved look. Deleting a preset is the normal way this
+    /// happens, and a set is exactly when you cannot investigate.
+    #[test]
+    fn a_scene_whose_preset_is_gone_does_not_fire() {
+        let (reg, hue, _, _) = registry();
+        let mut grid = Grid::new();
+        let lib: BTreeMap<String, Preset> = BTreeMap::new();
+
+        grid.assign(0, "deleted");
+        reg.set(hue, 0.3);
+        grid.fire(0, &reg, &src(&lib));
+        grid.tick(0.5, 0.0, &reg, &src(&lib));
+
+        assert!(grid.in_flight().is_none(), "a dangling scene started a transition");
+        assert_eq!(reg.target(hue), 0.3, "a dangling scene moved a parameter");
+    }
+
+    /// The pad's label is the performer's, the preset's name is the
+    /// look's. Relabelling must not repoint the pad.
+    #[test]
+    fn relabelling_a_pad_leaves_the_preset_alone() {
+        let mut grid = Grid::new();
+        grid.assign(3, "Warehouse 2");
+        grid.relabel(3, "drop");
+        let cell = grid.cell(3).unwrap();
+        assert_eq!(cell.preset, "Warehouse 2");
+        assert_eq!(cell.display(), "drop");
+        // Clearing the label falls back to the preset's own name.
+        grid.relabel(3, "");
+        assert_eq!(grid.cell(3).unwrap().display(), "Warehouse 2");
+    }
+
+    /// Upgrading must not empty someone's grid.
+    ///
+    /// Cells used to carry their own copy of the parameters. That file is
+    /// an evening's preparation, so the old shape is converted rather than
+    /// rejected: each cell's snapshot becomes a real preset under the name
+    /// the user already chose, and the pad is pointed at it.
+    #[test]
+    fn an_old_grid_file_becomes_preset_references() {
+        let (_guard, dir) = crate::test_env::scoped("grid-migrate");
+
+        // Exactly the shape 0.7.0 wrote.
+        let old = br#"{
+            "cells":[
+                {"name":"intro","preset":{"values":{"/particles/hue":0.25}}},
+                null,
+                {"name":"drop","preset":{"values":{"/particles/hue":0.8}}}
+            ],
+            "duration":3.0,
+            "curve":"easein",
+            "autopilot":{"enabled":true,"bars":2.0,"beats_per_bar":4.0}
+        }"#;
+        std::fs::create_dir_all(grid_path().parent().unwrap()).unwrap();
+        std::fs::write(grid_path(), old).unwrap();
+
+        let grid = load();
+        assert_eq!(grid.cells.len(), SLOTS);
+        assert_eq!(grid.cell(0).map(|c| c.preset.as_str()), Some("intro"));
+        assert!(grid.cell(1).is_none(), "an empty pad was filled");
+        assert_eq!(grid.cell(2).map(|c| c.preset.as_str()), Some("drop"));
+        // The settings around the cells survive too.
+        assert_eq!(grid.duration, 3.0);
+        assert_eq!(grid.curve, Curve::EaseIn);
+        assert!(grid.autopilot.enabled);
+
+        // And the looks themselves are now real presets, recallable and
+        // editable like any other — not just names pointing at nothing.
+        let intro = crate::preset::by_name("intro").expect("intro was not written");
+        assert_eq!(intro.values["/particles/hue"], 0.25);
+        assert_eq!(
+            crate::preset::by_name("drop").unwrap().values["/particles/hue"],
+            0.8
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scene named after a built-in must keep playing the user's look,
+    /// not the shipped one.
+    ///
+    /// `by_name` prefers built-ins and a user preset cannot shadow one, so
+    /// the obvious migration — reuse the cell's name — silently replaces
+    /// the user's look with a stranger's. The pad keeps reading as it did.
+    #[test]
+    fn migrating_a_scene_named_after_a_builtin_keeps_the_users_look() {
+        let (_guard, dir) = crate::test_env::scoped("grid-collide");
+        let builtin = crate::preset::BUILTINS[0].name;
+
+        let old = format!(
+            r#"{{"cells":[{{"name":"{builtin}","preset":{{"values":{{"/particles/hue":0.123}}}}}}],
+                "duration":2.0,"curve":"smooth",
+                "autopilot":{{"enabled":false,"bars":4.0,"beats_per_bar":4.0}}}}"#
+        );
+        std::fs::create_dir_all(grid_path().parent().unwrap()).unwrap();
+        std::fs::write(grid_path(), old).unwrap();
+
+        let grid = load();
+        let cell = grid.cell(0).expect("the cell was dropped");
+        assert_ne!(cell.preset, builtin, "the pad was repointed at the built-in");
+        assert_eq!(cell.display(), builtin, "the pad stopped reading as it did");
+        let theirs = crate::preset::by_name(&cell.preset).expect("their look was not saved");
+        assert_eq!(theirs.values["/particles/hue"], 0.123);
+        // And the built-in is untouched.
+        assert!(crate::preset::by_name(builtin).is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A file from another build can have any number of cells. Trusting
@@ -960,8 +1290,9 @@ mod tests {
         assert_eq!(grid.duration, MAX_DURATION);
         // And it must be safe to fire every pad.
         let (reg, _, _, _) = registry();
+        let lib: std::collections::BTreeMap<String, Preset> = Default::default();
         for slot in 0..SLOTS + 4 {
-            grid.fire(slot, &reg);
+            grid.fire(slot, &reg, &src(&lib));
         }
     }
 }

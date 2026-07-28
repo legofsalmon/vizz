@@ -514,7 +514,22 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
 fn grid_view(grid: &vizz_mod::scene::Grid, beats: f64) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
-        names: grid.cells().iter().map(|c| c.as_ref().map(|c| c.name.clone())).collect(),
+        names: grid
+            .cells()
+            .iter()
+            .map(|c| c.as_ref().map(|c| c.display().to_string()))
+            .collect(),
+        // A pad whose preset has been deleted or renamed must say so
+        // rather than looking filled and doing nothing when pressed.
+        missing: grid
+            .cells()
+            .iter()
+            .map(|c| {
+                c.as_ref()
+                    .is_some_and(|c| vizz_mod::preset::by_name(&c.preset).is_none())
+            })
+            .collect(),
+        presets: vizz_mod::preset::all_names(),
         current: grid.current(),
         in_flight: grid.in_flight(),
         duration: grid.duration,
@@ -547,26 +562,43 @@ fn apply_grid_actions(
     if let Some(slot) = actions.fire {
         reg.set(params.scene_fire, slot as f32 + 1.0);
     }
+    // Put an existing preset on a pad. The core gesture now that a scene
+    // names a look rather than owning a copy of one.
+    if let Some((slot, name)) = &actions.assign {
+        grid.assign(*slot, name.clone());
+        dirty = true;
+    }
     if let Some(slot) = actions.store {
-        // Keeps the name it had, or takes the pad's number. A scene with
-        // no name is a blank square you have to press to identify, which
-        // during a set means identifying it on the output.
+        // Capture still exists, because during a set the useful gesture is
+        // "keep what is on screen" and stopping to name it is exactly the
+        // wrong moment. But what it captures is now a *preset* — saved to
+        // the library under the pad's name and then referenced — rather
+        // than a copy hidden inside the grid. One gesture, and the result
+        // is a look you can also recall, edit and put on another pad.
         let name = grid
             .cell(slot)
-            .map(|c| c.name.clone())
+            .map(|c| c.preset.clone())
             .unwrap_or_else(|| format!("scene {}", slot + 1));
-        grid.store(slot, name, reg);
-        dirty = true;
+        let captured = vizz_mod::preset::Preset::capture(reg);
+        match vizz_mod::preset::save(&name, &captured) {
+            Ok(saved) => {
+                grid.assign(slot, saved);
+                dirty = true;
+            }
+            // A failed save must not leave the pad pointing at a preset
+            // that was never written — that would be a pad which looks
+            // filled and does nothing.
+            Err(e) => log::warn!("could not save scene {} as a preset: {e:#}", slot + 1),
+        }
     }
     if let Some(slot) = actions.clear {
         grid.clear(slot);
         dirty = true;
     }
-    if let Some((slot, name)) = &actions.rename
-        && let Some(cell) = grid.cell(*slot)
-    {
-        let preset = cell.preset.clone();
-        grid.put(*slot, name.clone(), preset);
+    if let Some((slot, name)) = &actions.rename {
+        // Renames the pad, not the preset. The same look is the drop in
+        // one set and the outro in another.
+        grid.relabel(*slot, name.clone());
         dirty = true;
     }
     if let Some(v) = actions.set_duration {

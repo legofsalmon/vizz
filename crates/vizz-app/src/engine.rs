@@ -126,14 +126,20 @@ impl FrameEngine {
         self.grid.autopilot.enabled = reg.target(p.scene_auto) >= 0.5;
         self.grid.autopilot.bars = reg.target(p.scene_bars);
 
+        // Scenes name presets rather than carrying copies, so firing one
+        // resolves through the library here. Built-ins and saved presets
+        // are equally addressable, which is what lets a set be prepared
+        // from either.
+        let presets = |name: &str| vizz_mod::preset::by_name(name);
         let slot = reg.target(p.scene_fire).round().max(0.0) as usize;
         if self.last_scene != Some(slot) {
             self.last_scene = Some(slot);
             if let Some(index) = slot.checked_sub(1) {
-                self.grid.fire(index, reg);
+                self.grid.fire(index, reg, &presets);
             }
         }
-        self.grid.tick(dt, self.modulation.clock.beats, reg);
+        self.grid
+            .tick(dt, self.modulation.clock.beats, reg, &presets);
     }
 
     /// Recall a preset when `/preset/recall` has moved to a new index.
