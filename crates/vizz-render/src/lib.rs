@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result};
 pub mod attractor;
 pub mod blit;
 pub mod camera;
+pub mod palette;
 pub mod output;
 pub mod particles;
 pub mod plystream;

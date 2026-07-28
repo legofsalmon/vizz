@@ -54,12 +54,17 @@ pub struct ParticleScene {
     /// The cloud bank. Kept for the bind group's texture view, and
     /// mutated when a cloud is loaded.
     attractors: Attractors,
+    /// The colour ramps, likewise.
+    pub palettes: crate::palette::Palettes,
+    /// How many palettes have been loaded, for choosing the next row.
+    loaded_palettes: usize,
 }
 
 impl ParticleScene {
     pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
         let device = &ctx.device;
         let attractors = Attractors::new(ctx);
+        let palettes = crate::palette::Palettes::new(ctx);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particles"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particles.wgsl").into()),
@@ -99,6 +104,18 @@ impl ParticleScene {
                     },
                     count: None,
                 },
+                // The palette bank. Read with `textureLoad`, so it needs
+                // no sampler and no filterable format.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -113,6 +130,10 @@ impl ParticleScene {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&attractors.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&palettes.view),
                 },
             ],
         });
@@ -168,7 +189,29 @@ impl ParticleScene {
             uniforms,
             bind_group,
             attractors,
+            palettes,
+            loaded_palettes: 0,
         }
+    }
+
+    /// Load a palette file into the next free row, returning its name and
+    /// the index `/color/palette` addresses it by.
+    ///
+    /// The row is chosen here rather than by the caller because the rows
+    /// below [`crate::palette::FIRST_USER`] are the shipped gradients and
+    /// are fixed forever — a preset saved with palette 3 must still be
+    /// "ice" in every future build.
+    pub fn load_palette(
+        &mut self,
+        ctx: &GpuContext,
+        path: &std::path::Path,
+    ) -> anyhow::Result<(String, usize)> {
+        let (stops, name) = crate::palette::parse(path)?;
+        let row = self.palettes.next_user_row(self.loaded_palettes);
+        self.palettes.load_slot(ctx, row, &stops, &name);
+        self.loaded_palettes += 1;
+        log::info!("palette {row}: {name} ({} colours)", stops.len());
+        Ok((name, row))
     }
 
     /// Names of the four cloud slots, for the UI.
@@ -408,6 +451,45 @@ mod tests {
         blown as f32 / (W * W) as f32
     }
 
+    /// The palette bank has to actually be read.
+    ///
+    /// Every other GPU test here renders at palette 0, which is the
+    /// procedural HSV path and never touches the texture — so the entire
+    /// lookup could return black and nothing would fail. A broken
+    /// `textureLoad`, a bank that was never written, or a bind group
+    /// missing its third entry all produce exactly that.
+    #[test]
+    fn a_built_in_palette_paints_something_and_differs_from_hsv() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+
+        let lit = |px: &[u8]| {
+            px.chunks_exact(4)
+                .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
+                .count()
+        };
+        let hsv = render_palette(&ctx, &scene, 0.0);
+        let warm = render_palette(&ctx, &scene, 1.0);
+        let ice = render_palette(&ctx, &scene, 3.0);
+
+        assert!(lit(&warm) > 0, "palette 1 rendered nothing — the bank is black");
+        assert!(lit(&ice) > 0, "palette 3 rendered nothing — the bank is black");
+        // And the rows are distinct from each other and from HSV, so the
+        // index is really selecting a row rather than being ignored.
+        assert_ne!(warm, hsv, "palette 1 painted the same as HSV");
+        assert_ne!(warm, ice, "two different palettes painted identically");
+    }
+
+    /// Render one frame at a given palette index.
+    fn render_palette(ctx: &GpuContext, scene: &ParticleScene, palette: f32) -> Vec<u8> {
+        render_tuned(ctx, scene, SCENE_CLEAR, |u| {
+            u.palette = palette;
+            // Spread the drive across the ramp so more than one texel of
+            // the row is read.
+            u.color_spread = 1.0;
+        })
+    }
+
     /// Transparency has to reach the pixels, not just the clear call.
     ///
     /// This is the property the whole feature rests on: vizz is only
@@ -479,6 +561,18 @@ mod tests {
         shape: f32,
         background: wgpu::Color,
     ) -> Vec<u8> {
+        render_tuned(ctx, scene, background, |u| u.shape = shape)
+    }
+
+    /// The one place a frame is actually encoded, with the uniforms open
+    /// for a test to adjust.
+    fn render_tuned(
+        ctx: &GpuContext,
+        scene: &ParticleScene,
+        background: wgpu::Color,
+        tune: impl FnOnce(&mut Uniforms),
+    ) -> Vec<u8> {
+        let shape = 0.0;
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("particle-test-target"),
             size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
@@ -524,6 +618,9 @@ mod tests {
             cloud_morph: 0.0,
             room: Default::default(),
         };
+
+        let mut uniforms = uniforms;
+        tune(&mut uniforms);
 
         let mut encoder = ctx
             .device

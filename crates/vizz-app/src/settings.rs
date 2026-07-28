@@ -51,6 +51,9 @@ pub struct Settings {
     /// conversion pass, so it costs on both sides for a difference only
     /// visible in slow gradients.
     pub wide_output: bool,
+    /// Palette files loaded, in the order they were dropped. Restored on
+    /// start so a set's colours come back with it.
+    pub palettes: Vec<String>,
 }
 
 /// Clamps for the settings above.
@@ -141,6 +144,13 @@ pub fn save_audio_device(name: Option<&str>) -> Result<()> {
 pub fn save_clouds(clouds: &[String]) -> Result<()> {
     let mut s = load();
     s.clouds = clouds.to_vec();
+    save(&s)
+}
+
+/// Remember the loaded palettes, same read-modify-write reason.
+pub fn save_palettes(palettes: &[String]) -> Result<()> {
+    let mut s = load();
+    s.palettes = palettes.to_vec();
     save(&s)
 }
 

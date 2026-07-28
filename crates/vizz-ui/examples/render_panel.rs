@@ -144,6 +144,15 @@ fn main() {
         audio_auto_bpm: true,
         modulated: Vec::new(),
         output: Default::default(),
+        palettes: vec![
+            "hsv".into(),
+            "warm".into(),
+            "ember".into(),
+            "ice".into(),
+            "neon".into(),
+            String::new(),
+            "warehouse".into(),
+        ],
         clouds: vec![
             "lorenz".into(),
             "aizawa".into(),

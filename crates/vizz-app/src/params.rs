@@ -124,10 +124,24 @@ impl AppParams {
         let shift = b.add(ParamDef::new("/fx/shift", 0.0, 1.0, 0.0).smooth(0.2));
         // Colour. Palette 0 is the original HSV behaviour, so the defaults
         // below leave the look exactly as it was.
+        // The range covers the loaded palettes as well as the shipped
+        // ones. Indices 0..=4 are fixed forever — a preset saved with
+        // palette 3 must still be "ice" in every future build, and a saved
+        // patch is the one thing that cannot be migrated after the fact —
+        // so anything loaded lands above them.
+        //
+        // Labelled only as far as the built-ins go; past that the label
+        // would have to be the name of whatever happens to be loaded,
+        // which is not something a static table can know.
         let palette = b.add(
-            ParamDef::new("/color/palette", 0.0, 4.0, 0.0)
-                .smooth(0.4)
-                .labels(&["hsv", "warm", "ember", "ice", "neon"]),
+            ParamDef::new(
+                "/color/palette",
+                0.0,
+                (vizz_render::palette::PALETTES - 1) as f32,
+                0.0,
+            )
+            .smooth(0.4)
+            .labels(&["hsv", "warm", "ember", "ice", "neon"]),
         );
         let color_spread = b.add(ParamDef::new("/color/spread", 0.0, 1.0, 0.12).smooth(0.3));
         // Stepped: these are four different ideas, not a sweep.

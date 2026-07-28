@@ -110,6 +110,9 @@ pub struct PanelState {
     pub clouds: Vec<String>,
     /// Current output size, render scale and precision.
     pub output: OutputSetup,
+    /// Palette name per row, so `/color/palette` can be read as colours
+    /// rather than as a number. Empty entries are unused rows.
+    pub palettes: Vec<String>,
     /// Beat clock, mirrored for the performance layout (which does not get
     /// a mutable ModEngine).
     pub bpm: f32,
@@ -196,7 +199,11 @@ pub fn draw(
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| clouds_section(ui, state));
+                .show(ui, |ui| {
+                    clouds_section(ui, state);
+                    ui.separator();
+                    palettes_section(ui, state);
+                });
             egui::CollapsingHeader::new("background")
                 .id_salt("background")
                 .default_open(state.expand_sections)
@@ -325,6 +332,25 @@ fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
         ui.small("no cloud slots");
     }
     ui.small("drag a .ply, .xyz, .csv or .pts onto the window to load one");
+}
+
+/// The colour ramps, by the index `/color/palette` uses.
+///
+/// Same reason as the cloud list: the parameter is a number, and past the
+/// four shipped names a number says nothing at all about what is in the
+/// slot. Unused rows are left out rather than listed as blanks — sixteen
+/// entries of which twelve are empty is a worse legend than four.
+fn palettes_section(ui: &mut egui::Ui, state: &PanelState) {
+    for (i, name) in state.palettes.iter().enumerate() {
+        if name.is_empty() {
+            continue;
+        }
+        ui.horizontal(|ui| {
+            ui.small(format!("{i}"));
+            ui.label(name);
+        });
+    }
+    ui.small("drag a .gpl or a list of hex colours onto the window to add one");
 }
 
 /// The background colour, and whether there is one at all.

@@ -102,6 +102,8 @@ struct App {
     /// repeatedly cycles through the slots rather than always replacing
     /// the same one — the point of having two is comparing them.
     next_cloud: usize,
+    /// Palette files loaded this session, in order, for persistence.
+    palettes: Vec<String>,
 }
 
 impl App {
@@ -184,6 +186,13 @@ impl App {
         // to the master: feedback needs somewhere to accumulate.
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
+        // Palettes come back in the order they were dropped, so the
+        // indices a preset saved still point at the same colours.
+        for path in &self.palettes {
+            if let Err(e) = scene.load_palette(&ctx, std::path::Path::new(path)) {
+                log::warn!("could not reload palette {path}: {e:#}");
+            }
+        }
         // A stream that will not start is a warning, never a startup
         // failure — the same trade as a cloud file that will not parse.
         if let Some(source) = self.opts.live_cloud.clone() {
@@ -281,6 +290,48 @@ impl App {
             "output now {ow}x{oh} ({}), rendering at {rw}x{rh} ({scale:.2}x)",
             if setup.wide { "16-bit float" } else { "8-bit" }
         );
+    }
+
+    /// Route a dropped file by what it is.
+    ///
+    /// One gesture for both, dispatched on extension, because "put this
+    /// file into vizz" is the same intent whether the file is geometry or
+    /// colour, and asking the user to remember two different ways to do it
+    /// would be a distinction that serves the implementation.
+    fn load_dropped(&mut self, path: std::path::PathBuf) {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "ply" | "xyz" | "pts" => self.load_dropped_cloud(path),
+            "gpl" | "hex" | "txt" => self.load_dropped_palette(path),
+            // `.csv` is both a point cloud and a plausible palette export.
+            // Geometry wins: it is the one this app has always taken, and
+            // a palette that arrives as a cloud is obvious immediately
+            // whereas the reverse silently recolours the scene.
+            "csv" => self.load_dropped_cloud(path),
+            other => log::warn!("nothing to do with a .{other} file"),
+        }
+    }
+
+    fn load_dropped_palette(&mut self, path: std::path::PathBuf) {
+        let Some(state) = &mut self.state else { return };
+        match state.scene.load_palette(&state.ctx, &path) {
+            Ok((name, row)) => {
+                // Select it, for the same reason a dropped cloud is
+                // selected: a palette you cannot see has not arrived.
+                let p = &*self.params;
+                p.registry.set(p.palette, row as f32);
+                self.palettes.push(path.display().to_string());
+                if let Err(e) = crate::settings::save_palettes(&self.palettes) {
+                    log::warn!("could not remember the loaded palettes: {e:#}");
+                }
+                log::info!("palette {name} is now selected");
+            }
+            Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+        }
     }
 
     fn load_dropped_cloud(&mut self, path: std::path::PathBuf) {
@@ -414,6 +465,7 @@ impl App {
         // `&mut state.gui` and reading `state.scene` inside its argument
         // list would borrow the same struct twice.
         let cloud_names: Vec<String> = state.scene.cloud_names().to_vec();
+        let palette_names: Vec<String> = state.scene.palettes.names.clone();
         // What the panel shows as current, so the controls reflect what is
         // actually allocated rather than what was last typed.
         let output_setup = vizz_ui::OutputSetup {
@@ -452,6 +504,7 @@ impl App {
             audio_bands: self.audio_bands,
             audio_auto_bpm: self.audio_auto_bpm,
             clouds: cloud_names,
+            palettes: palette_names,
             output: output_setup,
             // What the renderer is actually using this frame, so a fader
             // whose parameter is being modulated can show where the value
@@ -617,7 +670,7 @@ impl ApplicationHandler for App {
             // folder and you want it in the visualiser — and a dialog
             // would mean a new dependency that pulls GTK in on Linux, for
             // a modal window that is strictly more work to operate.
-            WindowEvent::DroppedFile(path) => self.load_dropped_cloud(path),
+            WindowEvent::DroppedFile(path) => self.load_dropped(path),
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
@@ -927,6 +980,13 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         opts.clouds.iter().map(|p| p.display().to_string()).collect()
     };
     opts.clouds = cloud_paths.iter().map(std::path::PathBuf::from).collect();
+    // Same treatment for palettes: a file that has since moved is dropped
+    // rather than warned about on every launch.
+    let palette_paths: Vec<String> = crate::settings::load()
+        .palettes
+        .into_iter()
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect();
     let mut engine = FrameEngine::new(
         Arc::clone(&params),
         vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
@@ -950,6 +1010,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         // was last dropped, so a set survives a restart.
         clouds: cloud_paths,
         next_cloud: 0,
+        palettes: palette_paths,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

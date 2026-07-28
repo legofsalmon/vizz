@@ -79,6 +79,11 @@ fn room_place(p: vec3<f32>) -> vec4<f32> {
 }
 // Trajectory lookup: one texel per point, row-major, attractors stacked.
 @group(0) @binding(1) var t_attractor: texture_2d<f32>;
+/// Colour ramps, one row per palette. Must match `palette::LUT_W` and
+/// `palette::PALETTES`.
+const PALETTE_W: u32 = 256u;
+const PALETTE_ROWS: u32 = 16u;
+@group(0) @binding(2) var t_palette: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -253,32 +258,32 @@ fn slot_tint(mode: u32, h: f32, t: f32) -> vec3<f32> {
 
 // --- Colour -----------------------------------------------------------
 
-// Inigo Quilez cosine gradients: color = a + b*cos(TAU*(c*t + d)). Four
-// coefficients describe a whole smooth ramp, it costs one cosine, and it
-// loops seamlessly — which matters because the drive value wraps.
+// One row of the palette bank, read by index.
+//
+// These were four cosine gradients written into this function. The maths
+// was elegant and the format was useless: `a + b*cos(TAU*(c*t + d))`
+// describes a ramp beautifully and nobody can export one, while every
+// palette anyone actually has is a list of colours. The built-ins are now
+// baked from exactly those coefficients into the same texture a loaded
+// palette lands in, so the shipped looks are unchanged and the shader
+// cannot tell the two apart.
+//
+// `textureLoad` with a manual lerp rather than a filtered sample: this
+// runs in the vertex stage, where filtered sampling is the restricted
+// path and a plain load is not, and it saves a bind-group entry.
 fn cos_palette(id: u32, t: f32) -> vec3<f32> {
-    switch id {
-        // Full spectrum.
-        case 1u: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(1.0) * t + vec3<f32>(0.0, 0.33, 0.67)));
-        }
-        // Amber through magenta: warm, reads well on a dark stage.
-        case 2u: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(1.0) * t + vec3<f32>(0.0, 0.10, 0.20)));
-        }
-        // Teal / green / gold.
-        case 3u: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(1.0, 1.0, 0.5) * t + vec3<f32>(0.8, 0.90, 0.30)));
-        }
-        // Two-tone red/blue: the most graphic of the set.
-        default: {
-            return vec3<f32>(0.5) + vec3<f32>(0.5)
-                * cos(TAU * (vec3<f32>(2.0, 1.0, 0.0) * t + vec3<f32>(0.5, 0.20, 0.25)));
-        }
-    }
+    let w = f32(PALETTE_W);
+    // The drive value wraps, so the ramp has to as well — sampling past
+    // the end must come back to the start rather than clamp, or a slow
+    // gradient shows a hard seam once per revolution.
+    let x = fract(t) * w;
+    let i0 = u32(floor(x)) % PALETTE_W;
+    let i1 = (i0 + 1u) % PALETTE_W;
+    let f = x - floor(x);
+    let row = i32(min(id, PALETTE_ROWS - 1u));
+    let a = textureLoad(t_palette, vec2<i32>(i32(i0), row), 0).rgb;
+    let b = textureLoad(t_palette, vec2<i32>(i32(i1), row), 0).rgb;
+    return mix(a, b, f);
 }
 
 // Cosine palettes are fully saturated by construction, so
