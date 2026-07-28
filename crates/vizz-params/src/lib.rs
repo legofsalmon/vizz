@@ -38,6 +38,13 @@ pub struct ParamDef {
     /// After `smooth` seconds the value has covered ~63% of the distance
     /// to the target; after `3 * smooth` it is ~95% there.
     pub smooth: f32,
+    /// Names for a stepped parameter's positions, indexed by the rounded
+    /// value.
+    ///
+    /// `/shape/mode` reading `5.000` tells you nothing; reading `Lorenz`
+    /// tells you what is on screen. Only for parameters whose positions
+    /// are genuinely discrete — a swept control has no names to give.
+    pub labels: Option<&'static [&'static str]>,
 }
 
 impl ParamDef {
@@ -54,7 +61,22 @@ impl ParamDef {
             max,
             default,
             smooth: 0.0,
+            labels: None,
         }
+    }
+
+    /// Name this parameter's discrete positions. See [`ParamDef::labels`].
+    pub fn labels(mut self, labels: &'static [&'static str]) -> Self {
+        self.labels = Some(labels);
+        self
+    }
+
+    /// The name for a value, if this parameter has names. Out-of-range
+    /// values yield `None` rather than panicking: the value is clamped
+    /// elsewhere, and a label is never worth a crash mid-set.
+    pub fn label_for(&self, value: f32) -> Option<&'static str> {
+        let labels = self.labels?;
+        labels.get(value.round().max(0.0) as usize).copied()
     }
 
     /// Set the smoothing time constant (seconds).

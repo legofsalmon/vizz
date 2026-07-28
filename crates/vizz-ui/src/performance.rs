@@ -221,7 +221,15 @@ fn fader(
             let value = registry.target(param);
             // Value under the fader rather than inside it: a number drawn
             // over a moving bar is unreadable at a glance.
-            ui.label(egui::RichText::new(format!("{value:.3}")).size(12.0).monospace());
+            //
+            // A stepped parameter shows its position's name. `5.000` under
+            // a fader called `mode` is unreadable in a different sense —
+            // it is legible and still tells you nothing.
+            let shown = def
+                .label_for(value)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{value:.2}"));
+            ui.label(egui::RichText::new(shown).size(12.0).monospace());
             // The short name is what identifies the fader; the full address
             // is only needed when reassigning.
             let short = addr.rsplit('/').next().unwrap_or(addr);

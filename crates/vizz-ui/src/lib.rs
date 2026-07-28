@@ -320,6 +320,40 @@ mod tests {
         b.build()
     }
 
+    /// A stepped parameter must read as its position's name. `mode 5.000`
+    /// is legible and still tells you nothing; `mode Lorenz` tells you
+    /// what is on screen, which in a dark room is the whole difference.
+    #[test]
+    fn stepped_parameters_read_as_names_not_numbers() {
+        let mut b = ParamRegistry::builder();
+        let mode = b.add(
+            ParamDef::new("/shape/mode", 0.0, 7.0, 0.0)
+                .labels(&["sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud"]),
+        );
+        let reg = b.build();
+        reg.set(mode, 5.0);
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            bpm: 120.0,
+            presets: Vec::new(),
+            focus_filter: false,
+            expand_sections: true,
+            bar_phase: 0.0,
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("Lorenz"), "stepped value not named: {text}");
+        assert!(!text.contains("5.000"), "raw number still shown: {text}");
+    }
+
     /// The preset list has to render, including the slot numbers — they
     /// are what `/preset/recall` and therefore a MIDI button address, and
     /// without them you would count rows to work out what to bind.

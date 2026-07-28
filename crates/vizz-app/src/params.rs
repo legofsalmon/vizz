@@ -73,7 +73,15 @@ impl AppParams {
         // Fractional values sit between two forms, so this is a sweep, not
         // a switch — and it wraps, so the top of the range morphs the
         // Aizawa attractor back into the sphere.
-        let shape = b.add(ParamDef::new("/shape/mode", 0.0, 8.0, 0.0).smooth(0.4));
+        let shape = b.add(
+            ParamDef::new("/shape/mode", 0.0, 8.0, 0.0)
+                .smooth(0.4)
+                // The sweep wraps, so 8 is the sphere again coming round.
+                .labels(&[
+                    "sphere", "torus", "knot", "grid", "shell", "Lorenz", "Aizawa", "cloud pair",
+                    "sphere",
+                ]),
+        );
         let morph = b.add(ParamDef::new("/shape/morph", 0.0, 1.0, 0.0).smooth(0.3));
         let twist = b.add(ParamDef::new("/shape/twist", 0.0, 2.0, 0.0).smooth(0.25));
         // Feedback: the effect that turns a particle field into VJ
@@ -85,16 +93,24 @@ impl AppParams {
         let zoom = b.add(ParamDef::new("/fx/zoom", 0.9, 1.1, 1.0).smooth(0.3));
         let spin = b.add(ParamDef::new("/fx/spin", -0.1, 0.1, 0.0).smooth(0.3));
         // Stepped, not swept: half a mirror is not a look.
-        let mirror = b.add(ParamDef::new("/fx/mirror", 0.0, 3.0, 0.0));
+        let mirror =
+            b.add(ParamDef::new("/fx/mirror", 0.0, 3.0, 0.0).labels(&["off", "x", "y", "quad"]));
         let glow = b.add(ParamDef::new("/fx/glow", 0.0, 1.0, 0.25).smooth(0.2));
         // Chromatic aberration. Subtle at the low end, prismatic at the top.
         let shift = b.add(ParamDef::new("/fx/shift", 0.0, 1.0, 0.0).smooth(0.2));
         // Colour. Palette 0 is the original HSV behaviour, so the defaults
         // below leave the look exactly as it was.
-        let palette = b.add(ParamDef::new("/color/palette", 0.0, 4.0, 0.0).smooth(0.4));
+        let palette = b.add(
+            ParamDef::new("/color/palette", 0.0, 4.0, 0.0)
+                .smooth(0.4)
+                .labels(&["hsv", "warm", "ember", "ice", "neon"]),
+        );
         let color_spread = b.add(ParamDef::new("/color/spread", 0.0, 1.0, 0.12).smooth(0.3));
         // Stepped: these are four different ideas, not a sweep.
-        let color_drive = b.add(ParamDef::new("/color/drive", 0.0, 3.0, 0.0));
+        let color_drive = b.add(
+            ParamDef::new("/color/drive", 0.0, 3.0, 0.0)
+                .labels(&["index", "radius", "depth", "height"]),
+        );
         // Point-cloud pair. Slot choice is stepped — half a slot is not a
         // cloud — while the morph between them is the swept, modulatable
         // control, which is what makes it worth having separately from the

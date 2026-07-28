@@ -818,11 +818,22 @@ fn param_row(
             ));
         }
 
-        let response = ui.add(
-            egui::Slider::new(&mut value, def.min..=def.max)
-                .text(short)
-                .clamping(egui::SliderClamping::Always),
-        );
+        // A stepped parameter shows its position's name rather than a
+        // number: `mode 5.000` says nothing, `mode Lorenz` says what is
+        // on screen.
+        let mut slider = egui::Slider::new(&mut value, def.min..=def.max)
+            .text(short)
+            .clamping(egui::SliderClamping::Always);
+        if def.labels.is_some() {
+            let labels = def.labels;
+            slider = slider.custom_formatter(move |v, _| {
+                labels
+                    .and_then(|l| l.get(v.round().max(0.0) as usize))
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| format!("{v:.0}"))
+            });
+        }
+        let response = ui.add(slider);
         if response.changed() {
             registry.set(id, value);
         }

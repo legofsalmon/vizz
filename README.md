@@ -488,6 +488,11 @@ current offset. A slider that will not stay where you put it is otherwise
 indistinguishable from a broken one — the value is still yours, modulation
 rides on top as an offset.
 
+**A stepped parameter reads as its position's name.** `/shape/mode` at
+`5.000` is legible and tells you nothing; `Lorenz` tells you what is on
+screen. Same for `/fx/mirror`, `/color/drive` and `/color/palette`. Only
+genuinely discrete controls get names — a swept one has none to give.
+
 **Press `/` to filter.** Typing flattens the groups, because when you have
 typed a name you already know what you want.
 
