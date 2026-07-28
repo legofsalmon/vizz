@@ -139,6 +139,37 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+### NDI input
+
+```sh
+vizz --list-ndi          # what is visible on the network
+```
+
+Everything else in this project sends. This is the first path that takes
+something *in*, which is what makes vizz mixable rather than only a
+source: another app's output, a camera over NDI, or a second vizz
+instance can come in and go through the same effects chain.
+
+Same two rules as the output side. **The render thread never waits** — a
+receive thread owns the NDI instance and writes finished frames into a
+single slot, and the renderer takes whatever is there with `try_lock`, so
+a stalled network drops a frame rather than missing vsync. One slot rather
+than a queue, because for a visual input the newest frame is the only one
+worth having. **Fail soft** — no runtime, no source, or a source that
+disappears mid-set all log and leave the input reporting itself
+unavailable, and reconnection is the normal case rather than an error.
+
+Frames are requested as BGRA so the conversion happens inside NDI's own
+optimised path, and the padded row stride is passed through to the texture
+upload rather than repacked.
+
+The FFI is hand-declared like the sender's, so the struct layouts are
+asserted field by field against the C headers in tests. That is the only
+thing between a header change and silent memory corruption.
+
+**Not wired to the renderer yet.** Discovery, connection and frame capture
+work and are tested; drawing the received frame is the next step.
+
 ## Releasing
 
 ```sh
