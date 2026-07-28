@@ -506,6 +506,7 @@ mod tests {
                 device: Some("Scarlett 2i2".into()),
                 bands: [0.8, 0.4, 0.2, 0.1],
                 raw: [0.13, 0.1, 0.05, 0.01],
+                raw_peak: [0.21, 0.16, 0.08, 0.02],
                 level: 0.2,
                 detected_bpm: 128.0,
                 confidence: 0.7,
@@ -526,6 +527,22 @@ mod tests {
         assert!(text.contains("tap"), "tap tempo missing: {text}");
         // Band edges are the filter control; they must be editable numbers.
         assert!(text.contains("30 Hz") && text.contains("110 Hz"), "band edges missing: {text}");
+        // Sensitivity reads in decibels, at the value the band actually
+        // carries. "×10" is not a quantity anyone can act on, and it was
+        // the thing that made the gain control look like it meant nothing.
+        // Asserting the number as well as the unit ties this to the
+        // shipped defaults, so raising one without the other is caught.
+        //
+        // Whitespace is collapsed first: egui emits a spin box's number
+        // and its suffix as separate galleys, so the collected text has
+        // them a couple of spaces apart rather than as one string.
+        let squashed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let first_band_db = format!("{:.1} dB", vizz_audio::default_bands()[0].gain_db());
+        assert!(
+            squashed.contains(&first_band_db),
+            "gain is not shown as {first_band_db}: {text}"
+        );
+        assert!(text.contains("fit"), "no way to set the gains from the input: {text}");
 
         // Disconnected must say so and explain the fix rather than showing
         // four dead meters.

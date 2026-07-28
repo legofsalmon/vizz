@@ -376,8 +376,9 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     let audio = vizz_ui::AudioView {
         connected: true,
         device: Some("Scarlett 2i2".into()),
-        bands: [0.85, 0.42, 0.3, 0.12],
-        raw: [0.14, 0.1, 0.06, 0.01],
+        bands: [0.79, 0.67, 0.87, 0.60],
+        raw: [0.10, 0.085, 0.055, 0.012],
+        raw_peak: [0.16, 0.14, 0.09, 0.02],
         level: 0.22,
         detected_bpm: 128.0,
         confidence: 0.72,

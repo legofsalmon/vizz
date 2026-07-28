@@ -130,16 +130,7 @@ fn main() {
         midi: midi_view(),
         // A plausible live reading, so the preview shows the meters doing
         // something rather than four empty bars.
-        audio: vizz_ui::AudioView {
-            connected: true,
-            device: Some("Scarlett 2i2".into()),
-            bands: [0.82, 0.44, 0.31, 0.12],
-            raw: [0.14, 0.11, 0.06, 0.012],
-            level: 0.21,
-            detected_bpm: 128.0,
-            confidence: 0.71,
-            dropped: 0,
-        },
+        audio: audio_view(),
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         bpm: 128.0,
@@ -295,6 +286,31 @@ fn save_png(
     drop(data);
     buffer.unmap();
     image::RgbaImage::from_raw(w, h, pixels).unwrap().save(path).unwrap();
+}
+
+/// A plausible live audio reading.
+///
+/// The envelopes are *computed* from the raw levels and the shipped gains
+/// rather than typed in beside them. Two hand-written arrays drift apart
+/// the moment a default changes, and a preview whose meters disagree with
+/// its own gain figures is worse than no preview — it is the one thing
+/// this is supposed to let you check.
+fn audio_view() -> vizz_ui::AudioView {
+    // Rough per-band RMS for a track at a healthy input level.
+    let raw = [0.10f32, 0.085, 0.055, 0.012];
+    let gains = vizz_audio::default_bands();
+    vizz_ui::AudioView {
+        connected: true,
+        device: Some("Scarlett 2i2".into()),
+        bands: std::array::from_fn(|i| (raw[i] * gains[i].gain).clamp(0.0, 1.0)),
+        raw,
+        // Peaks run a little above the running level, as they do live.
+        raw_peak: std::array::from_fn(|i| raw[i] * 1.6),
+        level: 0.21,
+        detected_bpm: 128.0,
+        confidence: 0.71,
+        dropped: 0,
+    }
 }
 
 /// A grid part-way through a blend, so the preview shows a filled pad, the

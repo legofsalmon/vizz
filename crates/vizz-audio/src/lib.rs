@@ -19,7 +19,10 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-pub use analysis::{BAND_COUNT, Band, default_bands};
+pub use analysis::{
+    BAND_COUNT, Band, MAX_GAIN_DB, MIN_GAIN_DB, TARGET_PEAK, db_to_linear, default_bands,
+    fit_gain_db, linear_to_db,
+};
 pub use beat::{MAX_BPM, MIN_BPM, TapTempo};
 
 /// Published analysis results. Read by the render thread every frame,
@@ -28,6 +31,13 @@ pub use beat::{MAX_BPM, MIN_BPM, TapTempo};
 pub struct AudioState {
     bands: [AtomicU32; BAND_COUNT],
     raw: [AtomicU32; BAND_COUNT],
+    /// Decaying peak of `raw`, which is what `fit` sets a gain against.
+    ///
+    /// Held here rather than sampled by the UI because the analysis thread
+    /// sees every frame at ~94 Hz while the panel only draws at 60, and a
+    /// peak is exactly the statistic that undersampling loses: the kick
+    /// you missed is the one that mattered.
+    raw_peak: [AtomicU32; BAND_COUNT],
     level: AtomicU32,
     bpm: AtomicU32,
     confidence: AtomicU32,
@@ -37,6 +47,11 @@ pub struct AudioState {
     pub frames: AtomicU64,
     connected: AtomicBool,
 }
+
+/// How long the peak hold takes to fall by 1/e. Long enough that a bar of
+/// music is one measurement, short enough that moving a fader and pressing
+/// `fit` again does what you meant.
+const PEAK_TAU: f32 = 4.0;
 
 /// Relaxed throughout: these are independent scalars sampled once a frame
 /// for display and modulation. A torn read across two of them is invisible
@@ -54,6 +69,21 @@ impl AudioState {
     }
     pub fn raw(&self, i: usize) -> f32 {
         self.raw.get(i).map(Self::load).unwrap_or(0.0)
+    }
+    /// Loudest this band has been over roughly the last few seconds.
+    pub fn raw_peak(&self, i: usize) -> f32 {
+        self.raw_peak.get(i).map(Self::load).unwrap_or(0.0)
+    }
+    /// Fold a new reading into the decaying peak.
+    ///
+    /// Rises instantly and falls slowly, so a single kick is still visible
+    /// to `fit` several seconds later. Decaying rather than absolute: a
+    /// peak that never forgets would mean one accidental clip at the start
+    /// of the night set the gain for the rest of it.
+    fn observe_peak(&self, i: usize, raw: f32, dt: f32) {
+        let decay = (-dt / PEAK_TAU).exp();
+        let held = Self::load(&self.raw_peak[i]) * decay;
+        Self::store(&self.raw_peak[i], held.max(raw));
     }
     pub fn level(&self) -> f32 {
         Self::load(&self.level)
@@ -295,6 +325,7 @@ fn analysis_loop(
         for i in 0..BAND_COUNT {
             AudioState::store(&state.bands[i], frame.bands[i]);
             AudioState::store(&state.raw[i], frame.raw[i]);
+            state.observe_peak(i, frame.raw[i], dt);
         }
         AudioState::store(&state.level, frame.level);
         AudioState::store(&state.bpm, detector.bpm());

@@ -298,6 +298,7 @@ impl App {
                     device: self.engine.audio.device_name.clone(),
                     bands: std::array::from_fn(|i| st.band(i)),
                     raw: std::array::from_fn(|i| st.raw(i)),
+                    raw_peak: std::array::from_fn(|i| st.raw_peak(i)),
                     level: st.level(),
                     detected_bpm: st.bpm(),
                     confidence: st.confidence(),
