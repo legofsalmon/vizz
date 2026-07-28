@@ -335,6 +335,7 @@ impl Gui {
         // from the parameter list end up in the same map by the same path.
         actions.set_learn_target = perf.set_learn_target;
         actions.clear_binding = perf.clear_binding;
+        actions.clear_slot_binding = perf.clear_slot_binding.map(|v| (performance::RECALL.to_string(), v));
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -621,7 +622,7 @@ mod tests {
                 available: true,
                 connected: vec!["Launch Control XL".into()],
                 map,
-                learn_target: Some("/particles/count".into()),
+                learn_target: Some(vizz_midi::LearnTarget::param("/particles/count")),
                 last_source: Some(vizz_midi::Source::Note { channel: 9, note: 36 }),
             },
             audio: AudioView::default(),

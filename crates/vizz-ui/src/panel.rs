@@ -24,18 +24,33 @@ pub struct MidiView {
     pub available: bool,
     pub connected: Vec<String>,
     pub map: MidiMap,
-    pub learn_target: Option<String>,
+    pub learn_target: Option<vizz_midi::LearnTarget>,
     pub last_source: Option<Source>,
+}
+
+impl MidiView {
+    /// Is a sweep learn pending for this parameter?
+    pub fn learning(&self, param: &str) -> bool {
+        matches!(&self.learn_target, Some(t) if t.param == param && t.value.is_none())
+    }
+
+    /// Is a trigger learn pending for this value of this parameter?
+    pub fn learning_value(&self, param: &str, value: f32) -> bool {
+        matches!(&self.learn_target, Some(t) if t.param == param && t.value == Some(value))
+    }
 }
 
 /// What the panel asks the app to do. Returned rather than applied
 /// directly so the panel keeps no privileged access of its own.
 #[derive(Default)]
 pub struct PanelActions {
-    /// Begin MIDI-learn for this parameter (or cancel, with None).
-    pub set_learn_target: Option<Option<String>>,
+    /// Begin MIDI-learn (or cancel, with None).
+    pub set_learn_target: Option<Option<vizz_midi::LearnTarget>>,
     /// Remove the MIDI binding for this parameter.
     pub clear_binding: Option<String>,
+    /// Remove the MIDI trigger for one value of a parameter, leaving the
+    /// other values of it mapped.
+    pub clear_slot_binding: Option<(String, f32)>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
     /// Recall this preset by name.
@@ -449,7 +464,7 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             .unwrap_or_else(|| "nothing yet".into());
         ui.colored_label(
             egui::Color32::from_rgb(255, 200, 90),
-            format!("learning {target} — move a control (seen: {seen})"),
+            format!("learning {} — move a control (seen: {seen})", target.label),
         );
     }
 }
@@ -1391,7 +1406,7 @@ fn param_row(
         if !state.midi.available {
             return;
         }
-        let learning = state.midi.learn_target.as_deref() == Some(def.addr.as_str());
+        let learning = state.midi.learning(&def.addr);
         match state.midi.map.source_for(&def.addr) {
             Some(source) => {
                 if ui
@@ -1409,7 +1424,8 @@ fn param_row(
             }
             None => {
                 if ui.small_button("learn").clicked() {
-                    actions.set_learn_target = Some(Some(def.addr.clone()));
+                    actions.set_learn_target =
+                        Some(Some(vizz_midi::LearnTarget::param(def.addr.clone())));
                 }
             }
         }

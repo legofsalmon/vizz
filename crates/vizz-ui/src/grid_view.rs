@@ -84,6 +84,16 @@ const ARMED: Color32 = Color32::from_rgb(255, 120, 90);
 /// the sweep read as another transition.
 const AUTO_ON: Color32 = Color32::from_rgb(72, 160, 104);
 const AUTO_BED: Color32 = Color32::from_rgb(30, 46, 36);
+/// A pad waiting for a MIDI control, and the chip on one that has found
+/// it. Amber, matching the learn colour the panel and the performance
+/// faders already use, so the state means the same thing everywhere.
+const LEARN: Color32 = Color32::from_rgb(255, 200, 90);
+/// A pad's binding at rest — quiet enough that a fully mapped grid does
+/// not read as sixteen alarms, bright enough to survive the transition
+/// fill passing underneath it. The pad being blended to is exactly the pad
+/// you are most likely to be looking at, so the one place the chip sits on
+/// amber rather than on the pad colour is not a corner case.
+const MIDI_INK: Color32 = Color32::from_rgb(158, 180, 206);
 /// Secondary text. The egui default is dimmer than anything on a stage
 /// should be, so labels here are set explicitly rather than inherited.
 const LABEL: Color32 = Color32::from_rgb(178, 187, 200);
@@ -116,6 +126,24 @@ pub struct GridView {
     /// The slot the autopilot will move to next, so the control can say
     /// what is coming rather than only that something is.
     pub upcoming: Option<usize>,
+    /// Per slot: the label of the MIDI control that fires it, if any.
+    ///
+    /// On the pad rather than beside the fire parameter because sixteen
+    /// pads share one parameter — the useful question is "which of these
+    /// is mapped", and a single row in the panel cannot answer it.
+    pub midi: Vec<Option<String>>,
+    /// The slot whose MIDI binding is being learned, waiting for a
+    /// control to arrive.
+    pub learning: Option<usize>,
+    /// Whether MIDI is available at all. With no controller the arm would
+    /// be a button that starts a wait nothing can ever end.
+    pub midi_available: bool,
+    /// What one pad is called, singular: "scene", "gravity". The row is
+    /// drawn for both layers, and a gravity pad offering to "capture the
+    /// current look into scene 3" describes the wrong layer entirely —
+    /// which is worse than saying nothing, because it is the layer the
+    /// other row is about.
+    pub noun: &'static str,
 }
 
 impl Default for GridView {
@@ -133,6 +161,10 @@ impl Default for GridView {
             bars: 4.0,
             auto_phase: None,
             upcoming: None,
+            midi: vec![None; SLOTS],
+            learning: None,
+            midi_available: false,
+            noun: "scene",
         }
     }
 }
@@ -149,6 +181,12 @@ pub enum PadMode {
     Fire,
     Store,
     Clear,
+    /// The next pad pressed will wait for a MIDI control to bind to it.
+    ///
+    /// Learning is per pad rather than per parameter because the fire
+    /// parameter addresses a slot: one binding for `/scene/fire` would be
+    /// one button for all sixteen scenes, which is the bug this replaces.
+    Learn,
 }
 
 #[derive(Debug, Default)]
@@ -162,6 +200,11 @@ pub struct GridActions {
     pub assign: Option<(usize, String)>,
     pub clear: Option<usize>,
     pub rename: Option<(usize, String)>,
+    /// Wait for a MIDI control and bind it to firing this slot. `None`
+    /// inside the `Some` cancels a wait already running.
+    pub learn: Option<Option<usize>>,
+    /// Drop the MIDI binding that fires this slot.
+    pub unlearn: Option<usize>,
     /// Transition settings the user moved. `Option` rather than a value so
     /// an untouched control does not fight OSC or a MIDI knob writing the
     /// same parameter — the UI only speaks when it is spoken to.
@@ -219,7 +262,7 @@ pub fn draw_with(
 ) -> GridActions {
     let mut actions = GridActions::default();
     pads(ui, view, state, shape, &mut actions);
-    modes(ui, state, &mut actions);
+    modes(ui, view, state, &mut actions);
     if shape.settings() {
         ui.add_space(4.0);
         controls(ui, view, &mut actions);
@@ -281,7 +324,10 @@ fn pad(
     // A dangling reference outranks every other outline: a pad that will
     // not fire is more urgent than which pad you are on.
     let broken = view.missing.get(slot).copied().unwrap_or(false);
-    let outline = if broken {
+    let waiting = view.learning == Some(slot);
+    let outline = if waiting {
+        Some(LEARN)
+    } else if broken {
         Some(ARMED)
     } else if view.in_flight.map(|(to, _)| to) == Some(slot) {
         Some(ARRIVING)
@@ -302,10 +348,32 @@ fn pad(
         egui::FontId::monospace(9.0),
         Color32::from_rgb(150, 155, 170),
     );
+    // The binding, along the bottom edge, where it cannot collide with the
+    // name on the centre line. Only on a pad tall enough to have a bottom
+    // edge to spare — the panel's four-by-four is 24 points high and the
+    // chip would sit on top of the name.
+    let bound = view.midi.get(slot).and_then(|m| m.as_deref());
+    let roomy = rect.height() >= 40.0;
+    if roomy && (waiting || bound.is_some()) {
+        p.with_clip_rect(rect.shrink(2.0)).text(
+            rect.right_bottom() + vec2(-4.0, -3.0),
+            egui::Align2::RIGHT_BOTTOM,
+            if waiting { "waiting" } else { bound.unwrap_or_default() },
+            egui::FontId::monospace(8.0),
+            if waiting { LEARN } else { MIDI_INK },
+        );
+    }
+
     if let Some(name) = name {
         // Clipped to the pad: a long name must not spill over its
-        // neighbour and make the row unreadable.
-        p.with_clip_rect(rect.shrink(3.0)).text(
+        // neighbour and make the row unreadable. The clip stops short of
+        // the bottom when a binding is drawn there, so a name long enough
+        // to be truncated cannot bleed into it.
+        let mut clip = rect.shrink(3.0);
+        if roomy && (waiting || bound.is_some()) {
+            clip.max.y -= 10.0;
+        }
+        p.with_clip_rect(clip).text(
             rect.left_center() + vec2(19.0, 0.0),
             egui::Align2::LEFT_CENTER,
             name,
@@ -318,29 +386,26 @@ fn pad(
         );
     }
 
-    let response = response.on_hover_text(match state.mode {
-        PadMode::Fire if broken => format!(
-            "{} — this preset no longer exists; right-click to pick another",
-            name.unwrap_or("scene")
-        ),
-        PadMode::Fire => name.map_or_else(
-            || format!("scene {} — empty; right-click to play a preset here", slot + 1),
-            // The rename is advertised here because it was previously only
-            // on the right-click menu, where nobody found it. A hover that
-            // names the gesture is the cheapest possible fix, and the
-            // double-click below is the gesture people try first.
-            |n| format!("fire {n}  ·  double-click to rename"),
-        ),
-        PadMode::Store => format!("capture the current look into scene {}", slot + 1),
-        PadMode::Clear => format!("empty scene {}", slot + 1),
-    });
+    let response = response.on_hover_text(tooltip(
+        state.mode,
+        slot,
+        Pad { name, noun: view.noun, broken, waiting, bound },
+    ));
     // Double-click to rename, which is where a name gets edited in every
     // other program. The context menu keeps its entry: this is a second
     // door to the same room, not a replacement.
+    //
+    // The second click of the pair also reports as a click, so without the
+    // guard below a rename fires the pad twice. The *first* click still
+    // fires it, and deliberately: suppressing that would mean holding
+    // every pad press for the length of the double-click window before
+    // acting on it, and a third of a second of latency on the one gesture
+    // the whole screen exists for is a far worse fault than firing the pad
+    // you just clicked on.
     if response.double_clicked() && name.is_some() {
         state.editing = Some((slot, name.unwrap_or_default().to_string()));
     }
-    if response.clicked() {
+    if response.clicked() && !response.double_clicked() {
         match state.mode {
             // Firing an empty pad is a no-op in the grid itself, so this
             // does not need a guard — but offering a rename on it is the
@@ -353,6 +418,10 @@ fn pad(
             }
             PadMode::Clear => {
                 actions.clear = Some(slot);
+                state.mode = PadMode::Fire;
+            }
+            PadMode::Learn => {
+                actions.learn = Some(Some(slot));
                 state.mode = PadMode::Fire;
             }
         }
@@ -393,10 +462,78 @@ fn pad(
                 ui.close();
             }
         }
+        if view.midi_available {
+            ui.separator();
+            match bound {
+                Some(m) => {
+                    if ui.button(format!("unmap {m}")).clicked() {
+                        actions.unlearn = Some(slot);
+                        ui.close();
+                    }
+                }
+                None if waiting => {
+                    if ui.button("cancel MIDI learn").clicked() {
+                        actions.learn = Some(None);
+                        ui.close();
+                    }
+                }
+                None => {
+                    if ui
+                        .button("MIDI learn")
+                        .on_hover_text("bind a button on your controller to firing this pad")
+                        .clicked()
+                    {
+                        actions.learn = Some(Some(slot));
+                        ui.close();
+                    }
+                }
+            }
+        }
     });
 }
 
-fn modes(ui: &mut egui::Ui, state: &mut GridState, _actions: &mut GridActions) {
+/// One pad's state, for the hover text.
+struct Pad<'a> {
+    name: Option<&'a str>,
+    noun: &'a str,
+    broken: bool,
+    waiting: bool,
+    bound: Option<&'a str>,
+}
+
+/// What a pad says on hover.
+///
+/// Split out because it is the widget's only prose, it changes with five
+/// inputs, and the row is drawn for two different layers — a tooltip that
+/// hardcoded "scene" described the wrong layer on every gravity pad, which
+/// is worse than describing nothing.
+fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
+    let Pad { name, noun, broken, waiting, bound } = pad;
+    let n = slot + 1;
+    match mode {
+        PadMode::Fire if broken => format!(
+            "{} — this preset no longer exists; right-click to pick another",
+            name.unwrap_or(noun)
+        ),
+        PadMode::Fire if waiting => format!("waiting for a control to fire {noun} {n}"),
+        PadMode::Fire => name.map_or_else(
+            || format!("{noun} {n} — empty; right-click to play a preset here"),
+            // The rename is advertised here because it was previously only
+            // on the right-click menu, where nobody found it. A hover that
+            // names the gesture is the cheapest possible fix, and the
+            // double-click is the gesture people try first.
+            |name| match bound {
+                Some(m) => format!("fire {name}  ·  {m}  ·  double-click to rename"),
+                None => format!("fire {name}  ·  double-click to rename"),
+            },
+        ),
+        PadMode::Store => format!("capture the current look into {noun} {n}"),
+        PadMode::Clear => format!("empty {noun} {n}"),
+        PadMode::Learn => format!("bind the next control you press to firing {noun} {n}"),
+    }
+}
+
+fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mut GridActions) {
     ui.horizontal(|ui| {
         let armed = state.mode == PadMode::Store;
         let store = egui::Button::new("store").fill(if armed {
@@ -427,6 +564,38 @@ fn modes(ui: &mut egui::Ui, state: &mut GridState, _actions: &mut GridActions) {
             } else {
                 PadMode::Clear
             };
+        }
+
+        // Mapping is per pad because the fire parameter names a slot, so
+        // the arm belongs on the row rather than beside a parameter.
+        if !view.midi_available {
+            return;
+        }
+        // A wait already running is cancelled from here too: the pad shows
+        // "waiting" but the eye goes to the button that started it.
+        if let Some(slot) = view.learning {
+            let cancel = egui::Button::new(format!("waiting for {}", slot + 1)).fill(LEARN);
+            if ui
+                .add(cancel)
+                .on_hover_text("press a button on your controller, or click to cancel")
+                .clicked()
+            {
+                actions.learn = Some(None);
+            }
+            return;
+        }
+        let learning = state.mode == PadMode::Learn;
+        let midi = egui::Button::new("MIDI").fill(if learning {
+            LEARN
+        } else {
+            ui.visuals().widgets.inactive.bg_fill
+        });
+        if ui
+            .add(midi)
+            .on_hover_text("arm, then press a pad to bind a controller button to it")
+            .clicked()
+        {
+            state.mode = if learning { PadMode::Fire } else { PadMode::Learn };
         }
     });
 }
@@ -660,6 +829,86 @@ mod tests {
     #[test]
     fn the_row_shows_every_slot_the_grid_has() {
         assert_eq!(SLOTS, vizz_mod::scene::SLOTS);
+    }
+
+    /// With sixteen pads sharing one fire parameter, the only place the
+    /// map can be read is on the pads themselves. If a bound pad looks
+    /// exactly like an unbound one there is no way to tell which of a
+    /// controller's buttons does what short of pressing them all — during
+    /// a set.
+    #[test]
+    fn a_mapped_pad_shows_what_fires_it() {
+        let mut v = view();
+        v.midi_available = true;
+        v.midi[0] = Some("ch1 note36".into());
+        let text = run(&v, &mut GridState::default());
+        assert!(text.contains("ch1 note36"), "binding not shown on the pad: {text}");
+    }
+
+    /// A learn that gives no sign it is waiting is indistinguishable from
+    /// a click that did nothing.
+    #[test]
+    fn a_pad_waiting_for_a_control_says_so() {
+        let mut v = view();
+        v.midi_available = true;
+        v.learning = Some(5);
+        let text = run(&v, &mut GridState::default());
+        assert!(text.contains("waiting"), "no sign of the pending learn: {text}");
+    }
+
+    /// The arm is the only route to a per-pad binding, so it has to exist
+    /// — and must not appear when there is no MIDI to bind, where it would
+    /// start a wait nothing could ever end.
+    #[test]
+    fn the_midi_arm_appears_only_when_there_is_midi() {
+        let mut v = view();
+        v.midi_available = true;
+        assert!(
+            run(&v, &mut GridState::default()).contains("MIDI"),
+            "no way to map a pad"
+        );
+
+        v.midi_available = false;
+        assert!(
+            !run(&v, &mut GridState::default()).contains("MIDI"),
+            "offered mapping with no MIDI available"
+        );
+    }
+
+    /// The row is drawn for both layers. A gravity pad that offers to
+    /// capture a look "into scene 3" names the other row entirely — worse
+    /// than saying nothing, because it points at real pads that exist and
+    /// hold something else.
+    #[test]
+    fn a_pad_never_describes_the_other_layer() {
+        let pad = |noun| Pad { name: None, noun, broken: false, waiting: false, bound: None };
+        for mode in [PadMode::Fire, PadMode::Store, PadMode::Clear, PadMode::Learn] {
+            let text = tooltip(mode, 2, pad("gravity"));
+            assert!(text.contains("gravity"), "{mode:?} did not say gravity: {text}");
+            assert!(!text.contains("scene"), "{mode:?} named the wrong layer: {text}");
+            // And it numbers the pad the way the pad is labelled and the
+            // fire parameter addresses it: from one.
+            assert!(text.contains('3'), "{mode:?} misnumbered the pad: {text}");
+        }
+    }
+
+    /// A filled pad's hover is where the binding is named in full — the
+    /// chip on the pad is eight points and abbreviated by width.
+    #[test]
+    fn a_mapped_pads_hover_names_its_control() {
+        let text = tooltip(
+            PadMode::Fire,
+            0,
+            Pad {
+                name: Some("opener"),
+                noun: "scene",
+                broken: false,
+                waiting: false,
+                bound: Some("ch1 note36"),
+            },
+        );
+        assert!(text.contains("ch1 note36"), "binding not named on hover: {text}");
+        assert!(text.contains("rename"), "lost the rename hint: {text}");
     }
 
     /// Arming store must be visible. An invisible mode that changes what

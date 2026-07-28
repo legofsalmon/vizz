@@ -544,7 +544,13 @@ impl App {
                 .map(|(id, _)| self.engine.snapshot.get(id))
                 .collect(),
             presets: preset_entries(),
-            grid: grid_view(&self.engine.grid, self.engine.modulation.clock.beats),
+            grid: grid_view(
+                &self.engine.grid,
+                self.engine.modulation.clock.beats,
+                &self.midi_view,
+                SCENE_FIRE,
+                "scene",
+            ),
             // Shown only once the layer is in use. Sixteen empty pads for
             // a layer nobody has touched is a lot of the performance
             // screen spent saying nothing.
@@ -552,6 +558,7 @@ impl App {
                 gravity_grid_view(
                     &self.engine.gravity_grid,
                     self.engine.modulation.clock.beats,
+                    &self.midi_view,
                 )
             }),
             focus_filter: std::mem::take(&mut self.focus_filter),
@@ -587,12 +594,14 @@ impl App {
                     &self.params,
                     &mut self.engine.grid,
                     &GridBinding::scenes(&self.params),
+                    &self.midi_shared,
                 );
                 apply_grid_actions(
                     &actions.gravity,
                     &self.params,
                     &mut self.engine.gravity_grid,
                     &GridBinding::gravity(&self.params),
+                    &self.midi_shared,
                 );
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
@@ -810,9 +819,10 @@ fn preset_entries() -> Vec<vizz_ui::PresetEntry> {
 fn gravity_grid_view(
     grid: &vizz_mod::scene::Grid,
     beats: f64,
+    midi: &MidiView,
 ) -> vizz_ui::grid_view::GridView {
     use vizz_mod::preset::Kind;
-    let mut view = grid_view(grid, beats);
+    let mut view = grid_view(grid, beats, midi, GRAVITY_FIRE, "gravity");
     view.presets = vizz_mod::preset::list_kind(Kind::Gravity);
     view.missing = grid
         .cells()
@@ -825,13 +835,46 @@ fn gravity_grid_view(
     view
 }
 
+/// The addresses a pad press writes. Named here because the grid view, the
+/// learn target and [`GridBinding`] all have to agree on them, and a typo
+/// in one of the three is a pad that maps to nothing.
+const SCENE_FIRE: &str = "/scene/fire";
+const GRAVITY_FIRE: &str = "/gravity/fire";
+
+/// The slot number a pad addresses. Pads are numbered from 1 because 0 is
+/// "nothing selected" — see `Engine::tick_grid`.
+fn fire_value(slot: usize) -> f32 {
+    slot as f32 + 1.0
+}
+
 /// The scene grid as the panel needs to see it.
 ///
 /// `beats` is the musical clock, so the autopilot switch can show how far
 /// through its step it is rather than only that it is on.
-fn grid_view(grid: &vizz_mod::scene::Grid, beats: f64) -> vizz_ui::grid_view::GridView {
+fn grid_view(
+    grid: &vizz_mod::scene::Grid,
+    beats: f64,
+    midi: &MidiView,
+    fire: &str,
+    noun: &'static str,
+) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
+        // Which pads a controller can fire, and which one is waiting for a
+        // button. Per pad rather than per parameter: sixteen pads share
+        // one fire address, so a single binding shown beside it would say
+        // nothing about which of them is mapped.
+        midi: (0..vizz_ui::grid_view::SLOTS)
+            .map(|slot| {
+                midi.map
+                    .source_for_value(fire, fire_value(slot))
+                    .map(|s| s.label())
+            })
+            .collect(),
+        learning: (0..vizz_ui::grid_view::SLOTS)
+            .find(|&slot| midi.learning_value(fire, fire_value(slot))),
+        midi_available: midi.available,
+        noun,
         names: grid
             .cells()
             .iter()
@@ -884,6 +927,10 @@ struct GridBinding {
     curve: vizz_params::ParamId,
     auto: vizz_params::ParamId,
     bars: vizz_params::ParamId,
+    /// The fire parameter's address, for MIDI bindings — those name a
+    /// parameter by address rather than by id, since they outlive the
+    /// process.
+    addr: &'static str,
     /// What a captured pad is called when the slot was empty.
     noun: &'static str,
 }
@@ -897,6 +944,7 @@ impl GridBinding {
             curve: p.scene_curve,
             auto: p.scene_auto,
             bars: p.scene_bars,
+            addr: SCENE_FIRE,
             noun: "scene",
         }
     }
@@ -909,6 +957,7 @@ impl GridBinding {
             curve: p.gravity_curve,
             auto: p.gravity_auto,
             bars: p.gravity_bars,
+            addr: GRAVITY_FIRE,
             noun: "gravity",
         }
     }
@@ -919,11 +968,39 @@ fn apply_grid_actions(
     params: &crate::params::AppParams,
     grid: &mut vizz_mod::scene::Grid,
     b: &GridBinding,
+    midi: &SharedMidi,
 ) {
     let reg = &params.registry;
     let mut dirty = false;
     if let Some(slot) = actions.fire {
-        reg.set(b.fire, slot as f32 + 1.0);
+        reg.set(b.fire, fire_value(slot));
+    }
+    // Learning a pad rather than the parameter. A binding on `/scene/fire`
+    // alone would be one button for all sixteen pads, which is what this
+    // replaces — see `Binding::value`.
+    //
+    // `try_lock` for the same reason as everywhere else the render thread
+    // touches this: a missed frame is a click that did not take, a blocked
+    // one is a dropped frame on stage. The revision bump is picked up by
+    // the flush in `apply_panel_actions`, which runs later in the frame.
+    if actions.learn.is_some() || actions.unlearn.is_some() {
+        if let Ok(mut state) = midi.try_lock() {
+            if let Some(target) = actions.learn {
+                state.learn_target = target.map(|slot| {
+                    vizz_midi::LearnTarget::value(
+                        b.addr,
+                        fire_value(slot),
+                        format!("{} {}", b.noun, slot + 1),
+                    )
+                });
+            }
+            if let Some(slot) = actions.unlearn {
+                state.map.unbind_value(b.addr, fire_value(slot));
+                state.revision += 1;
+            }
+        } else {
+            log::debug!("MIDI busy this frame; the pad mapping click did not take");
+        }
     }
     // Put an existing preset on a pad. The core gesture now that a scene
     // names a look rather than owning a copy of one.
@@ -1055,6 +1132,10 @@ fn apply_panel_actions(
     }
     if let Some(param) = actions.clear_binding {
         state.map.unbind_param(&param);
+        state.revision += 1;
+    }
+    if let Some((param, value)) = actions.clear_slot_binding {
+        state.map.unbind_value(&param, value);
         state.revision += 1;
     }
     // Persist as soon as a mapping changes: a crash mid-set should not

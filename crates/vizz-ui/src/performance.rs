@@ -102,10 +102,15 @@ pub struct PerformanceActions {
     pub grid: crate::grid_view::GridActions,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
-    /// Begin MIDI-learn for this parameter, or cancel with `None`.
-    pub set_learn_target: Option<Option<String>>,
+    /// Begin MIDI-learn, or cancel with `None`.
+    pub set_learn_target: Option<Option<vizz_midi::LearnTarget>>,
     /// Remove the MIDI binding for this parameter.
     pub clear_binding: Option<String>,
+    /// Remove the MIDI trigger that recalls this preset slot. Separate
+    /// from `clear_binding` because a slot parameter carries many
+    /// bindings, and clearing the parameter would unmap every preset to
+    /// unmap one.
+    pub clear_slot_binding: Option<f32>,
 }
 
 pub fn draw(
@@ -215,15 +220,62 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
             } else {
                 egui::RichText::new(name).size(14.0).color(INK)
             };
+            // A preset addresses a slot exactly as a scene pad does, so it
+            // maps the same way: the binding names the slot, and the
+            // button only says when. A plain binding on `/preset/recall`
+            // would spread a button across a 64-slot range and recall the
+            // last one every time.
+            let bound = state.midi.map.source_for_value(RECALL, slot as f32);
+            let waiting = state.midi.learning_value(RECALL, slot as f32);
             let button = egui::Button::new(label)
                 .min_size(vec2(0.0, 30.0))
-                .fill(Color32::from_rgb(36, 40, 48));
-            if ui.add(button).clicked() {
+                .fill(if waiting {
+                    LEARN
+                } else {
+                    Color32::from_rgb(36, 40, 48)
+                });
+            let response = ui.add(button);
+            if response.clicked() {
                 actions.preset_slot = Some(slot);
+            }
+            let response = match (&bound, waiting) {
+                (_, true) => response.on_hover_text("press a button on your controller"),
+                (Some(s), _) => response.on_hover_text(format!("recall {name}  ·  {}", s.label())),
+                (None, _) => response.on_hover_text(format!("recall {name}")),
+            };
+            if state.midi.available {
+                response.context_menu(|ui| match (&bound, waiting) {
+                    (Some(s), _) => {
+                        if ui.button(format!("unmap {}", s.label())).clicked() {
+                            actions.clear_slot_binding = Some(slot as f32);
+                            ui.close();
+                        }
+                    }
+                    (None, true) => {
+                        if ui.button("cancel MIDI learn").clicked() {
+                            actions.set_learn_target = Some(None);
+                            ui.close();
+                        }
+                    }
+                    (None, false) => {
+                        if ui.button("MIDI learn").clicked() {
+                            actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::value(
+                                RECALL,
+                                slot as f32,
+                                format!("preset {slot}"),
+                            )));
+                            ui.close();
+                        }
+                    }
+                });
             }
         }
     });
 }
+
+/// The preset recall address. Bindings name a parameter by address rather
+/// than by id, since they outlive the process.
+pub(crate) const RECALL: &str = "/preset/recall";
 
 fn status_strip(
     ui: &mut egui::Ui,
@@ -544,7 +596,7 @@ fn midi_chip(
         ui.label(egui::RichText::new(" ").size(11.0));
         return;
     }
-    let learning = state.midi.learn_target.as_deref() == Some(addr);
+    let learning = state.midi.learning(addr);
     match state.midi.map.source_for(addr) {
         Some(source) => {
             if ui
@@ -584,7 +636,7 @@ fn midi_chip(
                 .on_hover_text("bind the next control you move to this fader")
                 .clicked()
             {
-                actions.set_learn_target = Some(Some(addr.to_string()));
+                actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::param(addr)));
             }
         }
     }
@@ -995,7 +1047,7 @@ mod tests {
             },
             "/particles/size",
         );
-        midi.learn_target = Some("/fx/glow".into());
+        midi.learn_target = Some(vizz_midi::LearnTarget::param("/fx/glow"));
 
         let text = render_with(&mut macros, &reg, &midi, None);
         assert!(
