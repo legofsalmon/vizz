@@ -258,6 +258,11 @@ impl EguiRenderer {
 
     /// Draw `primitives` over `target`. `size_px` is the framebuffer size;
     /// `pixels_per_point` converts egui's points into those pixels.
+    ///
+    /// Wide by the same reasoning as the particle pass: these are the
+    /// wgpu handles and the frame's own measurements, held separately by
+    /// the caller and bundled nowhere else.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,

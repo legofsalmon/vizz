@@ -111,9 +111,159 @@ pub fn resolved_path(name: &str) -> PathBuf {
     path_for(name)
 }
 
+/// Where the working modulation state is kept between launches.
+///
+/// Not in the patch directory: this is not a patch someone named and chose
+/// to keep, and putting it there would list it in the load menu as if it
+/// were one.
+fn session_path() -> PathBuf {
+    patch_dir()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default()
+        .join("modulation.json")
+}
+
+/// Write the whole modulation state — clock, LFOs, routes and graph.
+///
+/// Every other piece of user state in the app comes back on the next
+/// launch: the scene grids, the macro assignments, the slider ranges, the
+/// MIDI map, the palettes, the point clouds. Modulation did not. A patch
+/// could be saved *by name* from the canvas, which covers the graph and
+/// only if you thought to do it — and it covers none of the routes, which
+/// are made one click at a time from the parameter list and had no save of
+/// any kind. Quitting threw them away silently.
+///
+/// Temp file and rename, like every other persisted artefact here.
+pub fn save_session(engine: &crate::ModEngine) -> Result<()> {
+    let path = session_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(engine)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
+}
+
+/// Restore it. `None` on a fresh install, or if the file cannot be read —
+/// a corrupt session must start the app with defaults rather than refuse
+/// to start.
+pub fn load_session() -> Option<crate::ModEngine> {
+    let path = session_path();
+    let bytes = std::fs::read(&path).ok()?;
+    match serde_json::from_slice(&bytes) {
+        Ok(engine) => Some(engine),
+        Err(e) => {
+            log::warn!(
+                "could not read {}: {e:#} — starting with default modulation",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// The bytes `save_session` would write, for deciding whether it needs to.
+///
+/// The graph has a `dirty` flag but it belongs to the topological sort and
+/// is cleared by it, and neither it nor anything else is set when a node's
+/// parameters are edited or a node is dragged. Comparing what would be
+/// written catches every edit wherever it happens, which a flag threaded
+/// through the mutation sites would not — and a patch is small enough that
+/// serialising it a couple of times a minute costs nothing.
+pub fn session_bytes(engine: &crate::ModEngine) -> Vec<u8> {
+    serde_json::to_vec(engine).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
+
+    /// The routes are the part with no other way back.
+    ///
+    /// A patch could always be saved by name from the canvas, and covers
+    /// the graph if you remembered to. Routes are made one click at a time
+    /// from the parameter list and had no save of any kind — so an evening
+    /// of assigning LFOs to parameters was thrown away by quitting, in
+    /// silence.
+    #[test]
+    fn the_modulation_session_comes_back_with_its_routes() {
+        let (_guard, _tmp) = crate::test_env::scoped("session-routes");
+        assert!(load_session().is_none(), "a fresh install has no session");
+
+        let mut engine = crate::ModEngine::with_defaults();
+        engine.routes.push(crate::Route {
+            source: crate::Source::Lfo(0),
+            param: "/particles/hue".into(),
+            depth: 0.3,
+            enabled: true,
+        });
+        engine.clock.bpm = 138.0;
+        engine.lfos[0].rate = crate::Rate::Beats(8.0);
+        save_session(&engine).unwrap();
+
+        let back = load_session().expect("the session did not come back");
+        assert_eq!(back.routes.len(), 1);
+        assert_eq!(back.routes[0].param, "/particles/hue");
+        assert!((back.routes[0].depth - 0.3).abs() < 1e-6);
+        assert!((back.clock.bpm - 138.0).abs() < 1e-6);
+        assert_eq!(back.lfos[0].rate, crate::Rate::Beats(8.0));
+    }
+
+    /// The node graph rides along with it, layout included.
+    #[test]
+    fn the_session_carries_the_node_graph_too() {
+        let (_guard, _tmp) = crate::test_env::scoped("session-graph");
+        let mut engine = crate::ModEngine::with_defaults();
+        let a = engine.graph.add(crate::graph::NodeKind::Level, [40.0, 60.0]);
+        let b = engine.graph.add(
+            crate::graph::NodeKind::Param { addr: "/particles/hue".into(), depth: 0.5 },
+            [220.0, 60.0],
+        );
+        engine.graph.connect(a, b, 0);
+        save_session(&engine).unwrap();
+
+        let back = load_session().unwrap();
+        assert_eq!(back.graph.nodes.len(), 2);
+        assert_eq!(back.graph.edges.len(), 1);
+        // Layout survives: a patch that reloads rearranged has to be read
+        // from scratch, which is most of the reason to save it.
+        assert_eq!(back.graph.nodes[0].pos, [40.0, 60.0]);
+    }
+
+    /// The autosave is driven by comparing what would be written, because
+    /// no flag in the graph covers editing a node or dragging one. If the
+    /// bytes did not change on an edit, the autosave would never fire.
+    #[test]
+    fn an_edit_changes_the_bytes_the_autosave_compares() {
+        let (_guard, _tmp) = crate::test_env::scoped("session-bytes");
+        let mut engine = crate::ModEngine::with_defaults();
+        let before = session_bytes(&engine);
+        assert_eq!(before, session_bytes(&engine), "unchanged state must be stable");
+
+        // Adding a node.
+        let id = engine.graph.add(crate::graph::NodeKind::Level, [10.0, 10.0]);
+        let added = session_bytes(&engine);
+        assert_ne!(before, added, "adding a node went unnoticed");
+
+        // Dragging one — no flag anywhere is set for this.
+        engine.graph.nodes[id.0].pos = [80.0, 10.0];
+        assert_ne!(added, session_bytes(&engine), "moving a node went unnoticed");
+    }
+
+    /// A corrupt session must not stop the app starting. It is written on
+    /// a timer, so a power cut mid-write is exactly when it would be torn.
+    #[test]
+    fn a_corrupt_session_starts_with_defaults_instead_of_failing() {
+        let (_guard, _tmp) = crate::test_env::scoped("session-corrupt");
+        let path = session_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ this is not json").unwrap();
+        assert!(load_session().is_none());
+    }
+    
     use crate::graph::NodeKind;
 
     /// The important property: a hostile name cannot escape the patch

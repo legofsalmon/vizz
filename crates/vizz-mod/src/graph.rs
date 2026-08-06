@@ -384,9 +384,9 @@ impl NodeGraph {
             // Gather inputs before touching the node, so the borrow of the
             // edge list does not overlap the mutable node borrow.
             let mut input = [0.0f32; 2];
-            for port in 0..2 {
+            for (port, slot) in input.iter_mut().enumerate() {
                 if let Some(e) = self.edges.iter().find(|e| e.to.0 == i && e.port == port) {
-                    input[port] = self.values.get(e.from.0).copied().unwrap_or(0.0);
+                    *slot = self.values.get(e.from.0).copied().unwrap_or(0.0);
                 }
             }
 

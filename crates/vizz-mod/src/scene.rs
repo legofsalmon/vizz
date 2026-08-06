@@ -1023,7 +1023,7 @@ mod tests {
     fn firing_an_empty_slot_does_nothing() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
-        let mut lib = std::collections::BTreeMap::new();
+        let lib = std::collections::BTreeMap::new();
         reg.set(hue, 0.25);
         grid.fire(7, &reg, &src(&lib));
         assert!(grid.in_flight().is_none());
@@ -1103,7 +1103,7 @@ mod tests {
     fn autopilot_with_an_empty_grid_stays_put() {
         let (reg, hue, _, _) = registry();
         let mut grid = Grid::new();
-        let mut lib = std::collections::BTreeMap::new();
+        let lib = std::collections::BTreeMap::new();
         grid.autopilot = Autopilot {
             enabled: true,
             bars: 1.0,

@@ -77,7 +77,7 @@ impl BeatDetector {
         // Re-estimating every frame would be wasted work; the tempo cannot
         // meaningfully change at 94 Hz. Once every ~0.5 s is plenty.
         let period = (self.frame_rate * 0.5) as usize;
-        if self.filled < self.flux.len() || period == 0 || self.write % period != 0 {
+        if self.filled < self.flux.len() || period == 0 || !self.write.is_multiple_of(period) {
             return false;
         }
         self.estimate();
@@ -176,11 +176,10 @@ impl TapTempo {
     /// Injectable clock, so the averaging and timeout can be tested without
     /// sleeping through them.
     pub fn tap_at(&mut self, now: Instant) -> Option<f32> {
-        if let Some(&last) = self.taps.last() {
-            if now.duration_since(last) > TAP_TIMEOUT {
+        if let Some(&last) = self.taps.last()
+            && now.duration_since(last) > TAP_TIMEOUT {
                 self.taps.clear();
             }
-        }
         self.taps.push(now);
         // Keep the last few only: a tempo set eight taps ago should not
         // drag against where the user is tapping now.

@@ -119,6 +119,11 @@ pub fn default_bands() -> [Band; BAND_COUNT] {
 /// otherwise ask for infinite gain, and the useful behaviour is to leave
 /// that band exactly as the performer set it.
 pub fn fit_gain_db(peak: f32) -> Option<f32> {
+    // Written as a negated `>` on purpose, and not the `<=` clippy would
+    // rather see: those differ for NaN. `!(NaN > x)` is true, so a NaN peak
+    // is rejected here; `NaN <= x` is false, so it would sail through and
+    // come out the other side as a NaN gain applied to every band.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(peak > 1e-5) {
         return None;
     }

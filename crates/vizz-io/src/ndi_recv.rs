@@ -563,8 +563,8 @@ mod tests {
         let slot = Arc::new(Slot::default());
         for video in [
             VideoFrameV2 { xres: 64, yres: 64, ..Default::default() },
-            VideoFrameV2 { xres: -1, yres: 64, p_data: 1 as *mut u8, ..Default::default() },
-            VideoFrameV2 { xres: 64, yres: 0, p_data: 1 as *mut u8, ..Default::default() },
+            VideoFrameV2 { xres: -1, yres: 64, p_data: std::ptr::dangling_mut::<u8>(), ..Default::default() },
+            VideoFrameV2 { xres: 64, yres: 0, p_data: std::ptr::dangling_mut::<u8>(), ..Default::default() },
         ] {
             copy_into(&slot, &video);
         }

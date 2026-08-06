@@ -307,7 +307,7 @@ impl Library {
             return true;
         }
         let wanted = crate::library::sanitize(name);
-        self.user(kind).iter().any(|n| *n == wanted)
+        self.user(kind).contains(&wanted)
     }
 }
 

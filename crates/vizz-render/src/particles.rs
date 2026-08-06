@@ -338,6 +338,12 @@ impl ParticleScene {
     pub const LIVE_SLOT: usize = crate::attractor::SLOTS - 1;
 
     /// Encode one frame into `target`. `count` is the number of particles.
+    ///
+    /// Eight arguments, and grouping them into a struct would only move the
+    /// same list somewhere else — every one is a distinct per-frame input
+    /// the caller already holds separately, and there is exactly one call
+    /// site in each of the windowed and headless paths.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         ctx: &GpuContext,

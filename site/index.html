@@ -177,9 +177,22 @@
       </div>
       <div class="card">
         <h3>Played, not configured</h3>
-        <p>OSC and MIDI on every parameter, with MIDI learn. Presets on the
-          number keys. A performance layout with eight assignable faders and
-          nothing else competing for the screen.</p>
+        <p>OSC and MIDI on every parameter. Sixteen assignable faders on the
+          performance layout, each with MIDI learn and a ghost mark showing
+          where modulation has actually pushed it.</p>
+      </div>
+      <div class="card">
+        <h3>Looks become scenes</h3>
+        <p>Design a look, save it as a preset, put it on one of sixteen pads,
+          and fire it mid-set — the blend takes musical time and moves the
+          parameters, not a crossfade. Edit a preset once and every pad
+          playing it follows.</p>
+      </div>
+      <div class="card">
+        <h3>A gravity layer above them</h3>
+        <p>Four attractors and repulsors bend the cloud from a layer over the
+          scenes, with their own presets and their own sixteen-pad grid.
+          Looks and wells compose instead of overwriting each other.</p>
       </div>
       <div class="card">
         <h3>Modulation as a node graph</h3>
@@ -189,9 +202,10 @@
       </div>
       <div class="card">
         <h3>Geometry</h3>
-        <p>Eight morphing modes including two strange attractors, plus PLY and
-          XYZ import with colour. A real camera with depth of field, and a
-          wireframe room sized to the frame for forced perspective.</p>
+        <p>Eight morphing modes including two strange attractors. Drop a PLY,
+          XYZ, PTS or CSV onto the window to load a scan, colour included. A
+          real camera with depth of field, and a wireframe room sized to the
+          frame for forced perspective.</p>
       </div>
       <div class="card">
         <h3>Live point clouds</h3>
@@ -229,6 +243,54 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.9.0">0.9.0</a></div>
+      <ul>
+        <li><strong>The gravity layer.</strong> Four attractors and repulsors
+          that bend the cloud, sitting over the scenes with their own presets
+          and their own sixteen-pad grid — a look firing cannot disturb the
+          wells, and a well cannot disturb the look.</li>
+        <li><strong>Drop files onto the window.</strong> Point clouds as PLY,
+          XYZ, PTS or CSV; your own colour palettes as GIMP
+          <code>.gpl</code> or a list of hex colours. Both come back on the
+          next launch.</li>
+        <li><strong>Output size and render size are separate</strong>, with a
+          16-bit float master behind a toggle. Render above 1× for free
+          anti-aliasing, below it for frame rate on a struggling machine.</li>
+        <li><strong>A MIDI button can fire one pad.</strong> A binding can
+          carry a slot, so sixteen buttons address sixteen scenes instead of
+          all firing the last one. Existing <code>midi.json</code> files load
+          unchanged.</li>
+        <li><strong>Fixed: the field collapsed at high counts.</strong> A
+          float hash ran out of precision above ~50k particles, so bigger
+          counts drew repeats on top of each other. The count slider buys
+          density all the way up now — every preset's look shifts slightly.</li>
+        <li>Escape asks before it quits, saving over a preset says so first,
+          and a pre-1.0 review's worth of smaller fixes — full notes on the
+          release.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.8.0">0.8.0</a></div>
+      <ul>
+        <li><strong>Scenes name presets.</strong> A pad references a saved
+          look rather than owning a copy of it, which is what makes the
+          workflow work: prepare any number of looks at a desk, load sixteen
+          into the grid at performance time.</li>
+        <li><strong>The performance layout, rebuilt.</strong> Sixteen faders
+          with MIDI learn and modulation marks, the grid and transport beside
+          them, and text contrast chosen for a dark room rather than a
+          desk.</li>
+        <li><strong>Background colour, down to fully transparent</strong> —
+          vizz as a layer in someone else's mix rather than the whole
+          picture.</li>
+        <li><strong>An audio input picker</strong>, camera panning with a
+          reset to centre, and the control panel cut back to its one job:
+          building a look.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.7.0">0.7.0</a></div>
