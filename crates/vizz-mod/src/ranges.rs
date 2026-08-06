@@ -41,10 +41,20 @@ impl Ranges {
     /// Load, falling back to empty. A corrupt file costs you your slider
     /// ranges, which is not a reason to refuse to start.
     pub fn load() -> Self {
-        std::fs::read(Self::path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        let path = Self::path();
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Self::default();
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            // Was fully silent: a corrupt file became defaults with no
+            // trace, and the first range edit overwrote it.
+            Err(e) => {
+                log::warn!("could not read {}: {e} — using default ranges", path.display());
+                crate::library::quarantine(&path);
+                Self::default()
+            }
+        }
     }
 
     pub fn save(&self) -> Result<()> {

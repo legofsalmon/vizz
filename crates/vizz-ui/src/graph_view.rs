@@ -491,6 +491,13 @@ impl GraphView {
 
     fn handle_delete(&mut self, ui: &egui::Ui, graph: &mut NodeGraph) -> bool {
         let Some(id) = self.selected else { return false };
+        // Not while anything is being typed into. Backspace is the most
+        // common key in a text field, and with a node selected it deleted
+        // that node mid-word — correcting a typo in a patch name or a
+        // Param address cost whatever was wired into the selected node.
+        if ui.ctx().egui_wants_keyboard_input() {
+            return false;
+        }
         let pressed = ui.ctx().input(|i| {
             i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
         });

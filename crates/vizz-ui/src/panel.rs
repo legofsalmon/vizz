@@ -1009,6 +1009,19 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
 /// So the list stays here even though a version of it exists there: it is
 /// the only place a preset can be created or removed, and creating them is
 /// the entire purpose of this screen.
+/// A delete that has been clicked once and is waiting to be meant.
+#[derive(Clone)]
+struct ArmedDelete {
+    name: String,
+    at: std::time::Instant,
+}
+
+impl Default for ArmedDelete {
+    fn default() -> Self {
+        Self { name: String::new(), at: std::time::Instant::now() }
+    }
+}
+
 fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     ui.label(egui::RichText::new("Presets").strong());
     ui.small("click to open a look and keep editing it");
@@ -1033,12 +1046,43 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                     if p.builtin {
                         return;
                     }
-                    if ui
+                    // Armed delete, matching the grid's store/clear
+                    // idiom. One click on a 14-point "x" permanently
+                    // erasing a file — with no undo anywhere — was the
+                    // cheapest destruction in the app, sitting a few
+                    // pixels from the load button.
+                    let arm_id = egui::Id::new("preset-delete-armed");
+                    let armed: Option<ArmedDelete> =
+                        ui.memory_mut(|m| m.data.get_temp(arm_id));
+                    let armed_here = armed
+                        .as_ref()
+                        .is_some_and(|a| a.name == p.name && a.at.elapsed().as_secs() < 3);
+                    if armed_here {
+                        let sure = egui::Button::new(
+                            egui::RichText::new("delete?")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(255, 236, 232)),
+                        )
+                        .fill(egui::Color32::from_rgb(150, 52, 46));
+                        if ui
+                            .add(sure)
+                            .on_hover_text("click again to delete for good — there is no undo")
+                            .clicked()
+                        {
+                            actions.preset_delete = Some(p.name.clone());
+                            ui.memory_mut(|m| m.data.remove_temp::<ArmedDelete>(arm_id));
+                        }
+                    } else if ui
                         .small_button("x")
-                        .on_hover_text("delete this preset")
+                        .on_hover_text("delete this preset (asks once)")
                         .clicked()
                     {
-                        actions.preset_delete = Some(p.name.clone());
+                        ui.memory_mut(|m| {
+                            m.data.insert_temp(
+                                arm_id,
+                                ArmedDelete { name: p.name.clone(), at: std::time::Instant::now() },
+                            )
+                        });
                     }
                 });
             }

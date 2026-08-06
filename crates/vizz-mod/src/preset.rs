@@ -349,6 +349,31 @@ pub fn delete(name: &str) -> Result<()> {
     std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))
 }
 
+/// A name a capture can actually be recalled under.
+///
+/// `by_name` prefers built-ins and a user preset cannot shadow one — the
+/// shipped starting points must stay reachable whatever is on disk. Which
+/// means capturing *onto a pad that names a built-in* used to write a file
+/// that could never be looked at again: the save succeeded, the pad kept
+/// its name, and firing it played the built-in while the user's look sat
+/// unreachable on disk. The capture was, in effect, silently discarded.
+///
+/// So a capture aimed at a built-in's name steps aside: "Butterfly"
+/// becomes "Butterfly 2", or the first numbered variant not already taken
+/// by another built-in. Colliding with the user's *own* preset is left
+/// alone deliberately — re-capturing onto your own name is the editing
+/// gesture, not an accident.
+pub fn capture_name(kind: Kind, wanted: &str) -> String {
+    let shadowed = |n: &str| kind == Kind::Look && BUILTINS.iter().any(|b| b.name == n);
+    if !shadowed(wanted) {
+        return wanted.to_string();
+    }
+    (2..)
+        .map(|i| format!("{wanted} {i}"))
+        .find(|n| !shadowed(n))
+        .expect("the integers do not run out")
+}
+
 pub fn exists(name: &str) -> bool {
     path_for(name).exists()
 }
@@ -578,6 +603,36 @@ pub fn by_index(i: usize) -> Option<(String, Preset)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Capturing onto a pad that names a built-in used to write a file
+    /// that could never be recalled: the save succeeded, but `by_name`
+    /// prefers built-ins, so firing the pad played the built-in while the
+    /// user's captured look sat unreachable on disk — silently discarded.
+    #[test]
+    fn a_capture_aimed_at_a_builtins_name_steps_aside_and_stays_recallable() {
+        let (_guard, _tmp) = crate::test_env::scoped("capture-shadow");
+        let builtin = BUILTINS[0].name;
+
+        let name = capture_name(Kind::Look, builtin);
+        assert_ne!(name, builtin, "a capture must not land on a built-in's name");
+        assert_eq!(name, format!("{builtin} 2"));
+
+        // A name of the user's own is untouched — re-capturing onto your
+        // own preset is the editing gesture, not an accident.
+        assert_eq!(capture_name(Kind::Look, "my look"), "my look");
+        // Gravity has no built-ins to shadow.
+        assert_eq!(capture_name(Kind::Gravity, builtin), builtin);
+
+        // And the stepped-aside name really resolves to the capture.
+        let mut values = BTreeMap::new();
+        values.insert("/fx/glow".to_string(), 0.123);
+        save(&name, &Preset { values: values.clone() }).unwrap();
+        assert_eq!(
+            by_name(&name).expect("saved capture must resolve").values,
+            values,
+            "the capture must come back, not the built-in"
+        );
+    }
 
     /// The listing is of file *stems*, which are sanitised, while a pad
     /// holds the name as it was typed. Comparing the two directly reports

@@ -636,6 +636,7 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
                 "could not read {}: {e:#} — starting with an empty grid",
                 path.display()
             );
+            crate::library::quarantine(&path);
             Grid::for_kind(kind)
         }
     }
@@ -697,6 +698,7 @@ pub fn load() -> Grid {
                     "could not read {}: {e:#} — starting with an empty grid",
                     path.display()
                 );
+                crate::library::quarantine(&path);
                 Grid::new()
             }
         },

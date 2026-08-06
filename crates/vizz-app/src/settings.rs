@@ -162,6 +162,7 @@ pub fn load() -> Settings {
                 "could not read {}: {e:#} — using default settings",
                 path.display()
             );
+            vizz_mod::library::quarantine(&path);
             Settings::default()
         }
     }

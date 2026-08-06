@@ -111,6 +111,31 @@ pub fn resolved_path(name: &str) -> PathBuf {
     path_for(name)
 }
 
+/// Set an unreadable state file aside instead of leaving it in place.
+///
+/// Every loader here falls back to defaults when its file will not parse
+/// — the right call at startup, an unreadable file must never stop the
+/// show. But the file then still sat at its own path, and the *first
+/// save* — an autosave, a knob turned — overwrote it. Corruption became
+/// permanent loss precisely because the app kept running well: a truncated
+/// modulation.json from a power cut held an evening of routing that a
+/// text editor could have recovered, for exactly as long as nothing
+/// saved.
+///
+/// Renamed to `<name>.broken`, replacing any previous quarantine — the
+/// newest corpse is the one worth keeping.
+pub fn quarantine(path: &std::path::Path) {
+    let mut broken = path.as_os_str().to_owned();
+    broken.push(".broken");
+    match std::fs::rename(path, &broken) {
+        Ok(()) => log::warn!(
+            "set the unreadable file aside as {} — it may be hand-recoverable",
+            std::path::Path::new(&broken).display()
+        ),
+        Err(e) => log::warn!("could not set {} aside: {e}", path.display()),
+    }
+}
+
 /// Where the working modulation state is kept between launches.
 ///
 /// Not in the patch directory: this is not a patch someone named and chose
@@ -159,6 +184,7 @@ pub fn load_session() -> Option<crate::ModEngine> {
                 "could not read {}: {e:#} — starting with default modulation",
                 path.display()
             );
+            quarantine(&path);
             None
         }
     }
@@ -262,6 +288,29 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"{ this is not json").unwrap();
         assert!(load_session().is_none());
+    }
+
+    /// And the corrupt file must survive what comes next. Falling back to
+    /// defaults is right; leaving the damaged file where the very next
+    /// autosave overwrites it turned recoverable corruption into
+    /// permanent loss — the evening of routing a text editor could have
+    /// salvaged, gone five seconds after the app came up.
+    #[test]
+    fn a_corrupt_session_is_set_aside_before_the_next_save_can_destroy_it() {
+        let (_guard, _tmp) = crate::test_env::scoped("session-quarantine");
+        let path = session_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let damaged = b"{ \"clock\": { \"bpm\": 174.0, TRUNCATED".to_vec();
+        std::fs::write(&path, &damaged).unwrap();
+
+        assert!(load_session().is_none());
+        save_session(&crate::ModEngine::with_defaults()).unwrap();
+
+        let mut broken = path.as_os_str().to_owned();
+        broken.push(".broken");
+        let kept = std::fs::read(std::path::Path::new(&broken))
+            .expect("the damaged file must be set aside, not clobbered");
+        assert_eq!(kept, damaged, "the quarantined bytes must be the originals");
     }
     
     use crate::graph::NodeKind;

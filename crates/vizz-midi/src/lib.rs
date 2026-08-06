@@ -259,7 +259,59 @@ pub fn load_map(path: &Path) -> Result<MidiMap> {
     }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    match serde_json::from_str(&text) {
+        Ok(map) => Ok(map),
+        Err(e) => {
+            // Two mitigations before giving up, because this file is the
+            // most laborious setup in the app.
+            //
+            // Salvage: parsing was all-or-nothing, so one malformed
+            // binding — a schema change, a hand-edit — cost every other
+            // binding in the file. If the JSON itself parses, every
+            // binding that still deserialises is kept.
+            //
+            // Quarantine: whatever happens, the damaged original is set
+            // aside rather than left in place, because the next save
+            // would overwrite it and turn corruption into permanent loss.
+            let salvaged = salvage_map(&text);
+            let mut broken = path.as_os_str().to_owned();
+            broken.push(".broken");
+            match std::fs::rename(path, &broken) {
+                Ok(()) => log::warn!(
+                    "set the unreadable MIDI map aside as {} — it may be hand-recoverable",
+                    Path::new(&broken).display()
+                ),
+                Err(re) => log::warn!("could not set {} aside: {re}", path.display()),
+            }
+            match salvaged {
+                Some((map, lost)) => {
+                    log::warn!(
+                        "{} was damaged ({e}) — recovered {} bindings, lost {lost}",
+                        path.display(),
+                        map.bindings.len()
+                    );
+                    Ok(map)
+                }
+                None => Err(e).with_context(|| format!("parsing {}", path.display())),
+            }
+        }
+    }
+}
+
+/// Keep every binding that still deserialises from a damaged map file.
+/// `None` when the text is not JSON at all — nothing to walk.
+fn salvage_map(text: &str) -> Option<(MidiMap, usize)> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let rows = value.get("bindings")?.as_array()?;
+    let mut map = MidiMap::default();
+    let mut lost = 0;
+    for row in rows {
+        match serde_json::from_value::<Binding>(row.clone()) {
+            Ok(b) => map.bindings.push(b),
+            Err(_) => lost += 1,
+        }
+    }
+    Some((map, lost))
 }
 
 pub fn save_map(path: &Path, map: &MidiMap) -> Result<()> {
@@ -402,6 +454,37 @@ mod tests {
         assert_eq!(load_map(&path).unwrap(), map);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Parsing was all-or-nothing: one malformed binding — a schema
+    /// change, a hand-edit gone wrong — cost every other binding in the
+    /// file, which is the most laborious setup in the app. Every binding
+    /// that still deserialises is kept, and the damaged original is set
+    /// aside where the next save cannot clobber it.
+    #[test]
+    fn a_damaged_map_keeps_its_good_bindings_and_the_original_is_set_aside() {
+        let dir = std::env::temp_dir().join(format!("vizz-midi-salvage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("midi.json");
+        let damaged = r#"{"bindings":[
+            {"source":{"kind":"control_change","channel":0,"controller":7},"param":"/master/dim"},
+            {"source":{"kind":"note","channel":"NOT A NUMBER","note":36},"param":"/scene/fire"},
+            {"source":{"kind":"note","channel":9,"note":36},"param":"/particles/speed"}
+        ]}"#;
+        std::fs::write(&path, damaged).unwrap();
+
+        let map = load_map(&path).expect("salvage should succeed");
+        assert_eq!(map.bindings.len(), 2, "both intact bindings kept");
+        assert_eq!(map.bindings[0].param, "/master/dim");
+        assert_eq!(map.bindings[1].param, "/particles/speed");
+
+        let broken = dir.join("midi.json.broken");
+        assert_eq!(
+            std::fs::read_to_string(&broken).expect("original set aside"),
+            damaged
+        );
+        assert!(!path.exists(), "the damaged file must not stay in the save path");
     }
 
     #[test]

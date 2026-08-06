@@ -257,8 +257,15 @@ impl App {
         // Palettes come back in the order they were dropped, so the
         // indices a preset saved still point at the same colours.
         for path in &self.palettes {
+            // A hole holds its row: `/color/palette` values in saved
+            // presets index rows, and rows must not shift under them.
+            if path.is_empty() {
+                scene.skip_palette_row();
+                continue;
+            }
             if let Err(e) = scene.load_palette(&ctx, std::path::Path::new(path)) {
                 log::warn!("could not reload palette {path}: {e:#}");
+                scene.skip_palette_row();
             }
         }
         // A stream that will not start is a warning, never a startup
@@ -1345,10 +1352,20 @@ fn apply_grid_actions(
         // the library under the pad's name and then referenced — rather
         // than a copy hidden inside the grid. One gesture, and the result
         // is a look you can also recall, edit and put on another pad.
-        let name = grid
+        let wanted = grid
             .cell(slot)
             .map(|c| c.preset.clone())
             .unwrap_or_else(|| format!("{} {}", b.noun, slot + 1));
+        // Stepped aside from a built-in's name if needed: a capture saved
+        // under one succeeded and could then never be recalled, because
+        // built-ins win the name — the look was silently discarded.
+        let name = vizz_mod::preset::capture_name(b.kind, &wanted);
+        if name != wanted {
+            notes.push((
+                false,
+                format!("'{wanted}' is a built-in — captured as '{name}' instead"),
+            ));
+        }
         let captured = vizz_mod::preset::Preset::capture_kind(reg, b.kind);
         match vizz_mod::preset::save_kind(b.kind, &name, &captured) {
             Ok(saved) => {
@@ -1578,25 +1595,33 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     let event_loop = EventLoop::new()?;
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
-    // A file that has since been moved or deleted is dropped from the list
-    // rather than being retried and warned about on every start.
+    // A file that has since been moved or deleted keeps its *place* and
+    // loses its content. Filtering it out compacted the list, and the
+    // list's positions are addresses: slot 2 is what `/cloud/a = 2` in
+    // every saved preset means. Deleting one file used to silently repoint
+    // every later slot — a preset built on the torso scan came back
+    // playing whatever shifted into its position, which is worse than the
+    // honest empty slot.
+    let hold_places = |mut paths: Vec<String>, what: &str| {
+        for p in &mut paths {
+            if !p.is_empty() && !std::path::Path::new(p).exists() {
+                log::warn!("{what} {p} is gone — its position is kept so the others stay put");
+                p.clear();
+            }
+        }
+        // Trailing holes carry no position worth keeping.
+        while paths.last().is_some_and(|p| p.is_empty()) {
+            paths.pop();
+        }
+        paths
+    };
     let cloud_paths: Vec<String> = if opts.clouds.is_empty() {
-        crate::settings::load()
-            .clouds
-            .into_iter()
-            .filter(|p| std::path::Path::new(p).exists())
-            .collect()
+        hold_places(crate::settings::load().clouds, "cloud")
     } else {
         opts.clouds.iter().map(|p| p.display().to_string()).collect()
     };
     opts.clouds = cloud_paths.iter().map(std::path::PathBuf::from).collect();
-    // Same treatment for palettes: a file that has since moved is dropped
-    // rather than warned about on every launch.
-    let palette_paths: Vec<String> = crate::settings::load()
-        .palettes
-        .into_iter()
-        .filter(|p| std::path::Path::new(p).exists())
-        .collect();
+    let palette_paths: Vec<String> = hold_places(crate::settings::load().palettes, "palette");
     let mut engine = FrameEngine::new(
         Arc::clone(&params),
         vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),

@@ -84,17 +84,26 @@ impl Macros {
     /// starting, least of all at a venue.
     pub fn load() -> Self {
         let path = Self::path();
-        match std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Self>(&b).ok())
-        {
-            Some(mut m) => {
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Self::default();
+        };
+        match serde_json::from_slice::<Self>(&bytes) {
+            Ok(mut m) => {
                 // Tolerate a file written by a build with a different slot
                 // count rather than panicking on index.
                 m.slots.resize(MACRO_COUNT, None);
                 m
             }
-            None => Self::default(),
+            // Was fully silent: a corrupt file became defaults with no
+            // trace, and the first fader assignment overwrote it.
+            Err(e) => {
+                log::warn!(
+                    "could not read {}: {e} — using default fader assignments",
+                    path.display()
+                );
+                crate::library::quarantine(&path);
+                Self::default()
+            }
         }
     }
 
