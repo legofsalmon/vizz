@@ -121,6 +121,7 @@ fn main() {
         "Ribbon".to_string(),
     ];
     let state = performance::PerformanceState {
+        preset_current: Some(2),
         outputs: &[
             OutputStatus {
                 name: "syphon:vizz".into(),

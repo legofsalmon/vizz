@@ -740,6 +740,7 @@ impl App {
                     .map(|(id, _)| self.engine.snapshot.get(id))
                     .collect(),
                 presets: preset_entries(&self.library),
+            preset_current: self.engine.current_preset(),
                 grid: grid_view(
                     &self.engine.grid,
                     self.engine.modulation.clock.beats,

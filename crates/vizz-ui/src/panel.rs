@@ -136,6 +136,9 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// The recalled slot (1-based), so the preset rows can show where the
+    /// look on screen came from.
+    pub preset_current: Option<usize>,
     /// The scene grid as it stands this frame.
     pub grid: crate::grid_view::GridView,
     /// The gravity grid, when the layer is in use. `None` hides it from

@@ -55,9 +55,14 @@ const LEARN: Color32 = Color32::from_rgb(232, 132, 108);
 const PER_ROW: usize = 8;
 const FADER_MIN_W: f32 = 62.0;
 const FADER_MAX_W: f32 = 104.0;
-/// Below this a fader is a decorative sliver, so the layout stops shrinking
-/// and lets the row overflow visibly instead.
-const FADER_MIN_H: f32 = 96.0;
+/// The height floor, below which a fader is decorative. Above it the
+/// layout *shrinks* rather than reflowing to one row: positions are what
+/// hands find in the dark, and shorter beats moved.
+const FADER_ABS_MIN: f32 = 56.0;
+/// Value, name and binding under each track, plus their spacing.
+const LABEL_H: f32 = 17.0;
+const LABEL_GAP: f32 = 2.0;
+const FADER_CHROME: f32 = LABEL_H * 3.0 + LABEL_GAP * 3.0;
 const PAD: f32 = 14.0;
 
 pub struct PerformanceState<'a> {
@@ -70,6 +75,9 @@ pub struct PerformanceState<'a> {
     /// Preset names in slot order, so the row can be numbered to match
     /// `/preset/recall` and the number keys.
     pub presets: &'a [String],
+    /// The recalled slot (1-based): the one button that should look
+    /// different from the other nine.
+    pub preset_current: Option<usize>,
     /// The scene grid, laid out across the full width here.
     pub grid: &'a crate::grid_view::GridView,
     /// The gravity grid, when there is anything in it. Hidden entirely
@@ -133,6 +141,19 @@ pub fn draw(
                 .map(|r| r.size())
                 .unwrap_or_else(|| vec2(1280.0, 800.0));
             ui.set_min_size(full);
+            // A near-opaque scrim between the layout and the live preview
+            // it composites over. Without it every label sat directly on
+            // the output, and the output is the one thing guaranteed to
+            // go bright white at the exact moments this screen matters —
+            // a strobe, a bloom — taking the BPM readout, the fader
+            // values and the binding chips with it. A few percent still
+            // bleeds through, deliberately: the show stays ambiently
+            // present without ever competing with the text.
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), full),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(PANEL_BG.r(), PANEL_BG.g(), PANEL_BG.b(), 242),
+            );
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
 
             let inner_w = full.x - PAD * 2.0;
@@ -172,7 +193,12 @@ pub fn draw(
                     // the cursor rather than guessed, so adding a row above
                     // shortens the faders instead of pushing them off.
                     let used = ui.cursor().top();
-                    let left = (full.y - used - PAD).max(FADER_MIN_H + 46.0);
+                    // The floor is the real column height — track plus its
+                    // three label lines — not a guess. The old 46-point
+                    // allowance was 11 short of the labels it was
+                    // reserving for, which is exactly the bottom row of
+                    // text it pushed off the window.
+                    let left = (full.y - used - PAD).max(FADER_ABS_MIN + FADER_CHROME + 6.0);
                     faders(ui, registry, macros, state, &mut actions, inner_w, left);
                 });
             });
@@ -227,12 +253,24 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
             // last one every time.
             let bound = state.midi.map.source_for_value(RECALL, slot as f32);
             let waiting = state.midi.learning_value(RECALL, slot as f32);
+            // The recalled slot is the answer to "where did the look on
+            // screen come from" — the one button that should not look
+            // like the other nine. Blue, matching the grid's CURRENT.
+            let current = state.preset_current == Some(slot as usize);
             let button = egui::Button::new(label)
                 .min_size(vec2(0.0, 30.0))
                 .fill(if waiting {
                     LEARN
                 } else {
                     Color32::from_rgb(36, 40, 48)
+                })
+                // An edge, so the row reads as buttons rather than as a
+                // line of caption text — which is what it was mistaken
+                // for when the fills sat 13 points off the background.
+                .stroke(if current {
+                    egui::Stroke::new(1.5, Color32::from_rgb(110, 180, 255))
+                } else {
+                    egui::Stroke::new(1.0, Color32::from_rgb(62, 68, 82))
                 });
             let response = ui.add(button);
             if response.clicked() {
@@ -390,6 +428,15 @@ fn audio_strip(ui: &mut egui::Ui, audio: &AudioView, width: f32) {
             let v = audio.bands[i].clamp(0.0, 1.0);
             let (r, _) = ui.allocate_exact_size(vec2(each, 12.0), Sense::hover());
             ui.painter().rect_filled(r, 2.0, TRACK);
+            // The track was 15 RGB points off the background — invisible,
+            // so a silent band vanished entirely and a fill's length had
+            // nothing to be judged against. The hairline is the ruler.
+            ui.painter().rect_stroke(
+                r,
+                2.0,
+                (1.0, Color32::from_rgb(64, 70, 84)),
+                egui::StrokeKind::Inside,
+            );
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(r.left_top(), vec2(r.width() * v, r.height())),
                 2.0,
@@ -435,8 +482,12 @@ fn faders(
     // One wide row of sixteen instead. Narrower columns are a real cost,
     // but a fader you can see and hit badly beats one that is not there —
     // and scrolling is not an answer on stage.
-    let chrome_h = 17.0 * 3.0 + 2.0 * 3.0;
-    let two_rows = 2.0 * (FADER_MIN_H + chrome_h) + 8.0;
+    // Two rows survive on shrunken faders down to the absolute floor —
+    // reflowing to one row of seventeen moves every fader's position and
+    // (before the master was anchored) pushed the rightmost off narrow
+    // windows. The single row is the last resort for genuinely short
+    // windows, not the response to a busy screen.
+    let two_rows = 2.0 * (FADER_ABS_MIN + FADER_CHROME + 6.0) + 8.0;
     let rows = if height >= two_rows {
         MACRO_COUNT.div_ceil(PER_ROW)
     } else {
@@ -447,44 +498,67 @@ fn faders(
     // same size as everything else rather than a full-width slab.
     let cols = per_row + 1;
     let w = ((width - (cols as f32 - 1.0) * 6.0) / cols as f32).clamp(FADER_MIN_W, FADER_MAX_W);
-    // Value, name and binding under each track, plus the spacing between
-    // them. Measured rather than guessed: underestimating this is what
-    // pushes the bottom row's labels off the screen, and a label you
-    // cannot read is a fader you cannot identify.
-    const LABEL_H: f32 = 17.0;
-    const LABEL_GAP: f32 = 2.0;
-    let chrome = LABEL_H * 3.0 + LABEL_GAP * 3.0;
-    debug_assert!((chrome - chrome_h).abs() < 0.01, "row-fit and layout disagree");
-    let h = ((height / rows as f32) - chrome - 6.0).max(FADER_MIN_H);
+    let chrome = FADER_CHROME;
+    // Shrinks below the preferred height rather than overflowing: the old
+    // floor of FADER_MIN_H here forced 96-point tracks into rows that had
+    // no room for them, which is what clipped the name and binding lines
+    // off the bottom of the window.
+    let h = ((height / rows as f32) - chrome - 6.0).clamp(FADER_ABS_MIN, f32::MAX);
 
     for row in 0..rows {
-        ui.horizontal(|ui| {
-            // Tight label stacking inside each column. The default 6-point
-            // gap is right for a form and far too loose for three lines
-            // that belong to one control.
-            ui.spacing_mut().item_spacing.y = LABEL_GAP;
-            for col in 0..per_row {
-                let slot = row * per_row + col;
-                if slot >= MACRO_COUNT {
-                    break;
-                }
-                ui.allocate_ui_with_layout(
-                    vec2(w, h + chrome),
-                    egui::Layout::top_down(egui::Align::Center),
-                    |ui| fader(ui, registry, macros, slot, state, actions, w, h),
-                );
+        // Laid out from explicit rects rather than a horizontal flow. A
+        // flow child grows to its content, so "reserve the master's
+        // column" could not actually hold against an overflowing row —
+        // the master still got pushed off the right edge, and the master
+        // is the dim fader that recovers a black output, wearing the
+        // blackout warning nobody could see. With rects, the master is
+        // right-anchored unconditionally and an overflowing row clips its
+        // *rightmost macros* against the master's ground instead.
+        let origin = ui.cursor().min;
+        let row_rect =
+            egui::Rect::from_min_size(origin, vec2(width, h + chrome));
+        ui.allocate_rect(row_rect, Sense::hover());
+
+        let macro_width = if row == 0 { (width - w - 6.0).max(w) } else { width };
+        let macros_rect =
+            egui::Rect::from_min_size(origin, vec2(macro_width, h + chrome));
+        let mut lane = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(macros_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::TOP)),
+        );
+        // Tight label stacking inside each column. The default 6-point
+        // gap is right for a form and far too loose for three lines that
+        // belong to one control.
+        lane.spacing_mut().item_spacing = vec2(6.0, LABEL_GAP);
+        lane.set_clip_rect(lane.clip_rect().intersect(macros_rect));
+        for col in 0..per_row {
+            let slot = row * per_row + col;
+            if slot >= MACRO_COUNT {
+                break;
             }
-            // Master at the end of the first row: same footprint as its
-            // neighbours, distinct only by colour and label. It is found by
-            // position, which is what actually works in the dark.
-            if row == 0 {
-                ui.allocate_ui_with_layout(
-                    vec2(w, h + chrome),
-                    egui::Layout::top_down(egui::Align::Center),
-                    |ui| master(ui, registry, state, w, h),
-                );
-            }
-        });
+            lane.allocate_ui_with_layout(
+                vec2(w, h + chrome),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| fader(ui, registry, macros, slot, state, actions, w, h),
+            );
+        }
+        // Master at the right edge of the first row: same footprint as
+        // its neighbours, distinct only by colour and label. It is found
+        // by position, which is what actually works in the dark.
+        if row == 0 {
+            let master_rect = egui::Rect::from_min_size(
+                egui::pos2(origin.x + width - w, origin.y),
+                vec2(w, h + chrome),
+            );
+            let mut col = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(master_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            col.spacing_mut().item_spacing = vec2(6.0, LABEL_GAP);
+            master(&mut col, registry, state, w, h);
+        }
         ui.add_space(4.0);
     }
 }
@@ -919,6 +993,7 @@ mod tests {
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let grid = crate::grid_view::GridView::default();
         let state = PerformanceState {
+            preset_current: None,
             outputs: &[OutputStatus {
                 name: "syphon:vizz".into(),
                 live: true,

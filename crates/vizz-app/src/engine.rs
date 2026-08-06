@@ -252,6 +252,14 @@ impl FrameEngine {
         }
     }
 
+    /// The `/preset/recall` slot last acted on, 1-based; `None` when
+    /// nothing has been recalled. For the preset row, which had no way to
+    /// show *where you are* — every button looked identical whether its
+    /// look was on screen or not.
+    pub fn current_preset(&self) -> Option<usize> {
+        self.last_preset.filter(|s| *s > 0)
+    }
+
     /// Advance time and parameters; returns everything the scene needs.
     /// `fixed_dt` pins the timestep (headless benchmarking); `None` uses
     /// wall-clock time (live).

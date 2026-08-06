@@ -379,6 +379,7 @@ impl Gui {
             bpm: state.bpm,
             bar_phase: state.bar_phase,
             presets: &preset_names,
+            preset_current: state.preset_current,
             grid: &state.grid,
             // Only shown when the layer is in use.
             gravity: state.gravity_grid.as_ref(),
@@ -458,6 +459,7 @@ mod tests {
         reg.set(mode, 5.0);
         let ctx = egui::Context::default();
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: Vec::new(),
@@ -496,6 +498,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: Vec::new(),
@@ -537,6 +540,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
@@ -580,6 +584,7 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![],
@@ -615,6 +620,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![],
@@ -699,6 +705,7 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![],
@@ -740,6 +747,7 @@ mod tests {
     fn update_banner_appears_only_when_a_newer_version_exists() {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
+            preset_current: None,
             update_available: update,
             health: None,
             outputs: vec![],
