@@ -65,8 +65,13 @@ cargo run --release                 # windowed, OSC on udp/7000
 cargo run --release -- --osc-port 9000 --width 1920 --height 1080
 ```
 
-Escape or closing the window quits. Logs (including the 2-second health
-line) go to stderr; tune with `RUST_LOG=debug`.
+Escape (pressed twice) or closing the window quits. Logs (including the
+2-second health line) go to stderr; tune with `RUST_LOG=debug`.
+
+OSC listens on every interface by default so a tablet across the stage
+can drive it — which also means anyone on the venue's wifi can. On a
+network you don't control, restrict it: `--osc-bind 127.0.0.1` accepts
+only this machine.
 
 The scene renders at the fixed `--width`×`--height` output resolution into
 a master texture; the window is only an aspect-fitted preview. Resizing

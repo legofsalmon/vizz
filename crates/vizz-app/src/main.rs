@@ -63,6 +63,13 @@ struct Args {
     #[arg(long, default_value_t = 7000)]
     osc_port: u16,
 
+    /// Address OSC listens on. The default accepts control from any
+    /// machine on the network, which is what a tablet running TouchOSC
+    /// needs — and also means anyone on venue wifi can drive the show.
+    /// Use 127.0.0.1 to accept only this machine.
+    #[arg(long, default_value = "0.0.0.0")]
+    osc_bind: String,
+
     /// Output width in pixels.
     #[arg(long, default_value_t = 1280)]
     width: u32,
@@ -190,13 +197,29 @@ fn main() -> Result<()> {
 
     // OSC failing to bind is degraded, not fatal: visuals still run,
     // control just isn't available on that port.
+    // The default bind is every interface, deliberately: pointing a
+    // tablet at vizz from across the stage is the whole point of OSC
+    // here. But that is a choice worth being able to unmake — on venue
+    // wifi it means anyone can drive the show — so the address is a flag
+    // and the log says what is exposed either way.
+    if args.osc_bind == "0.0.0.0" {
+        log::info!(
+            "OSC accepts control from ANY machine on the network (udp/{}) — \
+             restrict with --osc-bind 127.0.0.1",
+            args.osc_port
+        );
+    }
     let _osc = match vizz_osc::OscServer::spawn(
         Arc::clone(&params.registry),
-        ("0.0.0.0", args.osc_port),
+        (args.osc_bind.as_str(), args.osc_port),
     ) {
         Ok(server) => Some(server),
         Err(e) => {
-            log::error!("OSC bind failed on port {}: {e} — continuing without OSC", args.osc_port);
+            log::error!(
+                "OSC bind failed on {}:{}: {e} — continuing without OSC",
+                args.osc_bind,
+                args.osc_port
+            );
             None
         }
     };
