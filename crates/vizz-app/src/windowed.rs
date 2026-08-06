@@ -124,6 +124,13 @@ struct App {
     modulation_save_failing: bool,
     /// Output liveness as of last frame, for announcing transitions.
     output_status: Vec<vizz_ui::OutputStatus>,
+    /// Clouds parsing on worker threads, one per drop. Parsing happened
+    /// on the event-loop thread, so dropping a hundred-megabyte scan
+    /// froze the projector feed for however long the parse took — the
+    /// exact freeze the drop gesture was built to avoid. The GPU upload
+    /// still happens here when a result lands; only the pure CPU parse
+    /// leaves the thread.
+    pending_clouds: Vec<PendingCloud>,
     /// The learn that was armed last frame, and the map revision then —
     /// so a learn *completing* (on the MIDI thread, never in response to
     /// a click) gets announced, and a cancelled one does not.
@@ -134,6 +141,12 @@ struct App {
     /// receiving redraw events entirely and the Syphon/NDI feed must not
     /// stop with it.
     presentable: bool,
+}
+
+/// A cloud being parsed off-thread, and where its result will arrive.
+struct PendingCloud {
+    path: std::path::PathBuf,
+    rx: std::sync::mpsc::Receiver<anyhow::Result<Vec<vizz_render::pointcloud::Point>>>,
 }
 
 /// The file's own name, for a notice — the full path is for the log.
@@ -473,50 +486,107 @@ impl App {
     }
 
     fn load_dropped_cloud(&mut self, path: std::path::PathBuf) {
-        let Some(state) = &mut self.state else { return };
-        let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
-            return;
-        };
-        match state.scene.load_cloud(&state.ctx, slot, &path) {
-            Ok(name) => {
-                // A dropped file that will not parse is a warning, never a
-                // crash — the same trade the command-line path makes.
-                // Arriving at a venue and having the app die because a
-                // scan has a malformed header is the wrong failure.
-                let text = path.display().to_string();
-                if self.clouds.len() <= self.next_cloud {
-                    self.clouds.resize(self.next_cloud + 1, String::new());
-                }
-                self.clouds[self.next_cloud] = text;
-                self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
-                if let Err(e) = crate::settings::save_clouds(&self.clouds) {
-                    log::warn!("could not remember the loaded clouds: {e:#}");
-                    state.gui.notify_error(format!(
-                        "cloud loaded, but won't survive a restart: {e}"
-                    ));
-                }
-                log::info!("loaded {name} into cloud slot {slot}");
-                // Point the shape at what just arrived, so a drop shows
-                // something. Loading a cloud nobody can see is the same as
-                // not loading it, and hunting for the slot index
-                // afterwards is exactly the fiddling a drop avoids.
-                let p = &*self.params;
-                p.registry.set(p.cloud_a, slot as f32);
-                p.registry.set(p.cloud_morph, 0.0);
-                state
-                    .gui
-                    .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
-            }
+        // The parse leaves this thread. It used to run right here, on the
+        // event loop, holding up every frame behind it — a big scan froze
+        // the projector for the whole read. Only pure CPU work moves; the
+        // GPU upload happens back on this thread when the result lands in
+        // `finish_pending_clouds`.
+        if let Some(state) = &mut self.state {
+            state
+                .gui
+                .notify_info(format!("loading {}…", file_name(&path)));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let parse_path = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("vizz-cloud-load".into())
+            .spawn(move || {
+                let result = vizz_render::pointcloud::load(&parse_path).map(|mut points| {
+                    vizz_render::pointcloud::normalize(&mut points);
+                    points
+                });
+                // The receiver may be gone if the app quit; nothing to do.
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => self.pending_clouds.push(PendingCloud { path, rx }),
             Err(e) => {
-                log::warn!("could not load {}: {e:#}", path.display());
-                state
-                    .gui
-                    .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+                log::error!("could not start the cloud loader: {e}");
+                if let Some(state) = &mut self.state {
+                    state
+                        .gui
+                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+                }
+            }
+        }
+    }
+
+    /// Collect finished cloud parses and upload them. Called every frame;
+    /// nearly always a no-op.
+    fn finish_pending_clouds(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        if self.pending_clouds.is_empty() {
+            return;
+        }
+        let mut done = Vec::new();
+        self.pending_clouds.retain(|p| match p.rx.try_recv() {
+            Ok(result) => {
+                done.push((p.path.clone(), result));
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => {
+                done.push((p.path.clone(), Err(anyhow::anyhow!("the loader thread died"))));
+                false
+            }
+        });
+        for (path, result) in done {
+            let Some(state) = &mut self.state else { return };
+            match result {
+                Ok(points) => {
+                    let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
+                        return;
+                    };
+                    let name = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "cloud".into());
+                    state.scene.set_cloud(&state.ctx, slot, &points, &name);
+                    let text = path.display().to_string();
+                    if self.clouds.len() <= self.next_cloud {
+                        self.clouds.resize(self.next_cloud + 1, String::new());
+                    }
+                    self.clouds[self.next_cloud] = text;
+                    self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
+                    if let Err(e) = crate::settings::save_clouds(&self.clouds) {
+                        log::warn!("could not remember the loaded clouds: {e:#}");
+                        state.gui.notify_error(format!(
+                            "cloud loaded, but won't survive a restart: {e}"
+                        ));
+                    }
+                    log::info!("loaded {name} into cloud slot {slot}");
+                    // Point the shape at what just arrived, so a drop
+                    // shows something. Loading a cloud nobody can see is
+                    // the same as not loading it.
+                    let p = &*self.params;
+                    p.registry.set(p.cloud_a, slot as f32);
+                    p.registry.set(p.cloud_morph, 0.0);
+                    state
+                        .gui
+                        .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+                }
+                Err(e) => {
+                    log::warn!("could not load {}: {e:#}", path.display());
+                    state
+                        .gui
+                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+                }
             }
         }
     }
 
     fn redraw(&mut self) {
+        self.finish_pending_clouds();
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
         // Upload a new stream frame before drawing, and only when the
@@ -1684,6 +1754,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         modulation_save_failing: false,
         output_status: Vec::new(),
         armed_learn: None,
+        pending_clouds: Vec::new(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),

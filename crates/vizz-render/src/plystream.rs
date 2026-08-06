@@ -40,6 +40,13 @@ const MAX_HEADER: usize = 64 * 1024;
 /// otherwise be an instant allocation of everything the machine has.
 const MAX_VERTICES: usize = 20_000_000;
 
+/// Most bytes one frame body may claim. The vertex cap alone still let a
+/// header ask for MAX_VERTICES at a 64-byte stride — a 1.28 GB
+/// allocation, sized entirely by an untrusted peer before a single byte
+/// of body had arrived. A quarter gigabyte covers any real scan at any
+/// real stride and is survivable if a hostile peer asks for all of it.
+const MAX_FRAME_BYTES: usize = 256 << 20;
+
 /// What the header says about the body that follows it.
 #[derive(Debug, PartialEq)]
 struct FrameShape {
@@ -66,8 +73,13 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<Point>>> {
             let len = shape
                 .vertices
                 .checked_mul(stride)
-                .filter(|n| *n <= MAX_VERTICES * 64)
-                .ok_or_else(|| anyhow::anyhow!("PLY frame body size overflows"))?;
+                .filter(|n| *n <= MAX_FRAME_BYTES)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "PLY frame body over the {} MiB limit",
+                        MAX_FRAME_BYTES >> 20
+                    )
+                })?;
             let start = frame.len();
             frame.resize(start + len, 0);
             reader.read_exact(&mut frame[start..])?;

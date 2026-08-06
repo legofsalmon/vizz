@@ -36,7 +36,13 @@ impl OscServer {
             .name("vizz-osc".into())
             .spawn(move || {
                 log::info!("OSC listening on {local_addr}");
-                let mut buf = [0u8; rosc::decoder::MTU];
+                // The full UDP maximum, not rosc's 1536-byte "MTU". A
+                // datagram larger than the buffer is silently truncated
+                // by recv_from and then fails to decode, so a TouchOSC
+                // page sending one bundle of a few dozen faders simply
+                // never arrived. 64 KiB once on a worker thread's stack
+                // is nothing; the messages it saves are real.
+                let mut buf = [0u8; 65_507];
                 while !thread_stop.load(Ordering::Relaxed) {
                     match socket.recv_from(&mut buf) {
                         Ok((n, _peer)) => match rosc::decoder::decode_udp(&buf[..n]) {
