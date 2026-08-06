@@ -26,6 +26,31 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
 }
 
+/// Keep an uncaptured GPU error from ending the show.
+///
+/// wgpu's default handler for an uncaptured error — a validation failure,
+/// an out-of-memory allocation — is to panic, which takes the process and
+/// the projector with it. Every one of those errors is survivable here:
+/// the frame that tripped it is wrong or missing, and the next frame runs
+/// the same code with (usually) the same inputs, so a panic converts a
+/// one-frame glitch into a black screen and a dock bounce.
+///
+/// Logged at error with a rate limit, because the usual failure mode is
+/// the same validation error on every frame — sixty identical lines a
+/// second helps nobody and buries whatever else the log was saying.
+pub fn install_error_guard(device: &wgpu::Device) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static LOGGED: AtomicU32 = AtomicU32::new(0);
+    device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+        let n = LOGGED.fetch_add(1, Ordering::Relaxed);
+        // The first few in full, then one in every few hundred as a pulse
+        // that it is still happening.
+        if n < 5 || n.is_multiple_of(300) {
+            log::error!("GPU error (frame kept running, {n} so far): {e}");
+        }
+    }));
+}
+
 impl GpuContext {
     /// Bring up an adapter + device. Pass the surface in windowed mode so
     /// the adapter is guaranteed to be able to present to it.
@@ -66,6 +91,7 @@ impl GpuContext {
         device.set_device_lost_callback(|reason, msg| {
             log::error!("GPU device lost ({reason:?}): {msg}");
         });
+        install_error_guard(&device);
 
         Ok(Self {
             instance,

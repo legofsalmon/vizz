@@ -116,6 +116,28 @@ struct App {
     /// When it was last compared. Comparing is cheap but not free, and
     /// nothing here needs answering sixty times a second.
     modulation_checked: Instant,
+    /// Whether the last frame could present to the window. While it
+    /// cannot — minimised, occluded, surface lost — the loop drives
+    /// itself from `about_to_wait`, because a hidden window may stop
+    /// receiving redraw events entirely and the Syphon/NDI feed must not
+    /// stop with it.
+    presentable: bool,
+}
+
+/// Build a fresh surface for the window and configure it.
+///
+/// For the `Lost` and `Validation` acquire arms: reconfiguring a dead
+/// surface just fails the same way forever, which is a preview frozen for
+/// the rest of the night. The instance can always mint a new one.
+fn recreate_surface(state: &mut RenderState) {
+    match state.ctx.instance.create_surface(Arc::clone(&state.window)) {
+        Ok(surface) => {
+            state.surface = surface;
+            state.surface.configure(&state.ctx.device, &state.config);
+            log::info!("window surface recreated");
+        }
+        Err(e) => log::error!("could not recreate the window surface: {e:#}"),
+    }
 }
 
 /// How often the modulation autosave looks for a change. Slow enough to be
@@ -165,6 +187,15 @@ impl App {
                     trace: wgpu::Trace::Off,
                 })
                 .await?;
+            // The same guards GpuContext::new installs on the headless
+            // path. This device is built by hand for surface
+            // compatibility, and without these an uncaptured validation
+            // or out-of-memory error panics the process mid-set — wgpu's
+            // default handler — and a lost device dies silently.
+            device.set_device_lost_callback(|reason, msg| {
+                log::error!("GPU device lost ({reason:?}): {msg}");
+            });
+            vizz_render::install_error_guard(&device);
             anyhow::Ok(GpuContext {
                 instance,
                 adapter,
@@ -442,37 +473,7 @@ impl App {
             }
         }
 
-        use wgpu::CurrentSurfaceTexture as Cst;
-        let frame = match state.surface.get_current_texture() {
-            Cst::Success(frame) => frame,
-            Cst::Suboptimal(frame) => {
-                // Usable but stale (e.g. mid-resize): draw it, reconfigure after.
-                state.surface.configure(&state.ctx.device, &state.config);
-                frame
-            }
-            Cst::Lost | Cst::Outdated => {
-                // Resize/display change: reconfigure and try again next frame.
-                state.surface.configure(&state.ctx.device, &state.config);
-                state.window.request_redraw();
-                return;
-            }
-            Cst::Timeout | Cst::Occluded => {
-                // Skip the frame; keep the loop alive so we recover when
-                // the window is visible again.
-                state.window.request_redraw();
-                return;
-            }
-            Cst::Validation => {
-                log::error!("surface validation error — skipping frame");
-                state.window.request_redraw();
-                return;
-            }
-        };
-
         let inputs = self.engine.begin_frame(state.output.aspect(), None);
-        let preview = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = state
             .ctx
             .device
@@ -495,14 +496,59 @@ impl App {
             inputs.background,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
-        state.blit.draw(
-            &mut encoder,
-            &preview,
-            &state.blit_bind,
-            state.output.aspect(),
-            state.config.width,
-            state.config.height,
-        );
+
+        // Only now does the window enter into it. The master above is the
+        // show — it is what Syphon and NDI carry to the projector — and
+        // the window is a preview of it. This used to be the other way
+        // round: the whole frame sat behind the surface acquire, so
+        // minimising the preview window froze the projector feed, which
+        // is exactly backwards — the window you do not need killing the
+        // output you do.
+        use wgpu::CurrentSurfaceTexture as Cst;
+        let frame = match state.surface.get_current_texture() {
+            Cst::Success(frame) => Some(frame),
+            Cst::Suboptimal(frame) => {
+                // Usable but stale (e.g. mid-resize): draw it, reconfigure after.
+                state.surface.configure(&state.ctx.device, &state.config);
+                Some(frame)
+            }
+            Cst::Outdated => {
+                // Resize/display change: reconfigure; the preview skips a
+                // frame and the output does not.
+                state.surface.configure(&state.ctx.device, &state.config);
+                None
+            }
+            Cst::Lost => {
+                // Lost means the surface itself is gone — a display
+                // unplugged, a GPU reset — and reconfiguring a dead
+                // surface just returns Lost again, forever. Recreate it
+                // from the instance instead.
+                recreate_surface(state);
+                None
+            }
+            Cst::Timeout | Cst::Occluded => None,
+            Cst::Validation => {
+                // Retrying the identical call cannot succeed; rebuilding
+                // the surface can.
+                log::error!("surface validation error — rebuilding the surface");
+                recreate_surface(state);
+                None
+            }
+        };
+        self.presentable = frame.is_some();
+        let preview = frame
+            .as_ref()
+            .map(|f| f.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        if let Some(preview) = &preview {
+            state.blit.draw(
+                &mut encoder,
+                preview,
+                &state.blit_bind,
+                state.output.aspect(),
+                state.config.width,
+                state.config.height,
+            );
+        }
         // The prompt expires on its own as well as on a keystroke: an
         // Escape pressed and then walked away from must not leave the app
         // one key from quitting for the rest of the night.
@@ -543,7 +589,7 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
-        let actions = if state.gui.will_draw() {
+        let actions = if preview.is_some() && state.gui.will_draw() {
             // The panel composites over the preview, inside the same encoder,
             // so it costs one extra pass and no synchronisation point.
             let outputs_status: Vec<OutputStatus> = state
@@ -642,7 +688,7 @@ impl App {
                 &state.ctx.device,
                 &state.ctx.queue,
                 &mut encoder,
-                &preview,
+                preview.as_ref().expect("guarded by the branch condition"),
                 &self.params.registry,
                 panel_state,
                 &mut self.engine.modulation,
@@ -738,8 +784,23 @@ impl App {
             publish,
         );
 
-        state.window.pre_present_notify();
-        state.ctx.queue.present(frame);
+        if let Some(frame) = frame {
+            state.window.pre_present_notify();
+            state.ctx.queue.present(frame);
+        } else {
+            // No present means no vsync backpressure: left alone the loop
+            // would spin flat out rendering frames nobody can see faster
+            // than any receiver wants them. Sleeping is normally forbidden
+            // on this thread because it steals time from a present — here
+            // there is no present to steal from, and the sleep is what
+            // paces the Syphon/NDI feed at roughly its advertised rate.
+            let budget =
+                std::time::Duration::from_secs_f64(1.0 / self.opts.outputs.fps.max(1) as f64);
+            let spent = frame_start.elapsed();
+            if spent < budget {
+                std::thread::sleep(budget - spent);
+            }
+        }
 
         let elapsed = frame_start.elapsed();
         state.gui.push_frame_time(elapsed.as_secs_f32() * 1e3);
@@ -805,6 +866,17 @@ impl ApplicationHandler for App {
     /// window closed, Escape confirmed, the platform's own quit — so the
     /// few seconds since the last autosave are not lost to whichever route
     /// out the user happened to take.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // While the window cannot present, redraw events may stop coming
+        // at all — a miniaturised window gets none on some platforms — so
+        // the loop drives itself here, paced by the sleep in `redraw`.
+        // The moment presenting works again, `presentable` flips and the
+        // ordinary request_redraw cycle takes back over.
+        if !self.presentable && self.state.is_some() {
+            self.redraw();
+        }
+    }
+
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         let now = vizz_mod::library::session_bytes(&self.engine.modulation);
         if now != self.saved_modulation
@@ -1396,6 +1468,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         // nothing does not rewrite the file.
         saved_modulation: restored_modulation,
         modulation_checked: Instant::now(),
+        presentable: true,
         midi,
         midi_shared,
         midi_view: MidiView::default(),
