@@ -124,6 +124,10 @@ struct App {
     modulation_save_failing: bool,
     /// Output liveness as of last frame, for announcing transitions.
     output_status: Vec<vizz_ui::OutputStatus>,
+    /// The learn that was armed last frame, and the map revision then —
+    /// so a learn *completing* (on the MIDI thread, never in response to
+    /// a click) gets announced, and a cancelled one does not.
+    armed_learn: Option<(String, u64)>,
     /// Whether the last frame could present to the window. While it
     /// cannot — minimised, occluded, surface lost — the loop drives
     /// itself from `about_to_wait`, because a hidden window may stop
@@ -680,6 +684,23 @@ impl App {
             // both UIs carefully draw unreachable code.
             let outputs_status: Vec<OutputStatus> = state.outputs.status();
             refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+            // A learn finishing is worth saying: it completes on the MIDI
+            // thread when a control moves, so no click marks the moment —
+            // the old behaviour was a chip quietly changing somewhere
+            // possibly off-screen. Completion = the armed learn went away
+            // AND the map changed; armed-then-cancelled says nothing.
+            match (&self.armed_learn, &self.midi_view.learn_target) {
+                (Some((label, rev)), None) => {
+                    if self.midi_view.revision > *rev {
+                        state.gui.notify_info(format!("MIDI learned: {label}"));
+                    }
+                    self.armed_learn = None;
+                }
+                (_, Some(t)) => {
+                    self.armed_learn = Some((t.label.clone(), self.midi_view.revision));
+                }
+                (None, None) => {}
+            }
             // Picks up presets added behind the app's back — dropped into the
             // folder, or synced in. Anything the app writes refreshes this
             // directly, so the interval only has to catch what it did not do
@@ -1088,6 +1109,7 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     view.map = state.map.clone();
     view.learn_target = state.learn_target.clone();
     view.last_source = state.last_source;
+    view.revision = state.revision;
 }
 
 /// Push panel edits through to the analysis thread. A free function taking
@@ -1661,6 +1683,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         midi_save_backoff: None,
         modulation_save_failing: false,
         output_status: Vec::new(),
+        armed_learn: None,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

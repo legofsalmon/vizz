@@ -375,6 +375,7 @@ fn midi_view() -> MidiView {
     map.bind(vizz_midi::Source::ControlChange { channel: 0, controller: 7 }, "/master/dim");
     map.bind(vizz_midi::Source::ControlChange { channel: 0, controller: 1 }, "/particles/hue");
     MidiView {
+        revision: 0,
         available: true,
         connected: vec!["Launch Control XL".into()],
         map,

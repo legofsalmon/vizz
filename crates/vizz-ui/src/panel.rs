@@ -26,6 +26,9 @@ pub struct MidiView {
     pub map: MidiMap,
     pub learn_target: Option<vizz_midi::LearnTarget>,
     pub last_source: Option<Source>,
+    /// Binding-change counter, so a learn completing on the MIDI thread
+    /// is observable from the frame after.
+    pub revision: u64,
 }
 
 impl MidiView {

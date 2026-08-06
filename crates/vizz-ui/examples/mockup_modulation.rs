@@ -36,6 +36,7 @@ fn main() {
         Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
         Shot { name: "quit", w: 420, h: 200, draw: draw_quit },
         Shot { name: "notices", w: 480, h: 260, draw: draw_notices },
+        Shot { name: "learn-banner", w: 640, h: 140, draw: draw_learn_banner },
     ];
 
     for s in shots {
@@ -366,6 +367,11 @@ fn draw_notices(ctx: &egui::Context, _w: f32, _h: f32) {
         n.info("cloud 'torso-scan' loaded into slot 2 and shown");
         n.draw(ctx);
     });
+}
+
+/// The armed-learn banner: the global indicator for a global mode.
+fn draw_learn_banner(ctx: &egui::Context, _w: f32, _h: f32) {
+    vizz_ui::draw_learn_banner_for_preview(ctx, "scene 5");
 }
 
 fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {

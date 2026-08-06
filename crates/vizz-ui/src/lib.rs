@@ -40,6 +40,11 @@ pub fn draw_quit_prompt_for_preview(ctx: &egui::Context) {
     quit_prompt(ctx);
 }
 
+/// And the armed-learn banner, same reasoning.
+pub fn draw_learn_banner_for_preview(ctx: &egui::Context, label: &str) {
+    learn_banner(ctx, label);
+}
+
 /// Keyboard shortcuts, on screen rather than only in the README.
 ///
 /// A shortcut nobody can discover is a shortcut nobody uses, and the
@@ -106,6 +111,42 @@ fn quit_prompt(ctx: &egui::Context) {
                     );
                 });
         });
+}
+
+/// The armed-learn banner: a mode this global deserves an indicator this
+/// global.
+///
+/// An armed learn binds the next control that moves, whichever screen is
+/// up and whichever device sends it — armed from the panel, it survived
+/// switching to the performance layout, hiding everything, even the
+/// controller being unplugged and replugged, all with no on-screen sign
+/// anywhere. The first stray knob touch then bound itself to the waiting
+/// parameter. Returns true when clicked, which cancels the learn.
+fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
+    let mut clicked = false;
+    egui::Area::new(egui::Id::new("learn-banner"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let r = egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(64, 50, 18))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 90)))
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "MIDI learn armed: the next control you move binds to {label} — click to cancel"
+                        ))
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(255, 224, 170)),
+                    );
+                })
+                .response
+                .interact(egui::Sense::click());
+            clicked = r.clicked();
+        });
+    clicked
 }
 
 /// How many frame times the sparkline keeps.
@@ -208,13 +249,20 @@ impl Gui {
     /// in which case the caller should not act on it (so dragging a
     /// slider does not also trigger app shortcuts).
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        // Tab is ours, always: the panel must be dismissible even when
-        // egui wants keyboard focus.
+        // Tab is ours whenever nothing is being typed into: the panel
+        // must be dismissible even while egui has mouse focus. While a
+        // text field IS focused, Tab goes to egui as the focus-next it
+        // means there — it used to hide the entire panel mid-way through
+        // typing a preset name.
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
+            && !self.ctx.egui_wants_keyboard_input()
         {
             self.visible = !self.visible;
+            if !self.visible {
+                self.drop_text_focus();
+            }
             return true;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
@@ -222,12 +270,18 @@ impl Gui {
             && !self.ctx.egui_wants_keyboard_input()
         {
             match event.logical_key.as_ref() {
-                winit::keyboard::Key::Character("g") => {
+                // Case-insensitive: the ? overlay advertises these as "G"
+                // and "P", and Caps Lock — or a Shift held for something
+                // else — used to silently kill both.
+                winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("g") => {
                     self.graph_open = !self.graph_open;
                     return true;
                 }
-                winit::keyboard::Key::Character("p") => {
+                winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("p") => {
                     self.performance = !self.performance;
+                    if !self.performance {
+                        self.drop_text_focus();
+                    }
                     return true;
                 }
                 // `/` jumps to the parameter filter, as it does in every
@@ -257,10 +311,27 @@ impl Gui {
                 _ => {}
             }
         }
-        if !self.visible {
+        // Events flow to egui whenever anything is on screen — not only
+        // when the *panel* is. Gating this on `visible` alone meant Tab
+        // silently killed all mouse input to the performance layout and
+        // the modulation canvas while both kept drawing: every pad,
+        // fader and node looked live and responded to nothing.
+        if !self.will_draw() {
             return false;
         }
         self.state.on_window_event(window, event).consumed
+    }
+
+    /// Take keyboard focus away from whatever text field holds it.
+    ///
+    /// Called when the screen that field lives on goes away. A field left
+    /// focused behind a hidden panel kept `egui_wants_keyboard_input`
+    /// true, which silently disabled the number keys and every letter
+    /// shortcut — with nothing on screen to say why.
+    fn drop_text_focus(&mut self) {
+        if let Some(id) = self.ctx.memory(|m| m.focused()) {
+            self.ctx.memory_mut(|m| m.surrender_focus(id));
+        }
     }
 
     /// Record a frame time for the sparkline.
@@ -315,11 +386,16 @@ impl Gui {
         if self.performance {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
         }
-        let actions = if self.visible {
+        let mut actions = if self.visible {
             panel::draw(&self.ctx, registry, &state, modulation, &mut self.ranges)
         } else {
             PanelActions::default()
         };
+        if let Some(target) = &state.midi.learn_target
+            && learn_banner(&self.ctx, &target.label)
+        {
+            actions.set_learn_target = Some(None);
+        }
         if actions.ranges_changed && let Err(e) = self.ranges.save() {
             log::error!("could not save slider ranges: {e:#}");
             self.notices.error(format!("could not save the slider ranges: {e}"));
@@ -386,7 +462,13 @@ impl Gui {
             midi: &state.midi,
             values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
         };
-        let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
+        let mut perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
+        // The armed-learn banner rides both screens; see the panel path.
+        if let Some(target) = &state.midi.learn_target
+            && learn_banner(&self.ctx, &target.label)
+        {
+            perf.set_learn_target = Some(None);
+        }
         if perf.exit {
             self.performance = false;
         }
@@ -712,6 +794,7 @@ mod tests {
             frame_times_ms: vec![],
             frame_budget_ms: 16.67,
             midi: MidiView {
+                revision: 0,
                 available: true,
                 connected: vec!["Launch Control XL".into()],
                 map,
