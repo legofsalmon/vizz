@@ -49,7 +49,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     scene.load_clouds(&ctx, &opts.clouds);
     let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
-    let mut senders = outputs::build_senders(&ctx.device, &opts.outputs);
+    let mut senders = outputs::Outputs::new(&ctx.device, &opts.outputs);
     let fixed_dt = Duration::from_nanos(16_666_667);
 
     log::info!(
@@ -106,7 +106,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             !inputs.room_visible, inputs.background);
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         ctx.queue.submit([encoder.finish()]);
-        outputs::publish_all(&mut senders, &ctx.device, &ctx.queue, &output.texture);
+        senders.publish(&ctx.device, &ctx.queue, &output.texture);
         // Headless has no vsync backpressure: wait for the GPU so frame
         // times measure real work, not queue depth.
         ctx.device

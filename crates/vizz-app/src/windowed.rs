@@ -54,7 +54,7 @@ struct RenderState {
     output: OutputTarget,
     blit: BlitPass,
     blit_bind: wgpu::BindGroup,
-    senders: Vec<Box<dyn vizz_io::FrameSender>>,
+    outputs: outputs::Outputs,
     post: PostChain,
     gui: Gui,
     /// Eight-bit copy of the master, present only when the master is
@@ -279,7 +279,7 @@ impl App {
         // a fixed extent with no bounds check.
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
-        let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
+        let senders = outputs::Outputs::new(&ctx.device, &self.opts.outputs);
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
@@ -295,7 +295,7 @@ impl App {
             output,
             blit,
             blit_bind,
-            senders,
+            outputs: senders,
             post,
             gui,
             publish,
@@ -356,8 +356,7 @@ impl App {
         // that the stream's size changed.
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
-        state.senders.clear();
-        state.senders = outputs::build_senders(&state.ctx.device, &self.opts.outputs);
+        state.outputs = outputs::Outputs::new(&state.ctx.device, &self.opts.outputs);
         state.window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
 
         let mut s = crate::settings::load();
@@ -592,11 +591,10 @@ impl App {
         let actions = if preview.is_some() && state.gui.will_draw() {
             // The panel composites over the preview, inside the same encoder,
             // so it costs one extra pass and no synchronisation point.
-            let outputs_status: Vec<OutputStatus> = state
-                .senders
-                .iter()
-                .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
-                .collect();
+            // Real liveness, from the slot roster. The `live: true` this
+            // replaces was hardcoded, which made the dead-output warning
+            // both UIs carefully draw unreachable code.
+            let outputs_status: Vec<OutputStatus> = state.outputs.status();
             refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
             // Picks up presets added behind the app's back — dropped into the
             // folder, or synced in. Anything the app writes refreshes this
@@ -777,12 +775,9 @@ impl App {
             Some(p) => &p.texture,
             None => &state.output.texture,
         };
-        outputs::publish_all(
-            &mut state.senders,
-            &state.ctx.device,
-            &state.ctx.queue,
-            publish,
-        );
+        state
+            .outputs
+            .publish(&state.ctx.device, &state.ctx.queue, publish);
 
         if let Some(frame) = frame {
             state.window.pre_present_notify();
