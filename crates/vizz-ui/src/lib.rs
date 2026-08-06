@@ -7,6 +7,7 @@
 //! and never introduces a synchronisation point.
 
 pub mod graph_view;
+pub mod notices;
 pub mod grid_view;
 pub mod panel;
 pub mod performance;
@@ -137,6 +138,8 @@ pub struct Gui {
     macros: vizz_mod::perform::Macros,
     /// Slider working ranges, loaded once and saved when they change.
     ranges: vizz_mod::ranges::Ranges,
+    /// On-screen notices — the channel runtime failures report through.
+    notices: notices::Notices,
     history: Vec<f32>,
 }
 
@@ -167,8 +170,21 @@ impl Gui {
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             ranges: vizz_mod::ranges::Ranges::load(),
+            notices: notices::Notices::default(),
             history: Vec::with_capacity(HISTORY),
         }
+    }
+
+    /// Something worked and is worth confirming on screen.
+    pub fn notify_info(&mut self, text: impl Into<String>) {
+        self.notices.info(text);
+    }
+
+    /// Something failed. This is the loud path: it draws whatever else is
+    /// hidden, because a save failing with the panel closed is precisely
+    /// the case a log line was silently eating.
+    pub fn notify_error(&mut self, text: impl Into<String>) {
+        self.notices.error(text);
     }
 
     /// Will `render` put anything on screen this frame?
@@ -180,7 +196,12 @@ impl Gui {
     /// meant paying for a panel nobody could see. Which is the state a set
     /// is actually played in.
     pub fn will_draw(&self) -> bool {
-        self.visible || self.graph_open || self.performance || self.shortcuts_open || self.quit_armed
+        self.visible
+            || self.graph_open
+            || self.performance
+            || self.shortcuts_open
+            || self.quit_armed
+            || !self.notices.is_empty()
     }
 
     /// Feed a window event to egui. Returns `true` if egui consumed it,
@@ -290,6 +311,7 @@ impl Gui {
         if self.quit_armed {
             quit_prompt(&self.ctx);
         }
+        self.notices.draw(&self.ctx);
         if self.performance {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
         }
@@ -300,6 +322,7 @@ impl Gui {
         };
         if actions.ranges_changed && let Err(e) = self.ranges.save() {
             log::error!("could not save slider ranges: {e:#}");
+            self.notices.error(format!("could not save the slider ranges: {e}"));
         }
         if self.graph_open {
             let mut open = true;
@@ -367,6 +390,7 @@ impl Gui {
             self.performance = false;
         }
         if perf.macros_changed && let Err(e) = self.macros.save() {
+            self.notices.error(format!("could not save the fader assignments: {e}"));
             log::warn!("could not save macro assignments: {e}");
         }
 

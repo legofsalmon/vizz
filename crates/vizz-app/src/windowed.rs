@@ -116,12 +116,27 @@ struct App {
     /// When it was last compared. Comparing is cheap but not free, and
     /// nothing here needs answering sixty times a second.
     modulation_checked: Instant,
+    /// Set while the MIDI map is failing to save; holds the last attempt
+    /// so retries pace themselves instead of storming a full disk.
+    midi_save_backoff: Option<Instant>,
+    /// Whether the modulation autosave is currently failing, so the log
+    /// line fires once per streak and recovery gets announced.
+    modulation_save_failing: bool,
+    /// Output liveness as of last frame, for announcing transitions.
+    output_status: Vec<vizz_ui::OutputStatus>,
     /// Whether the last frame could present to the window. While it
     /// cannot — minimised, occluded, surface lost — the loop drives
     /// itself from `about_to_wait`, because a hidden window may stop
     /// receiving redraw events entirely and the Syphon/NDI feed must not
     /// stop with it.
     presentable: bool,
+}
+
+/// The file's own name, for a notice — the full path is for the log.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// Build a fresh surface for the window and configure it.
@@ -362,6 +377,18 @@ impl App {
         self.opts.outputs.height = oh;
         state.outputs = outputs::Outputs::new(&state.ctx.device, &self.opts.outputs);
         state.window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
+        if [ow, oh] != [setup.width, setup.height] {
+            // The fitter shrank the request. Saying so is what keeps the
+            // budget from reading as the spinner having ignored the drag.
+            state.gui.notify_error(format!(
+                "{}x{} is over the pixel budget — output fitted to {ow}x{oh}",
+                setup.width, setup.height
+            ));
+        } else {
+            state
+                .gui
+                .notify_info(format!("output {ow}x{oh}, rendering at {rw}x{rh}"));
+        }
 
         let mut s = crate::settings::load();
         s.output_size = Some([ow, oh]);
@@ -396,7 +423,14 @@ impl App {
             // a palette that arrives as a cloud is obvious immediately
             // whereas the reverse silently recolours the scene.
             "csv" => self.load_dropped_cloud(path),
-            other => log::warn!("nothing to do with a .{other} file"),
+            other => {
+                log::warn!("nothing to do with a .{other} file");
+                if let Some(state) = &mut self.state {
+                    state.gui.notify_error(format!(
+                        "can't load a .{other} — clouds are .ply .xyz .pts .csv, palettes .gpl .hex .txt"
+                    ));
+                }
+            }
         }
     }
 
@@ -411,10 +445,19 @@ impl App {
                 self.palettes.push(path.display().to_string());
                 if let Err(e) = crate::settings::save_palettes(&self.palettes) {
                     log::warn!("could not remember the loaded palettes: {e:#}");
+                    state.gui.notify_error(format!(
+                        "palette loaded, but won't survive a restart: {e}"
+                    ));
                 }
                 log::info!("palette {name} is now selected");
+                state.gui.notify_info(format!("palette '{name}' loaded and selected"));
             }
-            Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+            Err(e) => {
+                log::warn!("could not load {}: {e:#}", path.display());
+                state
+                    .gui
+                    .notify_error(format!("could NOT load palette {}: {e}", file_name(&path)));
+            }
         }
     }
 
@@ -437,6 +480,9 @@ impl App {
                 self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
                 if let Err(e) = crate::settings::save_clouds(&self.clouds) {
                     log::warn!("could not remember the loaded clouds: {e:#}");
+                    state.gui.notify_error(format!(
+                        "cloud loaded, but won't survive a restart: {e}"
+                    ));
                 }
                 log::info!("loaded {name} into cloud slot {slot}");
                 // Point the shape at what just arrived, so a drop shows
@@ -446,8 +492,16 @@ impl App {
                 let p = &*self.params;
                 p.registry.set(p.cloud_a, slot as f32);
                 p.registry.set(p.cloud_morph, 0.0);
+                state
+                    .gui
+                    .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
             }
-            Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+            Err(e) => {
+                log::warn!("could not load {}: {e:#}", path.display());
+                state
+                    .gui
+                    .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+            }
         }
     }
 
@@ -571,10 +625,27 @@ impl App {
             let now = vizz_mod::library::session_bytes(&self.engine.modulation);
             if now != self.saved_modulation {
                 match vizz_mod::library::save_session(&self.engine.modulation) {
-                    Ok(()) => self.saved_modulation = now,
-                    // Kept at debug: a full disk would otherwise print this
-                    // every few seconds for the rest of the night.
-                    Err(e) => log::debug!("could not save the modulation state: {e:#}"),
+                    Ok(()) => {
+                        if std::mem::take(&mut self.modulation_save_failing) {
+                            state.gui.notify_info("modulation is saving again");
+                        }
+                        self.saved_modulation = now;
+                    }
+                    // Once per streak, loudly — the review found the old
+                    // debug-level line was suppressed by the default
+                    // filter, so a full disk silently stopped persistence
+                    // for the whole night. The dedup in the notices keeps
+                    // a continuing failure to one row, so once per streak
+                    // on screen costs nothing.
+                    Err(e) => {
+                        if !self.modulation_save_failing {
+                            log::error!("could not save the modulation state: {e:#}");
+                        }
+                        self.modulation_save_failing = true;
+                        state
+                            .gui
+                            .notify_error(format!("modulation is NOT being saved: {e}"));
+                    }
                 }
             }
         }
@@ -592,7 +663,9 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
-        let actions = if preview.is_some() && state.gui.will_draw() {
+        let actions = if let Some(preview) = &preview
+            && state.gui.will_draw()
+        {
             // The panel composites over the preview, inside the same encoder,
             // so it costs one extra pass and no synchronisation point.
             // Real liveness, from the slot roster. The `live: true` this
@@ -690,7 +763,7 @@ impl App {
                 &state.ctx.device,
                 &state.ctx.queue,
                 &mut encoder,
-                preview.as_ref().expect("guarded by the branch condition"),
+                preview,
                 &self.params.registry,
                 panel_state,
                 &mut self.engine.modulation,
@@ -710,7 +783,13 @@ impl App {
                     &mut self.audio_auto_bpm,
                     &mut self.tap,
                 );
-                apply_preset_actions(&actions, &self.params.registry, &mut self.library);
+                let mut notes: Notes = Vec::new();
+                apply_preset_actions(
+                    &actions,
+                    &self.params.registry,
+                    &mut self.library,
+                    &mut notes,
+                );
                 apply_grid_actions(
                     &actions.grid,
                     &self.params,
@@ -718,6 +797,7 @@ impl App {
                     &GridBinding::scenes(&self.params),
                     &self.midi_shared,
                     &mut self.library,
+                    &mut notes,
                 );
                 apply_grid_actions(
                     &actions.gravity,
@@ -726,6 +806,7 @@ impl App {
                     &GridBinding::gravity(&self.params),
                     &self.midi_shared,
                     &mut self.library,
+                    &mut notes,
                 );
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
@@ -747,7 +828,17 @@ impl App {
                     &self.midi_shared,
                     &self.opts.midi_map_path,
                     &mut self.saved_revision,
-                )
+                    &mut self.midi_save_backoff,
+                    &mut notes,
+                );
+                // Everything the apply functions had to say, on screen.
+                for (is_error, text) in notes {
+                    if is_error {
+                        state.gui.notify_error(text);
+                    } else {
+                        state.gui.notify_info(text);
+                    }
+                }
             }
             // A GUI failure must never take down the output.
             Err(e) => log::error!("GUI draw failed: {e:#}"),
@@ -782,6 +873,28 @@ impl App {
         state
             .outputs
             .publish(&state.ctx.device, &state.ctx.queue, publish);
+        // Announce liveness *transitions*. The roster keeps dead outputs
+        // visible in the panel; this is the shove for the moment it
+        // happens, when the panel may be closed and the performer is
+        // looking at the output that just froze.
+        let status = state.outputs.status();
+        for now in &status {
+            let was = self
+                .output_status
+                .iter()
+                .find(|p| p.name == now.name)
+                .map(|p| p.live);
+            match (was, now.live) {
+                (Some(true), false) => state
+                    .gui
+                    .notify_error(format!("output '{}' died — retrying in the background", now.name)),
+                (Some(false), true) => {
+                    state.gui.notify_info(format!("output '{}' is back", now.name))
+                }
+                _ => {}
+            }
+        }
+        self.output_status = status;
 
         if let Some(frame) = frame {
             state.window.pre_present_notify();
@@ -1185,6 +1298,7 @@ fn apply_grid_actions(
     b: &GridBinding,
     midi: &SharedMidi,
     library: &mut vizz_mod::preset::Library,
+    notes: &mut Notes,
 ) {
     let reg = &params.registry;
     let mut dirty = false;
@@ -1248,7 +1362,13 @@ fn apply_grid_actions(
             // A failed save must not leave the pad pointing at a preset
             // that was never written — that would be a pad which looks
             // filled and does nothing.
-            Err(e) => log::warn!("could not save {} {} as a preset: {e:#}", b.noun, slot + 1),
+            Err(e) => {
+                log::warn!("could not save {} {} as a preset: {e:#}", b.noun, slot + 1);
+                notes.push((
+                    true,
+                    format!("could NOT capture {} {}: {e}", b.noun, slot + 1),
+                ));
+            }
         }
     }
     if let Some(slot) = actions.clear {
@@ -1296,6 +1416,7 @@ fn apply_grid_actions(
             .unwrap_or_default();
         if let Err(e) = vizz_mod::scene::save_kind(b.kind, grid) {
             log::error!("could not save the {} grid: {e:#}", b.noun);
+            notes.push((true, format!("could NOT save the {} grid: {e}", b.noun)));
         }
     }
 }
@@ -1304,16 +1425,25 @@ fn apply_grid_actions(
 /// the panel so drawing stays free of side effects, and every failure is
 /// logged rather than propagated — losing a preset must not take the show
 /// with it.
+/// Notices bound for the screen: `(is_error, text)`. Collected by the
+/// apply functions and pushed into the GUI by the caller, because the GUI
+/// is mutably borrowed elsewhere while these run.
+type Notes = Vec<(bool, String)>;
+
 fn apply_preset_actions(
     actions: &vizz_ui::PanelActions,
     registry: &vizz_params::ParamRegistry,
     library: &mut vizz_mod::preset::Library,
+    notes: &mut Notes,
 ) {
     use vizz_mod::preset;
     if let Some(name) = &actions.preset_load {
         match preset::by_name(name) {
             Some(p) => log::info!("recalled preset {name} ({} parameters)", p.apply(registry)),
-            None => log::error!("preset {name} could not be read"),
+            None => {
+                log::error!("preset {name} could not be read");
+                notes.push((true, format!("preset '{name}' could not be read")));
+            }
         }
     }
     // Both of these change what is on disk, so the cached listing is
@@ -1324,18 +1454,32 @@ fn apply_preset_actions(
         match preset::save(name, &snapshot) {
             Ok(saved) => {
                 log::info!("saved preset {saved} ({} parameters)", snapshot.values.len());
+                // Confirmed on screen because the failure is too. Before
+                // the notices existed the two outcomes were pixel-identical
+                // at the moment of the click: the name box cleared either
+                // way and a full disk silently ate the look.
+                notes.push((false, format!("saved '{saved}'")));
                 library.refresh();
             }
-            Err(e) => log::error!("could not save preset {name}: {e:#}"),
+            Err(e) => {
+                log::error!("could not save preset {name}: {e:#}");
+                // The name is in the message because the click already
+                // cleared the field — this is what lets it be retyped.
+                notes.push((true, format!("could NOT save '{name}': {e}")));
+            }
         }
     }
     if let Some(name) = &actions.preset_delete {
         match preset::delete(name) {
             Ok(()) => {
                 log::info!("deleted preset {name}");
+                notes.push((false, format!("deleted '{name}'")));
                 library.refresh();
             }
-            Err(e) => log::error!("could not delete preset {name}: {e:#}"),
+            Err(e) => {
+                log::error!("could not delete preset {name}: {e:#}");
+                notes.push((true, format!("could NOT delete '{name}': {e}")));
+            }
         }
     }
 }
@@ -1345,6 +1489,8 @@ fn apply_panel_actions(
     shared: &SharedMidi,
     map_path: &std::path::Path,
     saved_revision: &mut u64,
+    save_backoff: &mut Option<Instant>,
+    notes: &mut Notes,
 ) {
     // No early return on "the UI did nothing this frame".
     //
@@ -1373,12 +1519,30 @@ fn apply_panel_actions(
     }
     // Persist as soon as a mapping changes: a crash mid-set should not
     // cost the mappings that were just set up.
-    if state.revision != *saved_revision {
+    //
+    // But not on every frame while it *keeps* failing. This runs per
+    // frame and the failed revision stays unequal, so a full disk used to
+    // mean a serialize, a write attempt and an error log sixty times a
+    // second for the rest of the night. One attempt every few seconds is
+    // just as likely to catch the disk coming back.
+    let due = save_backoff.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(3));
+    if state.revision != *saved_revision && due {
         let (map, revision) = (state.map.clone(), state.revision);
         drop(state);
         match vizz_midi::save_map(map_path, &map) {
-            Ok(()) => *saved_revision = revision,
-            Err(e) => log::error!("could not save MIDI map: {e:#}"),
+            Ok(()) => {
+                if save_backoff.take().is_some() {
+                    notes.push((false, "MIDI map saved".into()));
+                }
+                *saved_revision = revision;
+            }
+            Err(e) => {
+                if save_backoff.is_none() {
+                    log::error!("could not save MIDI map: {e:#}");
+                    notes.push((true, format!("could NOT save the MIDI map: {e}")));
+                }
+                *save_backoff = Some(Instant::now());
+            }
         }
     }
 }
@@ -1468,6 +1632,9 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         saved_modulation: restored_modulation,
         modulation_checked: Instant::now(),
         presentable: true,
+        midi_save_backoff: None,
+        modulation_save_failing: false,
+        output_status: Vec::new(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),

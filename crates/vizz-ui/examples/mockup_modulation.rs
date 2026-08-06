@@ -35,6 +35,7 @@ fn main() {
         Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
         Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
         Shot { name: "quit", w: 420, h: 200, draw: draw_quit },
+        Shot { name: "notices", w: 480, h: 260, draw: draw_notices },
     ];
 
     for s in shots {
@@ -349,6 +350,22 @@ fn draw_shortcuts(ctx: &egui::Context, _w: f32, _h: f32) {
 /// key that used to end one, so it is worth looking at.
 fn draw_quit(ctx: &egui::Context, _w: f32, _h: f32) {
     vizz_ui::draw_quit_prompt_for_preview(ctx);
+}
+
+/// The notice stack, one of each kind — the channel every runtime failure
+/// now reports through, so its legibility is worth a look of its own.
+fn draw_notices(ctx: &egui::Context, _w: f32, _h: f32) {
+    use std::cell::RefCell;
+    thread_local! {
+        static N: RefCell<vizz_ui::notices::Notices> = RefCell::new(Default::default());
+    }
+    N.with(|n| {
+        let mut n = n.borrow_mut();
+        n.error("could NOT save 'warehouse 2am': No space left on device (os error 28)");
+        n.error("output 'ndi:vizz' died — retrying in the background");
+        n.info("cloud 'torso-scan' loaded into slot 2 and shown");
+        n.draw(ctx);
+    });
 }
 
 fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
