@@ -890,21 +890,36 @@ fn sparkline(ui: &mut egui::Ui, samples: &[f32], budget_ms: f32) {
 /// only thing that reliably cleans up a field of one-pixel sprites, and it
 /// costs fill rate rather than complexity.
 fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
-    let mut next = state.output;
+    // Edits accumulate here, in egui's own memory, and are only released
+    // as an action when a gesture *ends*. Applying on every changed()
+    // frame — the previous behaviour — rebuilt the master, the whole post
+    // chain and every sender on each tick of a spinner drag: dozens of
+    // texture allocations per adjustment, and Syphon/NDI receivers
+    // watching the source drop and reappear dozens of times.
+    let id = egui::Id::new("output-setup-pending");
+    let mut next: OutputSetup =
+        ui.data(|d| d.get_temp(id)).unwrap_or(state.output);
+    let mut commit = false;
+    // A settle, not a commit: the drag or the typing finished.
+    let settled = |r: &egui::Response| r.drag_stopped() || r.lost_focus();
 
     ui.horizontal(|ui| {
         ui.label("output");
-        ui.add(
+        // 8192 matches the app's own side limit (wgpu's default texture
+        // ceiling), and lets 8K DCI through; the total-pixel budget is
+        // enforced where the textures are allocated, not here.
+        let w = ui.add(
             egui::DragValue::new(&mut next.width)
-                .range(160..=7680)
+                .range(160..=8192)
                 .speed(8.0),
         );
         ui.label("x");
-        ui.add(
+        let h = ui.add(
             egui::DragValue::new(&mut next.height)
-                .range(160..=7680)
+                .range(160..=8192)
                 .speed(8.0),
         );
+        commit |= settled(&w) || settled(&h);
     });
     // The sizes people actually output at, because typing 3840 by dragging
     // a spinner is nobody's idea of a control.
@@ -918,18 +933,21 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
             if ui.small_button(label).clicked() {
                 next.width = w;
                 next.height = h;
+                commit = true;
             }
         }
     });
 
     ui.horizontal(|ui| {
         ui.label("render");
-        ui.add(
-            egui::Slider::new(&mut next.scale, 0.25..=2.0)
-                .suffix("x")
-                .clamping(egui::SliderClamping::Always),
-        )
-        .on_hover_text("above 1 supersamples: draw larger, let the downscale anti-alias");
+        let r = ui
+            .add(
+                egui::Slider::new(&mut next.scale, 0.25..=2.0)
+                    .suffix("x")
+                    .clamping(egui::SliderClamping::Always),
+            )
+            .on_hover_text("above 1 supersamples: draw larger, let the downscale anti-alias");
+        commit |= settled(&r);
     });
     // Say the resulting size out loud. A multiplier is easy to set and
     // hard to picture, and the number that matters for whether the machine
@@ -938,8 +956,10 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     let rh = (next.height as f32 * next.scale) as u32;
     ui.small(format!("drawing {rw} x {rh}"));
 
-    ui.checkbox(&mut next.wide, "16-bit float master")
+    let wide = ui
+        .checkbox(&mut next.wide, "16-bit float master")
         .on_hover_text("smoother gradients, at double the master's bandwidth");
+    commit |= wide.changed();
     if next.wide {
         // Not a warning about something broken — a statement of what it
         // costs. Syphon and NDI are BGRA8 by definition, so this cannot
@@ -948,8 +968,17 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
         ui.small("Syphon and NDI still receive 8-bit; a conversion pass is added for them");
     }
 
-    if next != state.output {
-        actions.output_setup = Some(next);
+    if commit {
+        if next != state.output {
+            actions.output_setup = Some(next);
+        }
+        // Re-sync with what the app actually applied — which may differ
+        // from what was asked, since the apply path fits the size to the
+        // pixel budget. Holding the raw numbers here would show a size
+        // the app has already refused.
+        ui.data_mut(|d| d.remove_temp::<OutputSetup>(id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, next));
     }
 }
 

@@ -93,7 +93,7 @@ pub const MAX_PIXELS: u64 = 8192 * 4320;
 /// a 16:9 canvas into a square. The aspect is what the projector was set up
 /// for and what every framing decision was made against, so a size that has
 /// to come down comes down whole.
-fn fit([w, h]: [u32; 2]) -> [u32; 2] {
+pub fn fit([w, h]: [u32; 2]) -> [u32; 2] {
     let (wf, hf) = (w.max(1) as f64, h.max(1) as f64);
     let factor = (MAX_DIM as f64 / wf)
         .min(MAX_DIM as f64 / hf)

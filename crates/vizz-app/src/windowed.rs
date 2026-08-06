@@ -315,13 +315,17 @@ impl App {
     /// out means relaunching into whatever the app opens with.
     fn apply_output_setup(&mut self, setup: vizz_ui::OutputSetup) {
         let Some(state) = &mut self.state else { return };
-        let ow = setup.width.clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
-        let oh = setup.height.clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        // Through the same fitter the settings loader uses — per-axis
+        // clamps alone are how a typed 7680x7680 became a 59-megapixel
+        // allocation: the sides were inside every limit and the area was
+        // the cost. This path allocates the actual textures, so it is
+        // exactly the wrong place to trust the UI's numbers.
+        let [ow, oh] = crate::settings::fit([setup.width, setup.height]);
         let scale = setup
             .scale
             .clamp(crate::settings::MIN_SCALE, crate::settings::MAX_SCALE);
-        let rw = ((ow as f32 * scale) as u32).clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
-        let rh = ((oh as f32 * scale) as u32).clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        let [rw, rh] =
+            crate::settings::fit([(ow as f32 * scale) as u32, (oh as f32 * scale) as u32]);
         let format = if setup.wide {
             vizz_render::output::WIDE_FORMAT
         } else {
