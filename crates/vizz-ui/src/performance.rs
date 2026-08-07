@@ -527,9 +527,10 @@ fn faders(
         // right-anchored unconditionally and an overflowing row clips its
         // *rightmost macros* against the master's ground instead.
         let origin = ui.cursor().min + vec2(inset, 0.0);
-        let row_rect =
-            egui::Rect::from_min_size(origin, vec2(width, h + chrome));
-        ui.allocate_rect(egui::Rect::from_min_size(ui.cursor().min, vec2(width + inset, h + chrome)), Sense::hover());
+        ui.allocate_rect(
+            egui::Rect::from_min_size(ui.cursor().min, vec2(width + inset, h + chrome)),
+            Sense::hover(),
+        );
 
         let macro_width = if row == 0 { (width - w - 6.0).max(w) } else { width };
         let macros_rect =
