@@ -225,11 +225,14 @@ pub fn draw(
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| {
-                    clouds_section(ui, state);
-                    ui.separator();
-                    palettes_section(ui, state);
-                });
+                .show(ui, |ui| clouds_section(ui, state, registry));
+            // Their own header, not a stowaway inside "clouds": someone
+            // looking for their colours has no reason to open a section
+            // named after geometry.
+            egui::CollapsingHeader::new("palettes")
+                .id_salt("palettes")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| palettes_section(ui, state, registry));
             egui::CollapsingHeader::new("background")
                 .id_salt("background")
                 .default_open(state.expand_sections)
@@ -347,11 +350,31 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
 /// The drop hint is here rather than nowhere because a gesture with no
 /// visible affordance is a gesture nobody discovers. That was the whole
 /// lesson of the rename living only on a right-click menu.
-fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
+fn clouds_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+    let slot = |addr: &str| {
+        registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
+    };
+    let (a, b) = (slot("/cloud/a"), slot("/cloud/b"));
     for (i, name) in state.clouds.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
             ui.label(name);
+            // Say which rows the morph pair is showing right now. The
+            // legend explained what the numbers meant but not which of
+            // them was on screen — the one question a legend is for.
+            let mut live = Vec::new();
+            if a == Some(i) {
+                live.push("a");
+            }
+            if b == Some(i) {
+                live.push("b");
+            }
+            if !live.is_empty() {
+                ui.label(
+                    egui::RichText::new(live.join(" ")).small().color(LIVE_MARK),
+                )
+                .on_hover_text("on screen — this end of the cloud morph pair");
+            }
         });
     }
     if state.clouds.is_empty() {
@@ -366,7 +389,10 @@ fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
 /// four shipped names a number says nothing at all about what is in the
 /// slot. Unused rows are left out rather than listed as blanks — sixteen
 /// entries of which twelve are empty is a worse legend than four.
-fn palettes_section(ui: &mut egui::Ui, state: &PanelState) {
+fn palettes_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+    let current = registry
+        .id("/color/palette")
+        .map(|id| registry.target(id).round().max(0.0) as usize);
     for (i, name) in state.palettes.iter().enumerate() {
         if name.is_empty() {
             continue;
@@ -374,6 +400,10 @@ fn palettes_section(ui: &mut egui::Ui, state: &PanelState) {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
             ui.label(name);
+            if current == Some(i) {
+                ui.label(egui::RichText::new("live").small().color(LIVE_MARK))
+                    .on_hover_text("the ramp /color/palette is set to");
+            }
         });
     }
     ui.small("drag a .gpl or a list of hex colours onto the window to add one");
@@ -606,6 +636,10 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     let mut bands = state.audio_bands;
     for (i, band) in bands.iter_mut().enumerate() {
         ui.horizontal(|ui| {
+            // Named the way every modulation source list names them, so
+            // "Band 2" in a route can be found in this section without
+            // counting rows.
+            ui.small(format!("band {}", i + 1));
             meter(ui, a.raw[i], a.bands[i]);
             ui.add(
                 egui::DragValue::new(&mut band.lo_hz)
@@ -1229,14 +1263,18 @@ fn params_section(
             filter.clear();
         }
         if scrolls && filter.is_empty() {
-            ui.small(format!("{total}"));
+            ui.small(format!("{total} params"))
+                .on_hover_text("the list scrolls — or type here to jump");
         }
     });
     let needle = filter.trim().to_ascii_lowercase();
     ui.memory_mut(|m| m.data.insert_temp(filter_id, filter));
 
-    let height = (screen_h - ui.cursor().top() - PARAM_LIST_MARGIN)
-        .clamp(PARAM_LIST_MIN, PARAM_LIST_MAX);
+    // As tall as the display allows, floored so a cramped window still
+    // shows a few rows. There used to be a 320px ceiling here, which on
+    // a tall display parked the panel's main working surface in a third
+    // of the space while the rest sat empty.
+    let height = (screen_h - ui.cursor().top() - PARAM_LIST_MARGIN).max(PARAM_LIST_MIN);
     egui::ScrollArea::vertical()
         .max_height(height)
         .auto_shrink([false, true])
@@ -1449,9 +1487,7 @@ const PARAM_LIST_MARGIN: f32 = 46.0;
 /// Never shrink below about five rows: past that the list is unusable and
 /// it is better to let the panel overflow than to hide everything.
 const PARAM_LIST_MIN: f32 = 92.0;
-/// Nor grow past this — a long list is easier to scan in a fixed frame
-/// than one that changes height with the display.
-const PARAM_LIST_MAX: f32 = 320.0;
+
 
 #[allow(clippy::too_many_arguments)]
 fn param_row(
@@ -1562,9 +1598,13 @@ fn param_row(
     // so a route there is inert. Offering the button and then drawing the
     // "modulated" marker beside it was the app claiming to do something it
     // had no path to do.
+    // Labelled with what it actually routes. As "mod" it contradicted
+    // the ~ marker: a parameter driven by an audio band showed ~ while
+    // the button sat unlit, which read as the panel disagreeing with
+    // itself about whether the row was modulated.
     if !is_transport(def)
         && ui
-            .add(egui::Button::new("mod").small().selected(routed))
+            .add(egui::Button::new("lfo1").small().selected(routed))
             .on_hover_text(hint)
             .clicked()
     {
@@ -1603,6 +1643,8 @@ fn param_row(
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
 /// as "something else is touching this" at a glance.
 const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+/// The "this row is what you are seeing" marker in the slot legends.
+const LIVE_MARK: egui::Color32 = egui::Color32::from_rgb(110, 180, 255);
 
 /// Marks a parameter that presets do not capture. Cool against the
 /// modulation marker's warm, since the two appear side by side and mean
