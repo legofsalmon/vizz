@@ -173,6 +173,7 @@ fn scan_and_connect(
         .collect();
 
     // Drop connections whose device disappeared.
+    let before = open.len();
     open.retain(|(name, _)| {
         let still_there = names.contains(name);
         if !still_there {
@@ -180,6 +181,17 @@ fn scan_and_connect(
         }
         still_there
     });
+    // A learn armed when a device vanishes is a trap: it survives the
+    // unplug-replug it was probably armed for, and the first stray event
+    // from *any* device — a drifting fader on a controller across the
+    // room — silently takes the binding. Disarm instead; re-arming is
+    // one click, un-learning a wrong control is a hunt.
+    if open.len() < before
+        && let Ok(mut state) = shared.lock()
+        && state.learn_target.take().is_some()
+    {
+        log::info!("MIDI learn cancelled — a device disconnected while it was armed");
+    }
 
     for port in &ports {
         let Ok(name) = input.port_name(port) else { continue };

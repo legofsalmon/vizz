@@ -264,14 +264,18 @@ fn main() -> Result<()> {
         // No size in the base title: the window init appends the size
         // actually allocated, and baking the requested one in here gave
         // the title two resolutions — leading with the stale number, in
-        // the one place a performer checks what is going out.
-        let title = if cfg!(target_os = "macos") && output_opts.syphon {
-            format!(
-                "vizz — Syphon '{}' — OSC :{}",
-                output_opts.syphon_name, args.osc_port
-            )
+        // the one place a performer checks what is going out. The OSC
+        // claim is real, not aspirational: a second instance whose bind
+        // failed used to advertise a port the first instance owned.
+        let osc = if _osc.is_some() {
+            format!(" — OSC :{}", args.osc_port)
         } else {
-            format!("vizz — OSC :{}", args.osc_port)
+            String::new()
+        };
+        let title = if cfg!(target_os = "macos") && output_opts.syphon {
+            format!("vizz — Syphon '{}'{osc}", output_opts.syphon_name)
+        } else {
+            format!("vizz{osc}")
         };
         windowed::run(
             params,
