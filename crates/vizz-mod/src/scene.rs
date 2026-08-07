@@ -671,7 +671,7 @@ fn write_grid(path: &std::path::Path, grid: &Grid) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
+    let tmp = crate::library::tmp_path(&path);
     std::fs::write(&tmp, serde_json::to_vec_pretty(grid)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;

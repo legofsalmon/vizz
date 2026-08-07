@@ -325,7 +325,7 @@ pub fn save_kind(kind: Kind, name: &str, preset: &Preset) -> Result<String> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating {}", dir.display()))?;
     let path = path_for_kind(kind, name);
-    let tmp = path.with_extension("json.tmp");
+    let tmp = crate::library::tmp_path(&path);
     std::fs::write(&tmp, serde_json::to_vec_pretty(preset)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;

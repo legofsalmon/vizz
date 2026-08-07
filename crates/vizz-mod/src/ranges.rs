@@ -61,7 +61,7 @@ impl Ranges {
         let path = Self::path();
         let dir = path.parent().context("ranges path has no parent")?;
         std::fs::create_dir_all(dir)?;
-        let tmp = path.with_extension("json.tmp");
+        let tmp = crate::library::tmp_path(&path);
         std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())

@@ -81,7 +81,7 @@ pub fn save(name: &str, graph: &NodeGraph) -> Result<PathBuf> {
     // full disk mid-write must not destroy the patch that was already
     // there. Rename within a directory is atomic on every platform we
     // target.
-    let tmp = path.with_extension("json.tmp");
+    let tmp = tmp_path(&path);
     std::fs::write(&tmp, serde_json::to_vec_pretty(graph)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
@@ -124,6 +124,19 @@ pub fn resolved_path(name: &str) -> PathBuf {
 ///
 /// Renamed to `<name>.broken`, replacing any previous quarantine — the
 /// newest corpse is the one worth keeping.
+/// Temp-file path for an atomic write, unique per process.
+///
+/// Two instances sharing one deterministic ".json.tmp" name could
+/// truncate each other's half-written file, landing a torn rename —
+/// defeating the very atomicity the tmp dance exists for. A double
+/// launch, or one window per projector, is exactly when the state files
+/// matter most.
+pub fn tmp_path(path: &std::path::Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".tmp.{}", std::process::id()));
+    PathBuf::from(name)
+}
+
 pub fn quarantine(path: &std::path::Path) {
     let mut broken = path.as_os_str().to_owned();
     broken.push(".broken");
@@ -165,7 +178,7 @@ pub fn save_session(engine: &crate::ModEngine) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
+    let tmp = tmp_path(&path);
     std::fs::write(&tmp, serde_json::to_vec_pretty(engine)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
@@ -214,6 +227,19 @@ mod tests {
     /// from the parameter list and had no save of any kind — so an evening
     /// of assigning LFOs to parameters was thrown away by quitting, in
     /// silence.
+    #[test]
+    fn atomic_write_tmp_names_do_not_collide_across_processes() {
+        let path = std::path::Path::new("/state/vizz/modulation.json");
+        let tmp = tmp_path(path);
+        // Same directory (rename must stay atomic), same visible stem,
+        // and carrying this process's id so another instance writes
+        // elsewhere.
+        assert_eq!(tmp.parent(), path.parent());
+        let name = tmp.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("modulation.json.tmp."), "{name}");
+        assert!(name.ends_with(&std::process::id().to_string()), "{name}");
+    }
+
     #[test]
     fn the_modulation_session_comes_back_with_its_routes() {
         let (_guard, _tmp) = crate::test_env::scoped("session-routes");

@@ -469,13 +469,45 @@ impl App {
 
     fn load_dropped_palette(&mut self, path: std::path::PathBuf) {
         let Some(state) = &mut self.state else { return };
+        let key = path.display().to_string();
+        // A file already in the bank reloads into its own row — the
+        // natural gesture after editing a .gpl. Appending instead burned
+        // a new row per re-drop and grew the saved list without bound,
+        // and once the bank wrapped, the duplicates overwrote the
+        // earliest palettes that saved presets still index.
+        if let Some(i) = self.palettes.iter().position(|p| *p == key) {
+            let row = vizz_render::palette::FIRST_USER + i;
+            match state.scene.reload_palette(&state.ctx, &path, row) {
+                Ok(name) => {
+                    let p = &*self.params;
+                    p.registry.set(p.palette, row as f32);
+                    state.gui.notify_info(format!("palette '{name}' reloaded"));
+                }
+                Err(e) => {
+                    log::warn!("could not reload {}: {e:#}", path.display());
+                    state.gui.notify_error(format!(
+                        "could NOT reload palette {}: {e}",
+                        file_name(&path)
+                    ));
+                }
+            }
+            return;
+        }
         match state.scene.load_palette(&state.ctx, &path) {
             Ok((name, row)) => {
                 // Select it, for the same reason a dropped cloud is
                 // selected: a palette you cannot see has not arrived.
                 let p = &*self.params;
                 p.registry.set(p.palette, row as f32);
-                self.palettes.push(path.display().to_string());
+                // The list mirrors the bank's rows, so when the bank
+                // wraps onto an old row the list entry for that row is
+                // replaced rather than the list growing past the bank.
+                let idx = row - vizz_render::palette::FIRST_USER;
+                if idx < self.palettes.len() {
+                    self.palettes[idx] = key;
+                } else {
+                    self.palettes.push(key);
+                }
                 if let Err(e) = crate::settings::save_palettes(&self.palettes) {
                     log::warn!("could not remember the loaded palettes: {e:#}");
                     state.gui.notify_error(format!(
@@ -1108,6 +1140,16 @@ impl ApplicationHandler for App {
             && let Err(e) = vizz_mod::library::save_session(&self.engine.modulation)
         {
             log::error!("could not save the modulation state on exit: {e:#}");
+        }
+        // The per-frame MIDI flush uses try_lock and can lose its last
+        // race to MIDI traffic — a binding learned in the final moments
+        // would vanish while its chip showed as bound. Exit is the one
+        // place a blocking lock costs nothing.
+        if let Ok(midi) = self.midi_shared.lock()
+            && midi.revision != self.saved_revision
+            && let Err(e) = vizz_midi::save_map(&self.opts.midi_map_path, &midi.map)
+        {
+            log::error!("could not save the MIDI map on exit: {e:#}");
         }
         // The canvas view is user state too, just cheap enough to keep in
         // settings. Written only when it moved, like everything else here.

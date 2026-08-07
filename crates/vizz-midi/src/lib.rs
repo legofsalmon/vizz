@@ -253,9 +253,35 @@ fn handle_message(
 
 /// Where mappings live by default.
 pub fn default_map_path() -> PathBuf {
-    std::env::home_dir()
-        .map(|h| h.join(".config/vizz/midi.json"))
-        .unwrap_or_else(|| PathBuf::from("vizz-midi.json"))
+    // The same resolution the rest of the user state uses (patches,
+    // presets, settings all honour XDG_CONFIG_HOME). This file was the
+    // one hold-out hardcoding ~/.config, so a user with XDG set had
+    // every file in one directory except the most laborious one to
+    // recreate — and "back up the vizz folder" silently omitted it.
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let path = base.join("vizz").join("midi.json");
+    // Bring an existing map along. Before this, setting XDG_CONFIG_HOME
+    // made a learned setup appear to vanish.
+    if !path.exists()
+        && let Some(legacy) = std::env::home_dir().map(|h| h.join(".config/vizz/midi.json"))
+        && legacy != path
+        && legacy.exists()
+    {
+        let moved = path
+            .parent()
+            .map(|dir| std::fs::create_dir_all(dir).is_ok())
+            .unwrap_or(false)
+            && std::fs::rename(&legacy, &path).is_ok();
+        if moved {
+            log::info!("moved the MIDI map from {} to {}", legacy.display(), path.display());
+        } else {
+            log::warn!("could not move the MIDI map from {}", legacy.display());
+        }
+    }
+    path
 }
 
 /// Load a mapping file. A missing file is not an error — it just means no
@@ -332,7 +358,11 @@ pub fn save_map(path: &Path, map: &MidiMap) -> Result<()> {
     // loss or a full disk during it leaves an empty or half-written file,
     // `load_map` fails, and the app starts with no mappings — losing the
     // most laborious setup in the app to the narrowest of windows.
-    let tmp = path.with_extension("json.tmp");
+    // Unique per process: two instances sharing one tmp name could
+    // truncate each other mid-write and rename a torn file into place.
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp.{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))
 }

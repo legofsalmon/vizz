@@ -261,6 +261,24 @@ impl ParticleScene {
         Ok((name, row))
     }
 
+    /// Reload a palette into the row it already occupies.
+    ///
+    /// For dropping a file that is already in the bank — the natural
+    /// gesture after editing a .gpl. Appending instead would burn a new
+    /// row on every re-drop and, once the bank wrapped, overwrite the
+    /// earliest palettes that saved presets still index.
+    pub fn reload_palette(
+        &mut self,
+        ctx: &GpuContext,
+        path: &std::path::Path,
+        row: usize,
+    ) -> anyhow::Result<String> {
+        let (stops, name) = crate::palette::parse(path)?;
+        self.palettes.load_slot(ctx, row, &stops, &name);
+        log::info!("palette {row} reloaded: {name} ({} colours)", stops.len());
+        Ok(name)
+    }
+
     /// Names of the four cloud slots, for the UI.
     pub fn cloud_names(&self) -> &[String; crate::attractor::SLOTS] {
         &self.attractors.names
