@@ -30,8 +30,8 @@ fn main() {
         Shot { name: "mod_b_canvas", w: 900, h: 560, draw: draw_canvas },
         Shot { name: "mod_c_flat", w: PANEL_W, h: 360, draw: draw_flat },
         // The real canvas, not a mockup: same code path the app runs.
-        Shot { name: "graph_real", w: 900, h: 620, draw: draw_real_graph },
-        Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
+        Shot { name: "graph_real", w: 1080, h: 620, draw: draw_real_graph },
+        Shot { name: "graph_real_zoomed", w: 1080, h: 620, draw: draw_real_zoomed },
         Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
         Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
         Shot { name: "quit", w: 420, h: 200, draw: draw_quit },
@@ -287,12 +287,17 @@ fn demo_graph() -> vizz_mod::graph::NodeGraph {
     let morph = g.add(K::Param { addr: "/shape/morph".into(), depth: 0.4 }, [470.0, 20.0]);
     let size = g.add(K::Param { addr: "/particles/size".into(), depth: 0.25 }, [470.0, 150.0]);
     let trail = g.add(K::Param { addr: "/fx/trail".into(), depth: 0.3 }, [470.0, 280.0]);
+    // One Param whose address no longer resolves and one never aimed,
+    // so the dead-node styling shows in the shot next to working ones.
+    let dead = g.add(K::Param { addr: "/fx/glowy".into(), depth: 0.5 }, [700.0, 20.0]);
+    let _unset = g.add(K::Param { addr: String::new(), depth: 0.5 }, [700.0, 150.0]);
     g.connect(lfo, morph, 0);
     g.connect(band, curve, 0);
     g.connect(curve, size, 0);
     g.connect(level, math, 0);
     g.connect(band, math, 1);
     g.connect(math, trail, 0);
+    g.connect(lfo, dead, 0);
     g
 }
 

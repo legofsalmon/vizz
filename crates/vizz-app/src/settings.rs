@@ -54,6 +54,40 @@ pub struct Settings {
     /// Palette files loaded, in the order they were dropped. Restored on
     /// start so a set's colours come back with it.
     pub palettes: Vec<String>,
+    /// Where the modulation canvas was left: pan, zoom, patch name and
+    /// whether the palette strip was open. Restored on start so the
+    /// canvas opens where you were working, not at the origin with the
+    /// name field blank.
+    pub graph_view: Option<GraphCanvas>,
+}
+
+/// Mirror of [`vizz_ui::graph_view::ViewMemory`], owned here because the
+/// UI crate does not serialise anything and should not start to for this.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GraphCanvas {
+    pub pan: [f32; 2],
+    pub zoom: f32,
+    pub patch: String,
+    pub palette: bool,
+}
+
+impl Default for GraphCanvas {
+    fn default() -> Self {
+        Self { pan: [40.0, 40.0], zoom: 1.0, patch: String::new(), palette: true }
+    }
+}
+
+impl From<vizz_ui::graph_view::ViewMemory> for GraphCanvas {
+    fn from(m: vizz_ui::graph_view::ViewMemory) -> Self {
+        Self { pan: m.pan, zoom: m.zoom, patch: m.patch_name, palette: m.show_palette }
+    }
+}
+
+impl From<GraphCanvas> for vizz_ui::graph_view::ViewMemory {
+    fn from(c: GraphCanvas) -> Self {
+        Self { pan: c.pan, zoom: c.zoom, patch_name: c.patch, show_palette: c.palette }
+    }
 }
 
 /// Clamps for the settings above.
@@ -209,6 +243,31 @@ pub fn save_palettes(palettes: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The canvas view round-trips, and an old file without the field
+    /// still loads — losing your settings because a field was added is
+    /// the failure the serde defaults exist to prevent.
+    #[test]
+    fn the_canvas_view_survives_a_restart() {
+        let (_guard, dir) = crate::test_env::scoped("settings-canvas");
+
+        let canvas = GraphCanvas {
+            pan: [-320.0, 12.5],
+            zoom: 0.6,
+            patch: "warehouse".into(),
+            palette: false,
+        };
+        save(&Settings { graph_view: Some(canvas.clone()), ..Default::default() }).unwrap();
+        assert_eq!(load().graph_view, Some(canvas));
+
+        // A file from a build before the field existed.
+        std::fs::write(path(), br#"{"palettes":["/p.png"]}"#).unwrap();
+        let s = load();
+        assert_eq!(s.graph_view, None);
+        assert_eq!(s.palettes, vec!["/p.png".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The round trip, and the property that matters most: an unrelated
     /// field survives a targeted write.

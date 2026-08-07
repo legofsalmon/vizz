@@ -217,6 +217,19 @@ impl Gui {
     }
 
     /// Something worked and is worth confirming on screen.
+    /// The modulation canvas view, for persisting across launches. The
+    /// canvas forgetting where you were — pan, zoom, the patch's name —
+    /// made every launch start with a scavenger hunt.
+    pub fn graph_view_memory(&self) -> graph_view::ViewMemory {
+        self.graph_view.memory()
+    }
+
+    /// Restore a persisted canvas view. Sanitised inside — see
+    /// [`GraphView::restore`].
+    pub fn restore_graph_view(&mut self, m: graph_view::ViewMemory) {
+        self.graph_view.restore(m);
+    }
+
     pub fn notify_info(&mut self, text: impl Into<String>) {
         self.notices.info(text);
     }

@@ -326,6 +326,11 @@ impl App {
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
         gui.visible = self.opts.show_gui;
+        // The canvas comes back where it was left — pan, zoom, patch
+        // name — instead of at the origin with the name field blank.
+        if let Some(canvas) = crate::settings::load().graph_view {
+            gui.restore_graph_view(canvas.into());
+        }
 
         Ok(RenderState {
             window,
@@ -1103,6 +1108,18 @@ impl ApplicationHandler for App {
             && let Err(e) = vizz_mod::library::save_session(&self.engine.modulation)
         {
             log::error!("could not save the modulation state on exit: {e:#}");
+        }
+        // The canvas view is user state too, just cheap enough to keep in
+        // settings. Written only when it moved, like everything else here.
+        if let Some(state) = &self.state {
+            let mem: crate::settings::GraphCanvas = state.gui.graph_view_memory().into();
+            let mut s = crate::settings::load();
+            if s.graph_view.as_ref() != Some(&mem) {
+                s.graph_view = Some(mem);
+                if let Err(e) = crate::settings::save(&s) {
+                    log::warn!("could not remember the canvas view: {e:#}");
+                }
+            }
         }
     }
 
