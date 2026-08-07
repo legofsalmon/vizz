@@ -310,7 +310,11 @@ impl FrameEngine {
         // detector is sure. Ambient material still produces *a* peak, and
         // letting that retune the clock mid-set is worse than a tempo that
         // is slightly stale.
-        if let Ok(settings) = self.audio.settings.lock()
+        // try_lock: the analysis thread takes this ~94 times a second,
+        // and a render thread parked behind a preempted holder is a
+        // missed vsync for nothing — a one-frame-stale reading serves
+        // auto-bpm exactly as well.
+        if let Ok(settings) = self.audio.settings.try_lock()
             && settings.auto_bpm {
                 let bpm = self.audio.state.bpm();
                 if bpm > 0.0 && self.audio.state.confidence() >= settings.min_confidence {

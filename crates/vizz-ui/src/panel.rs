@@ -860,6 +860,12 @@ fn health_section(ui: &mut egui::Ui, state: &PanelState) {
                 .color(color)
                 .small(),
         );
+        if over {
+            // In words as well as colour: red against green is exactly
+            // the pair that collapses for red-green colour-blind eyes,
+            // and this is the one headline that matters mid-set.
+            ui.label(egui::RichText::new("over budget").color(color).small());
+        }
     });
 
     sparkline(ui, &state.frame_times_ms, state.frame_budget_ms);

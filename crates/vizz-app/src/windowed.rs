@@ -27,6 +27,9 @@ use crate::params::AppParams;
 pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
+    /// The size came from an explicit --width/--height rather than the
+    /// defaults, and should outrank whatever the panel last saved.
+    pub size_from_cli: bool,
     pub show_gui: bool,
     /// Check GitHub for a newer release once at startup.
     pub check_updates: bool,
@@ -256,7 +259,14 @@ impl App {
         // cleans up a field of one-pixel sprites. Below 1× it buys frame
         // rate on a machine that cannot hold the budget.
         let s = crate::settings::load();
-        let [ow, oh] = s.output_or([self.opts.width, self.opts.height]);
+        // An explicit --width/--height wins for this launch: the scripted
+        // venue start must not be overridden by whatever was clicked on a
+        // laptop last week. Without the flags, the remembered size wins.
+        let [ow, oh] = if self.opts.size_from_cli {
+            crate::settings::fit([self.opts.width, self.opts.height])
+        } else {
+            s.output_or([self.opts.width, self.opts.height])
+        };
         let [rw, rh] = s.render_size([ow, oh]);
         let master_format = if s.wide_output {
             vizz_render::output::WIDE_FORMAT

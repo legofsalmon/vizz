@@ -711,10 +711,14 @@ impl GraphView {
                         Color32::from_rgb(150, 158, 168),
                     );
                 }
-                // Live value, right-aligned on the first row. A dead
-                // Param says what is wrong instead — in words, not just a
-                // border colour, so it reads whatever your colour vision.
-                let (readout, ink) = if dead_param {
+                // Live value, right-aligned on the first row. A node in
+                // trouble says what is wrong instead — in words, not just
+                // a border colour: the cycle red desaturates to nearly
+                // the Operator amber for red-green colour-blind eyes,
+                // and a border alone was the only cue.
+                let (readout, ink) = if in_cycle {
+                    ("cycle".to_string(), Color32::from_rgb(235, 150, 140))
+                } else if dead_param {
                     let text = if matches!(&n.kind, NodeKind::Param { addr, .. } if addr.is_empty())
                     {
                         "no target".to_string()

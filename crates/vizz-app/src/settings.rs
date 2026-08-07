@@ -33,9 +33,10 @@ pub struct Settings {
     /// honest outcome — the alternative is a copy that silently stops
     /// matching the file it came from.
     pub clouds: Vec<String>,
-    /// What receivers get, in pixels. `None` keeps whatever the command
-    /// line asked for, so a scripted venue is not overridden by a choice
-    /// made on a laptop last week.
+    /// What receivers get, in pixels, as last set from the panel. An
+    /// explicit `--width/--height` outranks it for that launch, so a
+    /// scripted venue is not overridden by a choice made on a laptop
+    /// last week; `None` means the panel has never chosen.
     pub output_size: Option<[u32; 2]>,
     /// Internal render resolution as a multiple of the output.
     ///

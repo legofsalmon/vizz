@@ -54,7 +54,12 @@ const LEARN: Color32 = Color32::from_rgb(232, 132, 108);
 /// enough to hit and mirrors the grid's sixteen above it.
 const PER_ROW: usize = 8;
 const FADER_MIN_W: f32 = 62.0;
-const FADER_MAX_W: f32 = 104.0;
+// Wide enough that a fullscreen 1080p rig gets thumb-sized targets —
+// at 104 the block spanned barely half of a 1920 window, left-anchored,
+// against the module's own "fill the window" rule. The track only paints
+// the middle three-quarters of the column, so even the widest fader
+// stays a fader rather than a slab.
+const FADER_MAX_W: f32 = 200.0;
 /// The height floor, below which a fader is decorative. Above it the
 /// layout *shrinks* rather than reflowing to one row: positions are what
 /// hands find in the dark, and shorter beats moved.
@@ -499,6 +504,12 @@ fn faders(
     // same size as everything else rather than a full-width slab.
     let cols = per_row + 1;
     let w = ((width - (cols as f32 - 1.0) * 6.0) / cols as f32).clamp(FADER_MIN_W, FADER_MAX_W);
+    // When the columns hit their width cap, centre the block instead of
+    // leaving everything parked against the left edge with the rest of
+    // the screen as dead backdrop.
+    let used = cols as f32 * w + (cols as f32 - 1.0) * 6.0;
+    let inset = ((width - used) * 0.5).max(0.0);
+    let width = used.min(width);
     let chrome = FADER_CHROME;
     // Shrinks below the preferred height rather than overflowing: the old
     // floor of FADER_MIN_H here forced 96-point tracks into rows that had
@@ -515,10 +526,10 @@ fn faders(
         // blackout warning nobody could see. With rects, the master is
         // right-anchored unconditionally and an overflowing row clips its
         // *rightmost macros* against the master's ground instead.
-        let origin = ui.cursor().min;
+        let origin = ui.cursor().min + vec2(inset, 0.0);
         let row_rect =
             egui::Rect::from_min_size(origin, vec2(width, h + chrome));
-        ui.allocate_rect(row_rect, Sense::hover());
+        ui.allocate_rect(egui::Rect::from_min_size(ui.cursor().min, vec2(width + inset, h + chrome)), Sense::hover());
 
         let macro_width = if row == 0 { (width - w - 6.0).max(w) } else { width };
         let macros_rect =

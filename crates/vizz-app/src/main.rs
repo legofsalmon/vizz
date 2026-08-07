@@ -70,13 +70,15 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     osc_bind: String,
 
-    /// Output width in pixels.
-    #[arg(long, default_value_t = 1280)]
-    width: u32,
+    /// Output width in pixels. Given explicitly, it wins over the size
+    /// remembered from the panel; omitted, the remembered size (or 1280)
+    /// is used.
+    #[arg(long)]
+    width: Option<u32>,
 
-    /// Output height in pixels.
-    #[arg(long, default_value_t = 720)]
-    height: u32,
+    /// Output height in pixels. Same precedence as --width.
+    #[arg(long)]
+    height: Option<u32>,
 
     /// Disable the Syphon output (macOS).
     #[arg(long)]
@@ -224,14 +226,22 @@ fn main() -> Result<()> {
         }
     };
 
+    // Whether a size was actually asked for, before the defaults fill in:
+    // the windowed path lets an explicit request outrank the remembered
+    // panel setting, and cannot tell "asked for 1280" from "defaulted to
+    // 1280" once the Option is gone.
+    let size_from_cli = args.width.is_some() || args.height.is_some();
+    let width = args.width.unwrap_or(1280);
+    let height = args.height.unwrap_or(720);
+
     let output_opts = outputs::OutputOpts {
         syphon: !args.no_syphon,
         syphon_name: args.syphon_name.clone(),
         syphon_flip: args.syphon_flip,
         ndi: args.ndi,
         ndi_name: args.ndi_name.clone(),
-        width: args.width,
-        height: args.height,
+        width,
+        height,
         fps: args.fps,
     };
 
@@ -239,8 +249,8 @@ fn main() -> Result<()> {
         headless::run(
             params,
             headless::HeadlessOpts {
-                width: args.width,
-                height: args.height,
+                width,
+                height,
                 frames: args.frames,
                 dump: args.dump,
                 audio_device,
@@ -251,19 +261,24 @@ fn main() -> Result<()> {
             },
         )
     } else {
+        // No size in the base title: the window init appends the size
+        // actually allocated, and baking the requested one in here gave
+        // the title two resolutions — leading with the stale number, in
+        // the one place a performer checks what is going out.
         let title = if cfg!(target_os = "macos") && output_opts.syphon {
             format!(
-                "vizz {}x{} — Syphon '{}' — OSC :{}",
-                args.width, args.height, output_opts.syphon_name, args.osc_port
+                "vizz — Syphon '{}' — OSC :{}",
+                output_opts.syphon_name, args.osc_port
             )
         } else {
-            format!("vizz {}x{} — OSC :{}", args.width, args.height, args.osc_port)
+            format!("vizz — OSC :{}", args.osc_port)
         };
         windowed::run(
             params,
             windowed::WindowedOpts {
-                width: args.width,
-                height: args.height,
+                width,
+                height,
+                size_from_cli,
                 show_gui: !args.no_gui,
                 check_updates: !args.no_update_check,
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),
