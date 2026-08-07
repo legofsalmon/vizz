@@ -263,7 +263,10 @@ pub fn draw(
             ui.separator();
             params_section(ui, registry, state, modulation, ranges, &mut actions);
             ui.separator();
-            ui.small("Tab panel · G modulation · P performance · Esc quits");
+            // Every key the app answers to, including the one that documents the
+    // rest — a shortcut listed only inside the overlay it opens can never
+    // be discovered. And Esc is honest about being a two-step.
+    ui.small("Tab panel · G canvas · P performance · ? shortcuts · Esc quits, twice");
         });
     actions
 }
@@ -301,7 +304,7 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         ui.small(audio.device.as_deref().unwrap_or("no audio"));
         // Same reason: 99.5 and 128.0 are different widths otherwise.
         ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
-        if ui.small_button("tap").on_hover_text("tap the beat to set the tempo").clicked() {
+        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
             actions.audio.tapped = true;
         }
     });
@@ -477,7 +480,6 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
 }
 
 fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
-    ui.label(egui::RichText::new("MIDI").strong());
     if !state.midi.available {
         ui.small("unavailable");
         return;
@@ -582,6 +584,16 @@ fn device_list(ui: &egui::Ui) -> Vec<String> {
 fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let current = state.audio.device.as_deref().unwrap_or("no input");
     ui.horizontal(|ui| {
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        ui.painter().circle_filled(
+            dot.center(),
+            4.0,
+            if state.audio.connected {
+                egui::Color32::from_rgb(90, 200, 120)
+            } else {
+                egui::Color32::from_rgb(110, 110, 110)
+            },
+        );
         ui.label("input");
         egui::ComboBox::from_id_salt("audio-device")
             .selected_text(current)
@@ -612,20 +624,9 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 
 fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let a = &state.audio;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Audio").strong());
-        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(
-            dot.center(),
-            4.0,
-            if a.connected {
-                egui::Color32::from_rgb(90, 200, 120)
-            } else {
-                egui::Color32::from_rgb(110, 110, 110)
-            },
-        );
-    });
-
+    // No bold "Audio" heading — the collapsing header the user just
+    // clicked already says so, and half the sections never restated
+    // theirs. The status dot lives on the input row instead.
     device_picker(ui, state, actions);
 
     if !a.connected {
@@ -645,13 +646,13 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                 egui::DragValue::new(&mut band.lo_hz)
                     .speed(2.0)
                     .range(20.0..=18_000.0)
-                    .suffix("Hz"),
+                    .suffix(" Hz"),
             );
             ui.add(
                 egui::DragValue::new(&mut band.hi_hz)
                     .speed(2.0)
                     .range(20.0..=20_000.0)
-                    .suffix("Hz"),
+                    .suffix(" Hz"),
             );
             // Decibels, not a multiplier. "×10" is not a quantity anyone
             // can act on — it does not say whether the band is hot or
@@ -730,7 +731,10 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         {
             actions.audio.auto_bpm = Some(auto);
         }
-        if ui.small_button("tap").on_hover_text("tap tempo: three taps sets it").clicked() {
+        // Same words as the status strip's tap: three surfaces telling
+        // three different stories about one behaviour reads as three
+        // different behaviours.
+        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
             actions.audio.tapped = true;
         }
     });
@@ -741,7 +745,6 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 
 fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEngine) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Modulation").strong());
         // Beat indicator: brightest on the downbeat, so tempo is visible
         // at a glance rather than inferred from a number.
         let phase = m.clock.bar_phase(4.0);
@@ -767,7 +770,9 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
 
     for (i, lfo) in m.lfos.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(format!("lfo{}", i + 1));
+            // "LFO 1", capitalised, because that is how the routes list
+            // and the canvas both name it — one object, one name.
+            ui.label(format!("LFO {}", i + 1));
             egui::ComboBox::from_id_salt(format!("shape{i}"))
                 .width(64.0)
                 .selected_text(lfo.shape.label())
@@ -829,14 +834,14 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
         m.routes.remove(i);
     }
     if m.routes.is_empty() {
-        ui.small("no routes — use ‘mod' next to a parameter");
+        ui.small("no routes — use “LFO 1” next to a parameter");
     }
     let _ = registry;
 }
 
 fn health_section(ui: &mut egui::Ui, state: &PanelState) {
     let Some(h) = &state.health else {
-        ui.label("Collecting health data…");
+        ui.small("collecting health data…");
         return;
     };
 
@@ -1023,7 +1028,6 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
 }
 
 fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
-    ui.label(egui::RichText::new("Outputs").strong());
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
         return;
@@ -1589,9 +1593,9 @@ fn param_row(
         let lfo1 = vizz_mod::Source::Lfo(0);
         let routed = modulation.has_route(lfo1, &def.addr);
         let hint = if routed {
-            "lfo1 is routed here — click to remove"
+            "LFO 1 is routed here — click to remove"
         } else {
-            "route lfo1 to this parameter"
+            "route LFO 1 to this parameter"
         };
     // Modulation cannot reach transport: the engine reads fire, blend time,
     // curve and autopilot from `target()`, which modulation never touches,
@@ -1604,7 +1608,7 @@ fn param_row(
     // itself about whether the row was modulated.
     if !is_transport(def)
         && ui
-            .add(egui::Button::new("lfo1").small().selected(routed))
+            .add(egui::Button::new("LFO 1").small().selected(routed))
             .on_hover_text(hint)
             .clicked()
     {

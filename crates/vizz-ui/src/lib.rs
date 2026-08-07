@@ -415,7 +415,11 @@ impl Gui {
         }
         if self.graph_open {
             let mut open = true;
-            egui::Window::new("modulation")
+            // "modulation canvas", not "modulation": the panel already has
+            // a section by that name for the LFOs and routes, and the two
+            // share nothing but the engine underneath. One word, two
+            // unrelated surfaces, is how G "opens the wrong thing".
+            egui::Window::new("modulation canvas")
                 .open(&mut open)
                 .default_pos([420.0, 60.0])
                 .default_size([760.0, 520.0])
@@ -702,7 +706,7 @@ mod tests {
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
-        assert!(text.contains("Collecting health data"), "got: {text}");
+        assert!(text.contains("collecting health data"), "got: {text}");
         assert!(text.contains("preview only"), "got: {text}");
     }
 
@@ -752,7 +756,10 @@ mod tests {
         assert!(text.contains("128.0 bpm"), "detected tempo missing: {text}");
         assert!(text.contains("tap"), "tap tempo missing: {text}");
         // Band edges are the filter control; they must be editable numbers.
-        assert!(text.contains("30 Hz") && text.contains("110 Hz"), "band edges missing: {text}");
+        // The value and its unit are separate glyph runs, so they are
+        // matched separately rather than as one string.
+        assert!(text.contains("30") && text.contains("110"), "band edges missing: {text}");
+        assert!(text.contains("Hz"), "band edge unit missing: {text}");
         // Sensitivity reads in decibels, at the value the band actually
         // carries. "×10" is not a quantity anyone can act on, and it was
         // the thing that made the gain control look like it meant nothing.

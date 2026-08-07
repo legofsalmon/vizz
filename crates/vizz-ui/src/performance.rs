@@ -369,13 +369,14 @@ fn status_strip(
                 .add(egui::Button::new(
                     egui::RichText::new("tap").size(13.0).color(INK),
                 ))
+                .on_hover_text("tap the beat — three taps set the tempo and switch auto off")
                 .clicked()
             {
                 actions.tapped = true;
             }
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(format!("{:.1} BPM", state.bpm))
+                egui::RichText::new(format!("{:.1} bpm", state.bpm))
                     .size(15.0)
                     .color(INK),
             );
@@ -605,12 +606,27 @@ fn fader(
                     .color(if modulated.is_some() { MOD } else { INK }),
             );
             // The short name identifies the fader; the full address is only
-            // needed when reassigning, so it lives in the tooltip.
+            // needed when reassigning, so it lives in the tooltip — unless
+            // another fader ends in the same word. The shipped layout has
+            // /color/spread and /particles/spread, and two faders both
+            // labelled "spread" cannot be told apart in the dark, which is
+            // the one job this screen has.
             let short = addr.rsplit('/').next().unwrap_or(addr);
+            let clash = macros
+                .slots
+                .iter()
+                .flatten()
+                .any(|a| a != addr && a.rsplit('/').next() == Some(short));
+            let shown_name = if clash {
+                addr.trim_start_matches('/').replace('/', " ")
+            } else {
+                short.to_string()
+            };
             if ui
                 .add(
-                    egui::Label::new(egui::RichText::new(short).size(13.0).color(INK_2))
-                        .sense(Sense::click()),
+                    egui::Label::new(egui::RichText::new(shown_name).size(13.0).color(INK_2))
+                        .sense(Sense::click())
+                        .truncate(),
                 )
                 .on_hover_text(format!("{addr}  —  click to reassign"))
                 .clicked()
@@ -1057,7 +1073,7 @@ mod tests {
             text.contains("syphon:vizz"),
             "output status missing: {text}"
         );
-        assert!(text.contains("128.0 BPM"), "tempo missing: {text}");
+        assert!(text.contains("128.0 bpm"), "tempo missing: {text}");
         // The stale slot renders as an empty placeholder rather than
         // vanishing, so the fader layout does not reflow mid-set.
         assert!(
