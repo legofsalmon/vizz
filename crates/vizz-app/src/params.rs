@@ -586,3 +586,91 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    /// The README's OSC reference used to claim completeness while
+    /// documenting 21 of 76 addresses, with ranges two releases stale.
+    /// This parses the table back out of the README and holds it against
+    /// the registry, so adding or retuning a parameter without updating
+    /// the reference fails here instead of shipping.
+    #[test]
+    fn the_readme_osc_reference_matches_the_registry() {
+        let readme = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../README.md"
+        ))
+        .expect("README.md beside the workspace");
+
+        // Rows look like: | `/addr` | min – max | default | meaning |
+        // Gravity wells are compacted as `/gravity/N/x` (N = 0–3).
+        let mut rows = std::collections::BTreeMap::new();
+        for line in readme.lines() {
+            let Some(rest) = line.strip_prefix("| `/") else { continue };
+            let Some((addr, rest)) = rest.split_once('`') else { continue };
+            let addr = format!("/{addr}");
+            let cols: Vec<&str> = rest.split('|').map(str::trim).collect();
+            if cols.len() < 4 {
+                continue;
+            }
+            let Some((min, max)) = cols[1].split_once('–').map(|(a, b)| {
+                (a.trim().parse::<f32>(), b.trim().parse::<f32>())
+            }) else {
+                continue;
+            };
+            let (Ok(min), Ok(max), Ok(default)) = (min, max, cols[2].parse::<f32>()) else {
+                continue;
+            };
+            let addrs: Vec<String> = if addr.contains("/N/") {
+                (0..4).map(|i| addr.replace("/N/", &format!("/{i}/"))).collect()
+            } else {
+                vec![addr]
+            };
+            for a in addrs {
+                rows.insert(a, (min, max, default));
+            }
+        }
+        assert!(rows.len() > 50, "parsed only {} rows — table format changed?", rows.len());
+
+        let p = super::AppParams::build();
+        for (_, d) in p.registry.iter() {
+            let (min, max, default) = rows
+                .get(&d.addr)
+                .unwrap_or_else(|| panic!("README OSC reference is missing {}", d.addr));
+            assert_eq!((d.min, d.max), (*min, *max), "{}: range drifted", d.addr);
+            assert_eq!(d.default, *default, "{}: default drifted", d.addr);
+        }
+        for addr in rows.keys() {
+            assert!(
+                p.registry.id(addr).is_some(),
+                "README documents {addr}, which no longer exists"
+            );
+        }
+    }
+
+    /// The render_panel harness is the only place panel layout is ever
+    /// looked at. It once drew 46 of 76 parameters — the whole gravity
+    /// layer had never appeared in a single screenshot, which is how a
+    /// layout fault in its group would ship unseen.
+    #[test]
+    fn the_panel_harness_mirrors_the_registry() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizz-ui/examples/render_panel.rs"
+        ))
+        .expect("the render_panel harness");
+        let p = super::AppParams::build();
+        for (_, d) in p.registry.iter() {
+            // Transport is hidden from the panel's parameter list, so the
+            // harness only needs what the panel can actually show.
+            if d.transport {
+                continue;
+            }
+            assert!(
+                src.contains(&format!("\"{}\"", d.addr)),
+                "render_panel harness is missing {} — the panel preview cannot show it",
+                d.addr
+            );
+        }
+    }
+}
