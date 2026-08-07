@@ -348,9 +348,12 @@ impl Grid {
     /// Firing during a transition re-aims from wherever the blend has
     /// reached, which is what makes the grid playable: you are never
     /// locked out until the last move finishes.
-    pub fn fire(&mut self, slot: usize, reg: &ParamRegistry, presets: Presets<'_>) {
+    ///
+    /// Returns whether a transition actually started, so the autopilot
+    /// can tell a fired pad from a dead one and move on.
+    pub fn fire(&mut self, slot: usize, reg: &ParamRegistry, presets: Presets<'_>) -> bool {
         let Some(cell) = self.cells.get(slot).and_then(|c| c.as_ref()) else {
-            return;
+            return false;
         };
         // A pad whose preset has been deleted or renamed does nothing
         // rather than firing into a half-resolved look. Logged once per
@@ -362,7 +365,7 @@ impl Grid {
                 slot + 1,
                 cell.preset
             );
-            return;
+            return false;
         };
         // Capture *this layer*, not everything. A gravity transition that
         // started from a full look snapshot would carry every look
@@ -387,6 +390,7 @@ impl Grid {
         // than on the next one, so a cut is genuinely a cut.
         let clock = 0.0;
         self.advance(clock, reg);
+        true
     }
 
     /// Advance the blend and the autopilot, writing the interpolated
@@ -413,8 +417,17 @@ impl Grid {
             None => self.last_step = Some(step),
             Some(last) if step != last => {
                 self.last_step = Some(step);
-                if let Some(next) = self.next_filled() {
-                    self.fire(next, reg, presets);
+                // A pad whose preset has been deleted refuses to fire.
+                // Walk on to the next filled pad rather than trying the
+                // same dead one every bar — an autopilot that wedges on
+                // one stale pad reads as the whole feature having died.
+                let mut next = self.next_filled();
+                for _ in 0..self.cells.len() {
+                    let Some(slot) = next else { break };
+                    if self.fire(slot, reg, presets) {
+                        break;
+                    }
+                    next = self.next_filled_from(slot + 1);
                 }
             }
             Some(_) => {}
@@ -454,6 +467,11 @@ impl Grid {
     fn next_filled(&self) -> Option<usize> {
         let from = self.transition.as_ref().map(|t| t.to_slot).or(self.current);
         let start = from.map_or(0, |s| s + 1);
+        self.next_filled_from(start)
+    }
+
+    /// The first filled slot at or after `start`, wrapping.
+    fn next_filled_from(&self, start: usize) -> Option<usize> {
         (0..self.cells.len())
             .map(|i| (start + i) % self.cells.len())
             .find(|i| self.cells[*i].is_some())
@@ -1099,6 +1117,35 @@ mod tests {
         assert_eq!(grid.current(), Some(4), "did not walk on");
         grid.tick(0.0, 12.1, &reg, &src(&lib));
         assert_eq!(grid.current(), Some(0), "did not wrap");
+    }
+
+    /// A pad whose preset was deleted refuses to fire. The autopilot
+    /// used to ask for the same next pad every bar, so one stale pad
+    /// wedged the whole feature: nothing changed on screen again until
+    /// someone repaired the grid by hand, mid-set.
+    #[test]
+    fn autopilot_walks_past_a_pad_whose_preset_is_gone() {
+        let (reg, _, _, _) = registry();
+        let mut grid = Grid::new();
+        let mut lib = std::collections::BTreeMap::new();
+        // Pad 1 names a preset that no longer exists; pad 5 is fine.
+        grid.assign(0, "deleted");
+        lib.insert("b".into(), Preset::capture(&reg));
+        grid.assign(4, "b");
+        grid.curve = Curve::Cut;
+        grid.autopilot = Autopilot {
+            enabled: true,
+            bars: 1.0,
+            beats_per_bar: 4.0,
+        };
+
+        grid.tick(0.0, 2.5, &reg, &src(&lib));
+        grid.tick(0.0, 4.1, &reg, &src(&lib));
+        assert_eq!(grid.current(), Some(4), "wedged on the dead pad");
+        // And it keeps playing on later bars, wrapping past the dead pad
+        // again rather than stalling the second time around.
+        grid.tick(0.0, 8.1, &reg, &src(&lib));
+        assert_eq!(grid.current(), Some(4), "stalled after the first lap");
     }
 
     #[test]

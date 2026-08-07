@@ -246,10 +246,26 @@ impl FrameEngine {
         match vizz_mod::preset::by_index(index) {
             Some((name, preset)) => {
                 let applied = preset.apply(reg);
+                // A look transition in flight would rewrite these same
+                // parameters on its very next frame, silently eating the
+                // recall — the number key would appear to do nothing.
+                // The recall is edge-triggered, so reaching here means it
+                // is the thing most recently touched; it wins.
+                self.grid.halt();
                 log::info!("recalled preset {slot}: {name} ({applied} parameters)");
             }
             None => log::debug!("no preset in slot {slot}"),
         }
+    }
+
+    /// Forget the last recall edge, so the next tick re-applies whatever
+    /// slot `/preset/recall` is sitting on. The number keys call this on
+    /// every press: recall is edge-triggered (see `apply_pending_preset`),
+    /// so without it pressing the key for the preset already showing does
+    /// nothing — and "press the number again to snap back after tweaking"
+    /// is exactly what the keys are for.
+    pub fn retrigger_preset(&mut self) {
+        self.last_preset = None;
     }
 
     /// The `/preset/recall` slot last acted on, 1-based; `None` when
@@ -280,10 +296,10 @@ impl FrameEngine {
         // advances, so a preset's values are targets for this same frame
         // and the glide starts immediately rather than one frame late.
         self.apply_pending_preset();
-        // Then the grid, so a scene fired on this frame starts blending on
-        // it — and so a transition in flight wins over a preset recalled
-        // underneath it, which is the order you would expect from the
-        // thing you most recently touched.
+        // Then the grid, so a scene fired on this frame starts blending
+        // on it. A recall on this frame has already halted any transition
+        // in flight — both are edge-triggered, so whichever the user
+        // touched last is the one writing the parameters.
         self.tick_grid(dt_s);
         let p = Arc::clone(&self.params);
         let p = &*p;
@@ -551,6 +567,70 @@ mod tests {
         assert!(
             (reg.target(glow) - 0.02).abs() < 1e-6,
             "a parked recall re-applied its preset and fought the user"
+        );
+    }
+
+    /// A recall must survive a look transition in flight. The grid
+    /// writes its blend into the same parameters every frame, so without
+    /// halting it the recalled preset was on screen for one frame and
+    /// then silently overwritten — the number key reads as doing nothing.
+    #[test]
+    fn a_recall_wins_over_a_transition_in_flight() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        let glow = reg.id("/fx/glow").unwrap();
+
+        // Pad 1 plays the second built-in; fire it and make sure the
+        // blend is genuinely in flight before recalling over it.
+        e.grid.assign(0, vizz_mod::preset::BUILTINS[1].name);
+        reg.set_by_addr("/scene/fire", 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert!(e.grid.in_flight().is_some(), "no transition to survive");
+
+        // Recall the first built-in mid-blend, then give the transition
+        // more than enough frames to have stamped its target if it were
+        // still alive.
+        reg.set_by_addr("/preset/recall", 1.0);
+        for _ in 0..240 {
+            e.begin_frame(16.0 / 9.0, dt);
+        }
+        let expected = vizz_mod::preset::BUILTINS[0].preset().values["/fx/glow"];
+        assert!(
+            (reg.target(glow) - expected).abs() < 1e-6,
+            "the in-flight transition overwrote the recall: glow {} vs {expected}",
+            reg.target(glow)
+        );
+    }
+
+    /// Pressing the number key for the preset already showing must
+    /// re-apply it. Recall is edge-triggered and the key writes the same
+    /// slot value, so without `retrigger_preset` the press moves nothing
+    /// — and snapping back after hand-tweaking is the main thing the
+    /// number keys are pressed for.
+    #[test]
+    fn a_repeated_number_key_reapplies_the_preset() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        let glow = reg.id("/fx/glow").unwrap();
+
+        reg.set_by_addr("/preset/recall", 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        let recalled = reg.target(glow);
+
+        // Tweak by hand; the parked recall must not fight it...
+        reg.set_by_addr("/fx/glow", 0.02);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert!((reg.target(glow) - 0.02).abs() < 1e-6);
+
+        // ...but the same key pressed again snaps it back.
+        e.retrigger_preset();
+        reg.set_by_addr("/preset/recall", 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert!(
+            (reg.target(glow) - recalled).abs() < 1e-6,
+            "the repeated press did nothing"
         );
     }
 

@@ -148,7 +148,14 @@ fn run(registry: Arc<ParamRegistry>, shared: SharedMidi, stop: Arc<AtomicBool>) 
             // rest of the session; try again on the next pass.
             Err(e) => log::debug!("MIDI rescan failed: {e:#}"),
         }
-        std::thread::sleep(RESCAN_INTERVAL);
+        // Sliced so quitting does not wait out the rescan pause: the join
+        // in `Drop` was stalling the whole app for up to two seconds.
+        let mut slept = Duration::ZERO;
+        while slept < RESCAN_INTERVAL && !stop.load(Ordering::Relaxed) {
+            let step = (RESCAN_INTERVAL - slept).min(Duration::from_millis(100));
+            std::thread::sleep(step);
+            slept += step;
+        }
     }
     log::info!("MIDI input stopped");
 }
@@ -495,5 +502,25 @@ mod tests {
         std::fs::write(&path, "{ this is not json").unwrap();
         assert!(load_map(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quitting joins the rescan thread, and the rescan pause is two
+    /// seconds. Dropping the engine mid-pause used to wait the pause out,
+    /// which read as the app hanging on quit. The bound here is generous
+    /// on purpose — half the old stall, several times the sliced sleep —
+    /// so it fails on the bug, not on a slow CI machine.
+    #[test]
+    fn quitting_does_not_wait_out_the_rescan_pause() {
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        let engine = MidiEngine::spawn(registry(), shared).expect("spawn");
+        // Let the thread get past the first scan and into the pause.
+        std::thread::sleep(Duration::from_millis(300));
+        let quit = std::time::Instant::now();
+        drop(engine);
+        assert!(
+            quit.elapsed() < Duration::from_secs(1),
+            "quit stalled {:?} joining the MIDI thread",
+            quit.elapsed()
+        );
     }
 }

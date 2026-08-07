@@ -141,6 +141,9 @@ struct App {
     /// receiving redraw events entirely and the Syphon/NDI feed must not
     /// stop with it.
     presentable: bool,
+    /// The render scale in effect, mirrored from settings so the panel
+    /// can show it without a settings-file read on every frame.
+    render_scale: f32,
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -414,6 +417,7 @@ impl App {
                 .notify_info(format!("output {ow}x{oh}, rendering at {rw}x{rh}"));
         }
 
+        self.render_scale = scale;
         let mut s = crate::settings::load();
         s.output_size = Some([ow, oh]);
         s.render_scale = Some(scale);
@@ -786,7 +790,7 @@ impl App {
             let output_setup = vizz_ui::OutputSetup {
                 width: state.output.width,
                 height: state.output.height,
-                scale: crate::settings::load().scale(),
+                scale: self.render_scale,
                 wide: !state.output.publishable(),
             };
             let panel_state = PanelState {
@@ -909,8 +913,13 @@ impl App {
                 );
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
-                // one recall path, not a second one that can drift.
+                // one recall path, not a second one that can drift. The
+                // retrigger makes a repeated press of the same number
+                // re-apply: without it the key for the preset already
+                // recalled is dead, and "snap back after tweaking" is the
+                // main thing the keys are pressed for.
                 if let Some(slot) = preset_key {
+                    self.engine.retrigger_preset();
                     self.params
                         .registry
                         .set(self.params.preset_recall, slot as f32);
@@ -1755,6 +1764,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         output_status: Vec::new(),
         armed_learn: None,
         pending_clouds: Vec::new(),
+        render_scale: crate::settings::load().scale(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),
