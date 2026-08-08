@@ -245,6 +245,36 @@
     <p class="sub">Newest first. Full notes on each release page.</p>
 
     <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.10.0">0.10.0</a></div>
+      <ul>
+        <li><strong>Recall always wins.</strong> A preset recalled during a
+          scene transition is no longer silently overwritten by the blend,
+          and pressing its number again snaps back after hand-tweaking.
+          The autopilot walks past a pad whose preset was deleted instead
+          of wedging on it every bar.</li>
+        <li><strong>The canvas tells the truth.</strong> A Param node aimed
+          at nothing says <em>missing</em>; a wire refused for making a
+          loop says why; save and load failures read red, not green. The
+          canvas also remembers its pan, zoom and patch name across
+          launches.</li>
+        <li><strong>State files survive a second instance.</strong> Atomic
+          writes no longer share temp names between processes, the MIDI
+          map follows <code>XDG_CONFIG_HOME</code> like everything else,
+          re-dropping an edited palette reloads it in place, and quitting
+          flushes the newest MIDI binding.</li>
+        <li><strong>Fullscreen earns its pixels.</strong> At 1080p the
+          faders grow to thumb size and fill the window; duplicate labels
+          disambiguate ("color spread" vs "particles spread"); a live-set's
+          worth of copy now tells one story per control.</li>
+        <li><strong>The OSC reference is complete and enforced.</strong>
+          Every one of the 76 addresses, with ranges checked against the
+          running registry by a test — plus honest <code>--width</code>
+          precedence, a title bar that only claims what bound, and quit
+          without the two-second stall.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.9.0">0.9.0</a></div>
       <ul>
         <li><strong>The gravity layer.</strong> Four attractors and repulsors

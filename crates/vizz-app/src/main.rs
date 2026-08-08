@@ -63,13 +63,22 @@ struct Args {
     #[arg(long, default_value_t = 7000)]
     osc_port: u16,
 
-    /// Output width in pixels.
-    #[arg(long, default_value_t = 1280)]
-    width: u32,
+    /// Address OSC listens on. The default accepts control from any
+    /// machine on the network, which is what a tablet running TouchOSC
+    /// needs — and also means anyone on venue wifi can drive the show.
+    /// Use 127.0.0.1 to accept only this machine.
+    #[arg(long, default_value = "0.0.0.0")]
+    osc_bind: String,
 
-    /// Output height in pixels.
-    #[arg(long, default_value_t = 720)]
-    height: u32,
+    /// Output width in pixels. Given explicitly, it wins over the size
+    /// remembered from the panel; omitted, the remembered size (or 1280)
+    /// is used.
+    #[arg(long)]
+    width: Option<u32>,
+
+    /// Output height in pixels. Same precedence as --width.
+    #[arg(long)]
+    height: Option<u32>,
 
     /// Disable the Syphon output (macOS).
     #[arg(long)]
@@ -190,16 +199,40 @@ fn main() -> Result<()> {
 
     // OSC failing to bind is degraded, not fatal: visuals still run,
     // control just isn't available on that port.
+    // The default bind is every interface, deliberately: pointing a
+    // tablet at vizz from across the stage is the whole point of OSC
+    // here. But that is a choice worth being able to unmake — on venue
+    // wifi it means anyone can drive the show — so the address is a flag
+    // and the log says what is exposed either way.
+    if args.osc_bind == "0.0.0.0" {
+        log::info!(
+            "OSC accepts control from ANY machine on the network (udp/{}) — \
+             restrict with --osc-bind 127.0.0.1",
+            args.osc_port
+        );
+    }
     let _osc = match vizz_osc::OscServer::spawn(
         Arc::clone(&params.registry),
-        ("0.0.0.0", args.osc_port),
+        (args.osc_bind.as_str(), args.osc_port),
     ) {
         Ok(server) => Some(server),
         Err(e) => {
-            log::error!("OSC bind failed on port {}: {e} — continuing without OSC", args.osc_port);
+            log::error!(
+                "OSC bind failed on {}:{}: {e} — continuing without OSC",
+                args.osc_bind,
+                args.osc_port
+            );
             None
         }
     };
+
+    // Whether a size was actually asked for, before the defaults fill in:
+    // the windowed path lets an explicit request outrank the remembered
+    // panel setting, and cannot tell "asked for 1280" from "defaulted to
+    // 1280" once the Option is gone.
+    let size_from_cli = args.width.is_some() || args.height.is_some();
+    let width = args.width.unwrap_or(1280);
+    let height = args.height.unwrap_or(720);
 
     let output_opts = outputs::OutputOpts {
         syphon: !args.no_syphon,
@@ -207,8 +240,8 @@ fn main() -> Result<()> {
         syphon_flip: args.syphon_flip,
         ndi: args.ndi,
         ndi_name: args.ndi_name.clone(),
-        width: args.width,
-        height: args.height,
+        width,
+        height,
         fps: args.fps,
     };
 
@@ -216,8 +249,8 @@ fn main() -> Result<()> {
         headless::run(
             params,
             headless::HeadlessOpts {
-                width: args.width,
-                height: args.height,
+                width,
+                height,
                 frames: args.frames,
                 dump: args.dump,
                 audio_device,
@@ -228,19 +261,28 @@ fn main() -> Result<()> {
             },
         )
     } else {
-        let title = if cfg!(target_os = "macos") && output_opts.syphon {
-            format!(
-                "vizz {}x{} — Syphon '{}' — OSC :{}",
-                args.width, args.height, output_opts.syphon_name, args.osc_port
-            )
+        // No size in the base title: the window init appends the size
+        // actually allocated, and baking the requested one in here gave
+        // the title two resolutions — leading with the stale number, in
+        // the one place a performer checks what is going out. The OSC
+        // claim is real, not aspirational: a second instance whose bind
+        // failed used to advertise a port the first instance owned.
+        let osc = if _osc.is_some() {
+            format!(" — OSC :{}", args.osc_port)
         } else {
-            format!("vizz {}x{} — OSC :{}", args.width, args.height, args.osc_port)
+            String::new()
+        };
+        let title = if cfg!(target_os = "macos") && output_opts.syphon {
+            format!("vizz — Syphon '{}'{osc}", output_opts.syphon_name)
+        } else {
+            format!("vizz{osc}")
         };
         windowed::run(
             params,
             windowed::WindowedOpts {
-                width: args.width,
-                height: args.height,
+                width,
+                height,
+                size_from_cli,
                 show_gui: !args.no_gui,
                 check_updates: !args.no_update_check,
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),

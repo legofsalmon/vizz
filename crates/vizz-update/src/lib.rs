@@ -6,9 +6,10 @@
 //!
 //! 1. An update that lands mid-set is exactly the failure a VJ cannot
 //!    afford. A human choosing the moment is the whole point.
-//! 2. The macOS bundle is unsigned, so a self-replacing binary would have
-//!    to fight Gatekeeper and quarantine — a lot of fragile machinery for
-//!    something a drag-and-drop already does reliably.
+//! 2. Replacing a running, signed and notarized bundle in place means
+//!    re-quarantine edge cases and torn-update recovery — a lot of
+//!    fragile machinery for something a drag-and-drop already does
+//!    reliably.
 //!
 //! The check runs once, on a background thread, with a short timeout, and
 //! fails silently: no network, an offline venue, a rate-limited API or a

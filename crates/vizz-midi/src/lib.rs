@@ -148,7 +148,14 @@ fn run(registry: Arc<ParamRegistry>, shared: SharedMidi, stop: Arc<AtomicBool>) 
             // rest of the session; try again on the next pass.
             Err(e) => log::debug!("MIDI rescan failed: {e:#}"),
         }
-        std::thread::sleep(RESCAN_INTERVAL);
+        // Sliced so quitting does not wait out the rescan pause: the join
+        // in `Drop` was stalling the whole app for up to two seconds.
+        let mut slept = Duration::ZERO;
+        while slept < RESCAN_INTERVAL && !stop.load(Ordering::Relaxed) {
+            let step = (RESCAN_INTERVAL - slept).min(Duration::from_millis(100));
+            std::thread::sleep(step);
+            slept += step;
+        }
     }
     log::info!("MIDI input stopped");
 }
@@ -166,6 +173,7 @@ fn scan_and_connect(
         .collect();
 
     // Drop connections whose device disappeared.
+    let before = open.len();
     open.retain(|(name, _)| {
         let still_there = names.contains(name);
         if !still_there {
@@ -173,6 +181,17 @@ fn scan_and_connect(
         }
         still_there
     });
+    // A learn armed when a device vanishes is a trap: it survives the
+    // unplug-replug it was probably armed for, and the first stray event
+    // from *any* device — a drifting fader on a controller across the
+    // room — silently takes the binding. Disarm instead; re-arming is
+    // one click, un-learning a wrong control is a hunt.
+    if open.len() < before
+        && let Ok(mut state) = shared.lock()
+        && state.learn_target.take().is_some()
+    {
+        log::info!("MIDI learn cancelled — a device disconnected while it was armed");
+    }
 
     for port in &ports {
         let Ok(name) = input.port_name(port) else { continue };
@@ -246,9 +265,35 @@ fn handle_message(
 
 /// Where mappings live by default.
 pub fn default_map_path() -> PathBuf {
-    std::env::home_dir()
-        .map(|h| h.join(".config/vizz/midi.json"))
-        .unwrap_or_else(|| PathBuf::from("vizz-midi.json"))
+    // The same resolution the rest of the user state uses (patches,
+    // presets, settings all honour XDG_CONFIG_HOME). This file was the
+    // one hold-out hardcoding ~/.config, so a user with XDG set had
+    // every file in one directory except the most laborious one to
+    // recreate — and "back up the vizz folder" silently omitted it.
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let path = base.join("vizz").join("midi.json");
+    // Bring an existing map along. Before this, setting XDG_CONFIG_HOME
+    // made a learned setup appear to vanish.
+    if !path.exists()
+        && let Some(legacy) = std::env::home_dir().map(|h| h.join(".config/vizz/midi.json"))
+        && legacy != path
+        && legacy.exists()
+    {
+        let moved = path
+            .parent()
+            .map(|dir| std::fs::create_dir_all(dir).is_ok())
+            .unwrap_or(false)
+            && std::fs::rename(&legacy, &path).is_ok();
+        if moved {
+            log::info!("moved the MIDI map from {} to {}", legacy.display(), path.display());
+        } else {
+            log::warn!("could not move the MIDI map from {}", legacy.display());
+        }
+    }
+    path
 }
 
 /// Load a mapping file. A missing file is not an error — it just means no
@@ -259,7 +304,59 @@ pub fn load_map(path: &Path) -> Result<MidiMap> {
     }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    match serde_json::from_str(&text) {
+        Ok(map) => Ok(map),
+        Err(e) => {
+            // Two mitigations before giving up, because this file is the
+            // most laborious setup in the app.
+            //
+            // Salvage: parsing was all-or-nothing, so one malformed
+            // binding — a schema change, a hand-edit — cost every other
+            // binding in the file. If the JSON itself parses, every
+            // binding that still deserialises is kept.
+            //
+            // Quarantine: whatever happens, the damaged original is set
+            // aside rather than left in place, because the next save
+            // would overwrite it and turn corruption into permanent loss.
+            let salvaged = salvage_map(&text);
+            let mut broken = path.as_os_str().to_owned();
+            broken.push(".broken");
+            match std::fs::rename(path, &broken) {
+                Ok(()) => log::warn!(
+                    "set the unreadable MIDI map aside as {} — it may be hand-recoverable",
+                    Path::new(&broken).display()
+                ),
+                Err(re) => log::warn!("could not set {} aside: {re}", path.display()),
+            }
+            match salvaged {
+                Some((map, lost)) => {
+                    log::warn!(
+                        "{} was damaged ({e}) — recovered {} bindings, lost {lost}",
+                        path.display(),
+                        map.bindings.len()
+                    );
+                    Ok(map)
+                }
+                None => Err(e).with_context(|| format!("parsing {}", path.display())),
+            }
+        }
+    }
+}
+
+/// Keep every binding that still deserialises from a damaged map file.
+/// `None` when the text is not JSON at all — nothing to walk.
+fn salvage_map(text: &str) -> Option<(MidiMap, usize)> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let rows = value.get("bindings")?.as_array()?;
+    let mut map = MidiMap::default();
+    let mut lost = 0;
+    for row in rows {
+        match serde_json::from_value::<Binding>(row.clone()) {
+            Ok(b) => map.bindings.push(b),
+            Err(_) => lost += 1,
+        }
+    }
+    Some((map, lost))
 }
 
 pub fn save_map(path: &Path, map: &MidiMap) -> Result<()> {
@@ -273,7 +370,11 @@ pub fn save_map(path: &Path, map: &MidiMap) -> Result<()> {
     // loss or a full disk during it leaves an empty or half-written file,
     // `load_map` fails, and the app starts with no mappings — losing the
     // most laborious setup in the app to the narrowest of windows.
-    let tmp = path.with_extension("json.tmp");
+    // Unique per process: two instances sharing one tmp name could
+    // truncate each other mid-write and rename a torn file into place.
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp.{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))
 }
@@ -404,6 +505,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Parsing was all-or-nothing: one malformed binding — a schema
+    /// change, a hand-edit gone wrong — cost every other binding in the
+    /// file, which is the most laborious setup in the app. Every binding
+    /// that still deserialises is kept, and the damaged original is set
+    /// aside where the next save cannot clobber it.
+    #[test]
+    fn a_damaged_map_keeps_its_good_bindings_and_the_original_is_set_aside() {
+        let dir = std::env::temp_dir().join(format!("vizz-midi-salvage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("midi.json");
+        let damaged = r#"{"bindings":[
+            {"source":{"kind":"control_change","channel":0,"controller":7},"param":"/master/dim"},
+            {"source":{"kind":"note","channel":"NOT A NUMBER","note":36},"param":"/scene/fire"},
+            {"source":{"kind":"note","channel":9,"note":36},"param":"/particles/speed"}
+        ]}"#;
+        std::fs::write(&path, damaged).unwrap();
+
+        let map = load_map(&path).expect("salvage should succeed");
+        assert_eq!(map.bindings.len(), 2, "both intact bindings kept");
+        assert_eq!(map.bindings[0].param, "/master/dim");
+        assert_eq!(map.bindings[1].param, "/particles/speed");
+
+        let broken = dir.join("midi.json.broken");
+        assert_eq!(
+            std::fs::read_to_string(&broken).expect("original set aside"),
+            damaged
+        );
+        assert!(!path.exists(), "the damaged file must not stay in the save path");
+    }
+
     #[test]
     fn corrupt_map_file_reports_an_error_rather_than_panicking() {
         let dir = std::env::temp_dir().join(format!("vizz-midi-bad-{}", std::process::id()));
@@ -412,5 +544,25 @@ mod tests {
         std::fs::write(&path, "{ this is not json").unwrap();
         assert!(load_map(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quitting joins the rescan thread, and the rescan pause is two
+    /// seconds. Dropping the engine mid-pause used to wait the pause out,
+    /// which read as the app hanging on quit. The bound here is generous
+    /// on purpose — half the old stall, several times the sliced sleep —
+    /// so it fails on the bug, not on a slow CI machine.
+    #[test]
+    fn quitting_does_not_wait_out_the_rescan_pause() {
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        let engine = MidiEngine::spawn(registry(), shared).expect("spawn");
+        // Let the thread get past the first scan and into the pause.
+        std::thread::sleep(Duration::from_millis(300));
+        let quit = std::time::Instant::now();
+        drop(engine);
+        assert!(
+            quit.elapsed() < Duration::from_secs(1),
+            "quit stalled {:?} joining the MIDI thread",
+            quit.elapsed()
+        );
     }
 }

@@ -27,6 +27,9 @@ use crate::params::AppParams;
 pub struct WindowedOpts {
     pub width: u32,
     pub height: u32,
+    /// The size came from an explicit --width/--height rather than the
+    /// defaults, and should outrank whatever the panel last saved.
+    pub size_from_cli: bool,
     pub show_gui: bool,
     /// Check GitHub for a newer release once at startup.
     pub check_updates: bool,
@@ -54,7 +57,7 @@ struct RenderState {
     output: OutputTarget,
     blit: BlitPass,
     blit_bind: wgpu::BindGroup,
-    senders: Vec<Box<dyn vizz_io::FrameSender>>,
+    outputs: outputs::Outputs,
     post: PostChain,
     gui: Gui,
     /// Eight-bit copy of the master, present only when the master is
@@ -116,6 +119,63 @@ struct App {
     /// When it was last compared. Comparing is cheap but not free, and
     /// nothing here needs answering sixty times a second.
     modulation_checked: Instant,
+    /// Set while the MIDI map is failing to save; holds the last attempt
+    /// so retries pace themselves instead of storming a full disk.
+    midi_save_backoff: Option<Instant>,
+    /// Whether the modulation autosave is currently failing, so the log
+    /// line fires once per streak and recovery gets announced.
+    modulation_save_failing: bool,
+    /// Output liveness as of last frame, for announcing transitions.
+    output_status: Vec<vizz_ui::OutputStatus>,
+    /// Clouds parsing on worker threads, one per drop. Parsing happened
+    /// on the event-loop thread, so dropping a hundred-megabyte scan
+    /// froze the projector feed for however long the parse took — the
+    /// exact freeze the drop gesture was built to avoid. The GPU upload
+    /// still happens here when a result lands; only the pure CPU parse
+    /// leaves the thread.
+    pending_clouds: Vec<PendingCloud>,
+    /// The learn that was armed last frame, and the map revision then —
+    /// so a learn *completing* (on the MIDI thread, never in response to
+    /// a click) gets announced, and a cancelled one does not.
+    armed_learn: Option<(String, u64)>,
+    /// Whether the last frame could present to the window. While it
+    /// cannot — minimised, occluded, surface lost — the loop drives
+    /// itself from `about_to_wait`, because a hidden window may stop
+    /// receiving redraw events entirely and the Syphon/NDI feed must not
+    /// stop with it.
+    presentable: bool,
+    /// The render scale in effect, mirrored from settings so the panel
+    /// can show it without a settings-file read on every frame.
+    render_scale: f32,
+}
+
+/// A cloud being parsed off-thread, and where its result will arrive.
+struct PendingCloud {
+    path: std::path::PathBuf,
+    rx: std::sync::mpsc::Receiver<anyhow::Result<Vec<vizz_render::pointcloud::Point>>>,
+}
+
+/// The file's own name, for a notice — the full path is for the log.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Build a fresh surface for the window and configure it.
+///
+/// For the `Lost` and `Validation` acquire arms: reconfiguring a dead
+/// surface just fails the same way forever, which is a preview frozen for
+/// the rest of the night. The instance can always mint a new one.
+fn recreate_surface(state: &mut RenderState) {
+    match state.ctx.instance.create_surface(Arc::clone(&state.window)) {
+        Ok(surface) => {
+            state.surface = surface;
+            state.surface.configure(&state.ctx.device, &state.config);
+            log::info!("window surface recreated");
+        }
+        Err(e) => log::error!("could not recreate the window surface: {e:#}"),
+    }
 }
 
 /// How often the modulation autosave looks for a change. Slow enough to be
@@ -165,6 +225,15 @@ impl App {
                     trace: wgpu::Trace::Off,
                 })
                 .await?;
+            // The same guards GpuContext::new installs on the headless
+            // path. This device is built by hand for surface
+            // compatibility, and without these an uncaptured validation
+            // or out-of-memory error panics the process mid-set — wgpu's
+            // default handler — and a lost device dies silently.
+            device.set_device_lost_callback(|reason, msg| {
+                log::error!("GPU device lost ({reason:?}): {msg}");
+            });
+            vizz_render::install_error_guard(&device);
             anyhow::Ok(GpuContext {
                 instance,
                 adapter,
@@ -190,7 +259,14 @@ impl App {
         // cleans up a field of one-pixel sprites. Below 1× it buys frame
         // rate on a machine that cannot hold the budget.
         let s = crate::settings::load();
-        let [ow, oh] = s.output_or([self.opts.width, self.opts.height]);
+        // An explicit --width/--height wins for this launch: the scripted
+        // venue start must not be overridden by whatever was clicked on a
+        // laptop last week. Without the flags, the remembered size wins.
+        let [ow, oh] = if self.opts.size_from_cli {
+            crate::settings::fit([self.opts.width, self.opts.height])
+        } else {
+            s.output_or([self.opts.width, self.opts.height])
+        };
         let [rw, rh] = s.render_size([ow, oh]);
         let master_format = if s.wide_output {
             vizz_render::output::WIDE_FORMAT
@@ -211,8 +287,15 @@ impl App {
         // Palettes come back in the order they were dropped, so the
         // indices a preset saved still point at the same colours.
         for path in &self.palettes {
+            // A hole holds its row: `/color/palette` values in saved
+            // presets index rows, and rows must not shift under them.
+            if path.is_empty() {
+                scene.skip_palette_row();
+                continue;
+            }
             if let Err(e) = scene.load_palette(&ctx, std::path::Path::new(path)) {
                 log::warn!("could not reload palette {path}: {e:#}");
+                scene.skip_palette_row();
             }
         }
         // A stream that will not start is a warning, never a startup
@@ -248,11 +331,16 @@ impl App {
         // a fixed extent with no bounds check.
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
-        let senders = outputs::build_senders(&ctx.device, &self.opts.outputs);
+        let senders = outputs::Outputs::new(&ctx.device, &self.opts.outputs);
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
         gui.visible = self.opts.show_gui;
+        // The canvas comes back where it was left — pan, zoom, patch
+        // name — instead of at the origin with the name field blank.
+        if let Some(canvas) = crate::settings::load().graph_view {
+            gui.restore_graph_view(canvas.into());
+        }
 
         Ok(RenderState {
             window,
@@ -264,7 +352,7 @@ impl App {
             output,
             blit,
             blit_bind,
-            senders,
+            outputs: senders,
             post,
             gui,
             publish,
@@ -284,13 +372,17 @@ impl App {
     /// out means relaunching into whatever the app opens with.
     fn apply_output_setup(&mut self, setup: vizz_ui::OutputSetup) {
         let Some(state) = &mut self.state else { return };
-        let ow = setup.width.clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
-        let oh = setup.height.clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        // Through the same fitter the settings loader uses — per-axis
+        // clamps alone are how a typed 7680x7680 became a 59-megapixel
+        // allocation: the sides were inside every limit and the area was
+        // the cost. This path allocates the actual textures, so it is
+        // exactly the wrong place to trust the UI's numbers.
+        let [ow, oh] = crate::settings::fit([setup.width, setup.height]);
         let scale = setup
             .scale
             .clamp(crate::settings::MIN_SCALE, crate::settings::MAX_SCALE);
-        let rw = ((ow as f32 * scale) as u32).clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
-        let rh = ((oh as f32 * scale) as u32).clamp(crate::settings::MIN_DIM, crate::settings::MAX_DIM);
+        let [rw, rh] =
+            crate::settings::fit([(ow as f32 * scale) as u32, (oh as f32 * scale) as u32]);
         let format = if setup.wide {
             vizz_render::output::WIDE_FORMAT
         } else {
@@ -325,10 +417,22 @@ impl App {
         // that the stream's size changed.
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
-        state.senders.clear();
-        state.senders = outputs::build_senders(&state.ctx.device, &self.opts.outputs);
+        state.outputs = outputs::Outputs::new(&state.ctx.device, &self.opts.outputs);
         state.window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
+        if [ow, oh] != [setup.width, setup.height] {
+            // The fitter shrank the request. Saying so is what keeps the
+            // budget from reading as the spinner having ignored the drag.
+            state.gui.notify_error(format!(
+                "{}x{} is over the pixel budget — output fitted to {ow}x{oh}",
+                setup.width, setup.height
+            ));
+        } else {
+            state
+                .gui
+                .notify_info(format!("output {ow}x{oh}, rendering at {rw}x{rh}"));
+        }
 
+        self.render_scale = scale;
         let mut s = crate::settings::load();
         s.output_size = Some([ow, oh]);
         s.render_scale = Some(scale);
@@ -362,62 +466,178 @@ impl App {
             // a palette that arrives as a cloud is obvious immediately
             // whereas the reverse silently recolours the scene.
             "csv" => self.load_dropped_cloud(path),
-            other => log::warn!("nothing to do with a .{other} file"),
+            other => {
+                log::warn!("nothing to do with a .{other} file");
+                if let Some(state) = &mut self.state {
+                    state.gui.notify_error(format!(
+                        "can't load a .{other} — clouds are .ply .xyz .pts .csv, palettes .gpl .hex .txt"
+                    ));
+                }
+            }
         }
     }
 
     fn load_dropped_palette(&mut self, path: std::path::PathBuf) {
         let Some(state) = &mut self.state else { return };
+        let key = path.display().to_string();
+        // A file already in the bank reloads into its own row — the
+        // natural gesture after editing a .gpl. Appending instead burned
+        // a new row per re-drop and grew the saved list without bound,
+        // and once the bank wrapped, the duplicates overwrote the
+        // earliest palettes that saved presets still index.
+        if let Some(i) = self.palettes.iter().position(|p| *p == key) {
+            let row = vizz_render::palette::FIRST_USER + i;
+            match state.scene.reload_palette(&state.ctx, &path, row) {
+                Ok(name) => {
+                    let p = &*self.params;
+                    p.registry.set(p.palette, row as f32);
+                    state.gui.notify_info(format!("palette '{name}' reloaded"));
+                }
+                Err(e) => {
+                    log::warn!("could not reload {}: {e:#}", path.display());
+                    state.gui.notify_error(format!(
+                        "could NOT reload palette {}: {e}",
+                        file_name(&path)
+                    ));
+                }
+            }
+            return;
+        }
         match state.scene.load_palette(&state.ctx, &path) {
             Ok((name, row)) => {
                 // Select it, for the same reason a dropped cloud is
                 // selected: a palette you cannot see has not arrived.
                 let p = &*self.params;
                 p.registry.set(p.palette, row as f32);
-                self.palettes.push(path.display().to_string());
+                // The list mirrors the bank's rows, so when the bank
+                // wraps onto an old row the list entry for that row is
+                // replaced rather than the list growing past the bank.
+                let idx = row - vizz_render::palette::FIRST_USER;
+                if idx < self.palettes.len() {
+                    self.palettes[idx] = key;
+                } else {
+                    self.palettes.push(key);
+                }
                 if let Err(e) = crate::settings::save_palettes(&self.palettes) {
                     log::warn!("could not remember the loaded palettes: {e:#}");
+                    state.gui.notify_error(format!(
+                        "palette loaded, but won't survive a restart: {e}"
+                    ));
                 }
                 log::info!("palette {name} is now selected");
+                state.gui.notify_info(format!("palette '{name}' loaded and selected"));
             }
-            Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+            Err(e) => {
+                log::warn!("could not load {}: {e:#}", path.display());
+                state
+                    .gui
+                    .notify_error(format!("could NOT load palette {}: {e}", file_name(&path)));
+            }
         }
     }
 
     fn load_dropped_cloud(&mut self, path: std::path::PathBuf) {
-        let Some(state) = &mut self.state else { return };
-        let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
-            return;
-        };
-        match state.scene.load_cloud(&state.ctx, slot, &path) {
-            Ok(name) => {
-                // A dropped file that will not parse is a warning, never a
-                // crash — the same trade the command-line path makes.
-                // Arriving at a venue and having the app die because a
-                // scan has a malformed header is the wrong failure.
-                let text = path.display().to_string();
-                if self.clouds.len() <= self.next_cloud {
-                    self.clouds.resize(self.next_cloud + 1, String::new());
+        // The parse leaves this thread. It used to run right here, on the
+        // event loop, holding up every frame behind it — a big scan froze
+        // the projector for the whole read. Only pure CPU work moves; the
+        // GPU upload happens back on this thread when the result lands in
+        // `finish_pending_clouds`.
+        if let Some(state) = &mut self.state {
+            state
+                .gui
+                .notify_info(format!("loading {}…", file_name(&path)));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let parse_path = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("vizz-cloud-load".into())
+            .spawn(move || {
+                let result = vizz_render::pointcloud::load(&parse_path).map(|mut points| {
+                    vizz_render::pointcloud::normalize(&mut points);
+                    points
+                });
+                // The receiver may be gone if the app quit; nothing to do.
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => self.pending_clouds.push(PendingCloud { path, rx }),
+            Err(e) => {
+                log::error!("could not start the cloud loader: {e}");
+                if let Some(state) = &mut self.state {
+                    state
+                        .gui
+                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
                 }
-                self.clouds[self.next_cloud] = text;
-                self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
-                if let Err(e) = crate::settings::save_clouds(&self.clouds) {
-                    log::warn!("could not remember the loaded clouds: {e:#}");
-                }
-                log::info!("loaded {name} into cloud slot {slot}");
-                // Point the shape at what just arrived, so a drop shows
-                // something. Loading a cloud nobody can see is the same as
-                // not loading it, and hunting for the slot index
-                // afterwards is exactly the fiddling a drop avoids.
-                let p = &*self.params;
-                p.registry.set(p.cloud_a, slot as f32);
-                p.registry.set(p.cloud_morph, 0.0);
             }
-            Err(e) => log::warn!("could not load {}: {e:#}", path.display()),
+        }
+    }
+
+    /// Collect finished cloud parses and upload them. Called every frame;
+    /// nearly always a no-op.
+    fn finish_pending_clouds(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        if self.pending_clouds.is_empty() {
+            return;
+        }
+        let mut done = Vec::new();
+        self.pending_clouds.retain(|p| match p.rx.try_recv() {
+            Ok(result) => {
+                done.push((p.path.clone(), result));
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => {
+                done.push((p.path.clone(), Err(anyhow::anyhow!("the loader thread died"))));
+                false
+            }
+        });
+        for (path, result) in done {
+            let Some(state) = &mut self.state else { return };
+            match result {
+                Ok(points) => {
+                    let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
+                        return;
+                    };
+                    let name = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "cloud".into());
+                    state.scene.set_cloud(&state.ctx, slot, &points, &name);
+                    let text = path.display().to_string();
+                    if self.clouds.len() <= self.next_cloud {
+                        self.clouds.resize(self.next_cloud + 1, String::new());
+                    }
+                    self.clouds[self.next_cloud] = text;
+                    self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
+                    if let Err(e) = crate::settings::save_clouds(&self.clouds) {
+                        log::warn!("could not remember the loaded clouds: {e:#}");
+                        state.gui.notify_error(format!(
+                            "cloud loaded, but won't survive a restart: {e}"
+                        ));
+                    }
+                    log::info!("loaded {name} into cloud slot {slot}");
+                    // Point the shape at what just arrived, so a drop
+                    // shows something. Loading a cloud nobody can see is
+                    // the same as not loading it.
+                    let p = &*self.params;
+                    p.registry.set(p.cloud_a, slot as f32);
+                    p.registry.set(p.cloud_morph, 0.0);
+                    state
+                        .gui
+                        .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+                }
+                Err(e) => {
+                    log::warn!("could not load {}: {e:#}", path.display());
+                    state
+                        .gui
+                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+                }
+            }
         }
     }
 
     fn redraw(&mut self) {
+        self.finish_pending_clouds();
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
         // Upload a new stream frame before drawing, and only when the
@@ -442,37 +662,7 @@ impl App {
             }
         }
 
-        use wgpu::CurrentSurfaceTexture as Cst;
-        let frame = match state.surface.get_current_texture() {
-            Cst::Success(frame) => frame,
-            Cst::Suboptimal(frame) => {
-                // Usable but stale (e.g. mid-resize): draw it, reconfigure after.
-                state.surface.configure(&state.ctx.device, &state.config);
-                frame
-            }
-            Cst::Lost | Cst::Outdated => {
-                // Resize/display change: reconfigure and try again next frame.
-                state.surface.configure(&state.ctx.device, &state.config);
-                state.window.request_redraw();
-                return;
-            }
-            Cst::Timeout | Cst::Occluded => {
-                // Skip the frame; keep the loop alive so we recover when
-                // the window is visible again.
-                state.window.request_redraw();
-                return;
-            }
-            Cst::Validation => {
-                log::error!("surface validation error — skipping frame");
-                state.window.request_redraw();
-                return;
-            }
-        };
-
         let inputs = self.engine.begin_frame(state.output.aspect(), None);
-        let preview = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = state
             .ctx
             .device
@@ -495,14 +685,59 @@ impl App {
             inputs.background,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
-        state.blit.draw(
-            &mut encoder,
-            &preview,
-            &state.blit_bind,
-            state.output.aspect(),
-            state.config.width,
-            state.config.height,
-        );
+
+        // Only now does the window enter into it. The master above is the
+        // show — it is what Syphon and NDI carry to the projector — and
+        // the window is a preview of it. This used to be the other way
+        // round: the whole frame sat behind the surface acquire, so
+        // minimising the preview window froze the projector feed, which
+        // is exactly backwards — the window you do not need killing the
+        // output you do.
+        use wgpu::CurrentSurfaceTexture as Cst;
+        let frame = match state.surface.get_current_texture() {
+            Cst::Success(frame) => Some(frame),
+            Cst::Suboptimal(frame) => {
+                // Usable but stale (e.g. mid-resize): draw it, reconfigure after.
+                state.surface.configure(&state.ctx.device, &state.config);
+                Some(frame)
+            }
+            Cst::Outdated => {
+                // Resize/display change: reconfigure; the preview skips a
+                // frame and the output does not.
+                state.surface.configure(&state.ctx.device, &state.config);
+                None
+            }
+            Cst::Lost => {
+                // Lost means the surface itself is gone — a display
+                // unplugged, a GPU reset — and reconfiguring a dead
+                // surface just returns Lost again, forever. Recreate it
+                // from the instance instead.
+                recreate_surface(state);
+                None
+            }
+            Cst::Timeout | Cst::Occluded => None,
+            Cst::Validation => {
+                // Retrying the identical call cannot succeed; rebuilding
+                // the surface can.
+                log::error!("surface validation error — rebuilding the surface");
+                recreate_surface(state);
+                None
+            }
+        };
+        self.presentable = frame.is_some();
+        let preview = frame
+            .as_ref()
+            .map(|f| f.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        if let Some(preview) = &preview {
+            state.blit.draw(
+                &mut encoder,
+                preview,
+                &state.blit_bind,
+                state.output.aspect(),
+                state.config.width,
+                state.config.height,
+            );
+        }
         // The prompt expires on its own as well as on a keystroke: an
         // Escape pressed and then walked away from must not leave the app
         // one key from quitting for the rest of the night.
@@ -522,10 +757,27 @@ impl App {
             let now = vizz_mod::library::session_bytes(&self.engine.modulation);
             if now != self.saved_modulation {
                 match vizz_mod::library::save_session(&self.engine.modulation) {
-                    Ok(()) => self.saved_modulation = now,
-                    // Kept at debug: a full disk would otherwise print this
-                    // every few seconds for the rest of the night.
-                    Err(e) => log::debug!("could not save the modulation state: {e:#}"),
+                    Ok(()) => {
+                        if std::mem::take(&mut self.modulation_save_failing) {
+                            state.gui.notify_info("modulation is saving again");
+                        }
+                        self.saved_modulation = now;
+                    }
+                    // Once per streak, loudly — the review found the old
+                    // debug-level line was suppressed by the default
+                    // filter, so a full disk silently stopped persistence
+                    // for the whole night. The dedup in the notices keeps
+                    // a continuing failure to one row, so once per streak
+                    // on screen costs nothing.
+                    Err(e) => {
+                        if !self.modulation_save_failing {
+                            log::error!("could not save the modulation state: {e:#}");
+                        }
+                        self.modulation_save_failing = true;
+                        state
+                            .gui
+                            .notify_error(format!("modulation is NOT being saved: {e}"));
+                    }
                 }
             }
         }
@@ -543,15 +795,33 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
-        let actions = if state.gui.will_draw() {
+        let actions = if let Some(preview) = &preview
+            && state.gui.will_draw()
+        {
             // The panel composites over the preview, inside the same encoder,
             // so it costs one extra pass and no synchronisation point.
-            let outputs_status: Vec<OutputStatus> = state
-                .senders
-                .iter()
-                .map(|s| OutputStatus { name: s.name().to_owned(), live: true })
-                .collect();
+            // Real liveness, from the slot roster. The `live: true` this
+            // replaces was hardcoded, which made the dead-output warning
+            // both UIs carefully draw unreachable code.
+            let outputs_status: Vec<OutputStatus> = state.outputs.status();
             refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+            // A learn finishing is worth saying: it completes on the MIDI
+            // thread when a control moves, so no click marks the moment —
+            // the old behaviour was a chip quietly changing somewhere
+            // possibly off-screen. Completion = the armed learn went away
+            // AND the map changed; armed-then-cancelled says nothing.
+            match (&self.armed_learn, &self.midi_view.learn_target) {
+                (Some((label, rev)), None) => {
+                    if self.midi_view.revision > *rev {
+                        state.gui.notify_info(format!("MIDI learned: {label}"));
+                    }
+                    self.armed_learn = None;
+                }
+                (_, Some(t)) => {
+                    self.armed_learn = Some((t.label.clone(), self.midi_view.revision));
+                }
+                (None, None) => {}
+            }
             // Picks up presets added behind the app's back — dropped into the
             // folder, or synced in. Anything the app writes refreshes this
             // directly, so the interval only has to catch what it did not do
@@ -567,7 +837,7 @@ impl App {
             let output_setup = vizz_ui::OutputSetup {
                 width: state.output.width,
                 height: state.output.height,
-                scale: crate::settings::load().scale(),
+                scale: self.render_scale,
                 wide: !state.output.publishable(),
             };
             let panel_state = PanelState {
@@ -612,6 +882,7 @@ impl App {
                     .map(|(id, _)| self.engine.snapshot.get(id))
                     .collect(),
                 presets: preset_entries(&self.library),
+            preset_current: self.engine.current_preset(),
                 grid: grid_view(
                     &self.engine.grid,
                     self.engine.modulation.clock.beats,
@@ -642,7 +913,7 @@ impl App {
                 &state.ctx.device,
                 &state.ctx.queue,
                 &mut encoder,
-                &preview,
+                preview,
                 &self.params.registry,
                 panel_state,
                 &mut self.engine.modulation,
@@ -662,7 +933,13 @@ impl App {
                     &mut self.audio_auto_bpm,
                     &mut self.tap,
                 );
-                apply_preset_actions(&actions, &self.params.registry, &mut self.library);
+                let mut notes: Notes = Vec::new();
+                apply_preset_actions(
+                    &actions,
+                    &self.params.registry,
+                    &mut self.library,
+                    &mut notes,
+                );
                 apply_grid_actions(
                     &actions.grid,
                     &self.params,
@@ -670,6 +947,7 @@ impl App {
                     &GridBinding::scenes(&self.params),
                     &self.midi_shared,
                     &mut self.library,
+                    &mut notes,
                 );
                 apply_grid_actions(
                     &actions.gravity,
@@ -678,11 +956,17 @@ impl App {
                     &GridBinding::gravity(&self.params),
                     &self.midi_shared,
                     &mut self.library,
+                    &mut notes,
                 );
                 // A number key fires a slot by writing the recall
                 // parameter, exactly as OSC or MIDI would — so there is
-                // one recall path, not a second one that can drift.
+                // one recall path, not a second one that can drift. The
+                // retrigger makes a repeated press of the same number
+                // re-apply: without it the key for the preset already
+                // recalled is dead, and "snap back after tweaking" is the
+                // main thing the keys are pressed for.
                 if let Some(slot) = preset_key {
+                    self.engine.retrigger_preset();
                     self.params
                         .registry
                         .set(self.params.preset_recall, slot as f32);
@@ -699,7 +983,17 @@ impl App {
                     &self.midi_shared,
                     &self.opts.midi_map_path,
                     &mut self.saved_revision,
-                )
+                    &mut self.midi_save_backoff,
+                    &mut notes,
+                );
+                // Everything the apply functions had to say, on screen.
+                for (is_error, text) in notes {
+                    if is_error {
+                        state.gui.notify_error(text);
+                    } else {
+                        state.gui.notify_info(text);
+                    }
+                }
             }
             // A GUI failure must never take down the output.
             Err(e) => log::error!("GUI draw failed: {e:#}"),
@@ -731,15 +1025,49 @@ impl App {
             Some(p) => &p.texture,
             None => &state.output.texture,
         };
-        outputs::publish_all(
-            &mut state.senders,
-            &state.ctx.device,
-            &state.ctx.queue,
-            publish,
-        );
+        state
+            .outputs
+            .publish(&state.ctx.device, &state.ctx.queue, publish);
+        // Announce liveness *transitions*. The roster keeps dead outputs
+        // visible in the panel; this is the shove for the moment it
+        // happens, when the panel may be closed and the performer is
+        // looking at the output that just froze.
+        let status = state.outputs.status();
+        for now in &status {
+            let was = self
+                .output_status
+                .iter()
+                .find(|p| p.name == now.name)
+                .map(|p| p.live);
+            match (was, now.live) {
+                (Some(true), false) => state
+                    .gui
+                    .notify_error(format!("output '{}' died — retrying in the background", now.name)),
+                (Some(false), true) => {
+                    state.gui.notify_info(format!("output '{}' is back", now.name))
+                }
+                _ => {}
+            }
+        }
+        self.output_status = status;
 
-        state.window.pre_present_notify();
-        state.ctx.queue.present(frame);
+        if let Some(frame) = frame {
+            state.window.pre_present_notify();
+            state.ctx.queue.present(frame);
+        } else {
+            // No present means no vsync backpressure: left alone the loop
+            // would spin flat out rendering frames nobody can see faster
+            // than any receiver wants them. Sleeping is normally forbidden
+            // on this thread because it steals time from a present — here
+            // there is no present to steal from, and the sleep is what
+            // paces the Syphon/NDI feed at roughly its advertised rate.
+            let budget =
+                std::time::Duration::from_secs_f64(1.0 / self.opts.outputs.fps.max(1) as f64);
+            let spent = frame_start.elapsed();
+            if spent < budget {
+                std::thread::sleep(budget - spent);
+            }
+        }
 
         let elapsed = frame_start.elapsed();
         state.gui.push_frame_time(elapsed.as_secs_f32() * 1e3);
@@ -805,12 +1133,45 @@ impl ApplicationHandler for App {
     /// window closed, Escape confirmed, the platform's own quit — so the
     /// few seconds since the last autosave are not lost to whichever route
     /// out the user happened to take.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // While the window cannot present, redraw events may stop coming
+        // at all — a miniaturised window gets none on some platforms — so
+        // the loop drives itself here, paced by the sleep in `redraw`.
+        // The moment presenting works again, `presentable` flips and the
+        // ordinary request_redraw cycle takes back over.
+        if !self.presentable && self.state.is_some() {
+            self.redraw();
+        }
+    }
+
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         let now = vizz_mod::library::session_bytes(&self.engine.modulation);
         if now != self.saved_modulation
             && let Err(e) = vizz_mod::library::save_session(&self.engine.modulation)
         {
             log::error!("could not save the modulation state on exit: {e:#}");
+        }
+        // The per-frame MIDI flush uses try_lock and can lose its last
+        // race to MIDI traffic — a binding learned in the final moments
+        // would vanish while its chip showed as bound. Exit is the one
+        // place a blocking lock costs nothing.
+        if let Ok(midi) = self.midi_shared.lock()
+            && midi.revision != self.saved_revision
+            && let Err(e) = vizz_midi::save_map(&self.opts.midi_map_path, &midi.map)
+        {
+            log::error!("could not save the MIDI map on exit: {e:#}");
+        }
+        // The canvas view is user state too, just cheap enough to keep in
+        // settings. Written only when it moved, like everything else here.
+        if let Some(state) = &self.state {
+            let mem: crate::settings::GraphCanvas = state.gui.graph_view_memory().into();
+            let mut s = crate::settings::load();
+            if s.graph_view.as_ref() != Some(&mem) {
+                s.graph_view = Some(mem);
+                if let Err(e) = crate::settings::save(&s) {
+                    log::warn!("could not remember the canvas view: {e:#}");
+                }
+            }
         }
     }
 
@@ -896,6 +1257,7 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     view.map = state.map.clone();
     view.learn_target = state.learn_target.clone();
     view.last_source = state.last_source;
+    view.revision = state.revision;
 }
 
 /// Push panel edits through to the analysis thread. A free function taking
@@ -1114,6 +1476,7 @@ fn apply_grid_actions(
     b: &GridBinding,
     midi: &SharedMidi,
     library: &mut vizz_mod::preset::Library,
+    notes: &mut Notes,
 ) {
     let reg = &params.registry;
     let mut dirty = false;
@@ -1160,10 +1523,20 @@ fn apply_grid_actions(
         // the library under the pad's name and then referenced — rather
         // than a copy hidden inside the grid. One gesture, and the result
         // is a look you can also recall, edit and put on another pad.
-        let name = grid
+        let wanted = grid
             .cell(slot)
             .map(|c| c.preset.clone())
             .unwrap_or_else(|| format!("{} {}", b.noun, slot + 1));
+        // Stepped aside from a built-in's name if needed: a capture saved
+        // under one succeeded and could then never be recalled, because
+        // built-ins win the name — the look was silently discarded.
+        let name = vizz_mod::preset::capture_name(b.kind, &wanted);
+        if name != wanted {
+            notes.push((
+                false,
+                format!("'{wanted}' is a built-in — captured as '{name}' instead"),
+            ));
+        }
         let captured = vizz_mod::preset::Preset::capture_kind(reg, b.kind);
         match vizz_mod::preset::save_kind(b.kind, &name, &captured) {
             Ok(saved) => {
@@ -1177,7 +1550,13 @@ fn apply_grid_actions(
             // A failed save must not leave the pad pointing at a preset
             // that was never written — that would be a pad which looks
             // filled and does nothing.
-            Err(e) => log::warn!("could not save {} {} as a preset: {e:#}", b.noun, slot + 1),
+            Err(e) => {
+                log::warn!("could not save {} {} as a preset: {e:#}", b.noun, slot + 1);
+                notes.push((
+                    true,
+                    format!("could NOT capture {} {}: {e}", b.noun, slot + 1),
+                ));
+            }
         }
     }
     if let Some(slot) = actions.clear {
@@ -1225,6 +1604,7 @@ fn apply_grid_actions(
             .unwrap_or_default();
         if let Err(e) = vizz_mod::scene::save_kind(b.kind, grid) {
             log::error!("could not save the {} grid: {e:#}", b.noun);
+            notes.push((true, format!("could NOT save the {} grid: {e}", b.noun)));
         }
     }
 }
@@ -1233,16 +1613,25 @@ fn apply_grid_actions(
 /// the panel so drawing stays free of side effects, and every failure is
 /// logged rather than propagated — losing a preset must not take the show
 /// with it.
+/// Notices bound for the screen: `(is_error, text)`. Collected by the
+/// apply functions and pushed into the GUI by the caller, because the GUI
+/// is mutably borrowed elsewhere while these run.
+type Notes = Vec<(bool, String)>;
+
 fn apply_preset_actions(
     actions: &vizz_ui::PanelActions,
     registry: &vizz_params::ParamRegistry,
     library: &mut vizz_mod::preset::Library,
+    notes: &mut Notes,
 ) {
     use vizz_mod::preset;
     if let Some(name) = &actions.preset_load {
         match preset::by_name(name) {
             Some(p) => log::info!("recalled preset {name} ({} parameters)", p.apply(registry)),
-            None => log::error!("preset {name} could not be read"),
+            None => {
+                log::error!("preset {name} could not be read");
+                notes.push((true, format!("preset '{name}' could not be read")));
+            }
         }
     }
     // Both of these change what is on disk, so the cached listing is
@@ -1253,18 +1642,32 @@ fn apply_preset_actions(
         match preset::save(name, &snapshot) {
             Ok(saved) => {
                 log::info!("saved preset {saved} ({} parameters)", snapshot.values.len());
+                // Confirmed on screen because the failure is too. Before
+                // the notices existed the two outcomes were pixel-identical
+                // at the moment of the click: the name box cleared either
+                // way and a full disk silently ate the look.
+                notes.push((false, format!("saved '{saved}'")));
                 library.refresh();
             }
-            Err(e) => log::error!("could not save preset {name}: {e:#}"),
+            Err(e) => {
+                log::error!("could not save preset {name}: {e:#}");
+                // The name is in the message because the click already
+                // cleared the field — this is what lets it be retyped.
+                notes.push((true, format!("could NOT save '{name}': {e}")));
+            }
         }
     }
     if let Some(name) = &actions.preset_delete {
         match preset::delete(name) {
             Ok(()) => {
                 log::info!("deleted preset {name}");
+                notes.push((false, format!("deleted '{name}'")));
                 library.refresh();
             }
-            Err(e) => log::error!("could not delete preset {name}: {e:#}"),
+            Err(e) => {
+                log::error!("could not delete preset {name}: {e:#}");
+                notes.push((true, format!("could NOT delete '{name}': {e}")));
+            }
         }
     }
 }
@@ -1274,6 +1677,8 @@ fn apply_panel_actions(
     shared: &SharedMidi,
     map_path: &std::path::Path,
     saved_revision: &mut u64,
+    save_backoff: &mut Option<Instant>,
+    notes: &mut Notes,
 ) {
     // No early return on "the UI did nothing this frame".
     //
@@ -1302,12 +1707,30 @@ fn apply_panel_actions(
     }
     // Persist as soon as a mapping changes: a crash mid-set should not
     // cost the mappings that were just set up.
-    if state.revision != *saved_revision {
+    //
+    // But not on every frame while it *keeps* failing. This runs per
+    // frame and the failed revision stays unequal, so a full disk used to
+    // mean a serialize, a write attempt and an error log sixty times a
+    // second for the rest of the night. One attempt every few seconds is
+    // just as likely to catch the disk coming back.
+    let due = save_backoff.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(3));
+    if state.revision != *saved_revision && due {
         let (map, revision) = (state.map.clone(), state.revision);
         drop(state);
         match vizz_midi::save_map(map_path, &map) {
-            Ok(()) => *saved_revision = revision,
-            Err(e) => log::error!("could not save MIDI map: {e:#}"),
+            Ok(()) => {
+                if save_backoff.take().is_some() {
+                    notes.push((false, "MIDI map saved".into()));
+                }
+                *saved_revision = revision;
+            }
+            Err(e) => {
+                if save_backoff.is_none() {
+                    log::error!("could not save MIDI map: {e:#}");
+                    notes.push((true, format!("could NOT save the MIDI map: {e}")));
+                }
+                *save_backoff = Some(Instant::now());
+            }
         }
     }
 }
@@ -1343,25 +1766,33 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     let event_loop = EventLoop::new()?;
     // Poll: we drive redraws ourselves; vsync provides the pacing.
     event_loop.set_control_flow(ControlFlow::Poll);
-    // A file that has since been moved or deleted is dropped from the list
-    // rather than being retried and warned about on every start.
+    // A file that has since been moved or deleted keeps its *place* and
+    // loses its content. Filtering it out compacted the list, and the
+    // list's positions are addresses: slot 2 is what `/cloud/a = 2` in
+    // every saved preset means. Deleting one file used to silently repoint
+    // every later slot — a preset built on the torso scan came back
+    // playing whatever shifted into its position, which is worse than the
+    // honest empty slot.
+    let hold_places = |mut paths: Vec<String>, what: &str| {
+        for p in &mut paths {
+            if !p.is_empty() && !std::path::Path::new(p).exists() {
+                log::warn!("{what} {p} is gone — its position is kept so the others stay put");
+                p.clear();
+            }
+        }
+        // Trailing holes carry no position worth keeping.
+        while paths.last().is_some_and(|p| p.is_empty()) {
+            paths.pop();
+        }
+        paths
+    };
     let cloud_paths: Vec<String> = if opts.clouds.is_empty() {
-        crate::settings::load()
-            .clouds
-            .into_iter()
-            .filter(|p| std::path::Path::new(p).exists())
-            .collect()
+        hold_places(crate::settings::load().clouds, "cloud")
     } else {
         opts.clouds.iter().map(|p| p.display().to_string()).collect()
     };
     opts.clouds = cloud_paths.iter().map(std::path::PathBuf::from).collect();
-    // Same treatment for palettes: a file that has since moved is dropped
-    // rather than warned about on every launch.
-    let palette_paths: Vec<String> = crate::settings::load()
-        .palettes
-        .into_iter()
-        .filter(|p| std::path::Path::new(p).exists())
-        .collect();
+    let palette_paths: Vec<String> = hold_places(crate::settings::load().palettes, "palette");
     let mut engine = FrameEngine::new(
         Arc::clone(&params),
         vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
@@ -1396,6 +1827,13 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         // nothing does not rewrite the file.
         saved_modulation: restored_modulation,
         modulation_checked: Instant::now(),
+        presentable: true,
+        midi_save_backoff: None,
+        modulation_save_failing: false,
+        output_status: Vec::new(),
+        armed_learn: None,
+        pending_clouds: Vec::new(),
+        render_scale: crate::settings::load().scale(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),

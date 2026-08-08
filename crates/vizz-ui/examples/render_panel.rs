@@ -76,6 +76,8 @@ fn main() {
         "/camera/fov",
         "/camera/focus",
         "/camera/defocus",
+        "/camera/pan_x",
+        "/camera/pan_y",
         "/room/brightness",
         "/room/depth",
         "/room/fade",
@@ -88,6 +90,30 @@ fn main() {
         "/bg/green",
         "/bg/blue",
         "/bg/alpha",
+        // The whole gravity layer. It shipped two releases ago and had
+        // never once appeared in a panel render — which is how a layout
+        // problem in its group would go unseen until a user hit it.
+        "/gravity/amount",
+        "/gravity/0/x",
+        "/gravity/0/y",
+        "/gravity/0/z",
+        "/gravity/0/strength",
+        "/gravity/0/radius",
+        "/gravity/1/x",
+        "/gravity/1/y",
+        "/gravity/1/z",
+        "/gravity/1/strength",
+        "/gravity/1/radius",
+        "/gravity/2/x",
+        "/gravity/2/y",
+        "/gravity/2/z",
+        "/gravity/2/strength",
+        "/gravity/2/radius",
+        "/gravity/3/x",
+        "/gravity/3/y",
+        "/gravity/3/z",
+        "/gravity/3/strength",
+        "/gravity/3/radius",
         "/master/dim",
         "/scene/fire",
         "/scene/time",
@@ -128,6 +154,7 @@ fn main() {
     }
 
     let state = PanelState {
+        preset_current: Some(2),
         update_available: Some("0.2.0".into()),
         health: Some(health.snapshot()),
         outputs: vec![
@@ -374,6 +401,7 @@ fn midi_view() -> MidiView {
     map.bind(vizz_midi::Source::ControlChange { channel: 0, controller: 7 }, "/master/dim");
     map.bind(vizz_midi::Source::ControlChange { channel: 0, controller: 1 }, "/particles/hue");
     MidiView {
+        revision: 0,
         available: true,
         connected: vec!["Launch Control XL".into()],
         map,

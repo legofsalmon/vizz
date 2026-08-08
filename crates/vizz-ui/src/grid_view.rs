@@ -536,7 +536,12 @@ fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
 fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mut GridActions) {
     ui.horizontal(|ui| {
         let armed = state.mode == PadMode::Store;
-        let store = egui::Button::new("store").fill(if armed {
+        let store = egui::Button::new(if armed {
+            egui::RichText::new("store").color(Color32::from_rgb(50, 18, 12))
+        } else {
+            egui::RichText::new("store")
+        })
+        .fill(if armed {
             ARMED
         } else {
             ui.visuals().widgets.inactive.bg_fill
@@ -549,7 +554,12 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
             state.mode = if armed { PadMode::Fire } else { PadMode::Store };
         }
         let arming = state.mode == PadMode::Clear;
-        let clear = egui::Button::new("clear").fill(if arming {
+        let clear = egui::Button::new(if arming {
+            egui::RichText::new("clear").color(Color32::from_rgb(50, 18, 12))
+        } else {
+            egui::RichText::new("clear")
+        })
+        .fill(if arming {
             ARMED
         } else {
             ui.visuals().widgets.inactive.bg_fill
@@ -574,7 +584,14 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
         // A wait already running is cancelled from here too: the pad shows
         // "waiting" but the eye goes to the button that started it.
         if let Some(slot) = view.learning {
-            let cancel = egui::Button::new(format!("waiting for {}", slot + 1)).fill(LEARN);
+            // Dark text on the amber fill: the default light grey was
+            // near-unreadable on it, on the one button that says the grid
+            // is waiting for your controller.
+            let cancel = egui::Button::new(
+                egui::RichText::new(format!("waiting for {}", slot + 1))
+                    .color(Color32::from_rgb(46, 32, 12)),
+            )
+            .fill(LEARN);
             if ui
                 .add(cancel)
                 .on_hover_text("press a button on your controller, or click to cancel")
@@ -585,7 +602,12 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
             return;
         }
         let learning = state.mode == PadMode::Learn;
-        let midi = egui::Button::new("MIDI").fill(if learning {
+        let midi = egui::Button::new(if learning {
+            egui::RichText::new("MIDI").color(Color32::from_rgb(46, 32, 12))
+        } else {
+            egui::RichText::new("MIDI")
+        })
+        .fill(if learning {
             LEARN
         } else {
             ui.visuals().widgets.inactive.bg_fill
@@ -619,7 +641,7 @@ fn controls(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
             .clamping(egui::SliderClamping::Always);
         if ui
             .add_sized([170.0, 20.0], slider)
-            .on_hover_text("how long a scene change takes. 0 is a cut")
+            .on_hover_text(format!("how long a {} change takes. 0 is a cut", view.noun))
             .changed()
         {
             actions.set_duration = Some(duration);

@@ -238,6 +238,16 @@ impl ParticleScene {
     /// below [`crate::palette::FIRST_USER`] are the shipped gradients and
     /// are fixed forever — a preset saved with palette 3 must still be
     /// "ice" in every future build.
+    /// Hold a palette row without loading anything into it.
+    ///
+    /// For restoring a saved list with a hole in it — a file that has
+    /// gone missing or will not parse keeps its *row*, because rows are
+    /// what `/color/palette` values in saved presets index. Compacting
+    /// over a hole would repoint every later palette.
+    pub fn skip_palette_row(&mut self) {
+        self.loaded_palettes += 1;
+    }
+
     pub fn load_palette(
         &mut self,
         ctx: &GpuContext,
@@ -249,6 +259,24 @@ impl ParticleScene {
         self.loaded_palettes += 1;
         log::info!("palette {row}: {name} ({} colours)", stops.len());
         Ok((name, row))
+    }
+
+    /// Reload a palette into the row it already occupies.
+    ///
+    /// For dropping a file that is already in the bank — the natural
+    /// gesture after editing a .gpl. Appending instead would burn a new
+    /// row on every re-drop and, once the bank wrapped, overwrite the
+    /// earliest palettes that saved presets still index.
+    pub fn reload_palette(
+        &mut self,
+        ctx: &GpuContext,
+        path: &std::path::Path,
+        row: usize,
+    ) -> anyhow::Result<String> {
+        let (stops, name) = crate::palette::parse(path)?;
+        self.palettes.load_slot(ctx, row, &stops, &name);
+        log::info!("palette {row} reloaded: {name} ({} colours)", stops.len());
+        Ok(name)
     }
 
     /// Names of the four cloud slots, for the UI.
@@ -263,6 +291,11 @@ impl ParticleScene {
     /// has a malformed header is precisely the wrong trade.
     pub fn load_clouds(&mut self, ctx: &GpuContext, paths: &[std::path::PathBuf]) {
         for (i, path) in paths.iter().enumerate() {
+            // A hole in the saved list holds its slot — see the palette
+            // twin above; `/cloud/a` values in presets index slots.
+            if path.as_os_str().is_empty() {
+                continue;
+            }
             let Some(slot) = Self::loadable_slot(i) else {
                 log::warn!(
                     "ignoring {}: only {} loadable cloud slots",
@@ -716,6 +749,31 @@ mod tests {
     /// the clamp the top two-thirds of a default macro fader's throw faded
     /// the field to black and held it there, with the readout showing a
     /// plausible "7.00" and nothing saying the row was empty.
+    /// Palette rows are addresses: `/color/palette` values in saved
+    /// presets index them. A saved list restored with a missing file used
+    /// to compact, silently repointing every later palette — a preset
+    /// built on row 7 came back painting with whatever shifted into 7.
+    /// A hole now holds its row.
+    #[test]
+    fn a_missing_palette_holds_its_row_so_later_ones_stay_put() {
+        let Some(ctx) = gpu() else { return };
+        let mut scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+
+        let dir = std::env::temp_dir().join(format!("vizz-palrow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.hex");
+        let b = dir.join("b.hex");
+        std::fs::write(&a, "#ff0000\n#00ff00\n").unwrap();
+        std::fs::write(&b, "#0000ff\n#ffff00\n").unwrap();
+
+        let (_, row_a) = scene.load_palette(&ctx, &a).unwrap();
+        // The file between them is gone: its row is held, not collapsed.
+        scene.skip_palette_row();
+        let (_, row_b) = scene.load_palette(&ctx, &b).unwrap();
+        assert_eq!(row_b, row_a + 2, "the hole must keep its row");
+    }
+
     #[test]
     fn the_colour_index_saturates_on_the_last_real_palette() {
         let Some(ctx) = gpu() else { return };

@@ -65,8 +65,13 @@ cargo run --release                 # windowed, OSC on udp/7000
 cargo run --release -- --osc-port 9000 --width 1920 --height 1080
 ```
 
-Escape or closing the window quits. Logs (including the 2-second health
-line) go to stderr; tune with `RUST_LOG=debug`.
+Escape (pressed twice) or closing the window quits. Logs (including the
+2-second health line) go to stderr; tune with `RUST_LOG=debug`.
+
+OSC listens on every interface by default so a tablet across the stage
+can drive it — which also means anyone on the venue's wifi can. On a
+network you don't control, restrict it: `--osc-bind 127.0.0.1` accepts
+only this machine.
 
 The scene renders at the fixed `--width`×`--height` output resolution into
 a master texture; the window is only an aspect-fitted preview. Resizing
@@ -884,28 +889,72 @@ Send standard OSC messages (float, int, double, or bool args) to the UDP
 port. Unknown addresses and malformed packets are logged and ignored —
 control input can never crash the renderer.
 
-| Address                 | Range        | Default | Meaning                        |
-|-------------------------|--------------|---------|--------------------------------|
-| `/particles/count`      | 0 – 500000   | 60000   | live particle count            |
-| `/particles/size`       | 0.001 – 0.2  | 0.015   | sprite size                    |
-| `/particles/speed`      | 0 – 4        | 0.6     | motion rate (phase-continuous) |
-| `/particles/spread`     | 0.05 – 3     | 1.2     | field radius                   |
-| `/particles/hue`        | 0 – 1        | 0.58    | base hue                       |
-| `/particles/saturation` | 0 – 1        | 0.8     | color saturation               |
-| `/particles/brightness` | 0 – 2        | 1.0     | value multiplier               |
-| `/shape/mode`           | 0 – 7        | 0.0     | geometry; fractional values morph |
-| `/shape/morph`          | 0 – 1        | 0.0     | extra blend into the next form |
-| `/shape/twist`          | 0 – 2        | 0.0     | shear and vertical twist       |
-| `/fx/trail`             | 0 – 0.98     | 0.0     | feedback: how much of last frame survives |
-| `/fx/zoom`              | 0.9 – 1.1    | 1.0     | per-frame zoom of the feedback (tunnels) |
-| `/fx/spin`              | -0.1 – 0.1   | 0.0     | per-frame rotation of the feedback |
-| `/fx/mirror`            | 0 – 3        | 0.0     | 0 off · 1 horizontal · 2 quad · 3 kaleidoscope |
-| `/fx/glow`              | 0 – 1        | 0.25    | bloom lift                     |
-| `/fx/shift`             | 0 – 1        | 0.0     | radial RGB split (chromatic aberration) |
-| `/color/palette`        | 0 – 4        | 0.0     | 0 HSV · 1 spectrum · 2 amber · 3 teal · 4 red/blue |
-| `/color/spread`         | 0 – 1        | 0.12    | how much of the palette the field spans |
-| `/color/drive`          | 0 – 3        | 0.0     | 0 index · 1 radius · 2 depth · 3 height |
-| `/master/dim`           | 0 – 1        | 1.0     | master fader                   |
+| Address | Range | Default | Meaning |
+|---------|-------|---------|---------|
+| `/particles/count` | 0 – 500000 | 60000 | live particle count |
+| `/particles/size` | 0.001 – 0.2 | 0.015 | sprite size |
+| `/particles/speed` | 0 – 4 | 0.6 | motion rate (phase-continuous) |
+| `/particles/spread` | 0.05 – 3 | 1.2 | field radius |
+| `/particles/hue` | 0 – 1 | 0.58 | base hue |
+| `/particles/saturation` | 0 – 1 | 0.8 | color saturation |
+| `/particles/brightness` | 0 – 2 | 1 | value multiplier |
+| `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
+| `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
+| `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |
+| `/fx/trail` | 0 – 0.98 | 0 | feedback: how much of last frame survives |
+| `/fx/zoom` | 0.9 – 1.1 | 1 | per-frame zoom of the feedback (tunnels) |
+| `/fx/spin` | -0.1 – 0.1 | 0 | per-frame rotation of the feedback |
+| `/fx/mirror` | 0 – 3 | 0 | 0 off · 1 mirror · 2 quad · 3 kaleido |
+| `/fx/glow` | 0 – 1 | 0.25 | bloom lift |
+| `/fx/shift` | 0 – 1 | 0 | radial RGB split (chromatic aberration) |
+| `/color/palette` | 0 – 15 | 0 | palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes |
+| `/color/spread` | 0 – 1 | 0.12 | how much of the palette the field spans |
+| `/color/drive` | 0 – 3 | 0 | what picks the colour: 0 index · 1 radius · 2 depth · 3 height |
+| `/cloud/a` | 0 – 3 | 0 | first slot of the cloud morph pair |
+| `/cloud/b` | 0 – 3 | 1 | second slot of the cloud morph pair |
+| `/cloud/morph` | 0 – 1 | 0 | blend position between the pair |
+| `/camera/distance` | 0.4 – 12 | 3.5 | orbit distance from the field |
+| `/camera/orbit` | -3.15 – 3.15 | 0 | orbit angle around the field |
+| `/camera/elevation` | -1.4 – 1.4 | 0.34 | height angle of the orbit |
+| `/camera/fov` | 0.2 – 2 | 0.9 | field of view, radians |
+| `/camera/focus` | 0 – 12 | 3.5 | focus distance |
+| `/camera/defocus` | 0 – 1 | 0 | depth-of-field blur amount |
+| `/camera/pan_x` | -4 – 4 | 0 | sideways pan of the view |
+| `/camera/pan_y` | -4 – 4 | 0 | vertical pan of the view |
+| `/room/brightness` | 0 – 1 | 0 | wireframe room visibility |
+| `/room/depth` | 1 – 20 | 7 | how deep the room extends |
+| `/room/fade` | 0 – 1 | 0.75 | distance fade of the room lines |
+| `/room/converge` | 0 – 1 | 0.35 | perspective convergence of the grid |
+| `/room/vanish_x` | -1 – 1 | 0 | vanishing point, sideways |
+| `/room/vanish_y` | -1 – 1 | 0 | vanishing point, vertical |
+| `/room/anchor` | 0 – 1 | 0.35 | where the cloud sits between front and back |
+| `/room/embed` | 0 – 1 | 0 | how much the room's perspective bends the cloud |
+| `/gravity/amount` | 0 – 1 | 0 | master depth of the gravity layer |
+| `/gravity/N/x` (N = 0–3) | -3 – 3 | 0 | well N position, X |
+| `/gravity/N/y` (N = 0–3) | -3 – 3 | 0 | well N position, Y |
+| `/gravity/N/z` (N = 0–3) | -3 – 3 | 0 | well N position, Z |
+| `/gravity/N/strength` (N = 0–3) | -2 – 2 | 0 | pull (positive) or push (negative) |
+| `/gravity/N/radius` (N = 0–3) | 0.05 – 4 | 1 | well reach |
+| `/gravity/fire` | 0 – 16 | 0 | fire gravity scene 1–16 on change; 0 = none |
+| `/gravity/time` | 0 – 60 | 2 | gravity blend time, seconds |
+| `/gravity/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
+| `/gravity/auto` | 0 – 1 | 0 | gravity autopilot on/off |
+| `/gravity/bars` | 0.25 – 16 | 4 | bars between gravity autopilot steps |
+| `/bg/red` | 0 – 1 | 0.004 | background red |
+| `/bg/green` | 0 – 1 | 0.004 | background green |
+| `/bg/blue` | 0 – 1 | 0.008 | background blue |
+| `/bg/alpha` | 0 – 1 | 1 | background opacity; 0 delivers the field on nothing |
+| `/preset/recall` | 0 – 64 | 0 | recall preset N on change; 0 = none |
+| `/scene/fire` | 0 – 16 | 0 | fire scene 1–16 on change; 0 = none |
+| `/scene/time` | 0 – 60 | 2 | scene blend time, seconds |
+| `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
+| `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
+| `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
+| `/master/dim` | 0 – 1 | 1 | master fader |
+
+The table is checked against the parameter registry by a test
+(`the_readme_osc_reference_matches_the_registry`), so it cannot silently
+go stale again.
 
 Every parameter has a per-parameter smoothing time constant, so stepped
 controller input becomes a glide on screen.

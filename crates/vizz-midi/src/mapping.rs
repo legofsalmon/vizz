@@ -209,6 +209,21 @@ impl Dispatcher {
                 // them with the stored MSB for 14-bit resolution; a device
                 // that only sends the MSB still works at 7 bits.
                 if (32..64).contains(&controller) {
+                    // A binding on the raw controller wins. Learning a
+                    // control that *sends* in this range — plenty of
+                    // controllers put ordinary buttons and knobs on CC
+                    // 32-63 — bound the raw number, and this fold then
+                    // routed every one of its events into a lookup for
+                    // CC-32 instead: the control learned fine and was
+                    // dead forever after. The 14-bit pairing is only a
+                    // convention, and an explicit binding outranks it.
+                    let raw = Source::ControlChange { channel, controller };
+                    if let Some(binding) = map.binding(&raw) {
+                        return Some((binding, value as f32 / 127.0));
+                    }
+                    // Otherwise: the LSB half of controller-32, combined
+                    // with the stored MSB for 14-bit resolution. A device
+                    // that only sends the MSB still works at 7 bits.
                     let msb_cc = controller - 32;
                     let msb = *self.msb.get(&(channel, msb_cc))?;
                     let source = Source::ControlChange { channel, controller: msb_cc };
@@ -241,10 +256,19 @@ impl Dispatcher {
     /// binding captures only the fine adjustment.
     pub fn learn_source(event: MidiEvent) -> Source {
         match event {
-            MidiEvent::ControlChange { channel, controller, .. } => Source::ControlChange {
-                channel,
-                controller: if (32..64).contains(&controller) { controller - 32 } else { controller },
-            },
+            // The controller exactly as it spoke. This used to fold
+            // 32..63 down to the 14-bit convention's MSB number, which
+            // assumed anything in that range was the LSB half of a pair —
+            // but plenty of hardware puts ordinary knobs and buttons
+            // there, and folding bound them to a controller they never
+            // send: learned successfully, dead forever (or driving a
+            // fader that happened to live on the folded number). A raw
+            // binding outranks the pairing at resolve time, and a device
+            // that really pairs still refines an MSB binding with its
+            // LSB half.
+            MidiEvent::ControlChange { channel, controller, .. } => {
+                Source::ControlChange { channel, controller }
+            }
             MidiEvent::NoteOn { channel, note, .. } | MidiEvent::NoteOff { channel, note } => {
                 Source::Note { channel, note }
             }
@@ -335,6 +359,31 @@ mod tests {
         assert_eq!(off, 0.0);
     }
 
+    /// Plenty of controllers put ordinary buttons and knobs on CC 32-63.
+    /// Learning one bound the raw controller number, but resolve folded
+    /// every event in that range into an LSB lookup for controller-32 —
+    /// so the control learned successfully and was then dead forever
+    /// (or, with CC-32 also bound, moved the wrong parameter).
+    #[test]
+    fn a_control_learned_on_cc_32_to_63_actually_works() {
+        let mut map = MidiMap::default();
+        // What learning from a knob on CC 40 produces.
+        map.bind(Dispatcher::learn_source(cc(0, 40, 100)), "/fx/glow");
+        let mut d = Dispatcher::default();
+
+        let (param, update) = d.resolve(cc(0, 40, 127), &map).expect("bound control was dead");
+        assert_eq!(param, "/fx/glow");
+        assert_eq!(update, Update::Range(1.0));
+
+        // And the 14-bit pairing still works where nothing shadows it:
+        // CC 1 bound, CC 33 unbound -> 33 refines 1.
+        map.bind(Source::ControlChange { channel: 0, controller: 1 }, "/particles/hue");
+        d.resolve(cc(0, 1, 64), &map);
+        let (param, update) = d.resolve(cc(0, 33, 32), &map).unwrap();
+        assert_eq!(param, "/particles/hue");
+        assert_eq!(update, Update::Range(8224.0 / 16383.0));
+    }
+
     #[test]
     fn pitch_bend_spans_the_range() {
         let mut map = MidiMap::default();
@@ -366,12 +415,19 @@ mod tests {
     }
 
     #[test]
-    fn learn_binds_the_msb_of_a_fourteen_bit_pair() {
-        // Turning a 14-bit knob emits both halves; binding the LSB would
-        // capture only the fine adjustment and feel broken.
+    fn learn_takes_the_controller_exactly_as_it_spoke() {
+        // This used to fold 32..63 down to the "MSB" of the 14-bit
+        // convention, on the theory that anything in that range was the
+        // fine half of a pair. Plenty of hardware disagrees — the
+        // nanoKONTROL's buttons live on CC 32+ — and the fold bound them
+        // to a controller they never send. The worry the fold answered
+        // (learning the fine half of a real 14-bit knob) is prevented by
+        // the wire itself: the spec sends the MSB first and learn takes
+        // the first event, so a genuine pair still lands on its MSB and
+        // keeps its LSB refinement.
         assert_eq!(
             Dispatcher::learn_source(cc(2, 33, 5)),
-            Source::ControlChange { channel: 2, controller: 1 }
+            Source::ControlChange { channel: 2, controller: 33 }
         );
         assert_eq!(
             Dispatcher::learn_source(cc(2, 1, 5)),

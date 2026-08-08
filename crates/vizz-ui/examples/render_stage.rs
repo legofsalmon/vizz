@@ -121,6 +121,7 @@ fn main() {
         "Ribbon".to_string(),
     ];
     let state = performance::PerformanceState {
+        preset_current: Some(2),
         outputs: &[
             OutputStatus {
                 name: "syphon:vizz".into(),
@@ -247,6 +248,7 @@ fn registry() -> ParamRegistry {
         "/fx/mirror",
         "/color/palette",
         "/color/drive",
+        "/color/spread",
         "/master/dim",
     ] {
         let def = ParamDef::new(addr, 0.0, 1.0, 0.4);

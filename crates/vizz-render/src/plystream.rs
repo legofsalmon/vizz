@@ -40,6 +40,13 @@ const MAX_HEADER: usize = 64 * 1024;
 /// otherwise be an instant allocation of everything the machine has.
 const MAX_VERTICES: usize = 20_000_000;
 
+/// Most bytes one frame body may claim. The vertex cap alone still let a
+/// header ask for MAX_VERTICES at a 64-byte stride — a 1.28 GB
+/// allocation, sized entirely by an untrusted peer before a single byte
+/// of body had arrived. A quarter gigabyte covers any real scan at any
+/// real stride and is survivable if a hostile peer asks for all of it.
+const MAX_FRAME_BYTES: usize = 256 << 20;
+
 /// What the header says about the body that follows it.
 #[derive(Debug, PartialEq)]
 struct FrameShape {
@@ -53,7 +60,24 @@ struct FrameShape {
 /// Returns `Ok(None)` at a clean end of stream — the sender closing
 /// between frames is normal shutdown, not an error.
 pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<Point>>> {
-    let Some(header) = read_header(reader)? else {
+    read_frame_patient(reader, &|| false)
+}
+
+/// [`read_frame`], riding out read timeouts without losing its place.
+///
+/// A read timeout used to be handled a layer up, by restarting
+/// `read_frame` from scratch — which is fine between frames and fatal in
+/// the middle of one: the bytes already consumed were gone, so the next
+/// attempt parsed a header out of the middle of a body and every frame
+/// after that was garbage. A stall over the socket timeout mid-frame
+/// permanently desynced the stream. Here a timeout keeps its position
+/// and simply waits more, consulting `stop`; a stop while waiting is a
+/// clean end of stream, not an error.
+pub fn read_frame_patient(
+    reader: &mut impl BufRead,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Vec<Point>>> {
+    let Some(header) = read_header(reader, stop)? else {
         return Ok(None);
     };
     let shape = parse_shape(&header)?;
@@ -66,11 +90,18 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<Point>>> {
             let len = shape
                 .vertices
                 .checked_mul(stride)
-                .filter(|n| *n <= MAX_VERTICES * 64)
-                .ok_or_else(|| anyhow::anyhow!("PLY frame body size overflows"))?;
+                .filter(|n| *n <= MAX_FRAME_BYTES)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "PLY frame body over the {} MiB limit",
+                        MAX_FRAME_BYTES >> 20
+                    )
+                })?;
             let start = frame.len();
             frame.resize(start + len, 0);
-            reader.read_exact(&mut frame[start..])?;
+            if !read_exact_patient(reader, &mut frame[start..], stop)? {
+                return Ok(None);
+            }
         }
         None => {
             // ASCII: exactly `vertices` non-blank lines. Blank lines are
@@ -81,7 +112,10 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<Point>>> {
             let mut line = String::new();
             while seen < shape.vertices {
                 line.clear();
-                if reader.read_line(&mut line)? == 0 {
+                let Some(read) = read_line_patient(reader, &mut line, stop)? else {
+                    return Ok(None);
+                };
+                if read == 0 {
                     bail!(
                         "PLY stream ended after {seen} of {} vertices",
                         shape.vertices
@@ -99,13 +133,96 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<Point>>> {
     Ok(Some(points))
 }
 
-/// Read up to and including `end_header`. `None` at a clean end of stream.
-fn read_header(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
+fn is_timeout(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
+}
+
+/// Fill `buf` exactly, treating a read timeout as "wait more" rather
+/// than an error — the position is tracked here, so nothing is lost.
+/// Returns `false` if `stop` turned true while waiting.
+fn read_exact_patient(
+    reader: &mut impl BufRead,
+    buf: &mut [u8],
+    stop: &dyn Fn() -> bool,
+) -> Result<bool> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => bail!("PLY stream ended mid-frame"),
+            Ok(n) => filled += n,
+            Err(e) if is_timeout(&e) => {
+                if stop() {
+                    return Ok(false);
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(true)
+}
+
+/// `read_line` that rides out timeouts. Built on `fill_buf`/`consume`,
+/// which a timeout leaves untouched — `BufRead::read_line`'s contract
+/// makes no promise about partially-read bytes on error, and losing
+/// them is exactly the desync this file exists to avoid.
+/// `Ok(Some(n))` appended `n` bytes (0 = end of stream); `Ok(None)`
+/// means `stop` turned true while waiting.
+fn read_line_patient(
+    reader: &mut impl BufRead,
+    line: &mut String,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<usize>> {
+    let mut bytes = Vec::new();
+    loop {
+        let (take, done) = match reader.fill_buf() {
+            Ok([]) => (0, true),
+            Ok(buf) => match buf.iter().position(|b| *b == b'\n') {
+                Some(pos) => {
+                    bytes.extend_from_slice(&buf[..=pos]);
+                    (pos + 1, true)
+                }
+                None => {
+                    bytes.extend_from_slice(buf);
+                    (buf.len(), false)
+                }
+            },
+            Err(e) if is_timeout(&e) => {
+                if stop() {
+                    return Ok(None);
+                }
+                (0, false)
+            }
+            Err(e) => return Err(e.into()),
+        };
+        reader.consume(take);
+        if done {
+            break;
+        }
+        // A line longer than any header has business being: bail rather
+        // than buffering an unbounded stream of not-PLY. Same wording as
+        // the header cap — both mean the same thing to the user.
+        if bytes.len() > MAX_HEADER {
+            bail!("no end_header within {MAX_HEADER} bytes — is this a PLY stream?");
+        }
+    }
+    let n = bytes.len();
+    line.push_str(&String::from_utf8_lossy(&bytes));
+    Ok(Some(n))
+}
+
+/// Read up to and including `end_header`. `None` at a clean end of
+/// stream, or when `stop` turned true while waiting.
+fn read_header(reader: &mut impl BufRead, stop: &dyn Fn() -> bool) -> Result<Option<Vec<u8>>> {
     let mut header = Vec::new();
     let mut line = String::new();
     loop {
         line.clear();
-        let read = reader.read_line(&mut line)?;
+        let Some(read) = read_line_patient(reader, &mut line, stop)? else {
+            return Ok(None);
+        };
         if read == 0 {
             // Nothing at all: the sender closed between frames.
             if header.is_empty() {
@@ -412,22 +529,16 @@ fn pump(
     let mut reader = std::io::BufReader::new(stream);
     slot.connected.store(true, Ordering::Relaxed);
     while !stop.load(Ordering::Relaxed) {
-        match read_frame(&mut reader) {
+        // Timeouts are ridden out *inside* the read, holding position.
+        // They used to be caught here by restarting `read_frame`, which
+        // between frames was an idle sender and mid-frame threw away the
+        // bytes already consumed — the next attempt parsed a header out
+        // of the middle of a body, and the stream never recovered.
+        match read_frame_patient(&mut reader, &|| stop.load(Ordering::Relaxed)) {
             Ok(Some(points)) => publish(slot, points),
-            // Clean close: the sender is done, not broken.
+            // Clean close: the sender is done (or we are), not broken.
             Ok(None) => return Ok(()),
-            Err(e) => {
-                // A read timeout is an idle sender, not a failure.
-                if let Some(io) = e.downcast_ref::<std::io::Error>()
-                    && matches!(
-                        io.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    )
-                {
-                    continue;
-                }
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         }
     }
     Ok(())
@@ -561,6 +672,45 @@ mod tests {
                        property float x\nproperty float y\nproperty float z\nend_header\n";
         let err = read_frame(&mut Cursor::new(header.to_vec())).unwrap_err().to_string();
         assert!(err.contains("limit"), "no size guard: {err}");
+    }
+
+    /// A sender that stalls mid-frame — long enough for the socket
+    /// timeout to fire — must not desync the stream. The timeout used
+    /// to be caught a layer up by restarting the whole frame read,
+    /// which discarded the bytes already consumed; the next attempt
+    /// parsed a header out of the middle of a body, and every frame
+    /// after the stall was garbage.
+    #[test]
+    fn a_stall_mid_frame_does_not_desync_the_stream() {
+        struct Stutter {
+            data: Vec<u8>,
+            pos: usize,
+            calls: usize,
+        }
+        impl std::io::Read for Stutter {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                // Every other call times out — mid-header, mid-body,
+                // everywhere — and data arrives five bytes at a time.
+                self.calls += 1;
+                if self.calls % 2 == 1 {
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                if self.pos >= self.data.len() {
+                    return Ok(0);
+                }
+                let n = buf.len().min(5).min(self.data.len() - self.pos);
+                buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                self.pos += n;
+                Ok(n)
+            }
+        }
+        let mut data = binary_frame(2);
+        data.extend(binary_frame(3));
+        let mut r = std::io::BufReader::new(Stutter { data, pos: 0, calls: 0 });
+        let stop = || false;
+        assert_eq!(read_frame_patient(&mut r, &stop).unwrap().unwrap().len(), 2);
+        assert_eq!(read_frame_patient(&mut r, &stop).unwrap().unwrap().len(), 3);
+        assert!(read_frame_patient(&mut r, &stop).unwrap().is_none());
     }
 
     /// Pointing vizz at the wrong port must fail quickly, not read an

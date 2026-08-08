@@ -26,6 +26,9 @@ pub struct MidiView {
     pub map: MidiMap,
     pub learn_target: Option<vizz_midi::LearnTarget>,
     pub last_source: Option<Source>,
+    /// Binding-change counter, so a learn completing on the MIDI thread
+    /// is observable from the frame after.
+    pub revision: u64,
 }
 
 impl MidiView {
@@ -136,6 +139,9 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// The recalled slot (1-based), so the preset rows can show where the
+    /// look on screen came from.
+    pub preset_current: Option<usize>,
     /// The scene grid as it stands this frame.
     pub grid: crate::grid_view::GridView,
     /// The gravity grid, when the layer is in use. `None` hides it from
@@ -219,11 +225,14 @@ pub fn draw(
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| {
-                    clouds_section(ui, state);
-                    ui.separator();
-                    palettes_section(ui, state);
-                });
+                .show(ui, |ui| clouds_section(ui, state, registry));
+            // Their own header, not a stowaway inside "clouds": someone
+            // looking for their colours has no reason to open a section
+            // named after geometry.
+            egui::CollapsingHeader::new("palettes")
+                .id_salt("palettes")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| palettes_section(ui, state, registry));
             egui::CollapsingHeader::new("background")
                 .id_salt("background")
                 .default_open(state.expand_sections)
@@ -254,7 +263,10 @@ pub fn draw(
             ui.separator();
             params_section(ui, registry, state, modulation, ranges, &mut actions);
             ui.separator();
-            ui.small("Tab panel · G modulation · P performance · Esc quits");
+            // Every key the app answers to, including the one that documents the
+    // rest — a shortcut listed only inside the overlay it opens can never
+    // be discovered. And Esc is honest about being a two-step.
+    ui.small("Tab panel · G canvas · P performance · ? shortcuts · Esc quits, twice");
         });
     actions
 }
@@ -292,7 +304,7 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         ui.small(audio.device.as_deref().unwrap_or("no audio"));
         // Same reason: 99.5 and 128.0 are different widths otherwise.
         ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
-        if ui.small_button("tap").on_hover_text("tap the beat to set the tempo").clicked() {
+        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
             actions.audio.tapped = true;
         }
     });
@@ -341,11 +353,31 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
 /// The drop hint is here rather than nowhere because a gesture with no
 /// visible affordance is a gesture nobody discovers. That was the whole
 /// lesson of the rename living only on a right-click menu.
-fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
+fn clouds_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+    let slot = |addr: &str| {
+        registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
+    };
+    let (a, b) = (slot("/cloud/a"), slot("/cloud/b"));
     for (i, name) in state.clouds.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
             ui.label(name);
+            // Say which rows the morph pair is showing right now. The
+            // legend explained what the numbers meant but not which of
+            // them was on screen — the one question a legend is for.
+            let mut live = Vec::new();
+            if a == Some(i) {
+                live.push("a");
+            }
+            if b == Some(i) {
+                live.push("b");
+            }
+            if !live.is_empty() {
+                ui.label(
+                    egui::RichText::new(live.join(" ")).small().color(LIVE_MARK),
+                )
+                .on_hover_text("on screen — this end of the cloud morph pair");
+            }
         });
     }
     if state.clouds.is_empty() {
@@ -360,7 +392,10 @@ fn clouds_section(ui: &mut egui::Ui, state: &PanelState) {
 /// four shipped names a number says nothing at all about what is in the
 /// slot. Unused rows are left out rather than listed as blanks — sixteen
 /// entries of which twelve are empty is a worse legend than four.
-fn palettes_section(ui: &mut egui::Ui, state: &PanelState) {
+fn palettes_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+    let current = registry
+        .id("/color/palette")
+        .map(|id| registry.target(id).round().max(0.0) as usize);
     for (i, name) in state.palettes.iter().enumerate() {
         if name.is_empty() {
             continue;
@@ -368,6 +403,10 @@ fn palettes_section(ui: &mut egui::Ui, state: &PanelState) {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
             ui.label(name);
+            if current == Some(i) {
+                ui.label(egui::RichText::new("live").small().color(LIVE_MARK))
+                    .on_hover_text("the ramp /color/palette is set to");
+            }
         });
     }
     ui.small("drag a .gpl or a list of hex colours onto the window to add one");
@@ -441,7 +480,6 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
 }
 
 fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
-    ui.label(egui::RichText::new("MIDI").strong());
     if !state.midi.available {
         ui.small("unavailable");
         return;
@@ -546,6 +584,16 @@ fn device_list(ui: &egui::Ui) -> Vec<String> {
 fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let current = state.audio.device.as_deref().unwrap_or("no input");
     ui.horizontal(|ui| {
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        ui.painter().circle_filled(
+            dot.center(),
+            4.0,
+            if state.audio.connected {
+                egui::Color32::from_rgb(90, 200, 120)
+            } else {
+                egui::Color32::from_rgb(110, 110, 110)
+            },
+        );
         ui.label("input");
         egui::ComboBox::from_id_salt("audio-device")
             .selected_text(current)
@@ -576,20 +624,9 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 
 fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let a = &state.audio;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Audio").strong());
-        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(
-            dot.center(),
-            4.0,
-            if a.connected {
-                egui::Color32::from_rgb(90, 200, 120)
-            } else {
-                egui::Color32::from_rgb(110, 110, 110)
-            },
-        );
-    });
-
+    // No bold "Audio" heading — the collapsing header the user just
+    // clicked already says so, and half the sections never restated
+    // theirs. The status dot lives on the input row instead.
     device_picker(ui, state, actions);
 
     if !a.connected {
@@ -600,18 +637,22 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     let mut bands = state.audio_bands;
     for (i, band) in bands.iter_mut().enumerate() {
         ui.horizontal(|ui| {
+            // Named the way every modulation source list names them, so
+            // "Band 2" in a route can be found in this section without
+            // counting rows.
+            ui.small(format!("band {}", i + 1));
             meter(ui, a.raw[i], a.bands[i]);
             ui.add(
                 egui::DragValue::new(&mut band.lo_hz)
                     .speed(2.0)
                     .range(20.0..=18_000.0)
-                    .suffix("Hz"),
+                    .suffix(" Hz"),
             );
             ui.add(
                 egui::DragValue::new(&mut band.hi_hz)
                     .speed(2.0)
                     .range(20.0..=20_000.0)
-                    .suffix("Hz"),
+                    .suffix(" Hz"),
             );
             // Decibels, not a multiplier. "×10" is not a quantity anyone
             // can act on — it does not say whether the band is hot or
@@ -690,7 +731,10 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         {
             actions.audio.auto_bpm = Some(auto);
         }
-        if ui.small_button("tap").on_hover_text("tap tempo: three taps sets it").clicked() {
+        // Same words as the status strip's tap: three surfaces telling
+        // three different stories about one behaviour reads as three
+        // different behaviours.
+        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
             actions.audio.tapped = true;
         }
     });
@@ -701,7 +745,6 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 
 fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEngine) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Modulation").strong());
         // Beat indicator: brightest on the downbeat, so tempo is visible
         // at a glance rather than inferred from a number.
         let phase = m.clock.bar_phase(4.0);
@@ -727,7 +770,9 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
 
     for (i, lfo) in m.lfos.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(format!("lfo{}", i + 1));
+            // "LFO 1", capitalised, because that is how the routes list
+            // and the canvas both name it — one object, one name.
+            ui.label(format!("LFO {}", i + 1));
             egui::ComboBox::from_id_salt(format!("shape{i}"))
                 .width(64.0)
                 .selected_text(lfo.shape.label())
@@ -789,14 +834,14 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
         m.routes.remove(i);
     }
     if m.routes.is_empty() {
-        ui.small("no routes — use ‘mod' next to a parameter");
+        ui.small("no routes — use “LFO 1” next to a parameter");
     }
     let _ = registry;
 }
 
 fn health_section(ui: &mut egui::Ui, state: &PanelState) {
     let Some(h) = &state.health else {
-        ui.label("Collecting health data…");
+        ui.small("collecting health data…");
         return;
     };
 
@@ -815,6 +860,12 @@ fn health_section(ui: &mut egui::Ui, state: &PanelState) {
                 .color(color)
                 .small(),
         );
+        if over {
+            // In words as well as colour: red against green is exactly
+            // the pair that collapses for red-green colour-blind eyes,
+            // and this is the one headline that matters mid-set.
+            ui.label(egui::RichText::new("over budget").color(color).small());
+        }
     });
 
     sparkline(ui, &state.frame_times_ms, state.frame_budget_ms);
@@ -890,21 +941,36 @@ fn sparkline(ui: &mut egui::Ui, samples: &[f32], budget_ms: f32) {
 /// only thing that reliably cleans up a field of one-pixel sprites, and it
 /// costs fill rate rather than complexity.
 fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
-    let mut next = state.output;
+    // Edits accumulate here, in egui's own memory, and are only released
+    // as an action when a gesture *ends*. Applying on every changed()
+    // frame — the previous behaviour — rebuilt the master, the whole post
+    // chain and every sender on each tick of a spinner drag: dozens of
+    // texture allocations per adjustment, and Syphon/NDI receivers
+    // watching the source drop and reappear dozens of times.
+    let id = egui::Id::new("output-setup-pending");
+    let mut next: OutputSetup =
+        ui.data(|d| d.get_temp(id)).unwrap_or(state.output);
+    let mut commit = false;
+    // A settle, not a commit: the drag or the typing finished.
+    let settled = |r: &egui::Response| r.drag_stopped() || r.lost_focus();
 
     ui.horizontal(|ui| {
         ui.label("output");
-        ui.add(
+        // 8192 matches the app's own side limit (wgpu's default texture
+        // ceiling), and lets 8K DCI through; the total-pixel budget is
+        // enforced where the textures are allocated, not here.
+        let w = ui.add(
             egui::DragValue::new(&mut next.width)
-                .range(160..=7680)
+                .range(160..=8192)
                 .speed(8.0),
         );
         ui.label("x");
-        ui.add(
+        let h = ui.add(
             egui::DragValue::new(&mut next.height)
-                .range(160..=7680)
+                .range(160..=8192)
                 .speed(8.0),
         );
+        commit |= settled(&w) || settled(&h);
     });
     // The sizes people actually output at, because typing 3840 by dragging
     // a spinner is nobody's idea of a control.
@@ -918,18 +984,21 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
             if ui.small_button(label).clicked() {
                 next.width = w;
                 next.height = h;
+                commit = true;
             }
         }
     });
 
     ui.horizontal(|ui| {
         ui.label("render");
-        ui.add(
-            egui::Slider::new(&mut next.scale, 0.25..=2.0)
-                .suffix("x")
-                .clamping(egui::SliderClamping::Always),
-        )
-        .on_hover_text("above 1 supersamples: draw larger, let the downscale anti-alias");
+        let r = ui
+            .add(
+                egui::Slider::new(&mut next.scale, 0.25..=2.0)
+                    .suffix("x")
+                    .clamping(egui::SliderClamping::Always),
+            )
+            .on_hover_text("above 1 supersamples: draw larger, let the downscale anti-alias");
+        commit |= settled(&r);
     });
     // Say the resulting size out loud. A multiplier is easy to set and
     // hard to picture, and the number that matters for whether the machine
@@ -938,8 +1007,10 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     let rh = (next.height as f32 * next.scale) as u32;
     ui.small(format!("drawing {rw} x {rh}"));
 
-    ui.checkbox(&mut next.wide, "16-bit float master")
+    let wide = ui
+        .checkbox(&mut next.wide, "16-bit float master")
         .on_hover_text("smoother gradients, at double the master's bandwidth");
+    commit |= wide.changed();
     if next.wide {
         // Not a warning about something broken — a statement of what it
         // costs. Syphon and NDI are BGRA8 by definition, so this cannot
@@ -948,13 +1019,21 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
         ui.small("Syphon and NDI still receive 8-bit; a conversion pass is added for them");
     }
 
-    if next != state.output {
-        actions.output_setup = Some(next);
+    if commit {
+        if next != state.output {
+            actions.output_setup = Some(next);
+        }
+        // Re-sync with what the app actually applied — which may differ
+        // from what was asked, since the apply path fits the size to the
+        // pixel budget. Holding the raw numbers here would show a size
+        // the app has already refused.
+        ui.data_mut(|d| d.remove_temp::<OutputSetup>(id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, next));
     }
 }
 
 fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
-    ui.label(egui::RichText::new("Outputs").strong());
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
         return;
@@ -980,6 +1059,19 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
 /// So the list stays here even though a version of it exists there: it is
 /// the only place a preset can be created or removed, and creating them is
 /// the entire purpose of this screen.
+/// A delete that has been clicked once and is waiting to be meant.
+#[derive(Clone)]
+struct ArmedDelete {
+    name: String,
+    at: std::time::Instant,
+}
+
+impl Default for ArmedDelete {
+    fn default() -> Self {
+        Self { name: String::new(), at: std::time::Instant::now() }
+    }
+}
+
 fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     ui.label(egui::RichText::new("Presets").strong());
     ui.small("click to open a look and keep editing it");
@@ -1004,12 +1096,43 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                     if p.builtin {
                         return;
                     }
-                    if ui
+                    // Armed delete, matching the grid's store/clear
+                    // idiom. One click on a 14-point "x" permanently
+                    // erasing a file — with no undo anywhere — was the
+                    // cheapest destruction in the app, sitting a few
+                    // pixels from the load button.
+                    let arm_id = egui::Id::new("preset-delete-armed");
+                    let armed: Option<ArmedDelete> =
+                        ui.memory_mut(|m| m.data.get_temp(arm_id));
+                    let armed_here = armed
+                        .as_ref()
+                        .is_some_and(|a| a.name == p.name && a.at.elapsed().as_secs() < 3);
+                    if armed_here {
+                        let sure = egui::Button::new(
+                            egui::RichText::new("delete?")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(255, 236, 232)),
+                        )
+                        .fill(egui::Color32::from_rgb(150, 52, 46));
+                        if ui
+                            .add(sure)
+                            .on_hover_text("click again to delete for good — there is no undo")
+                            .clicked()
+                        {
+                            actions.preset_delete = Some(p.name.clone());
+                            ui.memory_mut(|m| m.data.remove_temp::<ArmedDelete>(arm_id));
+                        }
+                    } else if ui
                         .small_button("x")
-                        .on_hover_text("delete this preset")
+                        .on_hover_text("delete this preset (asks once)")
                         .clicked()
                     {
-                        actions.preset_delete = Some(p.name.clone());
+                        ui.memory_mut(|m| {
+                            m.data.insert_temp(
+                                arm_id,
+                                ArmedDelete { name: p.name.clone(), at: std::time::Instant::now() },
+                            )
+                        });
                     }
                 });
             }
@@ -1150,14 +1273,18 @@ fn params_section(
             filter.clear();
         }
         if scrolls && filter.is_empty() {
-            ui.small(format!("{total}"));
+            ui.small(format!("{total} params"))
+                .on_hover_text("the list scrolls — or type here to jump");
         }
     });
     let needle = filter.trim().to_ascii_lowercase();
     ui.memory_mut(|m| m.data.insert_temp(filter_id, filter));
 
-    let height = (screen_h - ui.cursor().top() - PARAM_LIST_MARGIN)
-        .clamp(PARAM_LIST_MIN, PARAM_LIST_MAX);
+    // As tall as the display allows, floored so a cramped window still
+    // shows a few rows. There used to be a 320px ceiling here, which on
+    // a tall display parked the panel's main working surface in a third
+    // of the space while the rest sat empty.
+    let height = (screen_h - ui.cursor().top() - PARAM_LIST_MARGIN).max(PARAM_LIST_MIN);
     egui::ScrollArea::vertical()
         .max_height(height)
         .auto_shrink([false, true])
@@ -1370,9 +1497,7 @@ const PARAM_LIST_MARGIN: f32 = 46.0;
 /// Never shrink below about five rows: past that the list is unusable and
 /// it is better to let the panel overflow than to hide everything.
 const PARAM_LIST_MIN: f32 = 92.0;
-/// Nor grow past this — a long list is easier to scan in a fixed frame
-/// than one that changes height with the display.
-const PARAM_LIST_MAX: f32 = 320.0;
+
 
 #[allow(clippy::too_many_arguments)]
 fn param_row(
@@ -1474,18 +1599,22 @@ fn param_row(
         let lfo1 = vizz_mod::Source::Lfo(0);
         let routed = modulation.has_route(lfo1, &def.addr);
         let hint = if routed {
-            "lfo1 is routed here — click to remove"
+            "LFO 1 is routed here — click to remove"
         } else {
-            "route lfo1 to this parameter"
+            "route LFO 1 to this parameter"
         };
     // Modulation cannot reach transport: the engine reads fire, blend time,
     // curve and autopilot from `target()`, which modulation never touches,
     // so a route there is inert. Offering the button and then drawing the
     // "modulated" marker beside it was the app claiming to do something it
     // had no path to do.
+    // Labelled with what it actually routes. As "mod" it contradicted
+    // the ~ marker: a parameter driven by an audio band showed ~ while
+    // the button sat unlit, which read as the panel disagreeing with
+    // itself about whether the row was modulated.
     if !is_transport(def)
         && ui
-            .add(egui::Button::new("mod").small().selected(routed))
+            .add(egui::Button::new("LFO 1").small().selected(routed))
             .on_hover_text(hint)
             .clicked()
     {
@@ -1524,6 +1653,8 @@ fn param_row(
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
 /// as "something else is touching this" at a glance.
 const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+/// The "this row is what you are seeing" marker in the slot legends.
+const LIVE_MARK: egui::Color32 = egui::Color32::from_rgb(110, 180, 255);
 
 /// Marks a parameter that presets do not capture. Cool against the
 /// modulation marker's warm, since the two appear side by side and mean

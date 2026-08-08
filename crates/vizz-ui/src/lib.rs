@@ -7,6 +7,7 @@
 //! and never introduces a synchronisation point.
 
 pub mod graph_view;
+pub mod notices;
 pub mod grid_view;
 pub mod panel;
 pub mod performance;
@@ -37,6 +38,11 @@ pub fn draw_shortcuts_for_preview(ctx: &egui::Context, open: &mut bool) {
 /// and so is worth looking at rather than only reasoning about.
 pub fn draw_quit_prompt_for_preview(ctx: &egui::Context) {
     quit_prompt(ctx);
+}
+
+/// And the armed-learn banner, same reasoning.
+pub fn draw_learn_banner_for_preview(ctx: &egui::Context, label: &str) {
+    learn_banner(ctx, label);
 }
 
 /// Keyboard shortcuts, on screen rather than only in the README.
@@ -107,6 +113,42 @@ fn quit_prompt(ctx: &egui::Context) {
         });
 }
 
+/// The armed-learn banner: a mode this global deserves an indicator this
+/// global.
+///
+/// An armed learn binds the next control that moves, whichever screen is
+/// up and whichever device sends it — armed from the panel, it survived
+/// switching to the performance layout, hiding everything, even the
+/// controller being unplugged and replugged, all with no on-screen sign
+/// anywhere. The first stray knob touch then bound itself to the waiting
+/// parameter. Returns true when clicked, which cancels the learn.
+fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
+    let mut clicked = false;
+    egui::Area::new(egui::Id::new("learn-banner"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let r = egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(64, 50, 18))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 90)))
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "MIDI learn armed: the next control you move binds to {label} — click to cancel"
+                        ))
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(255, 224, 170)),
+                    );
+                })
+                .response
+                .interact(egui::Sense::click());
+            clicked = r.clicked();
+        });
+    clicked
+}
+
 /// How many frame times the sparkline keeps.
 const HISTORY: usize = 240;
 
@@ -137,6 +179,8 @@ pub struct Gui {
     macros: vizz_mod::perform::Macros,
     /// Slider working ranges, loaded once and saved when they change.
     ranges: vizz_mod::ranges::Ranges,
+    /// On-screen notices — the channel runtime failures report through.
+    notices: notices::Notices,
     history: Vec<f32>,
 }
 
@@ -167,8 +211,34 @@ impl Gui {
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             ranges: vizz_mod::ranges::Ranges::load(),
+            notices: notices::Notices::default(),
             history: Vec::with_capacity(HISTORY),
         }
+    }
+
+    /// Something worked and is worth confirming on screen.
+    /// The modulation canvas view, for persisting across launches. The
+    /// canvas forgetting where you were — pan, zoom, the patch's name —
+    /// made every launch start with a scavenger hunt.
+    pub fn graph_view_memory(&self) -> graph_view::ViewMemory {
+        self.graph_view.memory()
+    }
+
+    /// Restore a persisted canvas view. Sanitised inside — see
+    /// [`GraphView::restore`].
+    pub fn restore_graph_view(&mut self, m: graph_view::ViewMemory) {
+        self.graph_view.restore(m);
+    }
+
+    pub fn notify_info(&mut self, text: impl Into<String>) {
+        self.notices.info(text);
+    }
+
+    /// Something failed. This is the loud path: it draws whatever else is
+    /// hidden, because a save failing with the panel closed is precisely
+    /// the case a log line was silently eating.
+    pub fn notify_error(&mut self, text: impl Into<String>) {
+        self.notices.error(text);
     }
 
     /// Will `render` put anything on screen this frame?
@@ -180,20 +250,32 @@ impl Gui {
     /// meant paying for a panel nobody could see. Which is the state a set
     /// is actually played in.
     pub fn will_draw(&self) -> bool {
-        self.visible || self.graph_open || self.performance || self.shortcuts_open || self.quit_armed
+        self.visible
+            || self.graph_open
+            || self.performance
+            || self.shortcuts_open
+            || self.quit_armed
+            || !self.notices.is_empty()
     }
 
     /// Feed a window event to egui. Returns `true` if egui consumed it,
     /// in which case the caller should not act on it (so dragging a
     /// slider does not also trigger app shortcuts).
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        // Tab is ours, always: the panel must be dismissible even when
-        // egui wants keyboard focus.
+        // Tab is ours whenever nothing is being typed into: the panel
+        // must be dismissible even while egui has mouse focus. While a
+        // text field IS focused, Tab goes to egui as the focus-next it
+        // means there — it used to hide the entire panel mid-way through
+        // typing a preset name.
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
+            && !self.ctx.egui_wants_keyboard_input()
         {
             self.visible = !self.visible;
+            if !self.visible {
+                self.drop_text_focus();
+            }
             return true;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
@@ -201,12 +283,18 @@ impl Gui {
             && !self.ctx.egui_wants_keyboard_input()
         {
             match event.logical_key.as_ref() {
-                winit::keyboard::Key::Character("g") => {
+                // Case-insensitive: the ? overlay advertises these as "G"
+                // and "P", and Caps Lock — or a Shift held for something
+                // else — used to silently kill both.
+                winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("g") => {
                     self.graph_open = !self.graph_open;
                     return true;
                 }
-                winit::keyboard::Key::Character("p") => {
+                winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("p") => {
                     self.performance = !self.performance;
+                    if !self.performance {
+                        self.drop_text_focus();
+                    }
                     return true;
                 }
                 // `/` jumps to the parameter filter, as it does in every
@@ -236,10 +324,27 @@ impl Gui {
                 _ => {}
             }
         }
-        if !self.visible {
+        // Events flow to egui whenever anything is on screen — not only
+        // when the *panel* is. Gating this on `visible` alone meant Tab
+        // silently killed all mouse input to the performance layout and
+        // the modulation canvas while both kept drawing: every pad,
+        // fader and node looked live and responded to nothing.
+        if !self.will_draw() {
             return false;
         }
         self.state.on_window_event(window, event).consumed
+    }
+
+    /// Take keyboard focus away from whatever text field holds it.
+    ///
+    /// Called when the screen that field lives on goes away. A field left
+    /// focused behind a hidden panel kept `egui_wants_keyboard_input`
+    /// true, which silently disabled the number keys and every letter
+    /// shortcut — with nothing on screen to say why.
+    fn drop_text_focus(&mut self) {
+        if let Some(id) = self.ctx.memory(|m| m.focused()) {
+            self.ctx.memory_mut(|m| m.surrender_focus(id));
+        }
     }
 
     /// Record a frame time for the sparkline.
@@ -290,20 +395,31 @@ impl Gui {
         if self.quit_armed {
             quit_prompt(&self.ctx);
         }
+        self.notices.draw(&self.ctx);
         if self.performance {
             return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
         }
-        let actions = if self.visible {
+        let mut actions = if self.visible {
             panel::draw(&self.ctx, registry, &state, modulation, &mut self.ranges)
         } else {
             PanelActions::default()
         };
+        if let Some(target) = &state.midi.learn_target
+            && learn_banner(&self.ctx, &target.label)
+        {
+            actions.set_learn_target = Some(None);
+        }
         if actions.ranges_changed && let Err(e) = self.ranges.save() {
             log::error!("could not save slider ranges: {e:#}");
+            self.notices.error(format!("could not save the slider ranges: {e}"));
         }
         if self.graph_open {
             let mut open = true;
-            egui::Window::new("modulation")
+            // "modulation canvas", not "modulation": the panel already has
+            // a section by that name for the LFOs and routes, and the two
+            // share nothing but the engine underneath. One word, two
+            // unrelated surfaces, is how G "opens the wrong thing".
+            egui::Window::new("modulation canvas")
                 .open(&mut open)
                 .default_pos([420.0, 60.0])
                 .default_size([760.0, 520.0])
@@ -356,17 +472,25 @@ impl Gui {
             bpm: state.bpm,
             bar_phase: state.bar_phase,
             presets: &preset_names,
+            preset_current: state.preset_current,
             grid: &state.grid,
             // Only shown when the layer is in use.
             gravity: state.gravity_grid.as_ref(),
             midi: &state.midi,
             values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
         };
-        let perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
+        let mut perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
+        // The armed-learn banner rides both screens; see the panel path.
+        if let Some(target) = &state.midi.learn_target
+            && learn_banner(&self.ctx, &target.label)
+        {
+            perf.set_learn_target = Some(None);
+        }
         if perf.exit {
             self.performance = false;
         }
         if perf.macros_changed && let Err(e) = self.macros.save() {
+            self.notices.error(format!("could not save the fader assignments: {e}"));
             log::warn!("could not save macro assignments: {e}");
         }
 
@@ -434,6 +558,7 @@ mod tests {
         reg.set(mode, 5.0);
         let ctx = egui::Context::default();
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: Vec::new(),
@@ -472,6 +597,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: Vec::new(),
@@ -513,6 +639,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
@@ -556,6 +683,7 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![],
@@ -578,7 +706,7 @@ mod tests {
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
-        assert!(text.contains("Collecting health data"), "got: {text}");
+        assert!(text.contains("collecting health data"), "got: {text}");
         assert!(text.contains("preview only"), "got: {text}");
     }
 
@@ -591,6 +719,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![],
@@ -627,7 +756,10 @@ mod tests {
         assert!(text.contains("128.0 bpm"), "detected tempo missing: {text}");
         assert!(text.contains("tap"), "tap tempo missing: {text}");
         // Band edges are the filter control; they must be editable numbers.
-        assert!(text.contains("30 Hz") && text.contains("110 Hz"), "band edges missing: {text}");
+        // The value and its unit are separate glyph runs, so they are
+        // matched separately rather than as one string.
+        assert!(text.contains("30") && text.contains("110"), "band edges missing: {text}");
+        assert!(text.contains("Hz"), "band edge unit missing: {text}");
         // Sensitivity reads in decibels, at the value the band actually
         // carries. "×10" is not a quantity anyone can act on, and it was
         // the thing that made the gain control look like it meant nothing.
@@ -675,12 +807,14 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            preset_current: None,
             update_available: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
             frame_budget_ms: 16.67,
             midi: MidiView {
+                revision: 0,
                 available: true,
                 connected: vec!["Launch Control XL".into()],
                 map,
@@ -716,6 +850,7 @@ mod tests {
     fn update_banner_appears_only_when_a_newer_version_exists() {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
+            preset_current: None,
             update_available: update,
             health: None,
             outputs: vec![],

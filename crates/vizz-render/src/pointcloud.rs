@@ -226,6 +226,14 @@ fn read_ply_ascii(
 ) -> Result<Vec<Point>> {
     let mut out = Vec::with_capacity(count.min(1 << 20));
     for line in reader.lines() {
+        // The declared count is where the vertex element *ends*, not a
+        // hint. Reading to end-of-file swept whatever follows into the
+        // cloud — a scan with a face element after its vertices had every
+        // face row "3 0 1 2" parsed as a point at (3,0,1), which corrupts
+        // the cloud with a diagonal smear towards the origin.
+        if out.len() >= count {
+            break;
+        }
         let line = line?;
         let f: Vec<&str> = line.split_whitespace().collect();
         if f.is_empty() {
@@ -382,6 +390,32 @@ mod tests {
          1.0 2.0 3.0 255 0 0\n\
          -1.0 0.0 1.0 0 255 0\n\
          0.5 0.5 0.5 0 0 255\n"
+    }
+
+    /// The declared vertex count is where the vertices end. Reading to
+    /// end-of-file swept the face element into the cloud: every face row
+    /// "3 0 1 2" parsed as a point at (3,0,1), smearing a diagonal of
+    /// phantom points towards the origin through any scan with faces.
+    #[test]
+    fn face_rows_after_the_vertices_are_not_points() {
+        let dir = std::env::temp_dir().join(format!("vizz-plyface-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("faces.ply");
+        std::fs::write(
+            &path,
+            "ply\nformat ascii 1.0\nelement vertex 2\n\
+             property float x\nproperty float y\nproperty float z\n\
+             element face 2\nproperty list uchar int vertex_indices\n\
+             end_header\n\
+             1.0 2.0 3.0\n\
+             4.0 5.0 6.0\n\
+             3 0 1 2\n\
+             3 1 2 0\n",
+        )
+        .unwrap();
+        let points = load(&path).unwrap();
+        assert_eq!(points.len(), 2, "face rows leaked into the cloud");
+        assert_eq!(points[1].pos, [4.0, 5.0, 6.0]);
     }
 
     #[test]

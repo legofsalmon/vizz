@@ -132,9 +132,10 @@ pub struct GraphView {
     add_at: [f32; 2],
     /// Current patch name, for save/load.
     pub patch_name: String,
-    /// Transient feedback ("saved", "load failed: …") and when it was set,
-    /// so it fades rather than sitting there misleading you later.
-    status: Option<(String, f64)>,
+    /// Transient feedback ("saved", "load failed: …"), when it was set,
+    /// and whether it is bad news — so it fades rather than sitting there
+    /// misleading you later, and a failure is not dressed as a success.
+    status: Option<(String, f64, bool)>,
     pub show_palette: bool,
 }
 
@@ -154,12 +155,44 @@ impl Default for GraphView {
     }
 }
 
+/// The pieces of the view worth keeping across launches: where you were
+/// looking, and what the patch was called. Plain data so the app can
+/// persist it however it stores settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewMemory {
+    pub pan: [f32; 2],
+    pub zoom: f32,
+    pub patch_name: String,
+    pub show_palette: bool,
+}
+
 impl GraphView {
     /// Start at a given zoom. Struct-update syntax cannot reach the private
     /// interaction state, and that state should stay private — a caller
     /// setting a half-finished drag would be a bug.
     pub fn with_zoom(zoom: f32) -> Self {
         Self { zoom, ..Default::default() }
+    }
+
+    /// What to persist. See [`ViewMemory`].
+    pub fn memory(&self) -> ViewMemory {
+        ViewMemory {
+            pan: [self.pan.x, self.pan.y],
+            zoom: self.zoom,
+            patch_name: self.patch_name.clone(),
+            show_palette: self.show_palette,
+        }
+    }
+
+    /// Come back to a persisted view. Values are clamped rather than
+    /// trusted — a hand-edited or corrupt settings file must not open the
+    /// canvas at NaN zoom, which has no way back but deleting the file.
+    pub fn restore(&mut self, m: ViewMemory) {
+        let sane = |v: f32, default: f32| if v.is_finite() { v.clamp(-1e5, 1e5) } else { default };
+        self.pan = vec2(sane(m.pan[0], 40.0), sane(m.pan[1], 40.0));
+        self.zoom = if m.zoom.is_finite() { m.zoom.clamp(MIN_ZOOM, MAX_ZOOM) } else { 1.0 };
+        self.patch_name = m.patch_name;
+        self.show_palette = m.show_palette;
     }
 
     pub fn layout(&self, origin: Pos2) -> Layout {
@@ -217,14 +250,18 @@ impl GraphView {
                         self.patch_name = saved.clone();
                         self.set_status(ui, format!("saved “{saved}”"));
                     }
-                    Err(e) => self.set_status(ui, format!("save failed: {e}")),
+                    Err(e) => self.set_error(ui, format!("save failed: {e}")),
                 }
             }
-            let patches = library::list();
             egui::ComboBox::from_id_salt("load-patch")
                 .selected_text("load")
                 .width(90.0)
                 .show_ui(ui, |ui| {
+                    // Listed here, inside the popup, so the patch directory
+                    // is read while the menu is open rather than on every
+                    // frame the canvas is — dozens of directory scans a
+                    // second for a list nobody was looking at.
+                    let patches = library::list();
                     if patches.is_empty() {
                         ui.label(egui::RichText::new("no saved patches").small());
                     }
@@ -237,7 +274,7 @@ impl GraphView {
                                     self.selected = None;
                                     changed = true;
                                 }
-                                Err(e) => self.set_status(ui, format!("load failed: {e}")),
+                                Err(e) => self.set_error(ui, format!("load failed: {e}")),
                             }
                         }
                     }
@@ -257,15 +294,21 @@ impl GraphView {
             }
             ui.checkbox(&mut self.show_palette, "palette");
 
-            if let Some((msg, at)) = &self.status {
+            if let Some((msg, at, error)) = &self.status {
                 // Fade after a few seconds: stale feedback next to a
-                // changed graph reads as a fresh result.
+                // changed graph reads as a fresh result. Failures hold
+                // longer and read red — "load failed" in the same friendly
+                // green as "saved" was how errors went unnoticed here.
+                let ttl = if *error { 8.0 } else { 4.0 };
+                let colour = if *error {
+                    Color32::from_rgb(235, 150, 140)
+                } else {
+                    Color32::from_rgb(150, 200, 160)
+                };
                 let age = ui.ctx().input(|i| i.time) - at;
-                if age < 4.0 {
+                if age < ttl {
                     ui.label(egui::RichText::new(msg).small().color(
-                        Color32::from_rgb(150, 200, 160).gamma_multiply(
-                            (1.0 - (age / 4.0) as f32).clamp(0.15, 1.0),
-                        ),
+                        colour.gamma_multiply((1.0 - (age / ttl) as f32).clamp(0.15, 1.0)),
                     ));
                 }
             }
@@ -274,7 +317,11 @@ impl GraphView {
     }
 
     fn set_status(&mut self, ui: &egui::Ui, msg: String) {
-        self.status = Some((msg, ui.ctx().input(|i| i.time)));
+        self.status = Some((msg, ui.ctx().input(|i| i.time), false));
+    }
+
+    fn set_error(&mut self, ui: &egui::Ui, msg: String) {
+        self.status = Some((msg, ui.ctx().input(|i| i.time), true));
     }
 
     /// Every node kind, grouped. The canvas add-menu and this read the same
@@ -300,11 +347,13 @@ impl GraphView {
                         .on_hover_text("add to the canvas")
                         .clicked()
                     {
-                        // Drop new nodes near the middle of where the user
-                        // is looking rather than at the graph origin, which
-                        // may be off-screen entirely.
-                        let at = [-self.pan.x + 160.0, -self.pan.y + 80.0];
-                        let id = graph.add(kind, at);
+                        // Drop new nodes near the top-left of what the user
+                        // is looking at rather than at the graph origin,
+                        // which may be off-screen entirely. Divided by the
+                        // zoom because the offset is meant in screen pixels.
+                        let z = self.zoom.max(MIN_ZOOM);
+                        let at = [160.0 / z - self.pan.x, 80.0 / z - self.pan.y];
+                        let id = graph.add(kind, free_spot(graph, at));
                         self.selected = Some(id);
                         changed = true;
                     }
@@ -393,7 +442,7 @@ impl GraphView {
         changed |= self.update_drag(&response, &lay, graph, pointer, ui);
 
         self.draw_wires(&painter, &lay, graph, pointer);
-        self.draw_nodes(&painter, &lay, graph);
+        self.draw_nodes(&painter, &lay, graph, registry);
 
         changed |= self.add_menu(&response, graph, &lay, pointer);
         changed |= self.handle_delete(ui, graph);
@@ -463,8 +512,10 @@ impl GraphView {
                 if graph.would_cycle(from, to) {
                     // Refuse rather than accept and disable: a wire that
                     // appears and then goes dead is worse than one that
-                    // never lands.
-                    log::debug!("refused a connection that would cycle");
+                    // never lands. But refuse *out loud* — a wire that
+                    // vanishes on release with no word reads as a missed
+                    // drop, so the user just tries the same loop again.
+                    self.set_error(ui, "refused — that wire would make a loop".into());
                 } else {
                     graph.connect(from, to, port);
                     changed = true;
@@ -472,7 +523,9 @@ impl GraphView {
             }
             // Input dragged onto an output — the same wire, other way up.
             (Drag::WireTo(to, port), Some((from, None))) => {
-                if !graph.would_cycle(from, to) {
+                if graph.would_cycle(from, to) {
+                    self.set_error(ui, "refused — that wire would make a loop".into());
+                } else {
                     graph.connect(from, to, port);
                     changed = true;
                 }
@@ -484,13 +537,19 @@ impl GraphView {
             }
             _ => {}
         }
-        let _ = ui;
         self.drag = Drag::None;
         changed
     }
 
     fn handle_delete(&mut self, ui: &egui::Ui, graph: &mut NodeGraph) -> bool {
         let Some(id) = self.selected else { return false };
+        // Not while anything is being typed into. Backspace is the most
+        // common key in a text field, and with a node selected it deleted
+        // that node mid-word — correcting a typo in a patch name or a
+        // Param address cost whatever was wired into the selected node.
+        if ui.ctx().egui_wants_keyboard_input() {
+            return false;
+        }
         let pressed = ui.ctx().input(|i| {
             i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
         });
@@ -593,18 +652,28 @@ impl GraphView {
         }
     }
 
-    fn draw_nodes(&self, p: &egui::Painter, lay: &Layout, graph: &NodeGraph) {
+    fn draw_nodes(&self, p: &egui::Painter, lay: &Layout, graph: &NodeGraph, registry: &ParamRegistry) {
         for (i, n) in graph.nodes.iter().enumerate() {
             let inputs = n.kind.inputs();
             let rect = lay.node_rect(n.pos, inputs);
             let accent = category_color(n.kind.category());
             let in_cycle = graph.cycle_nodes().contains(&i);
+            // A Param node aimed at nothing — fresh from the palette, or
+            // holding an address a rename left behind — does not modulate
+            // anything, and drawing it exactly like a working node is how
+            // a route dies without anyone noticing.
+            let dead_param = match &n.kind {
+                NodeKind::Param { addr, .. } => registry.id(addr).is_none(),
+                _ => false,
+            };
 
             p.rect_filled(rect, 5.0, Color32::from_rgb(38, 41, 47));
             let border = if in_cycle {
                 Stroke::new(2.0, Color32::from_rgb(190, 80, 70))
             } else if self.selected == Some(NodeId(i)) {
                 Stroke::new(2.0, Color32::from_rgb(225, 230, 238))
+            } else if dead_param {
+                Stroke::new(2.0, Color32::from_rgb(205, 150, 70))
             } else {
                 Stroke::new(1.0, accent)
             };
@@ -642,13 +711,33 @@ impl GraphView {
                         Color32::from_rgb(150, 158, 168),
                     );
                 }
-                // Live value, right-aligned on the first row.
+                // Live value, right-aligned on the first row. A node in
+                // trouble says what is wrong instead — in words, not just
+                // a border colour: the cycle red desaturates to nearly
+                // the Operator amber for red-green colour-blind eyes,
+                // and a border alone was the only cue.
+                let (readout, ink) = if in_cycle {
+                    ("cycle".to_string(), Color32::from_rgb(235, 150, 140))
+                } else if dead_param {
+                    let text = if matches!(&n.kind, NodeKind::Param { addr, .. } if addr.is_empty())
+                    {
+                        "no target".to_string()
+                    } else {
+                        "missing".to_string()
+                    };
+                    (text, Color32::from_rgb(225, 170, 90))
+                } else {
+                    (
+                        format!("{:+.2}", graph.value(NodeId(i))),
+                        Color32::from_rgb(190, 200, 212),
+                    )
+                };
                 p.text(
                     pos2(rect.right() - 9.0, rect.top() + (TITLE_H + ROW_H * 0.5) * lay.zoom),
                     Align2::RIGHT_CENTER,
-                    format!("{:+.2}", graph.value(NodeId(i))),
+                    readout,
                     FontId::monospace(fs * 0.82),
-                    Color32::from_rgb(190, 200, 212),
+                    ink,
                 );
             }
 
@@ -847,6 +936,25 @@ fn category_color(c: Category) -> Color32 {
 /// clamp floor sat below the threshold that decided whether to draw at
 /// all, so titles silently vanished below ~0.63 zoom — precisely the zoom
 /// you use to read a large patch.
+/// Nudge a drop position until no node already sits there.
+///
+/// Every palette click used to land at the same point, so adding three
+/// LFOs gave what looked like one — the other two hidden exactly
+/// underneath, discovered only by dragging the top one aside.
+fn free_spot(graph: &NodeGraph, mut at: [f32; 2]) -> [f32; 2] {
+    let taken = |graph: &NodeGraph, at: [f32; 2]| {
+        graph
+            .nodes
+            .iter()
+            .any(|n| (n.pos[0] - at[0]).abs() < 12.0 && (n.pos[1] - at[1]).abs() < 12.0)
+    };
+    while taken(graph, at) {
+        at[0] += 26.0;
+        at[1] += 26.0;
+    }
+    at
+}
+
 fn title_metrics(zoom: f32, width: f32) -> (f32, usize) {
     let fs = (12.0 * zoom).clamp(8.0, 18.0);
     let chars = ((width - 16.0) / (fs * 0.52)).floor().max(3.0) as usize;
@@ -1053,6 +1161,45 @@ mod tests {
 
     /// An empty graph has no bounding box; fit must return to the default
     /// view rather than dividing by nothing.
+    /// Three palette clicks used to give what looked like one node.
+    #[test]
+    fn dropped_nodes_never_stack_exactly() {
+        let mut g = NodeGraph::default();
+        let a = free_spot(&g, [100.0, 50.0]);
+        g.add(NodeKind::Level, a);
+        let b = free_spot(&g, [100.0, 50.0]);
+        g.add(NodeKind::Level, b);
+        let c = free_spot(&g, [100.0, 50.0]);
+        assert_ne!(a, b, "second drop landed on the first");
+        assert_ne!(b, c, "third drop landed on the second");
+        assert_eq!(a, [100.0, 50.0], "an empty spot moved for no reason");
+    }
+
+    /// A corrupt settings file must not restore an unusable view.
+    #[test]
+    fn restoring_a_poisoned_view_lands_somewhere_usable() {
+        let mut v = GraphView::default();
+        v.restore(ViewMemory {
+            pan: [f32::NAN, 1e9],
+            zoom: f32::INFINITY,
+            patch_name: "warehouse".into(),
+            show_palette: false,
+        });
+        assert!(v.pan.x.is_finite() && v.pan.y.is_finite());
+        assert!((MIN_ZOOM..=MAX_ZOOM).contains(&v.zoom));
+        assert_eq!(v.patch_name, "warehouse");
+
+        // And a sane one comes back exactly.
+        let m = ViewMemory {
+            pan: [-320.0, 12.5],
+            zoom: 0.6,
+            patch_name: "club".into(),
+            show_palette: true,
+        };
+        v.restore(m.clone());
+        assert_eq!(v.memory(), m);
+    }
+
     #[test]
     fn fitting_an_empty_graph_returns_to_the_default_view() {
         let mut view = GraphView {

@@ -216,6 +216,11 @@ pub struct AudioEngine {
     /// Held to keep the stream alive; dropping it stops capture.
     _stream: Option<cpal::Stream>,
     stop: Arc<AtomicBool>,
+    /// The analysis thread, held so a reopen can *wait* for it. Without
+    /// the join the old thread could take one more lap after `reopen`
+    /// reset the meters — and its "delivering again" path could flip
+    /// `connected` back on with no device behind it.
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl AudioEngine {
@@ -227,7 +232,7 @@ impl AudioEngine {
         let stop = Arc::new(AtomicBool::new(false));
 
         match Self::open(device_name, &state, &settings, &stop) {
-            Ok((stream, name)) => {
+            Ok((stream, name, thread)) => {
                 log::info!("audio input: {name}");
                 state.connected.store(true, Ordering::Relaxed);
                 Self {
@@ -236,6 +241,7 @@ impl AudioEngine {
                     device_name: Some(name),
                     _stream: Some(stream),
                     stop,
+                    thread: Some(thread),
                 }
             }
             Err(e) => {
@@ -246,6 +252,7 @@ impl AudioEngine {
                     device_name: None,
                     _stream: None,
                     stop,
+                    thread: None,
                 }
             }
         }
@@ -267,9 +274,17 @@ impl AudioEngine {
     pub fn reopen(&mut self, device_name: Option<&str>) -> bool {
         // Stop the running analysis thread and let go of the stream before
         // opening another: two threads writing the same `AudioState` would
-        // interleave two devices' readings.
+        // interleave two devices' readings. *Waited for*, not just told:
+        // the flag alone let the old thread finish one more lap after the
+        // reset below, and its "delivering again" path could then mark
+        // the engine connected with no device behind it — a green light
+        // the watchdog no longer existed to turn off. The loop sleeps a
+        // few milliseconds at most, so the join is imperceptible.
         self.stop.store(true, Ordering::Relaxed);
         self._stream = None;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
         self.state.connected.store(false, Ordering::Relaxed);
         // Meters must not keep showing the old device's levels while the
         // new one is opening, or worse, forever if it fails.
@@ -282,11 +297,12 @@ impl AudioEngine {
         // moment it started.
         self.stop = Arc::new(AtomicBool::new(false));
         match Self::open(device_name, &self.state, &self.settings, &self.stop) {
-            Ok((stream, name)) => {
+            Ok((stream, name, thread)) => {
                 log::info!("audio input: {name}");
                 self.state.connected.store(true, Ordering::Relaxed);
                 self.device_name = Some(name);
                 self._stream = Some(stream);
+                self.thread = Some(thread);
                 true
             }
             Err(e) => {
@@ -308,7 +324,7 @@ impl AudioEngine {
         state: &Arc<AudioState>,
         settings: &Arc<Mutex<AudioSettings>>,
         stop: &Arc<AtomicBool>,
-    ) -> anyhow::Result<(cpal::Stream, String)> {
+    ) -> anyhow::Result<(cpal::Stream, String, std::thread::JoinHandle<()>)> {
         let host = cpal::default_host();
         let device = match want {
             Some(name) => host
@@ -367,17 +383,23 @@ impl AudioEngine {
         let state = state.clone();
         let settings = settings.clone();
         let stop = stop.clone();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("vizz-audio".into())
             .spawn(move || analysis_loop(consumer, state, settings, stop, sample_rate))?;
 
-        Ok((stream, name))
+        Ok((stream, name, thread))
     }
 }
 
 impl Drop for AudioEngine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // Joined for the same reason reopen joins — and so the stop-and-
+        // wait invariant is enforced everywhere, not promised in one
+        // place and skipped in the other.
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }
 

@@ -30,11 +30,13 @@ fn main() {
         Shot { name: "mod_b_canvas", w: 900, h: 560, draw: draw_canvas },
         Shot { name: "mod_c_flat", w: PANEL_W, h: 360, draw: draw_flat },
         // The real canvas, not a mockup: same code path the app runs.
-        Shot { name: "graph_real", w: 900, h: 620, draw: draw_real_graph },
-        Shot { name: "graph_real_zoomed", w: 900, h: 620, draw: draw_real_zoomed },
+        Shot { name: "graph_real", w: 1080, h: 620, draw: draw_real_graph },
+        Shot { name: "graph_real_zoomed", w: 1080, h: 620, draw: draw_real_zoomed },
         Shot { name: "performance", w: 900, h: 460, draw: draw_performance },
         Shot { name: "shortcuts", w: 420, h: 260, draw: draw_shortcuts },
         Shot { name: "quit", w: 420, h: 200, draw: draw_quit },
+        Shot { name: "notices", w: 480, h: 260, draw: draw_notices },
+        Shot { name: "learn-banner", w: 640, h: 140, draw: draw_learn_banner },
     ];
 
     for s in shots {
@@ -285,12 +287,17 @@ fn demo_graph() -> vizz_mod::graph::NodeGraph {
     let morph = g.add(K::Param { addr: "/shape/morph".into(), depth: 0.4 }, [470.0, 20.0]);
     let size = g.add(K::Param { addr: "/particles/size".into(), depth: 0.25 }, [470.0, 150.0]);
     let trail = g.add(K::Param { addr: "/fx/trail".into(), depth: 0.3 }, [470.0, 280.0]);
+    // One Param whose address no longer resolves and one never aimed,
+    // so the dead-node styling shows in the shot next to working ones.
+    let dead = g.add(K::Param { addr: "/fx/glowy".into(), depth: 0.5 }, [700.0, 20.0]);
+    let _unset = g.add(K::Param { addr: String::new(), depth: 0.5 }, [700.0, 150.0]);
     g.connect(lfo, morph, 0);
     g.connect(band, curve, 0);
     g.connect(curve, size, 0);
     g.connect(level, math, 0);
     g.connect(band, math, 1);
     g.connect(math, trail, 0);
+    g.connect(lfo, dead, 0);
     g
 }
 
@@ -349,6 +356,27 @@ fn draw_shortcuts(ctx: &egui::Context, _w: f32, _h: f32) {
 /// key that used to end one, so it is worth looking at.
 fn draw_quit(ctx: &egui::Context, _w: f32, _h: f32) {
     vizz_ui::draw_quit_prompt_for_preview(ctx);
+}
+
+/// The notice stack, one of each kind — the channel every runtime failure
+/// now reports through, so its legibility is worth a look of its own.
+fn draw_notices(ctx: &egui::Context, _w: f32, _h: f32) {
+    use std::cell::RefCell;
+    thread_local! {
+        static N: RefCell<vizz_ui::notices::Notices> = RefCell::new(Default::default());
+    }
+    N.with(|n| {
+        let mut n = n.borrow_mut();
+        n.error("could NOT save 'warehouse 2am': No space left on device (os error 28)");
+        n.error("output 'ndi:vizz' died — retrying in the background");
+        n.info("cloud 'torso-scan' loaded into slot 2 and shown");
+        n.draw(ctx);
+    });
+}
+
+/// The armed-learn banner: the global indicator for a global mode.
+fn draw_learn_banner(ctx: &egui::Context, _w: f32, _h: f32) {
+    vizz_ui::draw_learn_banner_for_preview(ctx, "scene 5");
 }
 
 fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
@@ -411,6 +439,7 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     };
     let midi = vizz_ui::MidiView::default();
     let state = vizz_ui::PerformanceState {
+        preset_current: Some(2),
         grid: &grid,
         gravity: None,
         midi: &midi,

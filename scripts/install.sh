@@ -43,10 +43,7 @@ if [ ! -w "$dest" ]; then
 fi
 rm -rf "$dest/vizz.app"
 mv "$tmp/vizz.app" "$dest/vizz.app"
-# Clear the quarantine flag so Gatekeeper allows the unsigned app.
-xattr -cr "$dest/vizz.app" 2>/dev/null || true
-
 echo
 echo "Installed $dest/vizz.app"
-echo "First launch: right-click the app and choose Open (it is not"
-echo "notarized with Apple). It appears in Resolume as Syphon source 'vizz'."
+echo "Releases are signed and notarized, so it opens with a normal"
+echo "double-click. It appears in Resolume as Syphon source 'vizz'."

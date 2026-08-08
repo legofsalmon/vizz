@@ -33,9 +33,10 @@ pub struct Settings {
     /// honest outcome — the alternative is a copy that silently stops
     /// matching the file it came from.
     pub clouds: Vec<String>,
-    /// What receivers get, in pixels. `None` keeps whatever the command
-    /// line asked for, so a scripted venue is not overridden by a choice
-    /// made on a laptop last week.
+    /// What receivers get, in pixels, as last set from the panel. An
+    /// explicit `--width/--height` outranks it for that launch, so a
+    /// scripted venue is not overridden by a choice made on a laptop
+    /// last week; `None` means the panel has never chosen.
     pub output_size: Option<[u32; 2]>,
     /// Internal render resolution as a multiple of the output.
     ///
@@ -54,6 +55,40 @@ pub struct Settings {
     /// Palette files loaded, in the order they were dropped. Restored on
     /// start so a set's colours come back with it.
     pub palettes: Vec<String>,
+    /// Where the modulation canvas was left: pan, zoom, patch name and
+    /// whether the palette strip was open. Restored on start so the
+    /// canvas opens where you were working, not at the origin with the
+    /// name field blank.
+    pub graph_view: Option<GraphCanvas>,
+}
+
+/// Mirror of [`vizz_ui::graph_view::ViewMemory`], owned here because the
+/// UI crate does not serialise anything and should not start to for this.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GraphCanvas {
+    pub pan: [f32; 2],
+    pub zoom: f32,
+    pub patch: String,
+    pub palette: bool,
+}
+
+impl Default for GraphCanvas {
+    fn default() -> Self {
+        Self { pan: [40.0, 40.0], zoom: 1.0, patch: String::new(), palette: true }
+    }
+}
+
+impl From<vizz_ui::graph_view::ViewMemory> for GraphCanvas {
+    fn from(m: vizz_ui::graph_view::ViewMemory) -> Self {
+        Self { pan: m.pan, zoom: m.zoom, patch: m.patch_name, palette: m.show_palette }
+    }
+}
+
+impl From<GraphCanvas> for vizz_ui::graph_view::ViewMemory {
+    fn from(c: GraphCanvas) -> Self {
+        Self { pan: c.pan, zoom: c.zoom, patch_name: c.patch, show_palette: c.palette }
+    }
 }
 
 /// Clamps for the settings above.
@@ -93,7 +128,7 @@ pub const MAX_PIXELS: u64 = 8192 * 4320;
 /// a 16:9 canvas into a square. The aspect is what the projector was set up
 /// for and what every framing decision was made against, so a size that has
 /// to come down comes down whole.
-fn fit([w, h]: [u32; 2]) -> [u32; 2] {
+pub fn fit([w, h]: [u32; 2]) -> [u32; 2] {
     let (wf, hf) = (w.max(1) as f64, h.max(1) as f64);
     let factor = (MAX_DIM as f64 / wf)
         .min(MAX_DIM as f64 / hf)
@@ -162,6 +197,7 @@ pub fn load() -> Settings {
                 "could not read {}: {e:#} — using default settings",
                 path.display()
             );
+            vizz_mod::library::quarantine(&path);
             Settings::default()
         }
     }
@@ -173,7 +209,7 @@ pub fn save(settings: &Settings) -> Result<()> {
     let path = path();
     let dir = path.parent().context("settings path has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = vizz_mod::library::tmp_path(&path);
     std::fs::write(&tmp, serde_json::to_vec_pretty(settings)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
@@ -208,6 +244,31 @@ pub fn save_palettes(palettes: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The canvas view round-trips, and an old file without the field
+    /// still loads — losing your settings because a field was added is
+    /// the failure the serde defaults exist to prevent.
+    #[test]
+    fn the_canvas_view_survives_a_restart() {
+        let (_guard, dir) = crate::test_env::scoped("settings-canvas");
+
+        let canvas = GraphCanvas {
+            pan: [-320.0, 12.5],
+            zoom: 0.6,
+            patch: "warehouse".into(),
+            palette: false,
+        };
+        save(&Settings { graph_view: Some(canvas.clone()), ..Default::default() }).unwrap();
+        assert_eq!(load().graph_view, Some(canvas));
+
+        // A file from a build before the field existed.
+        std::fs::write(path(), br#"{"palettes":["/p.png"]}"#).unwrap();
+        let s = load();
+        assert_eq!(s.graph_view, None);
+        assert_eq!(s.palettes, vec!["/p.png".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The round trip, and the property that matters most: an unrelated
     /// field survives a targeted write.
