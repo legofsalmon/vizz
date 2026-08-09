@@ -746,8 +746,17 @@ vizz --cloud scan.ply --cloud other.xyz
 ```
 
 Reads **PLY** (ASCII and binary little-endian) and plain **XYZ/CSV/PTS**,
-with per-point colour where the file has it. Files load into two slots
-alongside the two built-in attractors, giving four in total.
+with per-point colour where the file has it — and **PNG/JPEG** images,
+sampled to a coloured relief (position from the pixel grid, colour from
+the pixel, a shallow depth from luminance; transparent pixels are not
+part of the picture, so a logo keeps its silhouette). Six loadable slots
+sit alongside the two built-in attractors, giving eight in total.
+
+**Type a word and the particles form it.** The clouds section of the
+panel has a text field: the string is rasterized with the app's own font
+into a cloud, morphable against any other slot like any shape. Typed
+clouds come back after a restart — they persist as `text:WORD` entries
+in the settings and re-rasterize deterministically on launch.
 
 `/shape/mode 7` shows the **cloud pair**: `/cloud/a` and `/cloud/b` choose
 slots, `/cloud/morph` blends between them. That is separate from the shape
@@ -934,8 +943,8 @@ control input can never crash the renderer.
 | `/color/palette` | 0 – 15 | 0 | palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes |
 | `/color/spread` | 0 – 1 | 0.12 | how much of the palette the field spans |
 | `/color/drive` | 0 – 3 | 0 | what picks the colour: 0 index · 1 radius · 2 depth · 3 height |
-| `/cloud/a` | 0 – 3 | 0 | first slot of the cloud morph pair |
-| `/cloud/b` | 0 – 3 | 1 | second slot of the cloud morph pair |
+| `/cloud/a` | 0 – 7 | 0 | first slot of the cloud morph pair |
+| `/cloud/b` | 0 – 7 | 1 | second slot of the cloud morph pair |
 | `/cloud/morph` | 0 – 1 | 0 | blend position between the pair |
 | `/camera/distance` | 0.4 – 12 | 3.5 | orbit distance from the field |
 | `/camera/orbit` | -3.15 – 3.15 | 0 | orbit angle around the field |

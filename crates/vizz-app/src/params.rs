@@ -219,8 +219,11 @@ impl AppParams {
         // cloud — while the morph between them is the swept, modulatable
         // control, which is what makes it worth having separately from the
         // shape sweep (that one only reaches *adjacent* modes).
-        let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, 3.0, 0.0));
-        let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, 3.0, 1.0));
+        // The ceiling is the bank's, derived rather than retyped, so
+        // growing the bank cannot leave the top slots unreachable.
+        let cloud_max = (vizz_render::attractor::SLOTS - 1) as f32;
+        let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, cloud_max, 0.0));
+        let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, cloud_max, 1.0));
         let cloud_morph = b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).smooth(0.5));
         // Camera. Distance and field of view are two different kinds of
         // zoom — moving closer changes the perspective, narrowing the lens

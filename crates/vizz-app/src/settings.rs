@@ -290,6 +290,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A typed cloud persists as its `text:` pseudo-path, exactly like a
+    /// file path — the clouds list is plain strings and must stay that
+    /// way for old files to load.
+    #[test]
+    fn text_cloud_entries_round_trip_in_the_clouds_list() {
+        let (_guard, dir) = crate::test_env::scoped("settings-textcloud");
+        save_clouds(&["text:VIZZ".into(), String::new(), "/scans/torso.ply".into()]).unwrap();
+        assert_eq!(
+            load().clouds,
+            vec!["text:VIZZ".to_string(), String::new(), "/scans/torso.ply".into()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The round trip, and the property that matters most: an unrelated
     /// field survives a targeted write.
     #[test]

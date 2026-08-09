@@ -287,6 +287,20 @@ impl App {
         // to the master: feedback needs somewhere to accumulate.
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
+        // Typed clouds restore by re-rasterizing — deterministic, so the
+        // slot shows exactly what was on screen when it was saved. Their
+        // saved entries are `text:WORD` pseudo-paths; the file loader
+        // above saw holes in those positions.
+        for (i, entry) in self.clouds.iter().enumerate() {
+            if let Some(word) = entry.strip_prefix("text:")
+                && let Some(slot) = ParticleScene::loadable_slot(i)
+            {
+                let cloud = crate::textcloud::rasterize(word);
+                if !cloud.points.is_empty() {
+                    scene.set_cloud(&ctx, slot, &cloud.points, word);
+                }
+            }
+        }
         // Palettes come back in the order they were dropped, so the
         // indices a preset saved still point at the same colours.
         for path in &self.palettes {
@@ -463,6 +477,7 @@ impl App {
             .to_ascii_lowercase();
         match ext.as_str() {
             "ply" | "xyz" | "pts" => self.load_dropped_cloud(path),
+            "png" | "jpg" | "jpeg" => self.load_dropped_cloud(path),
             "gpl" | "hex" | "txt" => self.load_dropped_palette(path),
             // `.csv` is both a point cloud and a plausible palette export.
             // Geometry wins: it is the one this app has always taken, and
@@ -473,7 +488,7 @@ impl App {
                 log::warn!("nothing to do with a .{other} file");
                 if let Some(state) = &mut self.state {
                     state.gui.notify_error(format!(
-                        "can't load a .{other} — clouds are .ply .xyz .pts .csv, palettes .gpl .hex .txt"
+                        "can't load a .{other} — clouds are .ply .xyz .pts .csv .png .jpg, palettes .gpl .hex .txt"
                     ));
                 }
             }
@@ -555,7 +570,22 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("vizz-cloud-load".into())
             .spawn(move || {
-                let result = vizz_render::pointcloud::load(&parse_path).map(|mut points| {
+                // Same worker for scans and pictures: a 20-megapixel JPEG
+                // decode is exactly the event-thread freeze this thread
+                // exists to prevent.
+                let ext = parse_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let result = if matches!(ext.as_str(), "png" | "jpg" | "jpeg") {
+                    image::open(&parse_path)
+                        .map(|img| crate::textcloud::image_points(&img.to_rgba8()))
+                        .map_err(|e| anyhow::anyhow!("decoding {}: {e}", parse_path.display()))
+                } else {
+                    vizz_render::pointcloud::load(&parse_path)
+                }
+                .map(|mut points| {
                     vizz_render::pointcloud::normalize(&mut points);
                     points
                 });
@@ -573,6 +603,59 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Put a freshly made cloud into the next slot: upload, remember it
+    /// in the saved list (as `stored` — a path for files, `text:WORD`
+    /// for typed clouds), point the shape at it, and say so. One path
+    /// for drops, images and words, so the bookkeeping cannot drift.
+    fn adopt_cloud(&mut self, points: &[vizz_render::pointcloud::Point], name: &str, stored: String) {
+        let Some(state) = &mut self.state else { return };
+        let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
+            return;
+        };
+        state.scene.set_cloud(&state.ctx, slot, points, name);
+        if self.clouds.len() <= self.next_cloud {
+            self.clouds.resize(self.next_cloud + 1, String::new());
+        }
+        self.clouds[self.next_cloud] = stored;
+        self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
+        if let Err(e) = crate::settings::save_clouds(&self.clouds) {
+            log::warn!("could not remember the loaded clouds: {e:#}");
+            state
+                .gui
+                .notify_error(format!("cloud loaded, but won't survive a restart: {e}"));
+        }
+        log::info!("loaded {name} into cloud slot {slot}");
+        // Point the shape at what just arrived, so it shows. Loading a
+        // cloud nobody can see is the same as not loading it.
+        let p = &*self.params;
+        p.registry.set(p.cloud_a, slot as f32);
+        p.registry.set(p.cloud_morph, 0.0);
+        state
+            .gui
+            .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+    }
+
+    /// Rasterize a typed word into the next slot.
+    fn make_text_cloud(&mut self, text: &str) {
+        let cloud = crate::textcloud::rasterize(text);
+        let Some(state) = &mut self.state else { return };
+        if cloud.glyphs > 0 && cloud.missing * 3 > cloud.glyphs {
+            // Mostly tofu: the shipped font cannot draw this script.
+            // Refusing with a reason beats a cloud of the few glyphs it
+            // could manage, which reads as the feature mangling the word.
+            state.gui.notify_error(format!(
+                "the font cannot draw {text:?} — {} of {} glyphs missing",
+                cloud.missing, cloud.glyphs
+            ));
+            return;
+        }
+        if cloud.points.is_empty() {
+            state.gui.notify_error(format!("nothing to draw for {text:?}"));
+            return;
+        }
+        self.adopt_cloud(&cloud.points, text, format!("text:{text}"));
     }
 
     /// Collect finished cloud parses and upload them. Called every frame;
@@ -595,42 +678,17 @@ impl App {
             }
         });
         for (path, result) in done {
-            let Some(state) = &mut self.state else { return };
             match result {
                 Ok(points) => {
-                    let Some(slot) = ParticleScene::loadable_slot(self.next_cloud) else {
-                        return;
-                    };
                     let name = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "cloud".into());
-                    state.scene.set_cloud(&state.ctx, slot, &points, &name);
-                    let text = path.display().to_string();
-                    if self.clouds.len() <= self.next_cloud {
-                        self.clouds.resize(self.next_cloud + 1, String::new());
-                    }
-                    self.clouds[self.next_cloud] = text;
-                    self.next_cloud = (self.next_cloud + 1) % ParticleScene::LOADABLE;
-                    if let Err(e) = crate::settings::save_clouds(&self.clouds) {
-                        log::warn!("could not remember the loaded clouds: {e:#}");
-                        state.gui.notify_error(format!(
-                            "cloud loaded, but won't survive a restart: {e}"
-                        ));
-                    }
-                    log::info!("loaded {name} into cloud slot {slot}");
-                    // Point the shape at what just arrived, so a drop
-                    // shows something. Loading a cloud nobody can see is
-                    // the same as not loading it.
-                    let p = &*self.params;
-                    p.registry.set(p.cloud_a, slot as f32);
-                    p.registry.set(p.cloud_morph, 0.0);
-                    state
-                        .gui
-                        .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+                    self.adopt_cloud(&points, &name, path.display().to_string());
                 }
                 Err(e) => {
                     log::warn!("could not load {}: {e:#}", path.display());
+                    let Some(state) = &mut self.state else { return };
                     state
                         .gui
                         .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
@@ -948,6 +1006,7 @@ impl App {
         };
         let mut pending_output = None;
         let mut pending_device = None;
+        let mut pending_text_cloud = None;
         match actions {
             Ok(actions) => {
                 apply_audio_actions(
@@ -1000,6 +1059,7 @@ impl App {
                 // mid-encoder would swap a texture the encoder already
                 // references.
                 pending_output = actions.output_setup;
+                pending_text_cloud = actions.text_cloud.clone();
                 // Same deferral, for the same reason: see the bottom of
                 // this function.
                 pending_device = actions.audio.device.clone();
@@ -1104,6 +1164,9 @@ impl App {
         // it is safe to swap the textures out from under the next one.
         if let Some(setup) = pending_output {
             self.apply_output_setup(setup);
+        }
+        if let Some(text) = pending_text_cloud {
+            self.make_text_cloud(&text);
         }
         // Deferred for a different reason, to the same place. Closing one
         // audio device and opening another is not a fast call — CoreAudio
@@ -1821,7 +1884,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // honest empty slot.
     let hold_places = |mut paths: Vec<String>, what: &str| {
         for p in &mut paths {
-            if !p.is_empty() && !std::path::Path::new(p).exists() {
+            if !p.is_empty() && !p.starts_with("text:") && !std::path::Path::new(p).exists() {
                 log::warn!("{what} {p} is gone — its position is kept so the others stay put");
                 p.clear();
             }
@@ -1837,7 +1900,18 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     } else {
         opts.clouds.iter().map(|p| p.display().to_string()).collect()
     };
-    opts.clouds = cloud_paths.iter().map(std::path::PathBuf::from).collect();
+    opts.clouds = cloud_paths
+        .iter()
+        .map(|p| {
+            // Text entries hold their slot as holes here; init
+            // re-rasterizes them after the files have loaded.
+            if p.starts_with("text:") {
+                std::path::PathBuf::new()
+            } else {
+                std::path::PathBuf::from(p)
+            }
+        })
+        .collect();
     let palette_paths: Vec<String> = hold_places(crate::settings::load().palettes, "palette");
     let mut engine = FrameEngine::new(
         Arc::clone(&params),

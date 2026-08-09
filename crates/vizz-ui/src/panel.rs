@@ -59,6 +59,8 @@ pub struct PanelActions {
     /// Remove the MIDI trigger for one value of a parameter, leaving the
     /// other values of it mapped.
     pub clear_slot_binding: Option<(String, f32)>,
+    /// A word typed in the clouds section, to become a point cloud.
+    pub text_cloud: Option<String>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
     /// Recall this preset by name.
@@ -238,7 +240,7 @@ pub fn draw(
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| clouds_section(ui, state, registry));
+                .show(ui, |ui| clouds_section(ui, state, registry, &mut actions));
             // Their own header, not a stowaway inside "clouds": someone
             // looking for their colours has no reason to open a section
             // named after geometry.
@@ -366,7 +368,12 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
 /// The drop hint is here rather than nowhere because a gesture with no
 /// visible affordance is a gesture nobody discovers. That was the whole
 /// lesson of the rename living only on a right-click menu.
-fn clouds_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+fn clouds_section(
+    ui: &mut egui::Ui,
+    state: &PanelState,
+    registry: &ParamRegistry,
+    actions: &mut PanelActions,
+) {
     let slot = |addr: &str| {
         registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
     };
@@ -396,7 +403,24 @@ fn clouds_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistr
     if state.clouds.is_empty() {
         ui.small("no cloud slots");
     }
-    ui.small("drag a .ply, .xyz, .csv or .pts onto the window to load one");
+    ui.small("drag a .ply, .xyz, .csv, .pts, .png or .jpg onto the window to load one");
+    // Or type one. A word becomes a cloud: the particles form the
+    // letters, morphable against any other slot like any shape.
+    ui.horizontal(|ui| {
+        let id = egui::Id::new("text-cloud-draft");
+        let mut draft: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut draft)
+                .hint_text("type a word")
+                .desired_width(140.0),
+        );
+        let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.small_button("make cloud").clicked() || submitted) && !draft.trim().is_empty() {
+            actions.text_cloud = Some(draft.trim().to_string());
+            draft.clear();
+        }
+        ui.memory_mut(|m| m.data.insert_temp(id, draft));
+    });
 }
 
 /// The colour ramps, by the index `/color/palette` uses.

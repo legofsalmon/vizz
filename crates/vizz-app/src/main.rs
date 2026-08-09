@@ -3,6 +3,7 @@ mod headless;
 mod outputs;
 mod params;
 mod settings;
+mod textcloud;
 mod windowed;
 
 #[cfg(test)]
