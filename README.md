@@ -832,6 +832,45 @@ Arriving at a venue to find the app refuses to open because a scan has a
 malformed header is precisely the wrong trade. A truncated body keeps
 whatever was read.
 
+## Live video as a point cloud
+
+```sh
+vizz --video-source test          # the built-in pattern
+vizz --video-source "OBS"         # an NDI source, matched as a substring
+vizz --list-ndi                   # what is on the network
+```
+
+A video input **arrives as a cloud in its own slot**, which is the whole
+design: `/cloud/a`, `/cloud/b` and `/cloud/morph` select and blend it,
+the palette tints it, the spread scales it, and it can be morphed against
+a scan or an attractor with nothing else knowing it is live. The first
+frame points the shape at it, the way a dropped file does.
+
+Each particle takes a fixed cell of the picture and stays there, so the
+field reads as a cloud *of* the video rather than as noise sampled from
+it. Position comes from the cell, colour from the pixel, and depth from
+whatever `/video/relief` names:
+
+```
+/video/depth     -2 .. 2   how far the relief pushes along z; 0 is flat
+/video/relief    luminance · hue · saturation · chroma
+```
+
+Depth is signed because a picture standing proud of the plane and one
+sunk into it are different looks, and it is centred on zero so opening
+the relief spreads it either side rather than pushing the whole picture
+away from the camera. Luminance is the honest default; hue and saturation
+give a relief that follows colour instead of brightness, which is what a
+flat, evenly lit source needs.
+
+**`--video-source test` is a diagnostic.** "Nothing on screen" has two
+causes — the feed, or the wiring — and they need telling apart. The
+pattern is generated in-process and goes through the identical path, so a
+blank output with it running is a fault in vizz and a blank output
+without it is the network or the sender. It moves, deliberately: a still
+pattern proves a frame arrived once, a moving one proves frames are
+still arriving.
+
 ## Colour
 
 `/color/palette` starts at **0 = the original HSV behaviour** and
@@ -985,9 +1024,11 @@ control input can never crash the renderer.
 | `/color/palette` | 0 – 15 | 0 | palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes |
 | `/color/spread` | 0 – 1 | 0.12 | how much of the palette the field spans |
 | `/color/drive` | 0 – 3 | 0 | what picks the colour: 0 index · 1 radius · 2 depth · 3 height |
-| `/cloud/a` | 0 – 7 | 0 | first slot of the cloud morph pair |
-| `/cloud/b` | 0 – 7 | 1 | second slot of the cloud morph pair |
+| `/cloud/a` | 0 – 8 | 0 | first slot of the cloud morph pair |
+| `/cloud/b` | 0 – 8 | 1 | second slot of the cloud morph pair |
 | `/cloud/morph` | 0 – 1 | 0 | blend position between the pair |
+| `/video/depth` | -2 – 2 | 0.6 | how far the picture's relief pushes along z; 0 is flat |
+| `/video/relief` | 0 – 3 | 0 | what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma |
 | `/camera/distance` | 0.4 – 12 | 3.5 | orbit distance from the field |
 | `/camera/orbit` | -3.15 – 3.15 | 0 | orbit angle around the field |
 | `/camera/elevation` | -1.4 – 1.4 | 0.34 | height angle of the orbit |

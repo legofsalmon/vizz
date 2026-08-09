@@ -436,6 +436,16 @@ impl FrameEngine {
                 gravity_amount: [self.snapshot.get(p.gravity_amount), 0.0, 0.0, 0.0],
                 // Filled by the caller, which owns the palette bank.
                 palette_rows: [4.0, 0.0, 0.0, 0.0],
+                // Presence and aspect are the renderer's to know — it
+                // holds the texture — so they are filled in by the
+                // caller alongside the palette count. Only the two
+                // controls come from the parameter table here.
+                video: [
+                    0.0,
+                    1.0,
+                    self.snapshot.get(p.video_depth),
+                    self.snapshot.get(p.video_relief).round(),
+                ],
                 // Slot choice is stepped; the morph between them is not.
                 cloud_a: self.snapshot.get(p.cloud_a).round(),
                 cloud_b: self.snapshot.get(p.cloud_b).round(),

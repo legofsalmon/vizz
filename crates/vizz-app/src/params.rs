@@ -63,6 +63,8 @@ pub struct AppParams {
     pub cloud_a: ParamId,
     pub cloud_b: ParamId,
     pub cloud_morph: ParamId,
+    pub video_depth: ParamId,
+    pub video_relief: ParamId,
     pub cam_dist: ParamId,
     pub cam_orbit: ParamId,
     pub cam_elev: ParamId,
@@ -243,6 +245,18 @@ impl AppParams {
         let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, cloud_max, 0.0));
         let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, cloud_max, 1.0));
         let cloud_morph = b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).smooth(0.5));
+        // Live video, which arrives as a cloud in its own slot. Depth is
+        // signed so the relief can be pushed either way from the plane —
+        // a picture standing proud of it or sunk into it are different
+        // looks, and zero is the flat picture, which is a look too.
+        let video_depth = b.add(ParamDef::new("/video/depth", -2.0, 2.0, 0.6).smooth(0.3));
+        // What the picture pushes with. Stepped: these are four different
+        // readings of a frame, not points on one scale, so sweeping
+        // between them would spend the move showing neither.
+        let video_relief = b.add(
+            ParamDef::new("/video/relief", 0.0, 3.0, 0.0)
+                .labels(&["luminance", "hue", "saturation", "chroma"]),
+        );
         // Camera. Distance and field of view are two different kinds of
         // zoom — moving closer changes the perspective, narrowing the lens
         // does not — so both are exposed rather than conflated.
@@ -416,6 +430,8 @@ impl AppParams {
             cloud_a,
             cloud_b,
             cloud_morph,
+            video_depth,
+            video_relief,
             cam_dist,
             cam_orbit,
             cam_elev,

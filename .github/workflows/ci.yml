@@ -94,12 +94,56 @@ jobs:
             --report bench-macos.json --dump frame-macos.png 2> run.log \
             || { cat run.log; exit 1; }
           cat run.log
-          grep -q "Syphon output 'vizz' is live" run.log \
+          # Matched against what the app actually prints. This read
+          # "Syphon output 'vizz' is live" and the roster refactor
+          # renamed the line to "output 'syphon:vizz' is live", so the
+          # check has been failing on every run since — which also meant
+          # the assurance it exists to give, that Syphon really started
+          # on a real Mac, has not been given in a while.
+          grep -q "output 'syphon:vizz' is live" run.log \
             || { echo "::error::Syphon server did not start — see run.log"; exit 1; }
-          if grep -q "output 'vizz' failed" run.log; then
+          if grep -q "output 'syphon:vizz' failed" run.log; then
             echo "::error::Syphon publish failed mid-run — see run.log"; exit 1
           fi
           echo "Syphon server started and published 120 frames."
+      # The video-as-a-cloud path samples a texture in the vertex stage
+      # and is the newest shader work, so it gets its own run on real
+      # Metal. The built-in pattern needs no network and no NDI runtime,
+      # which is the reason it exists: this is the only place the path
+      # is exercised on the backend the release actually ships against.
+      - name: Headless video-cloud run on real Metal
+        run: |
+          RUST_LOG=info cargo run -- --headless --video-source test \
+            --frames 60 --dump frame-video-macos.png 2> video.log \
+            || { cat video.log; exit 1; }
+          grep -q "video input: test pattern" video.log \
+            || { echo "::error::the test pattern source did not open"; cat video.log; exit 1; }
+          python3 - <<'PY'
+          import struct, zlib, sys
+          # The dump must not be blank: a shader that fails to sample the
+          # video would still render a frame, just an empty one, and the
+          # run would pass on exit code alone.
+          data = open("frame-video-macos.png", "rb").read()
+          assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+          # Walk the chunk list properly rather than scanning for the
+          # IDAT tag: the payload starts right after the 4-byte type, and
+          # reading from four bytes further on hands zlib a mid-stream
+          # slice, which is what "incorrect header check" was.
+          idat, off = b"", 8
+          while off < len(data):
+              (length,) = struct.unpack(">I", data[off : off + 4])
+              kind = data[off + 4 : off + 8]
+              if kind == b"IDAT":
+                  idat += data[off + 8 : off + 8 + length]
+              elif kind == b"IEND":
+                  break
+              off += 12 + length
+          raw = zlib.decompress(idat)
+          lit = sum(1 for b in raw if b > 40)
+          print(f"{lit} bright bytes in the dump")
+          if lit < 10000:
+              sys.exit("::error::the video-cloud dump is blank — the field drew nothing")
+          PY
       - name: Upload benchmark + frame
         if: always()
         uses: actions/upload-artifact@v4

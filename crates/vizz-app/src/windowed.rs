@@ -56,6 +56,8 @@ pub struct WindowedOpts {
     pub clouds_from_cli: bool,
     /// Live point-cloud stream feeding the last slot, if any.
     pub live_cloud: Option<vizz_render::plystream::Source>,
+    /// Live video input spec, if one was asked for.
+    pub video_source: Option<String>,
 }
 
 struct RenderState {
@@ -112,6 +114,16 @@ struct App {
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
     live_revision: u64,
+    /// The live video input, if one opened.
+    video: Option<Box<dyn crate::videoin::VideoSource>>,
+    /// Revision last uploaded, so a still source costs no upload.
+    video_revision: u64,
+    /// Whether video's first frame has been put on screen.
+    video_shown: bool,
+    /// Last reported connection state, so a feed coming and going is
+    /// announced the way an output is rather than only appearing in the
+    /// log — a camera unplugged mid-set is worth a line on screen.
+    video_live: bool,
     /// Whether the stream's first frame has been put on screen. Only the
     /// first: a stream that re-pointed the shape on every frame would
     /// take `/shape/mode` away from you sixty times a second, so you
@@ -365,6 +377,18 @@ impl App {
         }
         // A stream that will not start is a warning, never a startup
         // failure — the same trade as a cloud file that will not parse.
+        if let Some(spec) = self.opts.video_source.clone() {
+            match crate::videoin::open(&spec) {
+                Ok(v) => {
+                    log::info!("video input: {}", v.label());
+                    self.video = Some(v);
+                }
+                // Degraded, not fatal, for the same reason a malformed
+                // cloud is: arriving at a venue to find the app will not
+                // open because a camera is unplugged is the wrong trade.
+                Err(e) => log::warn!("could not open the video input: {e:#}"),
+            }
+        }
         if let Some(source) = self.opts.live_cloud.clone() {
             match vizz_render::plystream::LiveCloud::start(source) {
                 Ok(live) => {
@@ -775,6 +799,37 @@ impl App {
         self.finish_pending_clouds();
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
+        // Same shape as the point stream below: upload only when the
+        // source says there is something new, and show it the first time
+        // a frame lands so a connected input is never invisible.
+        if let Some(video) = &self.video {
+            let live = video.connected();
+            if live != self.video_live {
+                self.video_live = live;
+                let label = video.label();
+                if live {
+                    state.gui.notify_info(format!("video input '{label}' connected"));
+                } else {
+                    state
+                        .gui
+                        .notify_error(format!("video input '{label}' stopped sending"));
+                }
+            }
+            let revision = video.revision();
+            if revision != self.video_revision {
+                self.video_revision = revision;
+                let scene = &mut state.scene;
+                let ctx = &state.ctx;
+                video.with_latest(&mut |f| {
+                    scene.set_video(ctx, f.width, f.height, f.stride, f.bgra);
+                });
+                if !self.video_shown && state.scene.video.present {
+                    self.video_shown = true;
+                    Self::show_cloud_slot(&self.params, vizz_render::attractor::VIDEO_SLOT);
+                }
+            }
+        }
+
         // Upload a new stream frame before drawing, and only when the
         // revision moved: re-uploading an unchanged cloud every frame
         // would cost a texture write for nothing.
@@ -2111,6 +2166,10 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         live: None,
         live_revision: 0,
         live_shown: false,
+        video: None,
+        video_revision: 0,
+        video_shown: false,
+        video_live: false,
         // Clouds named on the command line win; otherwise restore whatever
         // was last dropped, so a set survives a restart.
         clouds: cloud_paths,

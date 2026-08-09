@@ -105,6 +105,7 @@ fn main() {
         gravity_radius: Default::default(),
         gravity_amount: Default::default(),
         palette_rows: [4.0, 0.0, 0.0, 0.0],
+        video: [0.0, 1.0, 0.0, 0.0],
     };
     let post_uniforms = PostUniforms {
         trail: 0.0,

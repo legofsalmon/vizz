@@ -17,6 +17,7 @@ pub mod plystream;
 pub mod pointcloud;
 pub mod post;
 pub mod room;
+pub mod video;
 
 /// Owned GPU handles, shared by scenes and (later) I/O backends.
 pub struct GpuContext {
