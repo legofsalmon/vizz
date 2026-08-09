@@ -155,8 +155,8 @@ NDI frame is survivable and missing vsync is not.
 
 ### Recording
 
-`/record/active` (a button in the panel's outputs section, the red REC
-chip on the performance layout, OSC, or a learned MIDI button) records
+`/record/active` (the REC chip on the performance layout, a button in
+the panel's outputs section, OSC, or a learned MIDI button) records
 the master output as a **PNG sequence** — every finished frame is a
 finished file, so a crash mid-take costs nothing already written. Takes
 land in `~/Movies/vizz/vizz-<timestamp>/` (macOS) or `~/Videos/vizz/…`
@@ -190,9 +190,11 @@ vizz --live-cloud listen://0.0.0.0:9000     # wait for one to connect here
 vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten
 ```
 
-Frames land in the last cloud slot. Select it with `/cloud/a` or
-`/cloud/b` and set `/shape/mode 7`, and it morphs against a loaded scan or
-an attractor like any other cloud.
+Frames land in their own cloud slot, which is shown when the first frame
+arrives — a stream nobody can see is indistinguishable from one that never
+connected. Only the first: re-pointing the shape every frame would take
+`/shape/mode` away from you sixty times a second. From there it morphs
+against a loaded scan or an attractor like any other cloud.
 
 **The framing needs no wrapper protocol.** An app that streams PLY just
 concatenates whole files onto a socket, and a PLY header already declares
@@ -793,7 +795,13 @@ clouds come back after a restart — they persist as `text:WORD` entries
 in the settings and re-rasterize deterministically on launch.
 
 `/shape/mode 7` shows the **cloud pair**: `/cloud/a` and `/cloud/b` choose
-slots, `/cloud/morph` blends between them. That is separate from the shape
+slots, `/cloud/morph` blends between them. **Loading a cloud points the
+shape there for you** — dropping a file, typing a word or naming one with
+`--cloud` all select the new slot and glide `/shape/mode` onto the pair,
+because a cloud that arrives while the shape is still on `sphere` is
+invisible and the load reads as having done nothing. Restoring the saved
+bank at startup deliberately does not, or every launch would open on
+whatever was dropped last. That is separate from the shape
 sweep because the sweep only reaches *adjacent* modes — morphing an
 imported scan into Lorenz needs its own control. Slot choice is stepped
 (half a slot is not a cloud); the morph is swept and modulatable, so it

@@ -103,17 +103,18 @@ struct Args {
     #[arg(long)]
     syphon_flip: bool,
 
-    /// Load a point cloud (.ply, .xyz, .csv, .pts) into a cloud slot.
-    /// Repeat to fill both loadable slots: `--cloud a.ply --cloud b.ply`.
-    /// Select them with `/cloud/a` and `/cloud/b`, blend with
-    /// `/cloud/morph`, and set `/shape/mode 7` to show the pair.
+    /// Load a point cloud (.ply, .xyz, .csv, .pts) or an image
+    /// (.png, .jpg) into a cloud slot. Repeat to fill more of the six
+    /// loadable slots: `--cloud a.ply --cloud b.ply`. The last one loaded
+    /// is shown; `/cloud/a` and `/cloud/b` choose the morph pair and
+    /// `/cloud/morph` blends between them.
     #[arg(long)]
     cloud: Vec<PathBuf>,
 
     /// Live point-cloud stream: `tcp://host:port`, `listen://host:port`,
     /// a bare `host:port`, or a path to a `.ply` file that is rewritten in
-    /// place. Frames land in the last cloud slot; select it with
-    /// `/cloud/a` or `/cloud/b` and set `/shape/mode 7`.
+    /// place. Frames land in their own slot, which is shown when the
+    /// first frame arrives.
     #[arg(long)]
     live_cloud: Option<String>,
 
@@ -301,6 +302,7 @@ fn main() -> Result<()> {
                 title,
                 audio_device,
                 clouds: args.cloud.clone(),
+                clouds_from_cli: !args.cloud.is_empty(),
                 live_cloud: live_cloud.clone(),
                 outputs: output_opts,
             },

@@ -533,26 +533,48 @@ fn status_strip(
                     .size(15.0)
                     .color(INK),
             );
-            if let Some(rec) = &state.recording {
-                // Clicking stops: the chip is the one place a performer
-                // looks, so it is also the fastest way out.
-                let text = format!(
-                    "REC {}:{:02} · {}f{}",
-                    rec.secs / 60,
-                    rec.secs % 60,
-                    rec.frames,
-                    if rec.dropped > 0 { format!(" · {} dropped", rec.dropped) } else { String::new() }
-                );
+            // Recording, both ways round. This chip used to appear only
+            // once a take was already running, which made it a stop
+            // button wearing a record button's name: the only way to
+            // *start* was to leave this screen, open the panel and
+            // expand a setup section that is collapsed by default. A
+            // take you cannot begin from the screen you play on is a
+            // take that does not get begun.
+            if let Some(id) = registry.id("/record/active") {
+                let (text, fill, ink, hover) = match &state.recording {
+                    Some(rec) => (
+                        format!(
+                            "REC {}:{:02} · {}f{}",
+                            rec.secs / 60,
+                            rec.secs % 60,
+                            rec.frames,
+                            if rec.dropped > 0 {
+                                format!(" · {} dropped", rec.dropped)
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        Color32::from_rgb(150, 40, 36),
+                        Color32::WHITE,
+                        "recording the master — click to stop",
+                    ),
+                    // Idle sits dark with the word in a dimmed red, so it
+                    // reads as armed-and-waiting rather than as another
+                    // status light, and cannot be mistaken at a glance
+                    // for a take in progress.
+                    None => (
+                        "REC".to_string(),
+                        Color32::from_rgb(38, 26, 28),
+                        Color32::from_rgb(196, 106, 100),
+                        "record the master as a PNG sequence — click to start",
+                    ),
+                };
                 let chip = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(text).size(13.0).strong().color(Color32::WHITE),
-                    )
-                    .fill(Color32::from_rgb(150, 40, 36)),
+                    egui::Button::new(egui::RichText::new(text).size(13.0).strong().color(ink))
+                        .fill(fill),
                 );
-                if chip.on_hover_text("recording the master — click to stop").clicked()
-                    && let Some(id) = registry.id("/record/active")
-                {
-                    registry.set(id, 0.0);
+                if chip.on_hover_text(hover).clicked() {
+                    registry.set(id, if state.recording.is_some() { 0.0 } else { 1.0 });
                 }
             }
             if state.audio.clock_midi {
@@ -815,9 +837,19 @@ fn fader(
             } else {
                 short.to_string()
             };
+            // Qualified names are long, and a fader column is narrow: at
+            // the shipped fourteen across a 1280 window "particles
+            // spread" ellipsised to "particles …", which is the group
+            // word — the only part that distinguishes it from "color
+            // spread" — surviving while the part that says what the
+            // fader *does* is thrown away. Shrink to fit instead, taking
+            // the largest step that measures inside the column. A label
+            // one stop down is legible; a label ending in an ellipsis is
+            // a label the room has to guess at.
+            let size = fit_label_size(ui, &shown_name, w);
             if ui
                 .add(
-                    egui::Label::new(egui::RichText::new(shown_name).size(13.0).color(INK_2))
+                    egui::Label::new(egui::RichText::new(shown_name).size(size).color(INK_2))
                         .sense(Sense::click())
                         .truncate(),
                 )
@@ -861,6 +893,34 @@ fn fader(
     }
 
     assign_popup(ui, registry, macros, slot, actions);
+}
+
+/// The largest label size that measures inside a fader column.
+///
+/// Qualified names — the group word plus the parameter's own, which is
+/// what two faders ending in the same word both have to wear — are long
+/// enough to overrun a narrow column. Ellipsising them cuts from the
+/// right, which throws away the word saying what the fader *does* and
+/// keeps the group: "particles spread" reaching the screen as
+/// "particles …". Stepping the size down keeps the whole name, and a
+/// label one stop smaller is still read at a glance where a truncated
+/// one has to be guessed at.
+///
+/// Falls back to the smallest step rather than failing: at that point
+/// the column is narrower than any label, and the smallest is the one
+/// that loses least.
+fn fit_label_size(ui: &egui::Ui, text: &str, w: f32) -> f32 {
+    const STEPS: [f32; 4] = [13.0, 11.5, 10.0, 9.0];
+    STEPS
+        .into_iter()
+        .find(|&size| {
+            ui.painter()
+                .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), INK_2)
+                .rect
+                .width()
+                <= w
+        })
+        .unwrap_or(STEPS[STEPS.len() - 1])
 }
 
 /// The MIDI binding, or the way to make one.
@@ -1186,11 +1246,24 @@ mod tests {
         b.add(ParamDef::new("/punch/flash", 0.0, 1.0, 0.0).gesture());
         b.add(ParamDef::new("/punch/strobe", 0.0, 1.0, 0.0).gesture());
         b.add(ParamDef::new("/punch/strobe_div", 0.25, 4.0, 0.5).transport());
+        b.add(ParamDef::new("/record/active", 0.0, 1.0, 0.0).transport());
+        // A clashing pair: both end in "spread", so both faders have to
+        // wear their group word to be told apart.
+        b.add(ParamDef::new("/color/spread", 0.0, 1.0, 0.12));
+        b.add(ParamDef::new("/particles/spread", 0.05, 3.0, 1.2));
         b.build()
     }
 
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {
         render_with(macros, reg, &MidiView::default(), None)
+    }
+
+    fn render_with_recording(
+        macros: &mut Macros,
+        reg: &ParamRegistry,
+        rec: crate::RecordingView,
+    ) -> String {
+        render_inner(macros, reg, &MidiView::default(), None, Some(rec))
     }
 
     fn render_with(
@@ -1199,13 +1272,34 @@ mod tests {
         midi: &MidiView,
         values: Option<&[f32]>,
     ) -> String {
+        render_inner(macros, reg, midi, values, None)
+    }
+
+    fn render_inner(
+        macros: &mut Macros,
+        reg: &ParamRegistry,
+        midi: &MidiView,
+        values: Option<&[f32]>,
+        recording: Option<crate::RecordingView>,
+    ) -> String {
+        render_at(macros, reg, midi, values, recording, 1280.0)
+    }
+
+    fn render_at(
+        macros: &mut Macros,
+        reg: &ParamRegistry,
+        midi: &MidiView,
+        values: Option<&[f32]>,
+        recording: Option<crate::RecordingView>,
+        width: f32,
+    ) -> String {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let grid = crate::grid_view::GridView::default();
         let state = PerformanceState {
-            recording: None,
+            recording,
             preset_current: None,
             outputs: &[OutputStatus {
                 name: "syphon:vizz".into(),
@@ -1227,7 +1321,7 @@ mod tests {
             ctx.begin_pass(egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    vec2(1280.0, 800.0),
+                    vec2(width, 800.0),
                 )),
                 time: Some(i as f64 * 0.05),
                 ..Default::default()
@@ -1245,6 +1339,56 @@ mod tests {
                 .join(" ");
         }
         text
+    }
+
+    /// Two faders whose parameters end in the same word are qualified
+    /// with their group, and that label is long enough to overrun a
+    /// narrow column. It used to ellipsise, and it ellipsised from the
+    /// right, so "particles spread" reached the screen as "particles …"
+    /// — the word saying what the fader did was the part thrown away.
+    ///
+    /// Tested through the sizing helper rather than the rendered text:
+    /// egui's galley reports the string it was given, not the elided
+    /// one, so a truncated label is invisible to the string the other
+    /// tests here assert on.
+    #[test]
+    fn a_qualified_fader_label_shrinks_instead_of_being_cut_short() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        });
+        egui::Area::new(egui::Id::new("fit")).show(&ctx, |ui| {
+            let long = "particles spread";
+            let measure = |text: &str, size: f32| {
+                ui.painter()
+                    .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), INK_2)
+                    .rect
+                    .width()
+            };
+
+            // Wide enough for the full size: nothing is given up.
+            let roomy = measure(long, 13.0) + 10.0;
+            assert_eq!(fit_label_size(ui, long, roomy), 13.0);
+
+            // A column narrower than the label at full size steps down,
+            // and what it steps down to actually fits.
+            let tight = measure(long, 13.0) - 12.0;
+            let chosen = fit_label_size(ui, long, tight);
+            assert!(chosen < 13.0, "did not shrink for a {tight}pt column");
+            assert!(
+                measure(long, chosen) <= tight,
+                "chose {chosen}pt, which still overruns {tight}pt"
+            );
+
+            // A short label is never shrunk — most faders carry one word
+            // and must stay at full size.
+            assert_eq!(fit_label_size(ui, "glow", 62.0), 13.0);
+        });
+        let _ = ctx.end_pass();
     }
 
     /// The performance view must show what is assigned and the master
@@ -1363,6 +1507,31 @@ mod tests {
     /// control. So the number is what you set, the ghost mark on the track
     /// is where modulation has taken it, and the number's *colour* says
     /// which of the two you are looking at.
+    /// The chip used to be drawn only while a take was running, which
+    /// left the performance screen with no way to *start* one — arming
+    /// meant leaving for the panel and expanding a collapsed section.
+    /// Both states are checked, because a chip that only appears once
+    /// recording has begun passes any test that starts it recording.
+    #[test]
+    fn recording_can_be_started_and_stopped_from_the_performance_screen() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let idle = render(&mut macros, &reg);
+        assert!(
+            idle.contains("REC"),
+            "no way to arm a recording from the performance screen: {idle}"
+        );
+
+        let rolling = render_with_recording(
+            &mut macros,
+            &reg,
+            crate::RecordingView { secs: 62, frames: 3720, dropped: 4 },
+        );
+        assert!(rolling.contains("REC 1:02"), "no elapsed time: {rolling}");
+        assert!(rolling.contains("3720f"), "no frame count: {rolling}");
+        assert!(rolling.contains("4 dropped"), "drops not surfaced: {rolling}");
+    }
+
     #[test]
     fn the_readout_stays_stable_while_modulation_moves_the_parameter() {
         let reg = registry();
