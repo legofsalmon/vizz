@@ -846,7 +846,7 @@ fn fader(
             // the largest step that measures inside the column. A label
             // one stop down is legible; a label ending in an ellipsis is
             // a label the room has to guess at.
-            let size = fit_label_size(ui, &shown_name, w);
+            let (shown_name, size) = fit_label(ui, &shown_name, w);
             if ui
                 .add(
                     egui::Label::new(egui::RichText::new(shown_name).size(size).color(INK_2))
@@ -895,32 +895,50 @@ fn fader(
     assign_popup(ui, registry, macros, slot, actions);
 }
 
-/// The largest label size that measures inside a fader column.
+/// The label a fader wears, and the size that fits it in the column.
 ///
-/// Qualified names — the group word plus the parameter's own, which is
-/// what two faders ending in the same word both have to wear — are long
-/// enough to overrun a narrow column. Ellipsising them cuts from the
-/// right, which throws away the word saying what the fader *does* and
-/// keeps the group: "particles spread" reaching the screen as
-/// "particles …". Stepping the size down keeps the whole name, and a
-/// label one stop smaller is still read at a glance where a truncated
-/// one has to be guessed at.
+/// Faders normally carry one word — "glow", "twist" — and it fits at
+/// full size. The awkward case is a name qualified by its group, worn
+/// when another fader ends in the same word: "particles spread" beside
+/// "color spread", where the group word is the whole point and dropping
+/// it makes the two indistinguishable.
 ///
-/// Falls back to the smallest step rather than failing: at that point
-/// the column is narrower than any label, and the smallest is the one
-/// that loses least.
-fn fit_label_size(ui: &egui::Ui, text: &str, w: f32) -> f32 {
+/// Ellipsising is the wrong answer because it cuts from the right, and
+/// the right is the word saying what the fader *does*: "particles
+/// spread" reaching the screen as "particles …". So the size steps down
+/// first, and if the column is narrower than the label at any legible
+/// size, the *group* is abbreviated instead — three letters still tells
+/// "par." from "col.", and no current group collides in three.
+///
+/// Falls through to the smallest abbreviated form rather than failing;
+/// at that point the column is narrower than any label and this is the
+/// variant that loses least.
+fn fit_label(ui: &egui::Ui, name: &str, w: f32) -> (String, f32) {
     const STEPS: [f32; 4] = [13.0, 11.5, 10.0, 9.0];
-    STEPS
-        .into_iter()
-        .find(|&size| {
-            ui.painter()
-                .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), INK_2)
-                .rect
-                .width()
-                <= w
-        })
-        .unwrap_or(STEPS[STEPS.len() - 1])
+    let fits = |text: &str, size: f32| {
+        ui.painter()
+            .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), INK_2)
+            .rect
+            .width()
+            <= w
+    };
+    for size in STEPS {
+        if fits(name, size) {
+            return (name.to_string(), size);
+        }
+    }
+    // Only a qualified name has a group to give up.
+    let Some((group, rest)) = name.split_once(' ') else {
+        return (name.to_string(), STEPS[STEPS.len() - 1]);
+    };
+    let short_group: String = group.chars().take(3).collect();
+    let abbreviated = format!("{short_group}. {rest}");
+    for size in STEPS.into_iter().skip(1) {
+        if fits(&abbreviated, size) {
+            return (abbreviated, size);
+        }
+    }
+    (abbreviated, STEPS[STEPS.len() - 1])
 }
 
 /// The MIDI binding, or the way to make one.
@@ -1275,6 +1293,37 @@ mod tests {
         render_inner(macros, reg, midi, values, None)
     }
 
+    /// What a galley actually puts on screen, glyph by glyph.
+    ///
+    /// `Galley::text()` returns the string the galley was *given*, not
+    /// the one it drew: a label elided to "particles …" still reports
+    /// "particles spread", and a wrapped label reports its whole text
+    /// however little of it fits. Every assertion in this module is a
+    /// claim about what a performer can read in a dark room, so reading
+    /// back the source string makes those claims unfalsifiable — a label
+    /// clipped to nothing passes a `contains` check for its full name.
+    /// The glyphs are what was rasterised, ellipsis included.
+    /// Whether a run of text is inside the window at all.
+    ///
+    /// Shapes are emitted whether or not they land on screen: at
+    /// 1024x640 the whole fader label row sits below the bottom edge and
+    /// still arrives in this list. Reading it back unfiltered means a
+    /// layout that has pushed its labels off the window — the exact
+    /// regression the fader chrome allowance exists to prevent — passes
+    /// every assertion here.
+    fn on_screen(shape: &egui::epaint::TextShape, screen: egui::Rect) -> bool {
+        let rect = egui::Rect::from_min_size(shape.pos, shape.galley.rect.size());
+        screen.contains_rect(rect)
+    }
+
+    fn painted(galley: &egui::Galley) -> String {
+        galley
+            .rows
+            .iter()
+            .flat_map(|row| row.glyphs.iter().map(|g| g.chr))
+            .collect()
+    }
+
     fn render_inner(
         macros: &mut Macros,
         reg: &ParamRegistry,
@@ -1285,6 +1334,10 @@ mod tests {
         render_at(macros, reg, midi, values, recording, 1280.0)
     }
 
+    fn render_at_size(macros: &mut Macros, reg: &ParamRegistry, size: Vec2) -> String {
+        render_sized(macros, reg, &MidiView::default(), None, None, size)
+    }
+
     fn render_at(
         macros: &mut Macros,
         reg: &ParamRegistry,
@@ -1292,6 +1345,17 @@ mod tests {
         values: Option<&[f32]>,
         recording: Option<crate::RecordingView>,
         width: f32,
+    ) -> String {
+        render_sized(macros, reg, midi, values, recording, vec2(width, 800.0))
+    }
+
+    fn render_sized(
+        macros: &mut Macros,
+        reg: &ParamRegistry,
+        midi: &MidiView,
+        values: Option<&[f32]>,
+        recording: Option<crate::RecordingView>,
+        size: Vec2,
     ) -> String {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
@@ -1321,18 +1385,19 @@ mod tests {
             ctx.begin_pass(egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    vec2(width, 800.0),
+                    size,
                 )),
                 time: Some(i as f64 * 0.05),
                 ..Default::default()
             });
             draw(&ctx, reg, &state, macros);
             let out = ctx.end_pass();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             text = out
                 .shapes
                 .iter()
                 .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    egui::Shape::Text(t) if on_screen(t, screen) => Some(painted(&t.galley)),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1341,18 +1406,86 @@ mod tests {
         text
     }
 
+    /// Every painted run with the colour it was painted in.
+    ///
+    /// The layout's central claim is that colour carries meaning — the
+    /// ink ramp, and the readout that turns warm when what you are
+    /// reading is not what the parameter is currently at. The string
+    /// view throws all of that away, so a readout that lost its colour
+    /// coding entirely would pass every other test in this module.
+    fn render_coloured(
+        macros: &mut Macros,
+        reg: &ParamRegistry,
+        values: Option<&[f32]>,
+    ) -> Vec<(String, Color32)> {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let state = PerformanceState {
+            recording: None,
+            preset_current: None,
+            outputs: &[OutputStatus { name: "syphon:vizz".into(), live: true }],
+            audio: &audio,
+            fps: 60.0,
+            over_budget: false,
+            bpm: 128.0,
+            bar_phase: 0.1,
+            presets: &names,
+            grid: &grid,
+            gravity: None,
+            midi: &midi,
+            values,
+        };
+        let mut runs = Vec::new();
+        for i in 0..8 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(1280.0, 800.0),
+                )),
+                time: Some(i as f64 * 0.05),
+                ..Default::default()
+            });
+            draw(&ctx, reg, &state, macros);
+            let out = ctx.end_pass();
+            runs = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        // The colour a RichText carries lives on the job
+                        // section; an override wins when one is set.
+                        let colour = t.override_text_color.unwrap_or_else(|| {
+                            t.galley
+                                .job
+                                .sections
+                                .first()
+                                .map(|sec| sec.format.color)
+                                .unwrap_or(Color32::PLACEHOLDER)
+                        });
+                        Some((painted(&t.galley), colour))
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        runs
+    }
+
     /// Two faders whose parameters end in the same word are qualified
     /// with their group, and that label is long enough to overrun a
     /// narrow column. It used to ellipsise, and it ellipsised from the
     /// right, so "particles spread" reached the screen as "particles …"
     /// — the word saying what the fader did was the part thrown away.
     ///
-    /// Tested through the sizing helper rather than the rendered text:
-    /// egui's galley reports the string it was given, not the elided
-    /// one, so a truncated label is invisible to the string the other
-    /// tests here assert on.
+    /// Tested through the helper rather than the rendered text because
+    /// this is about what fits, and the sweep below is what checks that
+    /// nothing on the real layout ends up cut.
     #[test]
-    fn a_qualified_fader_label_shrinks_instead_of_being_cut_short() {
+    fn a_qualified_fader_label_shrinks_then_abbreviates_its_group() {
         let ctx = egui::Context::default();
         ctx.begin_pass(egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1370,25 +1503,103 @@ mod tests {
                     .width()
             };
 
-            // Wide enough for the full size: nothing is given up.
+            // Room for the whole thing: nothing is given up.
             let roomy = measure(long, 13.0) + 10.0;
-            assert_eq!(fit_label_size(ui, long, roomy), 13.0);
+            assert_eq!(fit_label(ui, long, roomy), (long.to_string(), 13.0));
 
-            // A column narrower than the label at full size steps down,
-            // and what it steps down to actually fits.
+            // Slightly tight: the size steps down, the words stay whole.
             let tight = measure(long, 13.0) - 12.0;
-            let chosen = fit_label_size(ui, long, tight);
-            assert!(chosen < 13.0, "did not shrink for a {tight}pt column");
+            let (text, size) = fit_label(ui, long, tight);
+            assert_eq!(text, long, "gave up the full name too early");
+            assert!(size < 13.0 && measure(&text, size) <= tight);
+
+            // Too narrow for the full name at any legible size: the
+            // group abbreviates, and the word that says what the fader
+            // does survives intact.
+            let narrow = measure(long, 9.0) - 6.0;
+            let (text, size) = fit_label(ui, long, narrow);
+            assert_eq!(text, "par. spread", "abbreviated the wrong end");
             assert!(
-                measure(long, chosen) <= tight,
-                "chose {chosen}pt, which still overruns {tight}pt"
+                measure(&text, size) <= narrow,
+                "abbreviated to {text:?} at {size}pt and still overran {narrow}pt"
             );
 
-            // A short label is never shrunk — most faders carry one word
-            // and must stay at full size.
-            assert_eq!(fit_label_size(ui, "glow", 62.0), 13.0);
+            // Groups stay distinguishable once abbreviated — the whole
+            // reason the label is qualified in the first place.
+            let (other, _) = fit_label(ui, "color spread", narrow);
+            assert_ne!(other, text, "two groups abbreviated to the same label");
+
+            // A one-word label is never touched.
+            assert_eq!(fit_label(ui, "glow", 62.0), ("glow".to_string(), 13.0));
         });
         let _ = ctx.end_pass();
+    }
+
+    /// Nothing on this screen may reach the eye ellipsised.
+    ///
+    /// Only assertable because the harness reads painted glyphs: a
+    /// clipped label reports its full text through `Galley::text()`, so
+    /// for as long as the tests here read that, every `contains` check
+    /// in this module passed whether or not the words survived to the
+    /// screen. Swept across the window sizes a rig actually presents —
+    /// a laptop, a 720p projector, a 1080p one — because the layout
+    /// shrinks rather than reflowing, and shrinking is what pushes a
+    /// label past its column.
+    #[test]
+    fn no_label_is_ellipsised_at_any_realistic_window_size() {
+        let reg = registry();
+        for size in [
+            vec2(1280.0, 800.0),
+            vec2(1440.0, 900.0),
+            vec2(1920.0, 1080.0),
+            vec2(1024.0, 640.0),
+            vec2(900.0, 600.0),
+        ] {
+            let mut macros = Macros::default();
+            // The pair that has to wear its group word, in the slots a
+            // default layout puts them in.
+            macros.set(0, Some("/color/spread".to_string()));
+            macros.set(1, Some("/particles/spread".to_string()));
+            let text = render_at_size(&mut macros, &reg, size);
+            assert!(
+                !text.contains('…'),
+                "a label was cut short at {size:?}: {text}"
+            );
+        }
+    }
+
+    /// The fader labels must be on the window, not merely drawn.
+    ///
+    /// The layout reserves room for three label lines under each track
+    /// and shrinks the tracks to fit — but the shrink has a floor, and
+    /// below it the labels go over the bottom edge instead. They are
+    /// still emitted as shapes when that happens, which is why this
+    /// reads back only what lands inside the screen rect: the value, the
+    /// name and the binding under a fader are the whole reason the
+    /// screen exists, and a build that pushed them off would otherwise
+    /// pass every assertion in this module.
+    #[test]
+    fn fader_labels_stay_on_the_window_at_realistic_sizes() {
+        let reg = registry();
+        for size in [
+            vec2(1280.0, 800.0),
+            vec2(1440.0, 900.0),
+            vec2(1920.0, 1080.0),
+            vec2(1366.0, 768.0),
+            vec2(1280.0, 720.0),
+        ] {
+            let mut macros = Macros::default();
+            macros.set(0, Some("/fx/glow".to_string()));
+            let text = render_at_size(&mut macros, &reg, size);
+            assert!(
+                text.contains("MASTER"),
+                "the master fader's label is off the window at {size:?}: {text}"
+            );
+            assert!(
+                text.contains("glow"),
+                "a fader's name is off the window at {size:?}: {text}"
+            );
+        }
     }
 
     /// The performance view must show what is assigned and the master
@@ -1497,16 +1708,6 @@ mod tests {
         assert!(text.contains("learn"), "no way to start a learn: {text}");
     }
 
-    /// The number under a fader must stay put while modulation moves the
-    /// parameter.
-    ///
-    /// The obvious design — show the live value — is wrong, and this test
-    /// exists to stop it being reintroduced. An LFO at any musical rate
-    /// turns a live readout into an unreadable blur, and the digit that
-    /// blurs is the one that tells you where your own hand left the
-    /// control. So the number is what you set, the ghost mark on the track
-    /// is where modulation has taken it, and the number's *colour* says
-    /// which of the two you are looking at.
     /// The chip used to be drawn only while a take was running, which
     /// left the performance screen with no way to *start* one — arming
     /// meant leaving for the panel and expanding a collapsed section.
@@ -1532,6 +1733,16 @@ mod tests {
         assert!(rolling.contains("4 dropped"), "drops not surfaced: {rolling}");
     }
 
+    /// The number under a fader must stay put while modulation moves the
+    /// parameter.
+    ///
+    /// The obvious design — show the live value — is wrong, and this test
+    /// exists to stop it being reintroduced. An LFO at any musical rate
+    /// turns a live readout into an unreadable blur, and the digit that
+    /// blurs is the one that tells you where your own hand left the
+    /// control. So the number is what you set, the ghost mark on the track
+    /// is where modulation has taken it, and the number's *colour* says
+    /// which of the two you are looking at.
     #[test]
     fn the_readout_stays_stable_while_modulation_moves_the_parameter() {
         let reg = registry();
@@ -1558,5 +1769,34 @@ mod tests {
             !text.contains("0.75"),
             "the readout followed modulation, which makes it a blur under any LFO: {text}"
         );
+
+        // And the second half of the claim: the colour is what says the
+        // number is no longer where the parameter is. Asserted because
+        // the doc comment above promises it and nothing else here could
+        // tell — the string view has no colour in it at all, so a
+        // readout that went back to plain ink would pass every other
+        // assertion in this module.
+        let runs = render_coloured(&mut macros, &reg, Some(&values));
+        let readout = runs
+            .iter()
+            .find(|(t, _)| t.trim() == "0.25")
+            .unwrap_or_else(|| panic!("no 0.25 readout among {runs:?}"));
+        assert_eq!(
+            readout.1, MOD,
+            "a modulated readout must be warm, or nothing says the number              is not where the parameter is"
+        );
+
+        // Unmodulated, the same readout is plain ink — otherwise "warm"
+        // means nothing, because everything is warm.
+        let plain = render_coloured(&mut macros, &reg, None);
+        let plain_readout = plain
+            .iter()
+            .find(|(t, _)| t.trim() == "0.25")
+            .unwrap_or_else(|| panic!("no 0.25 readout among {plain:?}"));
+        assert_eq!(
+            plain_readout.1, INK,
+            "an unmodulated readout must be plain ink"
+        );
     }
 }
+
