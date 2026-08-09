@@ -25,11 +25,14 @@ use crate::GpuContext;
 /// the cloud reads as a surface rather than a wire.
 pub const POINTS: usize = 256 * 256;
 const WIDTH: u32 = 256;
-/// Slots in the bank: two built-in attractors plus two loadable from file.
+/// Slots in the bank: two built-in attractors plus six loadable — files,
+/// text, images and the live stream all compete for the loadable ones,
+/// and with only two, loading a scan meant evicting the stream.
 /// Fixed rather than dynamic because the texture is allocated once and the
 /// shader indexes it by row — growing it live would mean reallocating and
-/// rebuilding every bind group mid-frame.
-pub const SLOTS: usize = 4;
+/// rebuilding every bind group mid-frame. Eight slots is a 32 MB texture,
+/// still far inside any real limit.
+pub const SLOTS: usize = 8;
 /// Which slots the built-in attractors occupy.
 pub const SLOT_LORENZ: usize = 0;
 pub const SLOT_AIZAWA: usize = 1;
@@ -169,12 +172,11 @@ impl Attractors {
         Self {
             texture,
             view,
-            names: [
-                "Lorenz".into(),
-                "Aizawa".into(),
-                "(empty)".into(),
-                "(empty)".into(),
-            ],
+            names: std::array::from_fn(|i| match i {
+                0 => "Lorenz".into(),
+                1 => "Aizawa".into(),
+                _ => "(empty)".into(),
+            }),
         }
     }
 

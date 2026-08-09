@@ -25,7 +25,7 @@ pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{
     AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
-    PresetEntry,
+    PresetEntry, RecordingView,
 };
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
@@ -59,11 +59,13 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
         .show(ctx, |ui| {
             for (key, what) in [
                 ("1 – 9, 0", "fire preset slot 1–10"),
+                ("Space", "flash — white out while held"),
                 ("Tab", "show or hide the control panel"),
                 ("G", "modulation canvas"),
                 ("P", "performance layout"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
+                ("F11", "fullscreen — Esc leaves it"),
                 ("Esc", "quit — twice, to mean it"),
             ] {
                 ui.horizontal(|ui| {
@@ -175,6 +177,13 @@ pub struct Gui {
     pub focus_filter: bool,
     /// A number key was pressed: fire this preset slot.
     pub preset_key: Option<u32>,
+    /// Space went down (`Some(true)`) or up (`Some(false)`) this frame:
+    /// the flash gesture, taken by the app like `preset_key` so there is
+    /// one path writing the parameter. Held state is tracked here so a
+    /// release is only reported for a press this handler saw — a space
+    /// typed into a text field must not end as a flash release.
+    pub flash_key: Option<bool>,
+    space_flashing: bool,
     graph_view: graph_view::GraphView,
     macros: vizz_mod::perform::Macros,
     /// Slider working ranges, loaded once and saved when they change.
@@ -208,6 +217,8 @@ impl Gui {
             quit_armed: false,
             focus_filter: false,
             preset_key: None,
+            flash_key: None,
+            space_flashing: false,
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             ranges: vizz_mod::ranges::Ranges::load(),
@@ -277,6 +288,27 @@ impl Gui {
                 self.drop_text_focus();
             }
             return true;
+        }
+        // Space is the flash. Press and release both matter — it is the
+        // one held gesture on the keyboard — so it is handled before the
+        // pressed-only block below.
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+        {
+            if event.state.is_pressed()
+                && !event.repeat
+                && !self.ctx.egui_wants_keyboard_input()
+                && !self.space_flashing
+            {
+                self.space_flashing = true;
+                self.flash_key = Some(true);
+                return true;
+            }
+            if !event.state.is_pressed() && self.space_flashing {
+                self.space_flashing = false;
+                self.flash_key = Some(false);
+                return true;
+            }
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
@@ -465,6 +497,7 @@ impl Gui {
         let health = state.health.as_ref();
         let preset_names: Vec<String> = state.presets.iter().map(|p| p.name.clone()).collect();
         let perf_state = performance::PerformanceState {
+            recording: state.recording,
             outputs: &state.outputs,
             audio: &state.audio,
             fps: health.map(|h| h.fps).unwrap_or(0.0),
@@ -521,7 +554,7 @@ impl Gui {
         // from the parameter list end up in the same map by the same path.
         actions.set_learn_target = perf.set_learn_target;
         actions.clear_binding = perf.clear_binding;
-        actions.clear_slot_binding = perf.clear_slot_binding.map(|v| (performance::RECALL.to_string(), v));
+        actions.clear_slot_binding = perf.clear_slot_binding;
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -558,6 +591,7 @@ mod tests {
         reg.set(mode, 5.0);
         let ctx = egui::Context::default();
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -597,6 +631,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -639,6 +674,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -683,6 +719,7 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -719,6 +756,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -736,6 +774,8 @@ mod tests {
                 detected_bpm: 128.0,
                 confidence: 0.7,
                 dropped: 0,
+                clock_midi: false,
+                clock_ticking: false,
             },
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
@@ -807,6 +847,7 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -820,6 +861,8 @@ mod tests {
                 map,
                 learn_target: Some(vizz_midi::LearnTarget::param("/particles/count")),
                 last_source: Some(vizz_midi::Source::Note { channel: 9, note: 36 }),
+                clock_bpm: None,
+                clock_started: false,
             },
             audio: AudioView::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -850,6 +893,7 @@ mod tests {
     fn update_banner_appears_only_when_a_newer_version_exists() {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
+            recording: None,
             preset_current: None,
             update_available: update,
             health: None,

@@ -29,6 +29,11 @@ pub struct MidiView {
     /// Binding-change counter, so a learn completing on the MIDI thread
     /// is observable from the frame after.
     pub revision: u64,
+    /// Tempo heard as MIDI clock on the wire, when ticks are arriving.
+    pub clock_bpm: Option<f32>,
+    /// A transport Start arrived; consumed by the app when it resets
+    /// the downbeat.
+    pub clock_started: bool,
 }
 
 impl MidiView {
@@ -54,6 +59,8 @@ pub struct PanelActions {
     /// Remove the MIDI trigger for one value of a parameter, leaving the
     /// other values of it mapped.
     pub clear_slot_binding: Option<(String, f32)>,
+    /// A word typed in the clouds section, to become a point cloud.
+    pub text_cloud: Option<String>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
     /// Recall this preset by name.
@@ -149,12 +156,22 @@ pub struct PanelState {
     pub gravity_grid: Option<crate::grid_view::GridView>,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
+    /// A recording in progress, if one is.
+    pub recording: Option<RecordingView>,
     /// Draw every collapsible section open.
     ///
     /// For offscreen rendering — tests and the preview example — where
     /// there is nobody to click a header, and asserting on content that
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
+}
+
+/// A recording in progress, for the panel and the performance strip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordingView {
+    pub secs: u64,
+    pub frames: u64,
+    pub dropped: u64,
 }
 
 /// What the panel needs to know about audio this frame. A snapshot rather
@@ -173,6 +190,11 @@ pub struct AudioView {
     pub detected_bpm: f32,
     pub confidence: f32,
     pub dropped: usize,
+    /// The beat clock follows MIDI clock rather than running free.
+    pub clock_midi: bool,
+    /// Ticks are actually arriving right now — the difference between
+    /// "following the wire" and "waiting for a wire that is silent".
+    pub clock_ticking: bool,
 }
 
 /// Edits the panel wants applied to the audio settings, collected here
@@ -182,6 +204,9 @@ pub struct AudioView {
 pub struct AudioEdits {
     pub bands: Option<[vizz_audio::Band; 4]>,
     pub auto_bpm: Option<bool>,
+    /// Follow MIDI clock from the controller (true) or run the internal
+    /// clock (false).
+    pub midi_clock: Option<bool>,
     /// The user tapped tempo; the caller resolves it to a BPM.
     pub tapped: bool,
     /// Switch to this input device. `Some(None)` means the system
@@ -218,14 +243,14 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| {
-                    outputs_section(ui, state);
+                    outputs_section(ui, state, registry);
                     ui.separator();
                     output_setup_section(ui, state, &mut actions);
                 });
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| clouds_section(ui, state, registry));
+                .show(ui, |ui| clouds_section(ui, state, registry, &mut actions));
             // Their own header, not a stowaway inside "clouds": someone
             // looking for their colours has no reason to open a section
             // named after geometry.
@@ -353,7 +378,12 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
 /// The drop hint is here rather than nowhere because a gesture with no
 /// visible affordance is a gesture nobody discovers. That was the whole
 /// lesson of the rename living only on a right-click menu.
-fn clouds_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+fn clouds_section(
+    ui: &mut egui::Ui,
+    state: &PanelState,
+    registry: &ParamRegistry,
+    actions: &mut PanelActions,
+) {
     let slot = |addr: &str| {
         registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
     };
@@ -383,7 +413,24 @@ fn clouds_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistr
     if state.clouds.is_empty() {
         ui.small("no cloud slots");
     }
-    ui.small("drag a .ply, .xyz, .csv or .pts onto the window to load one");
+    ui.small("drag a .ply, .xyz, .csv, .pts, .png or .jpg onto the window to load one");
+    // Or type one. A word becomes a cloud: the particles form the
+    // letters, morphable against any other slot like any shape.
+    ui.horizontal(|ui| {
+        let id = egui::Id::new("text-cloud-draft");
+        let mut draft: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut draft)
+                .hint_text("type a word")
+                .desired_width(140.0),
+        );
+        let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.small_button("make cloud").clicked() || submitted) && !draft.trim().is_empty() {
+            actions.text_cloud = Some(draft.trim().to_string());
+            draft.clear();
+        }
+        ui.memory_mut(|m| m.data.insert_temp(id, draft));
+    });
 }
 
 /// The colour ramps, by the index `/color/palette` uses.
@@ -731,6 +778,25 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         {
             actions.audio.auto_bpm = Some(auto);
         }
+        let mut follow = a.clock_midi;
+        if ui
+            .checkbox(&mut follow, "midi clock")
+            .on_hover_text(
+                "follow MIDI clock from the controller — tapping or auto \
+                 switches back to the internal clock",
+            )
+            .changed()
+        {
+            actions.audio.midi_clock = Some(follow);
+        }
+        if a.clock_midi && !a.clock_ticking {
+            // Selected but silent is the state worth a word: the clock
+            // is running free on its last tempo, not following anything.
+            ui.small(
+                egui::RichText::new("no ticks")
+                    .color(egui::Color32::from_rgb(240, 150, 90)),
+            );
+        }
         // Same words as the status strip's tap: three surfaces telling
         // three different stories about one behaviour reads as three
         // different behaviours.
@@ -1033,7 +1099,43 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     }
 }
 
-fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
+fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+    // Record lives with the outputs: it is one more consumer of the
+    // master. The button writes /record/active exactly as OSC or a
+    // learned MIDI button would — one path.
+    if let Some(id) = registry.id("/record/active") {
+        ui.horizontal(|ui| {
+            let on = registry.target(id) >= 0.5;
+            let label = if on { "stop recording" } else { "record" };
+            let button = egui::Button::new(
+                egui::RichText::new(label).color(if on {
+                    egui::Color32::from_rgb(240, 120, 110)
+                } else {
+                    egui::Color32::from_rgb(200, 205, 214)
+                }),
+            );
+            if ui
+                .add(button)
+                .on_hover_text("PNG sequence of the master output — heavy resolutions drop frames rather than stall the show")
+                .clicked()
+            {
+                registry.set(id, if on { 0.0 } else { 1.0 });
+            }
+            if let Some(rec) = &state.recording {
+                ui.small(format!(
+                    "{}:{:02} · {} frames{}",
+                    rec.secs / 60,
+                    rec.secs % 60,
+                    rec.frames,
+                    if rec.dropped > 0 {
+                        format!(" · {} dropped", rec.dropped)
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        });
+    }
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
         return;

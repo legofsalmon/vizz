@@ -28,7 +28,18 @@ pub struct PostUniforms {
     pub aspect: f32,
     /// Radial RGB split (chromatic aberration).
     pub shift: f32,
+    /// Flash-to-white, 0..1. A punch gesture: mixed in after everything
+    /// else so a flash is a flash whatever the look underneath.
+    pub flash: f32,
+    /// Invert the picture, 0..1. Applied after the tone shoulder so HDR
+    /// values past 1 cannot invert to negative light.
+    pub invert: f32,
+    /// Darken to black, 0..1. RGB only — alpha is untouched, matching
+    /// the master dim, so layer users keep their coverage.
+    pub black: f32,
     pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 /// HDR so sustained feedback has headroom before the tone-map. Scenes
@@ -306,6 +317,17 @@ mod tests {
     /// Run the real chain — particles into the post chain into a master in
     /// the output format — and return the master's pixels.
     fn render_chain(ctx: &GpuContext, background: wgpu::Color, glow: f32, trail: f32) -> Vec<u8> {
+        render_chain_punch(ctx, background, glow, trail, 0.0, 0.0)
+    }
+
+    fn render_chain_punch(
+        ctx: &GpuContext,
+        background: wgpu::Color,
+        glow: f32,
+        trail: f32,
+        flash: f32,
+        black: f32,
+    ) -> Vec<u8> {
         let mut post = PostChain::new(ctx, W, W, crate::output::OUTPUT_FORMAT);
         let scene = ParticleScene::new(ctx, SCENE_FORMAT);
         let master = ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -365,7 +387,12 @@ mod tests {
             glow,
             aspect: 1.0,
             shift: 0.0,
+            flash,
+            invert: 0.0,
+            black,
             _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
 
         let mut enc = ctx
@@ -445,6 +472,48 @@ mod tests {
         assert!(
             bloomed > plain,
             "glow did not extend coverage: {plain} covered without, {bloomed} with"
+        );
+    }
+
+    /// A flash is a white-out: at full strength every pixel must be
+    /// white and covered, whatever was underneath — including the alpha,
+    /// or a layer user's flash would be a transparent nothing.
+    #[test]
+    fn a_full_flash_whites_out_every_pixel() {
+        let Some(ctx) = gpu() else { return };
+        let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+        let pixels = render_chain_punch(&ctx, clear, 0.0, 0.0, 1.0, 0.0);
+        let white = pixels
+            .chunks_exact(4)
+            .filter(|p| p[0] > 240 && p[1] > 240 && p[2] > 240 && p[3] > 240)
+            .count();
+        assert_eq!(
+            white,
+            pixels.len() / 4,
+            "flash left {} pixels unwhitened",
+            pixels.len() / 4 - white
+        );
+    }
+
+    /// A blackout kills the light and nothing else: rgb goes to zero,
+    /// alpha keeps whatever coverage the frame had — the same contract
+    /// as the master dim, so a layer user's blackout stays a black card
+    /// only where the output was already covering.
+    #[test]
+    fn a_full_blackout_kills_the_light_but_not_the_coverage() {
+        let Some(ctx) = gpu() else { return };
+        let pixels =
+            render_chain_punch(&ctx, crate::particles::SCENE_CLEAR, 0.4, 0.0, 0.0, 1.0);
+        let lit = pixels
+            .chunks_exact(4)
+            .filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8)
+            .count();
+        assert_eq!(lit, 0, "{lit} pixels still lit through a full blackout");
+        let covered = pixels.chunks_exact(4).filter(|p| p[3] > 250).count();
+        assert_eq!(
+            covered,
+            pixels.len() / 4,
+            "blackout ate the alpha coverage too"
         );
     }
 

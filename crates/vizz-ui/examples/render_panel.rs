@@ -64,6 +64,11 @@ fn main() {
         "/fx/mirror",
         "/fx/glow",
         "/fx/shift",
+        "/punch/flash",
+        "/punch/black",
+        "/punch/invert",
+        "/punch/freeze",
+        "/punch/strobe",
         "/color/palette",
         "/color/spread",
         "/color/drive",
@@ -154,6 +159,7 @@ fn main() {
     }
 
     let state = PanelState {
+        recording: None,
         preset_current: Some(2),
         update_available: Some("0.2.0".into()),
         health: Some(health.snapshot()),
@@ -184,7 +190,11 @@ fn main() {
             "lorenz".into(),
             "aizawa".into(),
             "torso-scan".into(),
-            "empty".into(),
+            "text:VIZZ".into(),
+            "logo.png".into(),
+            "(empty)".into(),
+            "(empty)".into(),
+            "live".into(),
         ],
         bpm: 128.0,
         focus_filter: false,
@@ -371,6 +381,8 @@ fn audio_view() -> vizz_ui::AudioView {
         detected_bpm: 128.0,
         confidence: 0.71,
         dropped: 0,
+        clock_midi: false,
+        clock_ticking: false,
     }
 }
 
@@ -407,5 +419,7 @@ fn midi_view() -> MidiView {
         map,
         learn_target: None,
         last_source: None,
+        clock_bpm: None,
+        clock_started: false,
     }
 }

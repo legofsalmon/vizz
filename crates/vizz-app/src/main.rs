@@ -3,6 +3,7 @@ mod headless;
 mod outputs;
 mod params;
 mod settings;
+mod textcloud;
 mod windowed;
 
 #[cfg(test)]
@@ -79,6 +80,15 @@ struct Args {
     /// Output height in pixels. Same precedence as --width.
     #[arg(long)]
     height: Option<u32>,
+
+    /// Start fullscreen. Without it the last F11 choice is remembered.
+    #[arg(long)]
+    fullscreen: bool,
+
+    /// Monitor index for --fullscreen (0-based). Out of range falls back
+    /// to the primary.
+    #[arg(long)]
+    monitor: Option<usize>,
 
     /// Disable the Syphon output (macOS).
     #[arg(long)]
@@ -283,6 +293,8 @@ fn main() -> Result<()> {
                 width,
                 height,
                 size_from_cli,
+                fullscreen: args.fullscreen,
+                monitor: args.monitor,
                 show_gui: !args.no_gui,
                 check_updates: !args.no_update_check,
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),

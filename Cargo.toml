@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/legofsalmon/vizz"
@@ -43,7 +43,11 @@ pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }
 rosc = "0.11"
 clap = { version = "4", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Text-to-cloud rasterizing. Already in the build via egui/epaint, so
+# naming them directly costs nothing new.
+ab_glyph = "0.2"
+epaint_default_fonts = "0.35"
 # 0.39 needs rustc 1.95; stay one minor back until the toolchain catches up.
 sysinfo = "0.38"
 serde = { version = "1", features = ["derive"] }

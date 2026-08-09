@@ -291,6 +291,17 @@ fn demo_graph() -> vizz_mod::graph::NodeGraph {
     // so the dead-node styling shows in the shot next to working ones.
     let dead = g.add(K::Param { addr: "/fx/glowy".into(), depth: 0.5 }, [700.0, 20.0]);
     let _unset = g.add(K::Param { addr: String::new(), depth: 0.5 }, [700.0, 150.0]);
+    // The rhythm chain: band through a gate into an envelope — the
+    // canvas rendering of all three new nodes, wired the way a kick
+    // punch actually gets patched.
+    let gate = g.add(K::Gate { threshold: 0.5 }, [240.0, 410.0]);
+    let env = g.add(K::Envelope { attack: 0.01, decay: 0.3 }, [470.0, 410.0]);
+    let beat = g.add(K::BeatTrig { beats: 1.0 }, [20.0, 410.0]);
+    let morph2 = g.add(K::Param { addr: "/particles/size".into(), depth: 0.4 }, [700.0, 410.0]);
+    g.connect(band, gate, 0);
+    g.connect(gate, env, 0);
+    g.connect(env, morph2, 0);
+    let _ = beat;
     g.connect(lfo, morph, 0);
     g.connect(band, curve, 0);
     g.connect(curve, size, 0);
@@ -418,6 +429,8 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         detected_bpm: 128.0,
         confidence: 0.72,
         dropped: 0,
+        clock_midi: false,
+        clock_ticking: false,
     };
     // A grid part-way through a blend, so the preview shows the pad fill
     // and the two highlights doing something rather than sixteen blanks.
@@ -439,6 +452,7 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     };
     let midi = vizz_ui::MidiView::default();
     let state = vizz_ui::PerformanceState {
+        recording: None,
         preset_current: Some(2),
         grid: &grid,
         gravity: None,

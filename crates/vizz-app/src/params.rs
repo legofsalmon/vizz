@@ -41,6 +41,13 @@ pub struct AppParams {
     pub mirror: ParamId,
     pub glow: ParamId,
     pub shift: ParamId,
+    pub punch_flash: ParamId,
+    pub punch_black: ParamId,
+    pub punch_invert: ParamId,
+    pub punch_freeze: ParamId,
+    pub punch_strobe: ParamId,
+    pub punch_strobe_div: ParamId,
+    pub record_active: ParamId,
     pub palette: ParamId,
     pub color_spread: ParamId,
     pub color_drive: ParamId,
@@ -158,6 +165,38 @@ impl AppParams {
         let glow = b.add(ParamDef::new("/fx/glow", 0.0, 1.0, 0.25).smooth(0.2));
         // Chromatic aberration. Subtle at the low end, prismatic at the top.
         let shift = b.add(ParamDef::new("/fx/shift", 0.0, 1.0, 0.0).smooth(0.2));
+        // Punch effects: the things you do on the drop. All gestures —
+        // resting at zero, never smoothed (a flash that fades in is not a
+        // flash), excluded from presets (recalling a look must not replay
+        // a blackout) — and all still modulatable, because a strobe under
+        // an audio band is a legitimate patch. Resting at min matters
+        // twice over: it is also what makes a MIDI value binding behave
+        // as a momentary out of the box — press sends the value, release
+        // sends the bottom of the range, and the bottom is "off".
+        let punch_flash = b.add(ParamDef::new("/punch/flash", 0.0, 1.0, 0.0).gesture());
+        let punch_black = b.add(ParamDef::new("/punch/black", 0.0, 1.0, 0.0).gesture());
+        let punch_invert = b.add(ParamDef::new("/punch/invert", 0.0, 1.0, 0.0).gesture());
+        let punch_freeze = b.add(
+            ParamDef::new("/punch/freeze", 0.0, 1.0, 0.0)
+                .labels(&["off", "hold"])
+                .gesture(),
+        );
+        let punch_strobe = b.add(ParamDef::new("/punch/strobe", 0.0, 1.0, 0.0).gesture());
+        // Beats per strobe cycle. Transport, like the scene blend time:
+        // it says *how* the gesture behaves, not what anything looks
+        // like — a preset must not retune the strobe someone is holding,
+        // and modulation wobbling the division would make the strobe
+        // untrustworthy. Set from its own control beside the button.
+        let punch_strobe_div =
+            b.add(ParamDef::new("/punch/strobe_div", 0.25, 4.0, 0.5).transport());
+        // Recording is transport all the way: it says when, modulation
+        // must never toggle disk writes, and a preset recalling with a
+        // recording embedded would start one behind your back.
+        let record_active = b.add(
+            ParamDef::new("/record/active", 0.0, 1.0, 0.0)
+                .labels(&["off", "rec"])
+                .transport(),
+        );
         // Colour. Palette 0 is the original HSV behaviour, so the defaults
         // below leave the look exactly as it was.
         // The range covers the loaded palettes as well as the shipped
@@ -189,8 +228,11 @@ impl AppParams {
         // cloud — while the morph between them is the swept, modulatable
         // control, which is what makes it worth having separately from the
         // shape sweep (that one only reaches *adjacent* modes).
-        let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, 3.0, 0.0));
-        let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, 3.0, 1.0));
+        // The ceiling is the bank's, derived rather than retyped, so
+        // growing the bank cannot leave the top slots unreachable.
+        let cloud_max = (vizz_render::attractor::SLOTS - 1) as f32;
+        let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, cloud_max, 0.0));
+        let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, cloud_max, 1.0));
         let cloud_morph = b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).smooth(0.5));
         // Camera. Distance and field of view are two different kinds of
         // zoom — moving closer changes the perspective, narrowing the lens
@@ -347,6 +389,13 @@ impl AppParams {
             morph,
             twist,
             trail,
+            punch_flash,
+            punch_black,
+            punch_invert,
+            punch_freeze,
+            punch_strobe,
+            punch_strobe_div,
+            record_active,
             zoom,
             spin,
             mirror,
@@ -455,6 +504,14 @@ mod tests {
                 "/gravity/curve",
                 "/gravity/auto",
                 "/gravity/bars",
+                // Punch gestures: performed, not part of a look.
+                "/punch/flash",
+                "/punch/black",
+                "/punch/invert",
+                "/punch/freeze",
+                "/punch/strobe",
+                "/punch/strobe_div",
+                "/record/active",
             ]
         );
     }
@@ -560,16 +617,51 @@ mod tests {
         }
         for addr in vizz_mod::preset::EXCLUDED {
             // The master dim is excluded for a different reason — it is
-            // the panic fader, not transport — so it is the one exemption.
+            // the panic fader, not transport — and gestures are excluded
+            // for their own reason: performed, not scheduled, but still
+            // never part of a look. Everything else excluded must be
+            // transport, or the exclusion is a list drifting on its own.
             if *addr == "/master/dim" {
                 continue;
             }
             let id = p.registry.id(addr).expect("EXCLUDED names a real parameter");
+            let def = &p.registry.defs()[id.index()];
             assert!(
-                p.registry.defs()[id.index()].transport,
-                "{addr} is excluded from presets but not marked transport"
+                def.transport || def.gesture,
+                "{addr} is excluded from presets but neither transport nor gesture"
             );
         }
+    }
+
+    /// A flash that fades in is not a flash, and a punch that a preset
+    /// can recall is a booby trap. Every gesture rests at zero, snaps
+    /// (no smoothing), and sits in the exclusion list.
+    #[test]
+    fn punch_params_rest_at_zero_and_never_glide() {
+        let p = AppParams::build();
+        let mut seen = 0;
+        for (_, def) in p.registry.iter() {
+            if !def.gesture {
+                continue;
+            }
+            seen += 1;
+            assert_eq!(def.min, 0.0, "{}: a gesture's off state must be its floor", def.addr);
+            assert_eq!(def.smooth, 0.0, "{}: gestures snap", def.addr);
+            assert!(
+                vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()),
+                "{}: gesture missing from preset::EXCLUDED",
+                def.addr
+            );
+            // Resting at the floor is also what makes a MIDI value
+            // binding momentary: release drives to the bottom of the
+            // range, and the bottom must mean "off".
+            assert_eq!(
+                def.default, def.min,
+                "{}: a gesture must rest at its floor",
+                def.addr
+            );
+        }
+        assert!(seen >= 5, "expected the punch group, found {seen} gestures");
     }
 
     /// Slot 0 must select nothing. It is the resting value, so anything

@@ -52,6 +52,16 @@ pub struct ParamDef {
     /// it — all derived from here rather than from separate lists that
     /// have already drifted once.
     pub transport: bool,
+    /// A momentary performance move — a flash, a blackout, a freeze —
+    /// rather than part of a look.
+    ///
+    /// Not transport: transport says *when* things happen and is hidden
+    /// from the panel and refused by modulation, while a gesture is a
+    /// thing you perform — a strobe under an audio band is a legitimate
+    /// patch, and the panel should show it. What a gesture shares with
+    /// transport is that no preset may capture it: recalling a look must
+    /// never replay somebody's blackout.
+    pub gesture: bool,
 }
 
 impl ParamDef {
@@ -70,6 +80,7 @@ impl ParamDef {
             smooth: 0.0,
             labels: None,
             transport: false,
+            gesture: false,
         }
     }
 
@@ -104,6 +115,20 @@ impl ParamDef {
 
     pub fn smooth(mut self, seconds: f32) -> Self {
         self.smooth = seconds.max(0.0);
+        self
+    }
+
+    /// Mark this as a gesture. See [`ParamDef::gesture`]. Gestures are
+    /// never smoothed — a flash that fades in is not a flash — so this
+    /// asserts the smoothing was left at zero rather than quietly
+    /// overriding a conflicting call.
+    pub fn gesture(mut self) -> Self {
+        assert!(
+            self.smooth == 0.0,
+            "param {}: a gesture cannot be smoothed",
+            self.addr
+        );
+        self.gesture = true;
         self
     }
 }

@@ -149,6 +149,35 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+### Recording
+
+`/record/active` (a button in the panel's outputs section, the red REC
+chip on the performance layout, OSC, or a learned MIDI button) records
+the master output as a **PNG sequence** — every finished frame is a
+finished file, so a crash mid-take costs nothing already written. Takes
+land in `~/Movies/vizz/vizz-<timestamp>/` (macOS) or `~/Videos/vizz/…`
+elsewhere, with a `frames.csv` of per-frame wall-clock times so a
+variable-rate capture assembles honestly:
+
+```sh
+ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4
+```
+
+Recording never stalls the show: a slow disk drops frames on the
+recording only, the drops are counted and reported, and a full disk
+stops the take with a notice instead of retrying sixty times a second.
+Heavy resolutions will drop frames — PNG encoding at 1080p60 is at the
+edge of one core — and the counters say exactly how many.
+
+### Fullscreen
+
+**F11** goes fullscreen on the monitor the window is on — drag the
+preview to the projector first. The first **Esc** leaves fullscreen;
+`--fullscreen` (optionally `--monitor <index>`) starts that way, and
+the last F11 choice is remembered between launches. A dedicated second
+output window is future work; fullscreen-on-the-preview covers the
+single-machine venue case, and Syphon/NDI cover the rest.
+
 ### Live point clouds
 
 ```sh
@@ -396,9 +425,14 @@ Modulation is a directed graph. Sources, operators and parameter sinks are
 all nodes; every node has one output and zero or more inputs. Press **G**
 for the canvas.
 
-Node kinds: LFO, audio band, level, phasor and constant (sources); curve,
-math, scale, smooth, quantise and sample & hold (operators); parameter
-(sink). Drag from an output port to an input to wire; drag an input away
+Node kinds: LFO, audio band, level, phasor, beat trigger and constant
+(sources); curve, math, scale, smooth, quantise, sample & hold, gate and
+envelope (operators); parameter (sink). The rhythm chain is the reason
+the last three exist: a **beat trigger** pulses on a beat division,
+phase-locked to the transport; a **gate** turns any band into a clean
+trigger (with hysteresis, so a hovering level cannot chatter); an
+**envelope** fires a full attack/decay hit per rising edge — kick in,
+size punch out. Drag from an output port to an input to wire; drag an input away
 to unplug; right-click for the add menu; Delete removes the selected node. **fit**
 frames every node — an infinite canvas otherwise has a state you cannot
 get out of, where you have panned far enough that nothing is on screen and
@@ -611,12 +645,14 @@ typed a name you already know what you want.
 
 ```
 1 – 9, 0   fire preset slot 1–10
+Space      flash — white out while held
 Tab        show or hide the control panel
 G          modulation canvas
 P          performance layout
 /          filter the parameter list
 ?          the shortcut list, on screen
-Esc        quit
+F11        fullscreen on the window's monitor
+Esc        leave fullscreen; otherwise quit (twice)
 ```
 
 `?` exists because a shortcut that lives only in a README is a shortcut
@@ -740,8 +776,17 @@ vizz --cloud scan.ply --cloud other.xyz
 ```
 
 Reads **PLY** (ASCII and binary little-endian) and plain **XYZ/CSV/PTS**,
-with per-point colour where the file has it. Files load into two slots
-alongside the two built-in attractors, giving four in total.
+with per-point colour where the file has it — and **PNG/JPEG** images,
+sampled to a coloured relief (position from the pixel grid, colour from
+the pixel, a shallow depth from luminance; transparent pixels are not
+part of the picture, so a logo keeps its silhouette). Six loadable slots
+sit alongside the two built-in attractors, giving eight in total.
+
+**Type a word and the particles form it.** The clouds section of the
+panel has a text field: the string is rasterized with the app's own font
+into a cloud, morphable against any other slot like any shape. Typed
+clouds come back after a restart — they persist as `text:WORD` entries
+in the settings and re-rasterize deterministically on launch.
 
 `/shape/mode 7` shows the **cloud pair**: `/cloud/a` and `/cloud/b` choose
 slots, `/cloud/morph` blends between them. That is separate from the shape
@@ -880,6 +925,18 @@ Mappings are saved as JSON to `~/.config/vizz/midi.json` (override with
 mapping you just set up. MIDI failing to start is a degraded mode, not a
 failure: the visuals and OSC keep running.
 
+### MIDI clock sync
+
+vizz follows MIDI clock when asked: tick **midi clock** in the panel's
+audio section and the beat clock takes its tempo from the wire — the
+median of the last two beats of ticks, so USB scheduling spikes cannot
+drag it. A transport **Start** resets the downbeat. The performance
+layout shows a green `MIDI` badge while ticks arrive and an amber one
+while the wire is silent. Tapping the tempo or enabling auto-BPM
+switches back to the internal clock: an explicit human gesture always
+wins. The clock stream never arms MIDI learn and never touches a
+binding.
+
 Building on Linux needs ALSA headers (`libasound2-dev`); macOS and
 Windows use CoreMIDI/WinMM and need nothing extra.
 
@@ -907,11 +964,17 @@ control input can never crash the renderer.
 | `/fx/mirror` | 0 – 3 | 0 | 0 off · 1 mirror · 2 quad · 3 kaleido |
 | `/fx/glow` | 0 – 1 | 0.25 | bloom lift |
 | `/fx/shift` | 0 – 1 | 0 | radial RGB split (chromatic aberration) |
+| `/punch/flash` | 0 – 1 | 0 | white-out while held — Space, a punch button, or a learned MIDI note |
+| `/punch/black` | 0 – 1 | 0 | blackout while held; rgb only, coverage stays |
+| `/punch/invert` | 0 – 1 | 0 | invert the finished picture while held |
+| `/punch/freeze` | 0 – 1 | 0 | hold the picture; the set keeps moving underneath |
+| `/punch/strobe` | 0 – 1 | 0 | beat-synced strobe while held |
+| `/punch/strobe_div` | 0.25 – 4 | 0.5 | beats per strobe cycle |
 | `/color/palette` | 0 – 15 | 0 | palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes |
 | `/color/spread` | 0 – 1 | 0.12 | how much of the palette the field spans |
 | `/color/drive` | 0 – 3 | 0 | what picks the colour: 0 index · 1 radius · 2 depth · 3 height |
-| `/cloud/a` | 0 – 3 | 0 | first slot of the cloud morph pair |
-| `/cloud/b` | 0 – 3 | 1 | second slot of the cloud morph pair |
+| `/cloud/a` | 0 – 7 | 0 | first slot of the cloud morph pair |
+| `/cloud/b` | 0 – 7 | 1 | second slot of the cloud morph pair |
 | `/cloud/morph` | 0 – 1 | 0 | blend position between the pair |
 | `/camera/distance` | 0.4 – 12 | 3.5 | orbit distance from the field |
 | `/camera/orbit` | -3.15 – 3.15 | 0 | orbit angle around the field |
@@ -950,6 +1013,7 @@ control input can never crash the renderer.
 | `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
 | `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
+| `/record/active` | 0 – 1 | 0 | record the master to a PNG sequence; 1 starts, 0 stops |
 | `/master/dim` | 0 – 1 | 1 | master fader |
 
 The table is checked against the parameter registry by a test

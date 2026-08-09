@@ -248,14 +248,17 @@ impl Dispatcher {
                 let binding = map.binding(&Source::PitchBend { channel })?;
                 Some((binding, value as f32 / 16383.0))
             }
+            // Realtime traffic is the sync stream, not a control.
+            MidiEvent::Clock | MidiEvent::Start | MidiEvent::Continue | MidiEvent::Stop => None,
         }
     }
 
-    /// The source an event came from, for MIDI-learn. Learning binds the
-    /// MSB controller of a 14-bit pair, never the LSB — otherwise the
-    /// binding captures only the fine adjustment.
-    pub fn learn_source(event: MidiEvent) -> Source {
-        match event {
+    /// The source an event came from, for MIDI-learn. `None` for the
+    /// realtime stream: at 24 clocks per quarter note an armed learn
+    /// would bind to the first tick before the user's hand reached the
+    /// control it was armed for.
+    pub fn learn_source(event: MidiEvent) -> Option<Source> {
+        Some(match event {
             // The controller exactly as it spoke. This used to fold
             // 32..63 down to the 14-bit convention's MSB number, which
             // assumed anything in that range was the LSB half of a pair —
@@ -273,7 +276,10 @@ impl Dispatcher {
                 Source::Note { channel, note }
             }
             MidiEvent::PitchBend { channel, .. } => Source::PitchBend { channel },
-        }
+            MidiEvent::Clock | MidiEvent::Start | MidiEvent::Continue | MidiEvent::Stop => {
+                return None;
+            }
+        })
     }
 }
 
@@ -368,7 +374,7 @@ mod tests {
     fn a_control_learned_on_cc_32_to_63_actually_works() {
         let mut map = MidiMap::default();
         // What learning from a knob on CC 40 produces.
-        map.bind(Dispatcher::learn_source(cc(0, 40, 100)), "/fx/glow");
+        map.bind(Dispatcher::learn_source(cc(0, 40, 100)).unwrap(), "/fx/glow");
         let mut d = Dispatcher::default();
 
         let (param, update) = d.resolve(cc(0, 40, 127), &map).expect("bound control was dead");
@@ -426,11 +432,11 @@ mod tests {
         // the first event, so a genuine pair still lands on its MSB and
         // keeps its LSB refinement.
         assert_eq!(
-            Dispatcher::learn_source(cc(2, 33, 5)),
+            Dispatcher::learn_source(cc(2, 33, 5)).unwrap(),
             Source::ControlChange { channel: 2, controller: 33 }
         );
         assert_eq!(
-            Dispatcher::learn_source(cc(2, 1, 5)),
+            Dispatcher::learn_source(cc(2, 1, 5)).unwrap(),
             Source::ControlChange { channel: 2, controller: 1 }
         );
     }
