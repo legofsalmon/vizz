@@ -39,6 +39,9 @@ pub struct HeadlessOpts {
     pub clouds: Vec<PathBuf>,
     /// Live point-cloud stream feeding the last slot, if any.
     pub live_cloud: Option<vizz_render::plystream::Source>,
+    /// Live video input spec — the same one the windowed app takes, so a
+    /// video look can be dumped to a PNG and checked without a display.
+    pub video_source: Option<String>,
 }
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
@@ -47,6 +50,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let mut post = PostChain::new(&ctx, opts.width, opts.height, vizz_render::output::OUTPUT_FORMAT);
     let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
     scene.load_clouds(&ctx, &opts.clouds);
+    let params_for_video = Arc::clone(&params);
     let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
     let mut senders = outputs::Outputs::new(&ctx.device, &opts.outputs);
@@ -73,10 +77,35 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             }
         }
     });
+    let video = opts.video_source.as_deref().and_then(|spec| {
+        match crate::videoin::open(spec) {
+            Ok(v) => {
+                log::info!("video input: {}", v.label());
+                Some(v)
+            }
+            Err(e) => {
+                log::warn!("could not open the video input: {e:#}");
+                None
+            }
+        }
+    });
+    // Point the shape at the video the way the windowed app does, so a
+    // dump shows the input rather than the default sphere.
+    if video.is_some() {
+        let p = &*params_for_video;
+        p.registry.set(p.cloud_a, vizz_render::attractor::VIDEO_SLOT as f32);
+        p.registry.set(p.cloud_morph, 0.0);
+        p.registry.set(p.shape, crate::params::SHAPE_CLOUD_PAIR);
+    }
     let mut live_revision = 0u64;
     let run_start = Instant::now();
     for _ in 0..opts.frames {
         let frame_start = Instant::now();
+        if let Some(v) = &video {
+            v.with_latest(&mut |f| {
+                scene.set_video(&ctx, f.width, f.height, f.stride, f.bgra);
+            });
+        }
         if let Some(live) = &live {
             let revision = live.revision();
             if revision != live_revision

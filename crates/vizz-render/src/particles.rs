@@ -82,12 +82,25 @@ pub struct Uniforms {
     /// Highest written palette row in `.x`, so the colour index saturates
     /// on a real ramp instead of sweeping into empty rows.
     pub palette_rows: [f32; 4],
+    /// The live video input, packed as one vec4 because the alignment
+    /// would spend the space on padding anyway:
+    /// `.x` 1 when a frame has arrived, `.y` the picture's aspect,
+    /// `.z` how far luminance pushes a point along z, `.w` which channel
+    /// of the picture does the pushing.
+    pub video: [f32; 4],
 }
 
 pub struct ParticleScene {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Kept so the bind group can be rebuilt: a video frame that changes
+    /// size replaces its texture, and the old view in the bind group goes
+    /// with it.
+    bgl: wgpu::BindGroupLayout,
+    /// The live video input. Public so the app can ask what has arrived
+    /// without the scene re-exporting every field.
+    pub video: crate::video::Video,
     /// The cloud bank. Kept for the bind group's texture view, and
     /// mutated when a cloud is loaded.
     attractors: Attractors,
@@ -141,6 +154,20 @@ impl ParticleScene {
                     },
                     count: None,
                 },
+                // Live video, if any. `textureLoad` again — the field
+                // samples one texel per particle, so there is nothing to
+                // filter between, and staying unfiltered keeps this
+                // binding as portable as the two above it.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
                 // The palette bank. Read with `textureLoad`, so it needs
                 // no sampler and no filterable format.
                 wgpu::BindGroupLayoutEntry {
@@ -156,24 +183,10 @@ impl ParticleScene {
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("particle-bg"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&attractors.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&palettes.view),
-                },
-            ],
-        });
+        let video = crate::video::Video::new(ctx);
+        let bind_group = Self::make_bind_group(
+            device, &bgl, &uniforms, &attractors, &palettes, &video,
+        );
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("particle-pl"),
@@ -225,6 +238,8 @@ impl ParticleScene {
             pipeline,
             uniforms,
             bind_group,
+            bgl,
+            video,
             attractors,
             palettes,
             loaded_palettes: 0,
@@ -312,7 +327,69 @@ impl ParticleScene {
 
     /// How many slots can hold a file. The first two are the built-in
     /// attractors and are generated, not loaded.
-    pub const LOADABLE: usize = crate::attractor::SLOTS - (crate::attractor::SLOT_AIZAWA + 1);
+    fn make_bind_group(
+        device: &wgpu::Device,
+        bgl: &wgpu::BindGroupLayout,
+        uniforms: &wgpu::Buffer,
+        attractors: &Attractors,
+        palettes: &crate::palette::Palettes,
+        video: &crate::video::Video,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("particle-bg"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&attractors.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&palettes.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&video.view),
+                },
+            ],
+        })
+    }
+
+    /// Take a video frame. Rebuilds the bind group only when the frame
+    /// changed size, which is the only time the old texture view stops
+    /// being valid — a feed at a steady size uploads into the texture
+    /// already bound and costs nothing extra.
+    pub fn set_video(
+        &mut self,
+        ctx: &GpuContext,
+        width: u32,
+        height: u32,
+        stride: u32,
+        bgra: &[u8],
+    ) {
+        if self.video.upload(ctx, width, height, stride, bgra) {
+            self.bind_group = Self::make_bind_group(
+                &ctx.device,
+                &self.bgl,
+                &self.uniforms,
+                &self.attractors,
+                &self.palettes,
+                &self.video,
+            );
+        }
+    }
+
+    /// Slots a file, an image or a typed word can fill: everything from
+    /// the last built-in attractor up to, but not including, the video
+    /// slot. Counted against `VIDEO_SLOT` rather than `SLOTS` so that
+    /// adding a reserved slot cannot silently hand it out to the next
+    /// dropped file.
+    pub const LOADABLE: usize =
+        crate::attractor::VIDEO_SLOT - (crate::attractor::SLOT_AIZAWA + 1);
 
     /// The slot holding the `i`th loadable cloud, if there is one.
     pub fn loadable_slot(i: usize) -> Option<usize> {
@@ -368,7 +445,10 @@ impl ParticleScene {
     /// The slot a live stream writes into: the last loadable one, so a
     /// `--cloud` file and a live feed can be held at once and morphed
     /// between with `/cloud/morph`.
-    pub const LIVE_SLOT: usize = crate::attractor::SLOTS - 1;
+    /// The streamed point cloud's slot: the last loadable one, which it
+    /// shares with dropped files by design — a rig streaming geometry is
+    /// not also filling every slot from disk.
+    pub const LIVE_SLOT: usize = crate::attractor::VIDEO_SLOT - 1;
 
     /// Encode one frame into `target`. `count` is the number of particles.
     ///
@@ -393,6 +473,11 @@ impl ParticleScene {
         // it is read per frame rather than captured once.
         let mut uniforms = *uniforms;
         uniforms.palette_rows[0] = self.palettes.occupied() as f32;
+        // Same reasoning for the video input: whether a frame has ever
+        // arrived and what shape it is are facts about the texture this
+        // owns, not settings the parameter table could hold.
+        uniforms.video[0] = if self.video.present { 1.0 } else { 0.0 };
+        uniforms.video[1] = self.video.aspect();
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
@@ -516,6 +601,7 @@ mod tests {
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
             palette_rows: [4.0, 0.0, 0.0, 0.0],
+            video: [0.0, 1.0, 0.0, 0.0],
         };
         let mut encoder = ctx
             .device
@@ -934,6 +1020,7 @@ mod tests {
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
             palette_rows: [4.0, 0.0, 0.0, 0.0],
+            video: [0.0, 1.0, 0.0, 0.0],
         };
 
         let mut uniforms = uniforms;

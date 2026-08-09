@@ -198,6 +198,7 @@
   <h4>Material</h4>
   <a href="#shapes">Shapes and geometry</a>
   <a href="#clouds">Point clouds, words, images</a>
+  <a href="#video">Live video as a cloud</a>
   <a href="#colour">Colour and palettes</a>
   <a href="#effects">Effects</a>
   <a href="#camera">Camera and room</a>
@@ -509,6 +510,48 @@ shapes use, so <code>/particles/spread</code> means one thing everywhere.
 Fewer points than the slot holds means each is repeated with a small
 deterministic jitter, because a dense clump at the origin is far more
 visually wrong than slight duplication.</p>
+
+<h2 id="video">Live video as a point cloud</h2>
+
+<pre><code>vizz --video-source test      # the built-in pattern
+vizz --video-source "OBS"     # an NDI source, matched as a substring
+vizz --list-ndi               # what is on the network</code></pre>
+
+<p>A video input <strong>arrives as a cloud in its own slot</strong>. That is
+the whole design: <code>/cloud/a</code>, <code>/cloud/b</code> and
+<code>/cloud/morph</code> select and blend it, the palette tints it, the
+spread scales it, and it morphs against a scan or an attractor with nothing
+else needing to know it is live. The first frame points the shape at it, the
+way a dropped file does.</p>
+
+<p>Each particle takes a fixed cell of the picture and stays there, so the
+field reads as a cloud <em>of</em> the video rather than noise sampled from
+it. Position comes from the cell, colour from the pixel, and depth from
+whatever <code>/video/relief</code> names.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Control</th><th>What it does</th></tr>
+<tr><td><code>/video/depth</code></td><td>How far the relief pushes along z. Signed, because a picture standing proud of the plane and one sunk into it are different looks; 0 is the flat picture, which is a look too.</td></tr>
+<tr><td><code>/video/relief</code></td><td>What does the pushing: luminance, hue, saturation or chroma. Luminance is the honest default; the colour ones are what a flat, evenly lit source needs.</td></tr>
+</table>
+</div>
+
+<figure>
+  <img src="/img/docs-video.webp" alt="A video test pattern rendered as a particle cloud, its colour bars standing at different depths.">
+  <figcaption>The built-in test pattern as a cloud: colour from the pixel,
+  depth from luminance, seen from the default camera.</figcaption>
+</figure>
+
+<div class="note">
+<p><strong><code>--video-source test</code> is a diagnostic.</strong> "Nothing
+on screen" has two causes — the feed, or the wiring — and they need telling
+apart. The pattern is generated in-process and goes through the identical
+path, so a blank output with it running is a fault in vizz, and a blank
+output without it is the network or the sender. It moves on purpose: a still
+pattern proves a frame arrived once, a moving one proves frames are still
+arriving.</p>
+</div>
 
 <h2 id="colour">Colour and palettes</h2>
 
@@ -849,9 +892,11 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/color/palette</code></td><td>0 – 15</td><td>0</td><td>palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes</td></tr>
     <tr><td><code>/color/spread</code></td><td>0 – 1</td><td>0.12</td><td>how much of the palette the field spans</td></tr>
     <tr><td><code>/color/drive</code></td><td>0 – 3</td><td>0</td><td>what picks the colour: 0 index · 1 radius · 2 depth · 3 height</td></tr>
-    <tr><td><code>/cloud/a</code></td><td>0 – 7</td><td>0</td><td>first slot of the cloud morph pair</td></tr>
-    <tr><td><code>/cloud/b</code></td><td>0 – 7</td><td>1</td><td>second slot of the cloud morph pair</td></tr>
+    <tr><td><code>/cloud/a</code></td><td>0 – 8</td><td>0</td><td>first slot of the cloud morph pair</td></tr>
+    <tr><td><code>/cloud/b</code></td><td>0 – 8</td><td>1</td><td>second slot of the cloud morph pair</td></tr>
     <tr><td><code>/cloud/morph</code></td><td>0 – 1</td><td>0</td><td>blend position between the pair</td></tr>
+    <tr><td><code>/video/depth</code></td><td>-2 – 2</td><td>0.6</td><td>how far the picture's relief pushes along z; 0 is flat</td></tr>
+    <tr><td><code>/video/relief</code></td><td>0 – 3</td><td>0</td><td>what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma</td></tr>
     <tr><td><code>/camera/distance</code></td><td>0.4 – 12</td><td>3.5</td><td>orbit distance from the field</td></tr>
     <tr><td><code>/camera/orbit</code></td><td>-3.15 – 3.15</td><td>0</td><td>orbit angle around the field</td></tr>
     <tr><td><code>/camera/elevation</code></td><td>-1.4 – 1.4</td><td>0.34</td><td>height angle of the orbit</td></tr>

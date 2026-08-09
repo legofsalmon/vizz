@@ -133,6 +133,8 @@ fn main() {
         // transport row and preset recall are what the grids and the
         // preset list read, and a panel preview missing them is a
         // preview of a different app.
+        "/video/depth",
+        "/video/relief",
         "/record/active",
         "/punch/strobe_div",
         "/gravity/fire",
@@ -152,6 +154,9 @@ fn main() {
             "/fx/mirror" => def.labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
+            "/video/relief" => {
+                def.labels(&["luminance", "hue", "saturation", "chroma"])
+            }
             "/scene/curve" | "/gravity/curve" => {
                 def.labels(&["linear", "smooth", "ease in", "ease out", "cut"])
             }

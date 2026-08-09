@@ -32,7 +32,17 @@ const WIDTH: u32 = 256;
 /// shader indexes it by row — growing it live would mean reallocating and
 /// rebuilding every bind group mid-frame. Eight slots is a 32 MB texture,
 /// still far inside any real limit.
-pub const SLOTS: usize = 8;
+pub const SLOTS: usize = 9;
+
+/// The slot a live video input writes into.
+///
+/// Video is a cloud like any other so that everything already built for
+/// clouds works on it unchanged: `/cloud/a`, `/cloud/b` and
+/// `/cloud/morph` select and blend it, the palette multiplies its
+/// colour, and it can be morphed against a scan or an attractor. It sits
+/// past the loadable range rather than inside it, because a dropped file
+/// and a live feed should not be able to evict each other.
+pub const VIDEO_SLOT: usize = SLOTS - 1;
 /// Which slots the built-in attractors occupy.
 pub const SLOT_LORENZ: usize = 0;
 pub const SLOT_AIZAWA: usize = 1;
@@ -347,5 +357,41 @@ mod tests {
         // — the attractor really is dimmer there — so this bound only has
         // to catch a discontinuity, not enforce even spacing.
         assert!(max_hop < 0.2, "trajectory jumps between samples: {max_hop}");
+    }
+}
+
+#[cfg(test)]
+mod slot_sync_tests {
+    /// The shader carries its own copy of the slot count, and it folds
+    /// anything past it back onto a lower slot. When the bank grew from
+    /// four slots to eight, this constant did not: every cloud from the
+    /// third loadable slot on quietly showed a different one, with
+    /// nothing failing and nothing to see but the wrong picture.
+    ///
+    /// WGSL cannot read a Rust constant, so the copy is unavoidable. What
+    /// is avoidable is the copy going stale, which is what this reads the
+    /// shader source to prevent.
+    #[test]
+    fn the_shader_agrees_with_rust_about_the_slot_bank() {
+        let src = include_str!("shaders/particles.wgsl");
+        let read = |name: &str| -> usize {
+            let needle = format!("const {name}: u32 = ");
+            let at = src
+                .find(&needle)
+                .unwrap_or_else(|| panic!("{name} is not declared in particles.wgsl"));
+            let rest = &src[at + needle.len()..];
+            let end = rest.find('u').expect("a u32 literal");
+            rest[..end].trim().parse().expect("a number")
+        };
+        assert_eq!(
+            read("CLOUD_SLOTS"),
+            super::SLOTS,
+            "the shader would fold the top slots onto lower ones"
+        );
+        assert_eq!(
+            read("VIDEO_SLOT"),
+            super::VIDEO_SLOT,
+            "the shader would look for live video in the wrong slot"
+        );
     }
 }

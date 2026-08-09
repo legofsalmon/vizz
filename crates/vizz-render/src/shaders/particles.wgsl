@@ -40,6 +40,8 @@ struct Uniforms {
     /// and read back black, so the index saturates here rather than
     /// sweeping the field into one.
     palette_rows: vec4<f32>,
+    // x present, y aspect, z depth, w relief mode
+    video: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -94,6 +96,7 @@ fn room_place(p: vec3<f32>) -> vec4<f32> {
 const PALETTE_W: u32 = 256u;
 const PALETTE_ROWS: u32 = 16u;
 @group(0) @binding(2) var t_palette: texture_2d<f32>;
+@group(0) @binding(3) var t_video: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -155,10 +158,79 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
 // particle's index sweeps the whole cloud forward along the path.
 const ATTRACTOR_POINTS: u32 = 65536u;
 const ATTRACTOR_W: u32 = 256u;
-const CLOUD_SLOTS: u32 = 4u;
+/// Slot blocks stacked in the position texture. Must equal
+/// `attractor::SLOTS` on the Rust side — the modulo below folds anything
+/// past it back onto a lower slot, so when this said 4 against a bank of
+/// 8, the third loaded cloud onwards silently showed a different one.
+/// Held in step by a test that reads this file.
+const CLOUD_SLOTS: u32 = 9u;
+/// The slot a live video input occupies, matching `attractor::VIDEO_SLOT`.
+const VIDEO_SLOT: u32 = 8u;
+
+/// The video frame as a cloud: a stable grid of points over the picture,
+/// pushed along z by how bright or how coloured each one is.
+///
+/// A grid rather than a scatter, because the same particle must land on
+/// the same pixel every frame — a per-frame random sample of a moving
+/// picture is visual noise, not a cloud of it. `h` is the particle's own
+/// hash and does not change, so the cell it picks does not either.
+fn video_texel(h: f32) -> vec4<f32> {
+    let dims = textureDimensions(t_video);
+    let idx = u32(h * f32(ATTRACTOR_POINTS)) % ATTRACTOR_POINTS;
+    let rows = ATTRACTOR_POINTS / ATTRACTOR_W;
+    let cell = vec2<f32>(f32(idx % ATTRACTOR_W), f32(idx / ATTRACTOR_W));
+    let uv = (cell + 0.5) / vec2<f32>(f32(ATTRACTOR_W), f32(rows));
+    let px = min(
+        vec2<u32>(uv * vec2<f32>(f32(dims.x), f32(dims.y))),
+        dims - vec2<u32>(1u, 1u),
+    );
+    let c = textureLoad(t_video, px, 0);
+
+    // What the picture pushes with. Luminance is the honest default;
+    // hue and saturation give a relief that follows colour rather than
+    // brightness, which is what a flat, evenly lit source needs.
+    let mx = max(c.r, max(c.g, c.b));
+    let mn = min(c.r, min(c.g, c.b));
+    let luma = dot(c.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let chroma = mx - mn;
+    let sat = select(chroma / max(mx, 1e-5), 0.0, mx <= 0.0);
+    var hue = 0.0;
+    if (chroma > 1e-5) {
+        if (mx == c.r) {
+            hue = fract(((c.g - c.b) / chroma) / 6.0);
+        } else if (mx == c.g) {
+            hue = (((c.b - c.r) / chroma) + 2.0) / 6.0;
+        } else {
+            hue = (((c.r - c.g) / chroma) + 4.0) / 6.0;
+        }
+    }
+    let mode = u32(u.video.w + 0.5);
+    var relief = luma;
+    if (mode == 1u) { relief = hue; }
+    else if (mode == 2u) { relief = sat; }
+    else if (mode == 3u) { relief = chroma; }
+
+    // Fit the picture into the same box the procedural shapes use,
+    // without stretching it: the long edge fills the box and the short
+    // one is scaled by the aspect, exactly as an imported scan is.
+    let aspect = max(u.video.y, 1e-3);
+    let fit = select(vec2<f32>(aspect, 1.0), vec2<f32>(1.0, 1.0 / aspect), aspect >= 1.0);
+    let plane = (uv * 2.0 - 1.0) * fit;
+    // Centred on zero so raising the depth opens the relief out from the
+    // plane rather than pushing the whole picture away from the camera.
+    let z = (relief - 0.5) * u.video.z;
+    let packed = (u32(c.r * 255.0) << 16u) | (u32(c.g * 255.0) << 8u) | u32(c.b * 255.0);
+    return vec4<f32>(plane.x, -plane.y, z, bitcast<f32>(packed));
+}
 
 /// Raw texel for a slot, so callers can use the packed colour too.
 fn cloud_texel(which: u32, h: f32, t: f32) -> vec4<f32> {
+    // Video is a slot like any other from here on, which is what gets it
+    // the morph pair, the palette tint and the spread normalisation
+    // without any of them knowing it is live.
+    if (which == VIDEO_SLOT && u.video.x > 0.5) {
+        return video_texel(h);
+    }
     let flow = u32(max(t, 0.0) * 260.0);
     let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
     let row = (which % CLOUD_SLOTS) * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
