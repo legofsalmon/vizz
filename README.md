@@ -396,9 +396,14 @@ Modulation is a directed graph. Sources, operators and parameter sinks are
 all nodes; every node has one output and zero or more inputs. Press **G**
 for the canvas.
 
-Node kinds: LFO, audio band, level, phasor and constant (sources); curve,
-math, scale, smooth, quantise and sample & hold (operators); parameter
-(sink). Drag from an output port to an input to wire; drag an input away
+Node kinds: LFO, audio band, level, phasor, beat trigger and constant
+(sources); curve, math, scale, smooth, quantise, sample & hold, gate and
+envelope (operators); parameter (sink). The rhythm chain is the reason
+the last three exist: a **beat trigger** pulses on a beat division,
+phase-locked to the transport; a **gate** turns any band into a clean
+trigger (with hysteresis, so a hovering level cannot chatter); an
+**envelope** fires a full attack/decay hit per rising edge — kick in,
+size punch out. Drag from an output port to an input to wire; drag an input away
 to unplug; right-click for the add menu; Delete removes the selected node. **fit**
 frames every node — an infinite canvas otherwise has a state you cannot
 get out of, where you have panned far enough that nothing is on screen and
@@ -880,6 +885,18 @@ Mappings are saved as JSON to `~/.config/vizz/midi.json` (override with
 `--midi-map`) the moment they change, so a crash mid-set cannot cost the
 mapping you just set up. MIDI failing to start is a degraded mode, not a
 failure: the visuals and OSC keep running.
+
+### MIDI clock sync
+
+vizz follows MIDI clock when asked: tick **midi clock** in the panel's
+audio section and the beat clock takes its tempo from the wire — the
+median of the last two beats of ticks, so USB scheduling spikes cannot
+drag it. A transport **Start** resets the downbeat. The performance
+layout shows a green `MIDI` badge while ticks arrive and an amber one
+while the wire is silent. Tapping the tempo or enabling auto-BPM
+switches back to the internal clock: an explicit human gesture always
+wins. The clock stream never arms MIDI learn and never touches a
+binding.
 
 Building on Linux needs ALSA headers (`libasound2-dev`); macOS and
 Windows use CoreMIDI/WinMM and need nothing extra.

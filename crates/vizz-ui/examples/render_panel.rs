@@ -376,6 +376,8 @@ fn audio_view() -> vizz_ui::AudioView {
         detected_bpm: 128.0,
         confidence: 0.71,
         dropped: 0,
+        clock_midi: false,
+        clock_ticking: false,
     }
 }
 
@@ -412,5 +414,7 @@ fn midi_view() -> MidiView {
         map,
         learn_target: None,
         last_source: None,
+        clock_bpm: None,
+        clock_started: false,
     }
 }

@@ -287,6 +287,9 @@ fn audio_view() -> vizz_ui::AudioView {
         detected_bpm: 128.0,
         confidence: 0.71,
         dropped: 0,
+        // Following MIDI clock with ticks arriving, so the badge shows.
+        clock_midi: true,
+        clock_ticking: true,
     }
 }
 

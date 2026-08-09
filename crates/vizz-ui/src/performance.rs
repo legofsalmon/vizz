@@ -529,6 +529,17 @@ fn status_strip(
                     .size(15.0)
                     .color(INK),
             );
+            if state.audio.clock_midi {
+                // Following the wire — or supposed to be. Green while
+                // ticks arrive, warning-amber while the wire is silent
+                // and the clock is running free on its last tempo.
+                let (word, colour) = if state.audio.clock_ticking {
+                    ("MIDI", Color32::from_rgb(90, 200, 120))
+                } else {
+                    ("MIDI?", Color32::from_rgb(240, 150, 90))
+                };
+                ui.label(egui::RichText::new(word).size(13.0).strong().color(colour));
+            }
             // Beat indicator: brightest on the downbeat, so tempo is
             // visible without reading a number.
             let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());

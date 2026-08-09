@@ -29,6 +29,11 @@ pub struct MidiView {
     /// Binding-change counter, so a learn completing on the MIDI thread
     /// is observable from the frame after.
     pub revision: u64,
+    /// Tempo heard as MIDI clock on the wire, when ticks are arriving.
+    pub clock_bpm: Option<f32>,
+    /// A transport Start arrived; consumed by the app when it resets
+    /// the downbeat.
+    pub clock_started: bool,
 }
 
 impl MidiView {
@@ -173,6 +178,11 @@ pub struct AudioView {
     pub detected_bpm: f32,
     pub confidence: f32,
     pub dropped: usize,
+    /// The beat clock follows MIDI clock rather than running free.
+    pub clock_midi: bool,
+    /// Ticks are actually arriving right now — the difference between
+    /// "following the wire" and "waiting for a wire that is silent".
+    pub clock_ticking: bool,
 }
 
 /// Edits the panel wants applied to the audio settings, collected here
@@ -182,6 +192,9 @@ pub struct AudioView {
 pub struct AudioEdits {
     pub bands: Option<[vizz_audio::Band; 4]>,
     pub auto_bpm: Option<bool>,
+    /// Follow MIDI clock from the controller (true) or run the internal
+    /// clock (false).
+    pub midi_clock: Option<bool>,
     /// The user tapped tempo; the caller resolves it to a BPM.
     pub tapped: bool,
     /// Switch to this input device. `Some(None)` means the system
@@ -730,6 +743,25 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             .changed()
         {
             actions.audio.auto_bpm = Some(auto);
+        }
+        let mut follow = a.clock_midi;
+        if ui
+            .checkbox(&mut follow, "midi clock")
+            .on_hover_text(
+                "follow MIDI clock from the controller — tapping or auto \
+                 switches back to the internal clock",
+            )
+            .changed()
+        {
+            actions.audio.midi_clock = Some(follow);
+        }
+        if a.clock_midi && !a.clock_ticking {
+            // Selected but silent is the state worth a word: the clock
+            // is running free on its last tempo, not following anything.
+            ui.small(
+                egui::RichText::new("no ticks")
+                    .color(egui::Color32::from_rgb(240, 150, 90)),
+            );
         }
         // Same words as the status strip's tap: three surfaces telling
         // three different stories about one behaviour reads as three

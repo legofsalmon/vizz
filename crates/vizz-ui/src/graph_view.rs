@@ -850,6 +850,18 @@ fn node_editor(
         NodeKind::Phasor { beats } => {
             ui.add(egui::DragValue::new(beats).speed(0.1).range(0.25..=64.0).suffix(" beats"));
         }
+        NodeKind::BeatTrig { beats } => {
+            ui.add(egui::DragValue::new(beats).speed(0.05).range(0.25..=64.0).suffix(" beats"));
+        }
+        NodeKind::Gate { threshold } => {
+            ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("threshold"));
+        }
+        NodeKind::Envelope { attack, decay } => {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(attack).speed(0.005).range(0.0..=2.0).prefix("A "));
+                ui.add(egui::DragValue::new(decay).speed(0.005).range(0.0..=5.0).prefix("D "));
+            });
+        }
         NodeKind::Constant(c) => {
             ui.add(egui::Slider::new(c, -1.0..=1.0).text("value"));
         }

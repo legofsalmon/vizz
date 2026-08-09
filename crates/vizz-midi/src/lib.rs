@@ -57,6 +57,95 @@ impl LearnTarget {
     }
 }
 
+/// Tempo from a stream of MIDI clock ticks (24 per quarter note).
+///
+/// The wire clock is jittery — USB scheduling alone moves individual
+/// ticks by milliseconds — so the estimate is the **median** of the last
+/// two beats' worth of intervals, which a scheduling spike cannot drag
+/// the way a mean would be dragged. The estimate expires half a second
+/// after the last tick: a silent sender means no opinion, not the last
+/// tempo frozen forever.
+#[derive(Default)]
+pub struct ClockEstimator {
+    /// Recent tick intervals, seconds, newest last. Capped at 48
+    /// (two beats), which is enough to settle and short enough to track
+    /// a pitch fader.
+    intervals: Vec<f32>,
+    last_tick: Option<std::time::Instant>,
+    /// Start arrived since the last take: the next downbeat is now.
+    started: bool,
+}
+
+impl ClockEstimator {
+    /// Longest believable gap between ticks: 20 bpm. Anything longer is
+    /// a pause, not a tempo.
+    const MAX_INTERVAL: f32 = 60.0 / (20.0 * 24.0);
+    /// The estimate needs a beat of ticks before it says anything.
+    const MIN_TICKS: usize = 24;
+    /// How long after the last tick the estimate keeps being believed.
+    const FRESH: std::time::Duration = std::time::Duration::from_millis(500);
+
+    pub fn on_event(&mut self, event: MidiEvent, now: std::time::Instant) {
+        match event {
+            MidiEvent::Clock => {
+                if let Some(prev) = self.last_tick {
+                    let dt = now.duration_since(prev).as_secs_f32();
+                    if dt > 0.0 && dt <= Self::MAX_INTERVAL {
+                        if self.intervals.len() >= 48 {
+                            self.intervals.remove(0);
+                        }
+                        self.intervals.push(dt);
+                    }
+                }
+                self.last_tick = Some(now);
+            }
+            MidiEvent::Start => {
+                self.started = true;
+                // A fresh transport is a fresh measurement; stale
+                // intervals from before the pause would skew the median.
+                self.intervals.clear();
+                self.last_tick = None;
+            }
+            MidiEvent::Continue => {
+                // Resuming after a pause: the gap since the last tick is
+                // silence, not an interval.
+                self.last_tick = None;
+            }
+            MidiEvent::Stop => {
+                self.last_tick = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// The tempo, once enough ticks have arrived and the last one is
+    /// recent. `None` is "no opinion", never "zero".
+    pub fn bpm(&self, now: std::time::Instant) -> Option<f32> {
+        let last = self.last_tick?;
+        if now.duration_since(last) > Self::FRESH || self.intervals.len() < Self::MIN_TICKS {
+            return None;
+        }
+        let mut sorted = self.intervals.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        // The true even-count median — mean of the two middles. Taking
+        // the upper middle alone is off by half the jitter amplitude
+        // whenever the jitter alternates (USB batching does exactly
+        // that), which read 128 bpm as 116.
+        let mid = sorted.len() / 2;
+        let median = if sorted.len().is_multiple_of(2) {
+            (sorted[mid - 1] + sorted[mid]) * 0.5
+        } else {
+            sorted[mid]
+        };
+        Some(60.0 / (median * 24.0))
+    }
+
+    /// Whether Start arrived since the last call, consuming it.
+    pub fn take_started(&mut self) -> bool {
+        std::mem::take(&mut self.started)
+    }
+}
+
 /// State shared between the MIDI thread and the UI.
 #[derive(Default)]
 pub struct MidiState {
@@ -69,6 +158,8 @@ pub struct MidiState {
     pub last_source: Option<Source>,
     /// Bumped whenever a binding changes, so the app knows to save.
     pub revision: u64,
+    /// Tempo heard on the wire, fed by the realtime stream.
+    pub clock: ClockEstimator,
 }
 
 impl MidiState {
@@ -239,7 +330,13 @@ fn handle_message(
     // Poisoned mutex would mean a panic elsewhere; dropping the message is
     // better than propagating the panic into the MIDI callback thread.
     let Ok(mut state) = shared.lock() else { return };
-    let source = Dispatcher::learn_source(event);
+    // The realtime stream feeds the clock estimator and goes no further:
+    // at 24 ticks a beat it must never arm a learn, land in last_source,
+    // or reach the bindings.
+    let Some(source) = Dispatcher::learn_source(event) else {
+        state.clock.on_event(event, std::time::Instant::now());
+        return;
+    };
     state.last_source = Some(source);
 
     if state.apply_learn(source) {
@@ -391,6 +488,76 @@ mod tests {
         // A slot parameter, to stand in for the real `/scene/fire`.
         b.add(ParamDef::new("/scene/fire", 0.0, 16.0, 0.0));
         Arc::new(b.build())
+    }
+
+    /// The estimator reads the wire tempo through realistic per-tick
+    /// jitter — the median is what a USB scheduling spike cannot drag —
+    /// and expires to no-opinion when the ticks stop.
+    #[test]
+    fn the_clock_estimator_reads_tempo_through_jitter() {
+        let mut c = ClockEstimator::default();
+        // 128 bpm: 19.53 ms per tick.
+        let tick = std::time::Duration::from_secs_f64(60.0 / (128.0 * 24.0));
+        let jitter = std::time::Duration::from_millis(2);
+        let mut now = std::time::Instant::now();
+        assert!(c.bpm(now).is_none(), "an empty estimator had an opinion");
+        for i in 0..60 {
+            now += if i % 2 == 0 { tick + jitter } else { tick - jitter };
+            c.on_event(MidiEvent::Clock, now);
+        }
+        let bpm = c.bpm(now).expect("sixty ticks were not enough");
+        assert!((bpm - 128.0).abs() < 0.5, "estimate off: {bpm}");
+        // Silence is no opinion, never the last tempo frozen forever.
+        assert!(
+            c.bpm(now + std::time::Duration::from_secs(1)).is_none(),
+            "estimate survived a second of silence"
+        );
+    }
+
+    /// Start flags the downbeat exactly once and clears the measurement:
+    /// intervals from before the pause must not skew the fresh transport.
+    #[test]
+    fn start_flags_the_downbeat_once_and_resets_the_measurement() {
+        let mut c = ClockEstimator::default();
+        let tick = std::time::Duration::from_secs_f64(60.0 / (120.0 * 24.0));
+        let mut now = std::time::Instant::now();
+        for _ in 0..30 {
+            now += tick;
+            c.on_event(MidiEvent::Clock, now);
+        }
+        assert!(c.bpm(now).is_some());
+        assert!(!c.take_started(), "started before any Start arrived");
+
+        c.on_event(MidiEvent::Start, now);
+        assert!(c.take_started(), "Start was not flagged");
+        assert!(!c.take_started(), "Start flagged twice for one event");
+        assert!(c.bpm(now).is_none(), "old intervals survived the Start");
+    }
+
+    /// An armed learn must survive a storm of clock ticks unbound — at
+    /// 24 ticks a beat the first tick would otherwise take the binding
+    /// before the user's hand reached the control it was armed for.
+    #[test]
+    fn an_armed_learn_survives_a_clock_storm() {
+        let reg = registry();
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        shared.lock().unwrap().learn_target = Some(LearnTarget::param("/master/dim"));
+        let mut d = Dispatcher::default();
+
+        for _ in 0..100 {
+            handle_message(&[0xF8], &reg, &shared, &mut d);
+        }
+        handle_message(&[0xFA], &reg, &shared, &mut d);
+        {
+            let state = shared.lock().unwrap();
+            assert!(state.learn_target.is_some(), "clock stole the learn");
+            assert!(state.last_source.is_none(), "clock landed in last_source");
+        }
+
+        // The control the learn was actually waiting for still binds.
+        handle_message(&[0xB0, 7, 64], &reg, &shared, &mut d);
+        let state = shared.lock().unwrap();
+        assert!(state.learn_target.is_none(), "the real control did not bind");
     }
 
     /// The whole path a real message takes, minus the hardware: parse ->

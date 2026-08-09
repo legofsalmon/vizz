@@ -55,11 +55,24 @@ pub struct Settings {
     /// Palette files loaded, in the order they were dropped. Restored on
     /// start so a set's colours come back with it.
     pub palettes: Vec<String>,
+    /// Where the beat clock takes its tempo from. `Midi` follows MIDI
+    /// clock on the wire; tapping or enabling auto-BPM switches back to
+    /// `Internal`, because an explicit human gesture always wins.
+    pub clock_source: ClockSource,
     /// Where the modulation canvas was left: pan, zoom, patch name and
     /// whether the palette strip was open. Restored on start so the
     /// canvas opens where you were working, not at the origin with the
     /// name field blank.
     pub graph_view: Option<GraphCanvas>,
+}
+
+/// See [`Settings::clock_source`].
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockSource {
+    #[default]
+    Internal,
+    Midi,
 }
 
 /// Mirror of [`vizz_ui::graph_view::ViewMemory`], owned here because the
@@ -235,6 +248,13 @@ pub fn save_clouds(clouds: &[String]) -> Result<()> {
 }
 
 /// Remember the loaded palettes, same read-modify-write reason.
+/// Persist the clock source alone.
+pub fn save_clock_source(source: ClockSource) -> Result<()> {
+    let mut s = load();
+    s.clock_source = source;
+    save(&s)
+}
+
 pub fn save_palettes(palettes: &[String]) -> Result<()> {
     let mut s = load();
     s.palettes = palettes.to_vec();

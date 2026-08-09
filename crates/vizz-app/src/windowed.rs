@@ -147,6 +147,9 @@ struct App {
     /// The render scale in effect, mirrored from settings so the panel
     /// can show it without a settings-file read on every frame.
     render_scale: f32,
+    /// Where the beat clock takes its tempo from, mirrored from settings
+    /// for the same reason.
+    clock_source: crate::settings::ClockSource,
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -662,6 +665,18 @@ impl App {
             }
         }
 
+        // The wire clock drives the transport when asked. The view is a
+        // frame stale (it refreshes after the frame begins), which for a
+        // tempo reading is nothing.
+        if self.clock_source == crate::settings::ClockSource::Midi {
+            if std::mem::take(&mut self.midi_view.clock_started) {
+                // Start says the downbeat is now.
+                self.engine.modulation.clock.reset();
+            }
+            if let Some(bpm) = self.midi_view.clock_bpm {
+                self.engine.modulation.clock.bpm = bpm;
+            }
+        }
         let inputs = self.engine.begin_frame(state.output.aspect(), None);
         let mut encoder = state
             .ctx
@@ -872,6 +887,8 @@ impl App {
                         detected_bpm: st.bpm(),
                         confidence: st.confidence(),
                         dropped: st.dropped.load(std::sync::atomic::Ordering::Relaxed),
+                        clock_midi: self.clock_source == crate::settings::ClockSource::Midi,
+                        clock_ticking: self.midi_view.clock_bpm.is_some(),
                     }
                 },
                 audio_bands: self.audio_bands,
@@ -939,6 +956,7 @@ impl App {
                     &mut self.audio_bands,
                     &mut self.audio_auto_bpm,
                     &mut self.tap,
+                    &mut self.clock_source,
                 );
                 let mut notes: Notes = Vec::new();
                 apply_preset_actions(
@@ -1258,13 +1276,17 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     if midi.is_none() {
         return;
     }
-    let Ok(state) = shared.try_lock() else { return };
+    let Ok(mut state) = shared.try_lock() else { return };
     view.available = true;
     view.connected = state.connected.clone();
     view.map = state.map.clone();
     view.learn_target = state.learn_target.clone();
     view.last_source = state.last_source;
     view.revision = state.revision;
+    view.clock_bpm = state.clock.bpm(Instant::now());
+    // Accumulated rather than overwritten: a Start between two frames
+    // must not vanish because a later refresh missed the try_lock.
+    view.clock_started |= state.clock.take_started();
 }
 
 /// Push panel edits through to the analysis thread. A free function taking
@@ -1280,22 +1302,39 @@ fn apply_audio_actions(
     bands: &mut [vizz_audio::Band; 4],
     auto_bpm: &mut bool,
     tap: &mut vizz_audio::TapTempo,
+    clock_source: &mut crate::settings::ClockSource,
 ) {
+    use crate::settings::ClockSource;
     let a = &actions.audio;
-    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped {
+    if a.bands.is_none() && a.auto_bpm.is_none() && !a.tapped && a.midi_clock.is_none() {
         return;
     }
+    let source_was = *clock_source;
     if let Some(b) = a.bands {
         *bands = b;
     }
+    if let Some(follow) = a.midi_clock {
+        *clock_source = if follow { ClockSource::Midi } else { ClockSource::Internal };
+    }
     if let Some(auto) = a.auto_bpm {
         *auto_bpm = auto;
+        // Asking the detector to drive the clock is choosing a source:
+        // it and the wire clock would fight over bpm every frame.
+        if auto {
+            *clock_source = ClockSource::Internal;
+        }
     }
     if a.tapped && let Some(bpm) = tap.tap() {
         engine.modulation.clock.bpm = bpm;
-        // Tapping is an explicit manual override; leaving auto on would
-        // have the detector overwrite it on the next frame.
+        // Tapping is an explicit manual override; leaving auto or the
+        // wire clock in charge would overwrite it on the next frame.
         *auto_bpm = false;
+        *clock_source = ClockSource::Internal;
+    }
+    if *clock_source != source_was
+        && let Err(e) = crate::settings::save_clock_source(*clock_source)
+    {
+        log::warn!("could not remember the clock source: {e:#}");
     }
     if let Ok(mut s) = engine.audio.settings.lock() {
         s.bands = *bands;
@@ -1841,6 +1880,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         armed_learn: None,
         pending_clouds: Vec::new(),
         render_scale: crate::settings::load().scale(),
+        clock_source: crate::settings::load().clock_source,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

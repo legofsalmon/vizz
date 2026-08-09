@@ -117,6 +117,12 @@ pub enum NodeKind {
     Phasor { beats: f32 },
     Constant(f32),
 
+    /// 1.0 on the frame a beat division boundary passes, else 0.0.
+    /// Phase-locked to the absolute beat clock like [`NodeKind::Phasor`],
+    /// so every trigger of the same division fires together — this is
+    /// the node that makes an envelope rhythmic.
+    BeatTrig { beats: f32 },
+
     // --- operators ---
     Curve { shape: CurveShape, amount: f32 },
     Math { op: MathOp },
@@ -130,6 +136,17 @@ pub enum NodeKind {
     Quantise { steps: f32 },
     /// Latch input when the trigger input crosses 0.5 rising.
     SampleHold,
+    /// 1 while the input is at or above the threshold, 0 below — with a
+    /// tenth of hysteresis, so a band hovering at the line does not
+    /// chatter. Turns any envelope into a trigger.
+    Gate { threshold: f32 },
+    /// Attack/decay envelope fired by a rising edge through 0.5 on its
+    /// trigger input: linear attack to 1 over `attack` seconds, then
+    /// exponential decay with time constant `decay`. Retriggering climbs
+    /// from the current level rather than clicking to zero. Seconds,
+    /// not beats — beat-relative behaviour comes from feeding it a
+    /// [`NodeKind::BeatTrig`], which is the compositional point.
+    Envelope { attack: f32, decay: f32 },
 
     // --- sink ---
     /// Adds `depth × input` to a parameter's normalised offset.
@@ -143,6 +160,7 @@ impl NodeKind {
             | Self::Band(_)
             | Self::Level
             | Self::Phasor { .. }
+            | Self::BeatTrig { .. }
             | Self::Constant(_) => 0,
             Self::Math { .. } | Self::SampleHold => 2,
             _ => 1,
@@ -155,6 +173,7 @@ impl NodeKind {
             (Self::Math { .. }, 1) => "b",
             (Self::SampleHold, 0) => "in",
             (Self::SampleHold, 1) => "trig",
+            (Self::Envelope { .. }, 0) => "trig",
             _ => "in",
         }
     }
@@ -172,6 +191,9 @@ impl NodeKind {
             Self::Smooth { .. } => "Smooth".into(),
             Self::Quantise { .. } => "Quantise".into(),
             Self::SampleHold => "S&H".into(),
+            Self::BeatTrig { beats } => format!("Beat · {beats}"),
+            Self::Gate { .. } => "Gate".into(),
+            Self::Envelope { .. } => "Envelope".into(),
             Self::Param { addr, .. } => addr.clone(),
         }
     }
@@ -184,6 +206,7 @@ impl NodeKind {
             | Self::Band(_)
             | Self::Level
             | Self::Phasor { .. }
+            | Self::BeatTrig { .. }
             | Self::Constant(_) => Category::Source,
             Self::Param { .. } => Category::Sink,
             _ => Category::Operator,
@@ -206,16 +229,21 @@ pub struct Node {
     pub pos: [f32; 2],
     #[serde(default)]
     pub bypass: bool,
-    /// Per-node scratch: S&H latch, smoother state, phasor phase.
+    /// Per-node scratch: S&H latch, smoother state, envelope level.
     #[serde(skip)]
     state: f32,
     #[serde(skip)]
     prev_trigger: f32,
+    /// Second scratch slot: the envelope's stage, the beat trigger's
+    /// armed flag. Encoding these in the sign of `state` would be a trap
+    /// for the next reader, and one more skipped f32 costs nothing.
+    #[serde(skip)]
+    aux: f32,
 }
 
 impl Node {
     pub fn new(kind: NodeKind, pos: [f32; 2]) -> Self {
-        Self { kind, pos, bypass: false, state: 0.0, prev_trigger: 0.0 }
+        Self { kind, pos, bypass: false, state: 0.0, prev_trigger: 0.0, aux: 0.0 }
     }
 }
 
@@ -410,6 +438,26 @@ impl NodeGraph {
                     }
                 }
                 NodeKind::Constant(c) => *c,
+                NodeKind::BeatTrig { beats: per } => {
+                    if *per > 0.0 {
+                        let idx = (beats / *per as f64).floor() as f32;
+                        // Armed on the first tick rather than firing: a
+                        // patch loaded mid-set must wait for the next
+                        // boundary, exactly as the autopilot does.
+                        if node.aux < 0.5 {
+                            node.aux = 1.0;
+                            node.state = idx;
+                            0.0
+                        } else if node.state != idx {
+                            node.state = idx;
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    }
+                }
                 NodeKind::Curve { shape, amount } => {
                     // `amount` blends between untouched and fully shaped, so
                     // the control is continuous rather than a switch.
@@ -441,6 +489,47 @@ impl NodeGraph {
                     node.prev_trigger = input[1];
                     node.state
                 }
+                NodeKind::Gate { threshold } => {
+                    // On at the threshold, off a tenth below it. The gap
+                    // is what stops a band hovering at the line from
+                    // chattering the trigger it feeds.
+                    let was_on = node.state >= 0.5;
+                    let on = if was_on {
+                        input[0] > *threshold * 0.9
+                    } else {
+                        input[0] >= *threshold
+                    };
+                    node.state = if on { 1.0 } else { 0.0 };
+                    node.state
+                }
+                NodeKind::Envelope { attack, decay } => {
+                    // A rising edge starts the attack from the current
+                    // level, so a retrigger mid-decay climbs rather than
+                    // clicking to zero.
+                    if node.prev_trigger < 0.5 && input[0] >= 0.5 {
+                        node.aux = 1.0;
+                    }
+                    node.prev_trigger = input[0];
+                    if node.aux >= 0.5 {
+                        let step = if *attack <= f32::EPSILON {
+                            1.0
+                        } else {
+                            dt / *attack
+                        };
+                        node.state = (node.state + step).min(1.0);
+                        if node.state >= 1.0 {
+                            node.aux = 0.0;
+                        }
+                    } else {
+                        let k = if *decay <= f32::EPSILON {
+                            1.0
+                        } else {
+                            1.0 - (-dt / *decay).exp()
+                        };
+                        node.state -= node.state * k;
+                    }
+                    node.state
+                }
                 NodeKind::Param { addr, depth } => {
                     if let Some(id) = registry.id(addr) {
                         // Several Param nodes may target one parameter; they
@@ -466,6 +555,7 @@ pub fn catalog() -> Vec<(Category, &'static str, NodeKind)> {
         (Category::Source, "Audio band", K::Band(0)),
         (Category::Source, "Audio level", K::Level),
         (Category::Source, "Phasor", K::Phasor { beats: 4.0 }),
+        (Category::Source, "Beat trigger", K::BeatTrig { beats: 1.0 }),
         (Category::Source, "Constant", K::Constant(1.0)),
         (Category::Operator, "Curve", K::Curve { shape: CurveShape::Exp2, amount: 1.0 }),
         (Category::Operator, "Math", K::Math { op: MathOp::Add }),
@@ -473,6 +563,8 @@ pub fn catalog() -> Vec<(Category, &'static str, NodeKind)> {
         (Category::Operator, "Smooth", K::Smooth { attack: 0.02, release: 0.2 }),
         (Category::Operator, "Quantise", K::Quantise { steps: 4.0 }),
         (Category::Operator, "Sample & hold", K::SampleHold),
+        (Category::Operator, "Gate", K::Gate { threshold: 0.5 }),
+        (Category::Operator, "Envelope", K::Envelope { attack: 0.01, decay: 0.3 }),
         (Category::Sink, "Parameter", K::Param { addr: String::new(), depth: 0.5 }),
     ]
 }
@@ -499,6 +591,136 @@ mod tests {
         let mut out = Vec::new();
         g.tick(1.0 / 60.0, 0.0, 0.0, AudioLevels { bands, level: 0.0 }, reg, &mut out);
         out
+    }
+
+    /// Tick with an explicit clock position, for the beat-locked nodes.
+    fn run_at(g: &mut NodeGraph, reg: &ParamRegistry, beats: f64) -> Vec<f32> {
+        let mut out = Vec::new();
+        g.tick(1.0 / 60.0, 0.0, beats, AudioLevels::default(), reg, &mut out);
+        out
+    }
+
+    /// The beat trigger fires exactly once per division boundary, waits
+    /// for the next boundary after load (a patch loaded mid-set must not
+    /// fire on arrival), and stays locked to the absolute clock under
+    /// fractional frame deltas.
+    #[test]
+    fn beat_trigger_fires_once_per_division_and_arms_silently() {
+        let reg = registry();
+        let mut g = NodeGraph::default();
+        let t = g.add(NodeKind::BeatTrig { beats: 1.0 }, [0.0, 0.0]);
+
+        // First tick arms: the clock is mid-beat 2 and nothing fires.
+        run_at(&mut g, &reg, 2.4);
+        assert_eq!(g.value(t), 0.0, "fired on arm");
+
+        // Walk the clock in uneven steps across two boundaries.
+        let mut fires = 0;
+        let mut beats = 2.4;
+        while beats < 4.5 {
+            beats += 0.037;
+            run_at(&mut g, &reg, beats);
+            if g.value(t) >= 0.5 {
+                fires += 1;
+            }
+        }
+        assert_eq!(fires, 2, "expected the 3.0 and 4.0 boundaries only");
+    }
+
+    /// Gate hysteresis: on at the threshold, still on a hair below it,
+    /// off a tenth under — a band hovering at the line must not chatter
+    /// the trigger it feeds.
+    #[test]
+    fn gate_holds_through_a_hovering_input() {
+        let reg = registry();
+        let mut g = NodeGraph::default();
+        let c = g.add(NodeKind::Constant(0.0), [0.0, 0.0]);
+        let gate = g.add(NodeKind::Gate { threshold: 0.5 }, [1.0, 0.0]);
+        g.connect(c, gate, 0);
+
+        let level = |v: f32, g: &mut NodeGraph| {
+            if let NodeKind::Constant(c) = &mut g.nodes[c.0].kind {
+                *c = v;
+            }
+            run(g, &reg);
+            g.value(gate)
+        };
+        assert_eq!(level(0.51, &mut g), 1.0, "did not open at the threshold");
+        assert_eq!(level(0.47, &mut g), 1.0, "chattered inside the hysteresis band");
+        assert_eq!(level(0.44, &mut g), 0.0, "did not close below the band");
+        assert_eq!(level(0.49, &mut g), 0.0, "reopened below the threshold");
+    }
+
+    /// The envelope rises over its attack, decays after, and a retrigger
+    /// mid-decay climbs from the current level rather than clicking to
+    /// zero.
+    #[test]
+    fn envelope_attacks_decays_and_retriggers_without_a_click() {
+        let reg = registry();
+        let mut g = NodeGraph::default();
+        let c = g.add(NodeKind::Constant(0.0), [0.0, 0.0]);
+        // Attack spanning several frames so the ramp is observable.
+        let env = g.add(NodeKind::Envelope { attack: 0.1, decay: 0.2 }, [1.0, 0.0]);
+        g.connect(c, env, 0);
+        let trig = |v: f32, g: &mut NodeGraph| {
+            if let NodeKind::Constant(c) = &mut g.nodes[c.0].kind {
+                *c = v;
+            }
+            run(g, &reg);
+            g.value(env)
+        };
+
+        // One pulse fires the whole shape: the attack keeps climbing
+        // after the trigger has gone low again, because the envelope is
+        // a one-shot per rising edge — a single-frame BeatTrig pulse
+        // must produce the full hit.
+        let first = trig(1.0, &mut g);
+        assert!(first > 0.0 && first < 1.0, "attack skipped the ramp: {first}");
+        // 0.1 s attack at 60 Hz is six frames; the first is above.
+        let mut level = first;
+        for _ in 0..5 {
+            let next = trig(0.0, &mut g);
+            assert!(next >= level, "attack went backwards");
+            level = next;
+        }
+        assert!(level >= 1.0, "never reached full: {level}");
+
+        // Then it decays on its own.
+        for _ in 0..8 {
+            level = trig(0.0, &mut g);
+        }
+        assert!(level < 0.7 && level > 0.0, "decay looks wrong: {level}");
+
+        // Retrigger mid-decay: the next value must not drop below where
+        // the decay had reached — no click.
+        let resumed = trig(1.0, &mut g);
+        assert!(
+            resumed >= level,
+            "retrigger clicked down: {level} -> {resumed}"
+        );
+    }
+
+    /// Scratch state is serde-skipped, so a saved patch with an envelope
+    /// mid-flight comes back quiet and re-arms cleanly.
+    #[test]
+    fn rhythm_nodes_round_trip_through_json_quietly() {
+        let reg = registry();
+        let mut g = NodeGraph::default();
+        let t = g.add(NodeKind::BeatTrig { beats: 2.0 }, [0.0, 0.0]);
+        let env = g.add(NodeKind::Envelope { attack: 0.01, decay: 0.3 }, [1.0, 0.0]);
+        let gate = g.add(NodeKind::Gate { threshold: 0.5 }, [2.0, 0.0]);
+        g.connect(t, env, 0);
+        g.connect(t, gate, 0);
+        // Drive it hot, then round-trip.
+        for i in 0..20 {
+            run_at(&mut g, &reg, i as f64 * 0.5);
+        }
+        let json = serde_json::to_string(&g).unwrap();
+        let mut back: NodeGraph = serde_json::from_str(&json).unwrap();
+        // First tick after load arms without firing, whatever the clock.
+        run_at(&mut back, &reg, 173.2);
+        assert_eq!(back.value(t), 0.0, "beat trigger fired on load");
+        assert_eq!(back.value(env), 0.0, "envelope woke up hot");
     }
 
     /// The capability the flat routing could not express: an operator

@@ -12,14 +12,32 @@ pub enum MidiEvent {
     NoteOff { channel: u8, note: u8 },
     /// 0..=16383, centre 8192.
     PitchBend { channel: u8, value: u16 },
+    /// Realtime clock tick, 24 per quarter note. Carries no channel.
+    Clock,
+    /// Transport start: the next clock tick is the downbeat.
+    Start,
+    /// Transport continue: ticks resume, no downbeat implied.
+    Continue,
+    /// Transport stop: ticks may keep arriving on some gear; the sender
+    /// has stopped meaning them.
+    Stop,
 }
 
 /// Parse one MIDI message. Returns `None` for anything vizz does not map
-/// (clock, sysex, aftertouch…) rather than treating it as an error —
-/// a controller sending clock must not spam the log.
+/// (sysex, aftertouch, song position…) rather than treating it as an
+/// error — unmapped traffic must not spam the log.
 pub fn parse(bytes: &[u8]) -> Option<MidiEvent> {
     let status = *bytes.first()?;
-    // Realtime/system messages (0xF8..) carry no channel and are ignored.
+    // Realtime messages carry no channel and no data bytes. Clock and
+    // the transport are the sync surface; everything else system-ish is
+    // still ignored.
+    match status {
+        0xF8 => return Some(MidiEvent::Clock),
+        0xFA => return Some(MidiEvent::Start),
+        0xFB => return Some(MidiEvent::Continue),
+        0xFC => return Some(MidiEvent::Stop),
+        _ => {}
+    }
     if !(0x80..0xF0).contains(&status) {
         return None;
     }
@@ -69,6 +87,17 @@ mod tests {
     }
 
     #[test]
+    fn realtime_clock_and_transport_parse() {
+        assert_eq!(parse(&[0xF8]), Some(MidiEvent::Clock));
+        assert_eq!(parse(&[0xFA]), Some(MidiEvent::Start));
+        assert_eq!(parse(&[0xFB]), Some(MidiEvent::Continue));
+        assert_eq!(parse(&[0xFC]), Some(MidiEvent::Stop));
+        // The rest of the system range stays unmapped.
+        assert_eq!(parse(&[0xF2, 0, 0]), None, "song position leaked through");
+        assert_eq!(parse(&[0xFE]), None, "active sensing leaked through");
+    }
+
+    #[test]
     fn note_on_with_zero_velocity_is_note_off() {
         assert_eq!(parse(&[0x90, 60, 0]), Some(MidiEvent::NoteOff { channel: 0, note: 60 }));
         assert_eq!(
@@ -92,7 +121,6 @@ mod tests {
     #[test]
     fn ignores_unmapped_and_malformed_messages() {
         assert_eq!(parse(&[]), None);
-        assert_eq!(parse(&[0xF8]), None, "clock must be ignored silently");
         assert_eq!(parse(&[0xF0, 1, 2]), None, "sysex");
         assert_eq!(parse(&[0xD0, 64]), None, "channel aftertouch is unmapped");
         assert_eq!(parse(&[0xB0]), None, "truncated");
