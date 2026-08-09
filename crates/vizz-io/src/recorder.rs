@@ -331,7 +331,13 @@ mod tests {
     #[test]
     fn an_unwritable_directory_is_refused_up_front() {
         let Some((device, _queue, _texture)) = gpu() else { return };
-        let err = Recorder::new(&device, Path::new("/proc/vizz-cannot-write-here"), 8, 8);
-        assert!(err.is_err(), "recording into /proc was accepted");
+        // A path whose parent is a plain *file* cannot become a directory
+        // on any platform — unlike /proc, which Windows happily creates
+        // as a real, writable D:\proc.
+        let blocker = std::env::temp_dir().join(format!("vizz-rec-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"").unwrap();
+        let err = Recorder::new(&device, &blocker.join("take"), 8, 8);
+        assert!(err.is_err(), "recording under a plain file was accepted");
+        let _ = std::fs::remove_file(&blocker);
     }
 }
