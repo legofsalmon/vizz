@@ -81,6 +81,15 @@ struct Args {
     #[arg(long)]
     height: Option<u32>,
 
+    /// Start fullscreen. Without it the last F11 choice is remembered.
+    #[arg(long)]
+    fullscreen: bool,
+
+    /// Monitor index for --fullscreen (0-based). Out of range falls back
+    /// to the primary.
+    #[arg(long)]
+    monitor: Option<usize>,
+
     /// Disable the Syphon output (macOS).
     #[arg(long)]
     no_syphon: bool,
@@ -284,6 +293,8 @@ fn main() -> Result<()> {
                 width,
                 height,
                 size_from_cli,
+                fullscreen: args.fullscreen,
+                monitor: args.monitor,
                 show_gui: !args.no_gui,
                 check_updates: !args.no_update_check,
                 midi_map_path: args.midi_map.clone().unwrap_or_else(vizz_midi::default_map_path),

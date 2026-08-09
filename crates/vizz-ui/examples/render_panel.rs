@@ -159,6 +159,7 @@ fn main() {
     }
 
     let state = PanelState {
+        recording: None,
         preset_current: Some(2),
         update_available: Some("0.2.0".into()),
         health: Some(health.snapshot()),

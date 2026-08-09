@@ -30,6 +30,12 @@ pub struct WindowedOpts {
     /// The size came from an explicit --width/--height rather than the
     /// defaults, and should outrank whatever the panel last saved.
     pub size_from_cli: bool,
+    /// Start fullscreen (--fullscreen). Without it, the remembered
+    /// setting decides; F11 toggles either way.
+    pub fullscreen: bool,
+    /// Monitor index for --fullscreen, from `--monitor`. Out of range
+    /// warns and falls back to the window's own monitor.
+    pub monitor: Option<usize>,
     pub show_gui: bool,
     /// Check GitHub for a newer release once at startup.
     pub check_updates: bool,
@@ -150,6 +156,9 @@ struct App {
     /// Where the beat clock takes its tempo from, mirrored from settings
     /// for the same reason.
     clock_source: crate::settings::ClockSource,
+    /// A recording in flight. Present exactly while /record/active is up;
+    /// the reconcile in `redraw` keeps the two honest with each other.
+    recorder: Option<vizz_io::recorder::Recorder>,
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -193,9 +202,25 @@ const QUIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(
 
 impl App {
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<RenderState> {
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title(self.opts.title.clone())
             .with_inner_size(LogicalSize::new(self.opts.width, self.opts.height));
+        // The flag forces fullscreen for this run; otherwise the last
+        // toggle is remembered — a venue machine that always runs
+        // fullscreen should not need retelling every launch.
+        if self.opts.fullscreen || crate::settings::load().fullscreen {
+            let monitor = match self.opts.monitor {
+                Some(i) => {
+                    let picked = event_loop.available_monitors().nth(i);
+                    if picked.is_none() {
+                        log::warn!("--monitor {i} does not exist — using the primary");
+                    }
+                    picked.or_else(|| event_loop.primary_monitor())
+                }
+                None => None, // current monitor, decided by the platform
+            };
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
+        }
         let window = Arc::new(event_loop.create_window(attrs)?);
 
         let instance =
@@ -449,6 +474,12 @@ impl App {
                 .notify_info(format!("output {ow}x{oh}, rendering at {rw}x{rh}"));
         }
 
+        // The recorder's ring is sized to the master being replaced —
+        // the same hazard the sender rebuild below documents.
+        if self.recorder.take().is_some() {
+            self.params.registry.set(self.params.record_active, 0.0);
+            state.gui.notify_info("recording stopped — the output size changed");
+        }
         self.render_scale = scale;
         let mut s = crate::settings::load();
         s.output_size = Some([ow, oh]);
@@ -920,7 +951,12 @@ impl App {
                 scale: self.render_scale,
                 wide: !state.output.publishable(),
             };
+            let recording = self.recorder.as_ref().map(|r| {
+                let (frames, dropped) = r.progress();
+                vizz_ui::RecordingView { secs: r.elapsed().as_secs(), frames, dropped }
+            });
             let panel_state = PanelState {
+                recording,
                 // try_lock: the update thread holds this for microseconds, but
                 // the render thread still never waits on it.
                 update_available: self
@@ -1113,6 +1149,64 @@ impl App {
         state
             .outputs
             .publish(&state.ctx.device, &state.ctx.queue, publish);
+        // Recording rides the same eight-bit master the senders get. The
+        // parameter is the source of truth: up with no recorder running
+        // starts one, down with one running stops it — which is what lets
+        // OSC, MIDI and both buttons share one control.
+        let want_recording = self.params.registry.target(self.params.record_active) >= 0.5;
+        match (&mut self.recorder, want_recording) {
+            (slot @ None, true) => {
+                let dir = crate::settings::take_dir();
+                match vizz_io::recorder::Recorder::new(
+                    &state.ctx.device,
+                    &dir,
+                    publish.width(),
+                    publish.height(),
+                ) {
+                    Ok(rec) => {
+                        state.gui.notify_info(format!("recording to {}", dir.display()));
+                        log::info!("recording to {}", dir.display());
+                        *slot = Some(rec);
+                    }
+                    Err(e) => {
+                        // Refused: put the control back down so the button
+                        // does not claim a recording that is not happening.
+                        log::error!("could not start recording: {e:#}");
+                        state.gui.notify_error(format!("could NOT record: {e}"));
+                        self.params.registry.set(self.params.record_active, 0.0);
+                    }
+                }
+            }
+            (Some(rec), true) => {
+                rec.publish(&state.ctx.device, &state.ctx.queue, publish);
+                if let Some(e) = rec.take_error() {
+                    // The worker died (disk full, most likely). Stop and
+                    // say so once, keeping whatever was already written.
+                    let (frames, _) = rec.progress();
+                    state
+                        .gui
+                        .notify_error(format!("recording stopped after {frames} frames: {e}"));
+                    self.params.registry.set(self.params.record_active, 0.0);
+                    self.recorder = None;
+                }
+            }
+            (slot @ Some(_), false) => {
+                let rec = slot.take().expect("matched Some");
+                let (frames, dropped) = rec.progress();
+                let dir = rec.dir().display().to_string();
+                drop(rec); // joins the encoder, flushing the tail
+                let drops = if dropped > 0 {
+                    format!(", dropped {dropped}")
+                } else {
+                    String::new()
+                };
+                state
+                    .gui
+                    .notify_info(format!("recorded {frames} frames{drops} — {dir}"));
+                log::info!("recording finished: {frames} frames{drops} in {dir}");
+            }
+            (None, false) => {}
+        }
         // Announce liveness *transitions*. The roster keeps dead outputs
         // visible in the panel; this is the shove for the moment it
         // happens, when the panel may be closed and the performer is
@@ -1290,8 +1384,32 @@ impl ApplicationHandler for App {
             // the platform's own quit. Nothing to confirm.
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
+                if event.logical_key == Key::Named(NamedKey::F11) && event.state.is_pressed() =>
+            {
+                if let Some(state) = &self.state {
+                    let going_full = state.window.fullscreen().is_none();
+                    state.window.set_fullscreen(going_full.then(|| {
+                        winit::window::Fullscreen::Borderless(state.window.current_monitor())
+                    }));
+                    if let Err(e) = crate::settings::save_fullscreen(going_full) {
+                        log::warn!("could not remember the fullscreen choice: {e:#}");
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
                 if event.logical_key == Key::Named(NamedKey::Escape) && event.state.is_pressed() =>
             {
+                // In fullscreen the first Escape leaves fullscreen — the
+                // standard meaning, and strictly safer than arming quit.
+                if let Some(state) = &self.state
+                    && state.window.fullscreen().is_some()
+                {
+                    state.window.set_fullscreen(None);
+                    if let Err(e) = crate::settings::save_fullscreen(false) {
+                        log::warn!("could not remember the fullscreen choice: {e:#}");
+                    }
+                    return;
+                }
                 // Escape is not. It is one key, next to nothing, and it
                 // used to end the show on the first press — the only
                 // destructive single keystroke in the app, on a machine
@@ -1955,6 +2073,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         pending_clouds: Vec::new(),
         render_scale: crate::settings::load().scale(),
         clock_source: crate::settings::load().clock_source,
+        recorder: None,
         midi,
         midi_shared,
         midi_view: MidiView::default(),

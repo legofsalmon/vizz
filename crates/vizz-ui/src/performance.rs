@@ -71,6 +71,9 @@ const FADER_CHROME: f32 = LABEL_H * 3.0 + LABEL_GAP * 3.0;
 const PAD: f32 = 14.0;
 
 pub struct PerformanceState<'a> {
+    /// A recording in progress: the strip wears a red chip, because
+    /// forgetting a recording is how disks fill mid-set.
+    pub recording: Option<crate::RecordingView>,
     pub outputs: &'a [OutputStatus],
     pub audio: &'a AudioView,
     pub fps: f32,
@@ -167,7 +170,7 @@ pub fn draw(
                 ui.add_space(PAD);
                 ui.vertical(|ui| {
                     ui.set_width(inner_w);
-                    status_strip(ui, state, &mut actions, inner_w);
+                    status_strip(ui, registry, state, &mut actions, inner_w);
                     ui.add_space(10.0);
 
                     section(ui, "PUNCH");
@@ -466,6 +469,7 @@ fn punch_button(
 
 fn status_strip(
     ui: &mut egui::Ui,
+    registry: &ParamRegistry,
     state: &PerformanceState<'_>,
     actions: &mut PerformanceActions,
     width: f32,
@@ -529,6 +533,28 @@ fn status_strip(
                     .size(15.0)
                     .color(INK),
             );
+            if let Some(rec) = &state.recording {
+                // Clicking stops: the chip is the one place a performer
+                // looks, so it is also the fastest way out.
+                let text = format!(
+                    "REC {}:{:02} · {}f{}",
+                    rec.secs / 60,
+                    rec.secs % 60,
+                    rec.frames,
+                    if rec.dropped > 0 { format!(" · {} dropped", rec.dropped) } else { String::new() }
+                );
+                let chip = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(text).size(13.0).strong().color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(150, 40, 36)),
+                );
+                if chip.on_hover_text("recording the master — click to stop").clicked()
+                    && let Some(id) = registry.id("/record/active")
+                {
+                    registry.set(id, 0.0);
+                }
+            }
             if state.audio.clock_midi {
                 // Following the wire — or supposed to be. Green while
                 // ticks arrive, warning-amber while the wire is silent
@@ -1179,6 +1205,7 @@ mod tests {
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let grid = crate::grid_view::GridView::default();
         let state = PerformanceState {
+            recording: None,
             preset_current: None,
             outputs: &[OutputStatus {
                 name: "syphon:vizz".into(),

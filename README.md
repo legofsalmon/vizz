@@ -149,6 +149,35 @@ never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
 
+### Recording
+
+`/record/active` (a button in the panel's outputs section, the red REC
+chip on the performance layout, OSC, or a learned MIDI button) records
+the master output as a **PNG sequence** — every finished frame is a
+finished file, so a crash mid-take costs nothing already written. Takes
+land in `~/Movies/vizz/vizz-<timestamp>/` (macOS) or `~/Videos/vizz/…`
+elsewhere, with a `frames.csv` of per-frame wall-clock times so a
+variable-rate capture assembles honestly:
+
+```sh
+ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4
+```
+
+Recording never stalls the show: a slow disk drops frames on the
+recording only, the drops are counted and reported, and a full disk
+stops the take with a notice instead of retrying sixty times a second.
+Heavy resolutions will drop frames — PNG encoding at 1080p60 is at the
+edge of one core — and the counters say exactly how many.
+
+### Fullscreen
+
+**F11** goes fullscreen on the monitor the window is on — drag the
+preview to the projector first. The first **Esc** leaves fullscreen;
+`--fullscreen` (optionally `--monitor <index>`) starts that way, and
+the last F11 choice is remembered between launches. A dedicated second
+output window is future work; fullscreen-on-the-preview covers the
+single-machine venue case, and Syphon/NDI cover the rest.
+
 ### Live point clouds
 
 ```sh
@@ -622,7 +651,8 @@ G          modulation canvas
 P          performance layout
 /          filter the parameter list
 ?          the shortcut list, on screen
-Esc        quit
+F11        fullscreen on the window's monitor
+Esc        leave fullscreen; otherwise quit (twice)
 ```
 
 `?` exists because a shortcut that lives only in a README is a shortcut
@@ -983,6 +1013,7 @@ control input can never crash the renderer.
 | `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
 | `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
+| `/record/active` | 0 – 1 | 0 | record the master to a PNG sequence; 1 starts, 0 stops |
 | `/master/dim` | 0 – 1 | 1 | master fader |
 
 The table is checked against the parameter registry by a test

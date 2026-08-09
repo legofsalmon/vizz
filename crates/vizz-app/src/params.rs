@@ -47,6 +47,7 @@ pub struct AppParams {
     pub punch_freeze: ParamId,
     pub punch_strobe: ParamId,
     pub punch_strobe_div: ParamId,
+    pub record_active: ParamId,
     pub palette: ParamId,
     pub color_spread: ParamId,
     pub color_drive: ParamId,
@@ -188,6 +189,14 @@ impl AppParams {
         // untrustworthy. Set from its own control beside the button.
         let punch_strobe_div =
             b.add(ParamDef::new("/punch/strobe_div", 0.25, 4.0, 0.5).transport());
+        // Recording is transport all the way: it says when, modulation
+        // must never toggle disk writes, and a preset recalling with a
+        // recording embedded would start one behind your back.
+        let record_active = b.add(
+            ParamDef::new("/record/active", 0.0, 1.0, 0.0)
+                .labels(&["off", "rec"])
+                .transport(),
+        );
         // Colour. Palette 0 is the original HSV behaviour, so the defaults
         // below leave the look exactly as it was.
         // The range covers the loaded palettes as well as the shipped
@@ -386,6 +395,7 @@ impl AppParams {
             punch_freeze,
             punch_strobe,
             punch_strobe_div,
+            record_active,
             zoom,
             spin,
             mirror,
@@ -501,6 +511,7 @@ mod tests {
                 "/punch/freeze",
                 "/punch/strobe",
                 "/punch/strobe_div",
+                "/record/active",
             ]
         );
     }

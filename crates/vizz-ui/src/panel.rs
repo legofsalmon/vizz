@@ -156,12 +156,22 @@ pub struct PanelState {
     pub gravity_grid: Option<crate::grid_view::GridView>,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
+    /// A recording in progress, if one is.
+    pub recording: Option<RecordingView>,
     /// Draw every collapsible section open.
     ///
     /// For offscreen rendering — tests and the preview example — where
     /// there is nobody to click a header, and asserting on content that
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
+}
+
+/// A recording in progress, for the panel and the performance strip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordingView {
+    pub secs: u64,
+    pub frames: u64,
+    pub dropped: u64,
 }
 
 /// What the panel needs to know about audio this frame. A snapshot rather
@@ -233,7 +243,7 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| {
-                    outputs_section(ui, state);
+                    outputs_section(ui, state, registry);
                     ui.separator();
                     output_setup_section(ui, state, &mut actions);
                 });
@@ -1089,7 +1099,43 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     }
 }
 
-fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
+fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
+    // Record lives with the outputs: it is one more consumer of the
+    // master. The button writes /record/active exactly as OSC or a
+    // learned MIDI button would — one path.
+    if let Some(id) = registry.id("/record/active") {
+        ui.horizontal(|ui| {
+            let on = registry.target(id) >= 0.5;
+            let label = if on { "stop recording" } else { "record" };
+            let button = egui::Button::new(
+                egui::RichText::new(label).color(if on {
+                    egui::Color32::from_rgb(240, 120, 110)
+                } else {
+                    egui::Color32::from_rgb(200, 205, 214)
+                }),
+            );
+            if ui
+                .add(button)
+                .on_hover_text("PNG sequence of the master output — heavy resolutions drop frames rather than stall the show")
+                .clicked()
+            {
+                registry.set(id, if on { 0.0 } else { 1.0 });
+            }
+            if let Some(rec) = &state.recording {
+                ui.small(format!(
+                    "{}:{:02} · {} frames{}",
+                    rec.secs / 60,
+                    rec.secs % 60,
+                    rec.frames,
+                    if rec.dropped > 0 {
+                        format!(" · {} dropped", rec.dropped)
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        });
+    }
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
         return;

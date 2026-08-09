@@ -55,6 +55,9 @@ pub struct Settings {
     /// Palette files loaded, in the order they were dropped. Restored on
     /// start so a set's colours come back with it.
     pub palettes: Vec<String>,
+    /// Whether the window was fullscreen when last toggled. Restored on
+    /// launch; `--fullscreen` forces it for a run regardless.
+    pub fullscreen: bool,
     /// Where the beat clock takes its tempo from. `Midi` follows MIDI
     /// clock on the wire; tapping or enabling auto-BPM switches back to
     /// `Internal`, because an explicit human gesture always wins.
@@ -248,6 +251,56 @@ pub fn save_clouds(clouds: &[String]) -> Result<()> {
 }
 
 /// Remember the loaded palettes, same read-modify-write reason.
+/// Where a new recording lands: a fresh timestamped directory under the
+/// platform's video folder, falling back to the config directory when no
+/// home exists. UTC in the name — std has no timezone database, and a
+/// name that sorts correctly matters more than local wall time.
+pub fn take_dir() -> PathBuf {
+    let base = std::env::home_dir()
+        .map(|h| {
+            if cfg!(target_os = "macos") {
+                h.join("Movies").join("vizz")
+            } else {
+                h.join("Videos").join("vizz")
+            }
+        })
+        .unwrap_or_else(|| {
+            vizz_mod::library::patch_dir()
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default()
+                .join("recordings")
+        });
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_unix(secs);
+    let (hh, mm, ss) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    base.join(format!("vizz-{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}"))
+}
+
+/// Days-since-epoch to calendar date (Howard Hinnant's civil algorithm).
+fn civil_from_unix(secs: u64) -> (i64, u64, u64) {
+    let z = secs as i64 / 86_400 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u64;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u64;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Persist the fullscreen choice alone.
+pub fn save_fullscreen(fullscreen: bool) -> Result<()> {
+    let mut s = load();
+    s.fullscreen = fullscreen;
+    save(&s)
+}
+
 /// Persist the clock source alone.
 pub fn save_clock_source(source: ClockSource) -> Result<()> {
     let mut s = load();
@@ -287,6 +340,43 @@ mod tests {
         assert_eq!(s.graph_view, None);
         assert_eq!(s.palettes, vec!["/p.png".to_string()]);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The recording directory name is a real calendar date, sortable,
+    /// and lands under a base that exists on every platform.
+    #[test]
+    fn take_dirs_are_dated_and_sortable() {
+        let (y, m, d) = civil_from_unix(0);
+        assert_eq!((y, m, d), (1970, 1, 1));
+        // 2026-08-08 00:00:00 UTC.
+        let (y, m, d) = civil_from_unix(1_786_147_200);
+        assert_eq!((y, m, d), (2026, 8, 8), "civil date drifted");
+        let dir = take_dir();
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("vizz-20"), "take dir name: {name}");
+        assert_eq!(name.len(), "vizz-YYYYMMDD-HHMMSS".len(), "take dir name: {name}");
+    }
+
+    /// Fullscreen and clock-source choices survive a restart, and a file
+    /// from before the fields existed still loads.
+    #[test]
+    fn fullscreen_and_clock_source_round_trip() {
+        let (_guard, dir) = crate::test_env::scoped("settings-fullscreen");
+        save(&Settings {
+            fullscreen: true,
+            clock_source: ClockSource::Midi,
+            ..Default::default()
+        })
+        .unwrap();
+        let s = load();
+        assert!(s.fullscreen);
+        assert_eq!(s.clock_source, ClockSource::Midi);
+
+        std::fs::write(path(), br#"{"palettes":[]}"#).unwrap();
+        let s = load();
+        assert!(!s.fullscreen, "an old file should default windowed");
+        assert_eq!(s.clock_source, ClockSource::Internal);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

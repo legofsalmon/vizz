@@ -3271,6 +3271,7 @@ name = "vizz-io"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "image",
  "libloading 0.8.9",
  "log",
  "objc2 0.6.4",

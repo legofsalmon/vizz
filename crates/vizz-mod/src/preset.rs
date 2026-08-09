@@ -60,6 +60,9 @@ pub const EXCLUDED: &[&str] = &[
     "/punch/freeze",
     "/punch/strobe",
     "/punch/strobe_div",
+    // A preset with a recording embedded would start disk writes on
+    // recall. Transport, like the fire controls.
+    "/record/active",
 ];
 
 fn excluded(addr: &str) -> bool {

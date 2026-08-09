@@ -25,7 +25,7 @@ pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{
     AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
-    PresetEntry,
+    PresetEntry, RecordingView,
 };
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
@@ -65,6 +65,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
                 ("P", "performance layout"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
+                ("F11", "fullscreen — Esc leaves it"),
                 ("Esc", "quit — twice, to mean it"),
             ] {
                 ui.horizontal(|ui| {
@@ -496,6 +497,7 @@ impl Gui {
         let health = state.health.as_ref();
         let preset_names: Vec<String> = state.presets.iter().map(|p| p.name.clone()).collect();
         let perf_state = performance::PerformanceState {
+            recording: state.recording,
             outputs: &state.outputs,
             audio: &state.audio,
             fps: health.map(|h| h.fps).unwrap_or(0.0),
@@ -589,6 +591,7 @@ mod tests {
         reg.set(mode, 5.0);
         let ctx = egui::Context::default();
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -628,6 +631,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -670,6 +674,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -714,6 +719,7 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -750,6 +756,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -840,6 +847,7 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            recording: None,
             preset_current: None,
             update_available: None,
             health: None,
@@ -885,6 +893,7 @@ mod tests {
     fn update_banner_appears_only_when_a_newer_version_exists() {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
+            recording: None,
             preset_current: None,
             update_available: update,
             health: None,
