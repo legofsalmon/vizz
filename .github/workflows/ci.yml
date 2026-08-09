@@ -100,6 +100,36 @@ jobs:
             echo "::error::Syphon publish failed mid-run — see run.log"; exit 1
           fi
           echo "Syphon server started and published 120 frames."
+      # The video-as-a-cloud path samples a texture in the vertex stage
+      # and is the newest shader work, so it gets its own run on real
+      # Metal. The built-in pattern needs no network and no NDI runtime,
+      # which is the reason it exists: this is the only place the path
+      # is exercised on the backend the release actually ships against.
+      - name: Headless video-cloud run on real Metal
+        run: |
+          RUST_LOG=info cargo run -- --headless --video-source test \
+            --frames 60 --dump frame-video-macos.png 2> video.log \
+            || { cat video.log; exit 1; }
+          grep -q "video input: test pattern" video.log \
+            || { echo "::error::the test pattern source did not open"; cat video.log; exit 1; }
+          python3 - <<'PY'
+          import struct, zlib, sys
+          # The dump must not be blank: a shader that fails to sample the
+          # video would still render a frame, just an empty one, and the
+          # run would pass on exit code alone.
+          data = open("frame-video-macos.png", "rb").read()
+          assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+          idat = b"".join(
+              data[i + 8 : i + 8 + struct.unpack(">I", data[i - 4 : i])[0]]
+              for i in range(8, len(data))
+              if data[i : i + 4] == b"IDAT"
+          )
+          raw = zlib.decompress(idat)
+          lit = sum(1 for b in raw if b > 40)
+          print(f"{lit} bright bytes in the dump")
+          if lit < 10000:
+              sys.exit("::error::the video-cloud dump is blank — the field drew nothing")
+          PY
       - name: Upload benchmark + frame
         if: always()
         uses: actions/upload-artifact@v4
