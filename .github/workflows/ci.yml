@@ -94,9 +94,15 @@ jobs:
             --report bench-macos.json --dump frame-macos.png 2> run.log \
             || { cat run.log; exit 1; }
           cat run.log
-          grep -q "Syphon output 'vizz' is live" run.log \
+          # Matched against what the app actually prints. This read
+          # "Syphon output 'vizz' is live" and the roster refactor
+          # renamed the line to "output 'syphon:vizz' is live", so the
+          # check has been failing on every run since — which also meant
+          # the assurance it exists to give, that Syphon really started
+          # on a real Mac, has not been given in a while.
+          grep -q "output 'syphon:vizz' is live" run.log \
             || { echo "::error::Syphon server did not start — see run.log"; exit 1; }
-          if grep -q "output 'vizz' failed" run.log; then
+          if grep -q "output 'syphon:vizz' failed" run.log; then
             echo "::error::Syphon publish failed mid-run — see run.log"; exit 1
           fi
           echo "Syphon server started and published 120 frames."
