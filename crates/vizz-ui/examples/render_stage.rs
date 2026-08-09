@@ -258,6 +258,11 @@ fn registry() -> ParamRegistry {
         "/punch/freeze",
         "/punch/invert",
         "/punch/strobe_div",
+        // The status strip draws its REC chip only when this exists, so
+        // without it here the harness renders a performance screen with
+        // no way to record — which is the state this harness was used to
+        // review, and missed.
+        "/record/active",
         "/master/dim",
     ] {
         let def = ParamDef::new(addr, 0.0, 1.0, 0.4);
@@ -268,6 +273,7 @@ fn registry() -> ParamRegistry {
             }
             "/particles/size" => ParamDef::new(addr, 0.001, 0.2, 0.015),
             "/punch/strobe_div" => ParamDef::new(addr, 0.25, 4.0, 0.5).transport(),
+            "/record/active" => ParamDef::new(addr, 0.0, 1.0, 0.0).transport(),
             "/master/dim" => ParamDef::new(addr, 0.0, 1.0, 1.0),
             _ => def,
         });

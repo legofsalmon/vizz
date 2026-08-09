@@ -11,6 +11,15 @@ use vizz_params::{ParamDef, ParamId, ParamRegistry};
 /// place by hand mid-set.
 pub const GRAVITY_WELLS: usize = 4;
 
+/// The `/shape/mode` position that shows the cloud pair.
+///
+/// Named because loading a cloud has to point the shape at it — a cloud
+/// that arrives while the shape is still on `sphere` is invisible, and
+/// the load reads as having done nothing. A bare `7.0` at that call site
+/// says nothing about why, and would not survive the shape list gaining
+/// a form before this one; the test below holds it to the label.
+pub const SHAPE_CLOUD_PAIR: f32 = 7.0;
+
 /// The parameter ids for one well.
 #[derive(Debug, Clone, Copy)]
 pub struct GravityWell {
@@ -740,6 +749,26 @@ mod reference_tests {
         }
     }
 
+    /// `SHAPE_CLOUD_PAIR` is a bare number pointed at a position in a
+    /// list that has grown twice. Held to the label, so inserting a form
+    /// ahead of the cloud pair fails here rather than silently making
+    /// every cloud load select the wrong shape.
+    #[test]
+    fn the_cloud_pair_constant_still_names_the_cloud_pair() {
+        let p = super::AppParams::build();
+        let (_, def) = p.registry.iter().find(|(id, _)| *id == p.shape).expect("/shape/mode");
+        assert_eq!(
+            def.label_for(super::SHAPE_CLOUD_PAIR),
+            Some("cloud pair"),
+            "SHAPE_CLOUD_PAIR points at {:?}, not the cloud pair",
+            def.label_for(super::SHAPE_CLOUD_PAIR)
+        );
+        assert!(
+            super::SHAPE_CLOUD_PAIR >= def.min && super::SHAPE_CLOUD_PAIR <= def.max,
+            "SHAPE_CLOUD_PAIR is outside /shape/mode's range"
+        );
+    }
+
     /// The docs site carries the same OSC reference as the README, and a
     /// second copy is a second thing that can go stale — the exact
     /// failure the README test exists for. Held against the registry the
@@ -820,11 +849,15 @@ mod reference_tests {
         .expect("the render_panel harness");
         let p = super::AppParams::build();
         for (_, d) in p.registry.iter() {
-            // Transport is hidden from the panel's parameter list, so the
-            // harness only needs what the panel can actually show.
-            if d.transport {
-                continue;
-            }
+            // Transport params used to be exempted here, on the grounds
+            // that the panel's parameter list never lists them. That was
+            // true of the list and false of the panel: /record/active is
+            // transport and has a button of its own in the outputs
+            // section, which the exemption then kept out of every
+            // screenshot the panel is ever reviewed in. The harness now
+            // mirrors the registry outright — a transport param costs a
+            // line here and nothing on screen, and the next bespoke
+            // control gets reviewed instead of shipping unseen.
             assert!(
                 src.contains(&format!("\"{}\"", d.addr)),
                 "render_panel harness is missing {} — the panel preview cannot show it",

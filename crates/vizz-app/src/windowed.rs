@@ -49,6 +49,11 @@ pub struct WindowedOpts {
     pub audio_device: Option<String>,
     /// Point clouds to load into the loadable slots, in order.
     pub clouds: Vec<std::path::PathBuf>,
+    /// Whether `clouds` came from `--cloud` rather than from the saved
+    /// bank. Naming one on the command line is a request to see it, so
+    /// the shape is pointed at the last one loaded; a restored bank is
+    /// left alone, or every launch would open on it.
+    pub clouds_from_cli: bool,
     /// Live point-cloud stream feeding the last slot, if any.
     pub live_cloud: Option<vizz_render::plystream::Source>,
 }
@@ -107,6 +112,11 @@ struct App {
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
     live_revision: u64,
+    /// Whether the stream's first frame has been put on screen. Only the
+    /// first: a stream that re-pointed the shape on every frame would
+    /// take `/shape/mode` away from you sixty times a second, so you
+    /// could never morph a live scan against anything else.
+    live_shown: bool,
     /// Paths currently in the loadable cloud slots, in slot order.
     /// Mirrors what is on the GPU so a drop can be persisted without
     /// asking the renderer what it is holding.
@@ -312,6 +322,19 @@ impl App {
         // to the master: feedback needs somewhere to accumulate.
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
+        // Show what was asked for. `load_clouds` fills slots and nothing
+        // more, so without this `vizz --cloud scan.ply` opened on the
+        // default sphere with the scan sitting unseen in a slot.
+        if self.opts.clouds_from_cli
+            && let Some(last) = self
+                .opts
+                .clouds
+                .iter()
+                .rposition(|p| !p.as_os_str().is_empty())
+            && let Some(slot) = ParticleScene::loadable_slot(last)
+        {
+            Self::show_cloud_slot(&self.params, slot);
+        }
         // Typed clouds restore by re-rasterizing — deterministic, so the
         // slot shows exactly what was on screen when it was saved. Their
         // saved entries are `text:WORD` pseudo-paths; the file loader
@@ -658,14 +681,34 @@ impl App {
                 .notify_error(format!("cloud loaded, but won't survive a restart: {e}"));
         }
         log::info!("loaded {name} into cloud slot {slot}");
-        // Point the shape at what just arrived, so it shows. Loading a
-        // cloud nobody can see is the same as not loading it.
-        let p = &*self.params;
-        p.registry.set(p.cloud_a, slot as f32);
-        p.registry.set(p.cloud_morph, 0.0);
+        Self::show_cloud_slot(&self.params, slot);
+        let Some(state) = &mut self.state else { return };
         state
             .gui
             .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+    }
+
+    /// Put a cloud slot on screen: select it as the `a` end of the morph
+    /// pair, take the morph to that end, and point `/shape/mode` at the
+    /// cloud pair.
+    ///
+    /// The last of those was missing, and it is the one that decides
+    /// whether anything appears: `/cloud/a` only chooses which cloud the
+    /// pair would show, so with the shape sitting on `sphere` — where it
+    /// rests on a fresh launch — dragging in a scan or typing a word
+    /// changed nothing on screen while the notice said "and shown".
+    ///
+    /// The shape *glides* there rather than cutting, because that is what
+    /// every other value change in the app does, and the sweep blends
+    /// adjacent forms, so the arrival reads as the field turning into the
+    /// cloud rather than as a jump.
+    /// Takes the parameters rather than `&mut self` so it can be called
+    /// from inside the frame path, where the window state is already
+    /// borrowed and the stream's first frame needs exactly this.
+    fn show_cloud_slot(p: &crate::params::AppParams, slot: usize) {
+        p.registry.set(p.cloud_a, slot as f32);
+        p.registry.set(p.cloud_morph, 0.0);
+        p.registry.set(p.shape, crate::params::SHAPE_CLOUD_PAIR);
     }
 
     /// Rasterize a typed word into the next slot.
@@ -750,6 +793,15 @@ impl App {
                 // this frame is skipped and the next one retries.
                 if uploaded.is_some() {
                     self.live_revision = revision;
+                    // Show the stream when it first arrives, for the same
+                    // reason a dropped file is shown: a live cloud nobody
+                    // can see is indistinguishable from one that never
+                    // connected, which is the worst thing to be debugging
+                    // at a venue.
+                    if !self.live_shown {
+                        self.live_shown = true;
+                        Self::show_cloud_slot(&self.params, ParticleScene::LIVE_SLOT);
+                    }
                 }
             }
         }
@@ -2013,6 +2065,9 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         }
         paths
     };
+    // Which of these two the list came from is what decides whether the
+    // shape is pointed at it — see `Opts::clouds_from_cli`, set by the
+    // caller from the same emptiness test.
     let cloud_paths: Vec<String> = if opts.clouds.is_empty() {
         hold_places(crate::settings::load().clouds, "cloud")
     } else {
@@ -2055,6 +2110,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         focus_filter: false,
         live: None,
         live_revision: 0,
+        live_shown: false,
         // Clouds named on the command line win; otherwise restore whatever
         // was last dropped, so a set survives a restart.
         clouds: cloud_paths,

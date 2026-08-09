@@ -482,14 +482,16 @@ vizz --live-cloud listen://0.0.0.0:9000     # wait for one to connect here
 vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten</code></pre>
 
 <h3>Showing and morphing them</h3>
-<div class="warn">
-<p><strong>A loaded cloud is not on screen until the shape is pointed at it.</strong>
-Set <code>/shape/mode</code> to <strong>7</strong> (<em>cloud pair</em>) — in the
-panel it is the <code>shape</code> group's <em>mode</em> row, which reads
-<code>cloud pair</code> at that position. Loading a cloud sets
-<code>/cloud/a</code> to the new slot for you, but if the shape is still on
-<em>sphere</em> you will keep seeing a sphere.</p>
-</div>
+
+<p><strong>A cloud you load is shown.</strong> Dropping a file, typing a word,
+naming one with <code>--cloud</code>, or the first frame of a live stream all
+select the new slot as <code>/cloud/a</code> and point
+<code>/shape/mode</code> at the cloud pair. The shape glides there rather than
+cutting, so the field turns into the cloud over about a second.</p>
+
+<p>The one case that does not move the shape is the bank coming back at
+startup: the clouds you loaded in earlier sessions are restored to their
+slots, but the look you left behind is left alone.</p>
 
 <p><code>/cloud/a</code> and <code>/cloud/b</code> pick the two slots and
 <code>/cloud/morph</code> blends between them. Slot choice is stepped — half a
@@ -760,11 +762,12 @@ finished frame is a finished file, so a crash mid-take costs nothing already
 written.</p>
 
 <ol class="steps">
-<li>Open the panel (<kbd>Tab</kbd>) and expand <strong>outputs</strong>.</li>
-<li>Click <strong>record</strong>. A red <strong>REC</strong> chip appears on the
-performance layout showing elapsed time, frames written and frames dropped.</li>
-<li>Click <strong>stop recording</strong> — or the REC chip — when you are done.
-A notice names the folder.</li>
+<li>Press the <strong>REC</strong> chip on the performance layout's status
+strip. (The panel's <strong>outputs</strong> section has the same control, if
+that is where you already are.)</li>
+<li>The chip turns red and counts elapsed time, frames written and frames
+dropped.</li>
+<li>Press it again to stop. A notice names the folder.</li>
 </ol>
 
 <p>Takes land in <code>~/Movies/vizz/vizz-&lt;timestamp&gt;/</code> on macOS and
@@ -927,8 +930,11 @@ run.</p>
 <h2 id="trouble">Troubleshooting</h2>
 
 <h3>I loaded a cloud and nothing changed</h3>
-<p>Set <code>/shape/mode</code> to <strong>7</strong> — <em>cloud pair</em>. See
-<a href="#clouds">showing and morphing</a>.</p>
+<p>Loading one points <code>/shape/mode</code> at the cloud pair for you, so the
+usual cause is something moving it back: a preset, a scene, or a modulation
+route driving <code>/shape/mode</code>. Check what the <code>shape</code>
+group's <em>mode</em> row reads — <em>cloud pair</em> is the position that
+shows clouds — and whether it carries a <code>~</code>.</p>
 
 <h3>The picture goes white and stays white</h3>
 <p><code>/fx/trail</code> is very high and the frame is saturating. Bring it

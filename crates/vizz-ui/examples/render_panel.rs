@@ -125,6 +125,22 @@ fn main() {
         "/scene/curve",
         "/scene/auto",
         "/scene/bars",
+        // Transport, and hidden from the parameter list — but the
+        // outputs section draws a record button only when this exists,
+        // so without it here the one screenshot anyone reviews the panel
+        // in cannot show that button at all. The rest are here because
+        // the harness mirrors the registry outright now: the gravity
+        // transport row and preset recall are what the grids and the
+        // preset list read, and a panel preview missing them is a
+        // preview of a different app.
+        "/record/active",
+        "/punch/strobe_div",
+        "/gravity/fire",
+        "/gravity/time",
+        "/gravity/curve",
+        "/gravity/auto",
+        "/gravity/bars",
+        "/preset/recall",
     ] {
         // Labels where the app has them, so the preview shows names under
         // the stepped controls rather than a number that says nothing.
@@ -136,7 +152,9 @@ fn main() {
             "/fx/mirror" => def.labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
-            "/scene/curve" => def.labels(&["linear", "smooth", "ease in", "ease out", "cut"]),
+            "/scene/curve" | "/gravity/curve" => {
+                def.labels(&["linear", "smooth", "ease in", "ease out", "cut"])
+            }
             // Alpha rests opaque, as it does in the app: the preview
             // must show the shipped state, not a transparent one.
             "/bg/alpha" => ParamDef::new(addr, 0.0, 1.0, 1.0),
