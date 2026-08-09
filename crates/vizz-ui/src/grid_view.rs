@@ -818,7 +818,13 @@ mod tests {
     fn collect_text(shapes: &[egui::epaint::ClippedShape]) -> String {
         fn walk(shape: &egui::Shape, out: &mut String) {
             match shape {
-                egui::Shape::Text(t) => out.push_str(t.galley.text()),
+                egui::Shape::Text(t) => {
+                    // The painted glyphs, not the string the galley was
+                    // given: an elided label reports its full text
+                    // through Galley::text(), so a `contains` check
+                    // passes whether or not the words reached the eye.
+                    out.extend(t.galley.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| g.chr)));
+                }
                 egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
                 _ => {}
             }
