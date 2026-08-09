@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vizz documentation</title>
+<link rel="icon" type="image/png" href="/img/icon.png">
+<link rel="apple-touch-icon" href="/img/icon.png">
+<meta name="description" content="Full documentation for vizz: making a look, presets and scenes, point clouds, audio reactivity, modulation, MIDI and OSC control, Syphon and NDI output, recording, and playing a set.">
+<meta property="og:title" content="vizz documentation">
+<meta property="og:description" content="How to build a look, play a set, and wire vizz into a rig.">
+<meta property="og:type" content="article">
+<style>
+  /* Same one-file rule as the landing page: no build step, no CDN, works
+     on a venue's hostile wifi. The tokens are copied rather than shared
+     because two files cannot import from each other without a build. */
+  :root {
+    --bg: #0a0c12;
+    --panel: #12151d;
+    --line: #232838;
+    --text: #e8ecf5;
+    --dim: #97a0b5;
+    --accent: #7fb5ff;
+    --good: #78dca0;
+    --warn: #f0b354;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .92em;
+  }
+  code { background: #171b26; padding: .1em .35em; border-radius: 4px; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+
+  /* Top bar: the way back to the site, always reachable. */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(10,12,18,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 24px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .topbar img { width: 22px; height: 22px; border-radius: 5px; }
+  .topbar strong { letter-spacing: -.02em; }
+  .topbar .sp { flex: 1; }
+  .topbar a { text-decoration: none; }
+
+  .shell { display: flex; align-items: flex-start; max-width: 1180px; margin: 0 auto; }
+
+  /* Sidebar contents. Sticky so a 20-section page stays navigable, and
+     it is the whole nav — one page means the browser's own find works
+     across every topic, which is what someone hunting an OSC address
+     actually reaches for. */
+  nav {
+    position: sticky; top: 43px;
+    width: 232px; flex: none;
+    max-height: calc(100vh - 43px);
+    overflow-y: auto;
+    padding: 28px 12px 60px 24px;
+    font-size: 14px;
+  }
+  nav h4 {
+    margin: 18px 0 6px; font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); font-weight: 600;
+  }
+  nav a {
+    display: block; padding: 3px 0; color: var(--dim); text-decoration: none;
+    border-left: 2px solid transparent; padding-left: 10px; margin-left: -12px;
+  }
+  nav a:hover { color: var(--text); border-left-color: var(--line); }
+
+  main { flex: 1; min-width: 0; padding: 28px 24px 120px; max-width: 800px; }
+  h1 { font-size: 40px; letter-spacing: -.03em; margin: 8px 0 4px; }
+  h2 {
+    font-size: 26px; letter-spacing: -.02em; margin: 52px 0 4px;
+    padding-top: 14px; border-top: 1px solid var(--line);
+    scroll-margin-top: 60px;
+  }
+  h3 { font-size: 18px; margin: 30px 0 4px; scroll-margin-top: 60px; }
+  p, ul, ol { margin: 10px 0; }
+  li { margin: 4px 0; }
+  .lede { color: var(--dim); font-size: 18px; }
+  .dim { color: var(--dim); }
+
+  /* A step list that reads as a procedure rather than prose. */
+  ol.steps { counter-reset: step; list-style: none; padding-left: 0; }
+  ol.steps > li {
+    counter-increment: step; position: relative;
+    padding-left: 38px; margin: 12px 0;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    position: absolute; left: 0; top: 1px;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--line);
+    color: var(--accent); font-size: 13px; font-weight: 600;
+    display: grid; place-items: center;
+  }
+
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+  td code { white-space: nowrap; }
+  /* Wide tables scroll inside themselves; the page never scrolls sideways. */
+  .scroll { overflow-x: auto; }
+  /* A range reads as one quantity — "0 – 500000" broken over two lines
+     reads as two. Safe to keep on one line because the table scrolls
+     inside its own container rather than widening the page. */
+  .scroll td:nth-child(2), .scroll td:nth-child(3) { white-space: nowrap; }
+
+  .note, .warn {
+    border: 1px solid var(--line); border-left-width: 3px;
+    background: var(--panel); border-radius: 0 8px 8px 0;
+    padding: 12px 16px; margin: 16px 0;
+  }
+  .note { border-left-color: var(--accent); }
+  .warn { border-left-color: var(--warn); }
+  .note p:first-child, .warn p:first-child { margin-top: 0; }
+  .note p:last-child, .warn p:last-child { margin-bottom: 0; }
+
+  figure { margin: 20px 0; }
+  figure img {
+    max-width: 100%; border: 1px solid var(--line); border-radius: 8px; display: block;
+  }
+  figcaption { color: var(--dim); font-size: 14px; margin-top: 8px; }
+
+  kbd {
+    background: #1b2030; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: .08em .45em; font-size: .88em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  footer { border-top: 1px solid var(--line); color: var(--dim); font-size: 14px; padding: 24px 0 0; margin-top: 60px; }
+
+  @media (max-width: 900px) {
+    .shell { display: block; }
+    /* Two columns rather than one long list: a 26-item table of contents
+       in a single column is most of a phone screen standing between the
+       reader and the first sentence. A height-capped scrolling box would
+       do the same job but traps a finger inside a nested scroll region,
+       and a collapsible menu is not available — the site's CSP allows
+       styles only, so there is no script to toggle one, and a duplicate
+       nav for mobile is a second copy to keep in step. */
+    nav {
+      position: static; width: auto; max-height: none;
+      padding: 16px 24px; border-bottom: 1px solid var(--line);
+      columns: 2; column-gap: 20px; font-size: 13.5px;
+    }
+    nav h4 { margin: 10px 0 4px; break-after: avoid; }
+    nav a { break-inside: avoid; }
+    nav h4:first-child { margin-top: 0; }
+    main { padding: 20px 24px 80px; }
+    h1 { font-size: 32px; }
+    /* The wordmark and the way out to GitHub survive; the subtitle is
+       the one thing on the bar that can be inferred from the page. */
+    .topbar { padding: 10px 16px; gap: 10px; }
+    .topbar .dim { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="/"><img src="/img/icon.png" alt=""></a>
+  <a href="/"><strong>vizz</strong></a>
+  <span class="dim">documentation</span>
+  <span class="sp"></span>
+  <a href="https://github.com/legofsalmon/vizz">GitHub</a>
+</div>
+
+<div class="shell">
+<nav>
+  <h4>Start</h4>
+  <a href="#install">Install and first launch</a>
+  <a href="#screens">The three screens</a>
+  <a href="#first-look">Build your first look</a>
+
+  <h4>Playing</h4>
+  <a href="#presets">Presets</a>
+  <a href="#scenes">Scenes and transitions</a>
+  <a href="#punch">Punch FX</a>
+  <a href="#gravity">Gravity</a>
+  <a href="#faders">Performance faders</a>
+
+  <h4>Material</h4>
+  <a href="#shapes">Shapes and geometry</a>
+  <a href="#clouds">Point clouds, words, images</a>
+  <a href="#colour">Colour and palettes</a>
+  <a href="#effects">Effects</a>
+  <a href="#camera">Camera and room</a>
+
+  <h4>Making it move</h4>
+  <a href="#audio">Audio reactivity</a>
+  <a href="#tempo">Tempo and the beat clock</a>
+  <a href="#modulation">Modulation graph</a>
+
+  <h4>Control</h4>
+  <a href="#midi">MIDI</a>
+  <a href="#osc">OSC</a>
+  <a href="#keyboard">Keyboard</a>
+
+  <h4>Output</h4>
+  <a href="#outputs">Syphon, NDI, sizes</a>
+  <a href="#recording">Recording</a>
+  <a href="#venue">Fullscreen and venue setup</a>
+
+  <h4>Reference</h4>
+  <a href="#osc-table">Every OSC address</a>
+  <a href="#files">Files and folders</a>
+  <a href="#cli">Command line</a>
+  <a href="#trouble">Troubleshooting</a>
+</nav>
+
+<main>
+<h1>vizz documentation</h1>
+<p class="lede">A realtime generative visual instrument. This covers building a
+look, playing a set, and wiring it into a rig — from first launch to a
+projector at a venue.</p>
+
+<h2 id="install">Install and first launch</h2>
+
+<p><strong>macOS</strong> — download from
+<a href="https://github.com/legofsalmon/vizz/releases/latest">the latest release</a>
+and drag <code>vizz.app</code> to Applications, or run:</p>
+
+<pre><code>curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/install.sh | bash</code></pre>
+
+<p>Releases are signed with a Developer ID and notarized, so they open with a
+normal double-click. Syphon is embedded — there is nothing else to install.</p>
+
+<p><strong>Windows and Linux</strong> build from source and are tested in CI, but
+have no installer yet. You will need a Rust toolchain:</p>
+
+<pre><code>git clone https://github.com/legofsalmon/vizz
+cd vizz
+cargo run --release</code></pre>
+
+<div class="note">
+<p><strong>What happens on first launch.</strong> A window opens at 1280&times;720
+showing a slowly turning sphere of particles, with the control panel on the
+left. OSC is listening on UDP 7000 and — on macOS — a Syphon source named
+<code>vizz</code> is already published, so Resolume or VDMX can see the output
+before you have touched anything.</p>
+</div>
+
+<h2 id="screens">The three screens</h2>
+
+<p>vizz has one window and three overlays on it. The visuals keep running
+underneath all of them.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Screen</th><th>Key</th><th>What it is for</th></tr>
+<tr><td><strong>Control panel</strong></td><td><kbd>Tab</kbd></td>
+<td>Every parameter, grouped. Where you build a look. Open on first launch.</td></tr>
+<tr><td><strong>Performance</strong></td><td><kbd>P</kbd></td>
+<td>Big faders, scene pads, punch buttons. Where you play. Nothing here can
+destroy work.</td></tr>
+<tr><td><strong>Modulation canvas</strong></td><td><kbd>G</kbd></td>
+<td>A node graph: what moves what. Editing, not performing.</td></tr>
+</table>
+</div>
+
+<p>Press <kbd>?</kbd> at any time for the shortcut list on screen.</p>
+
+<figure>
+  <img src="/img/docs-panel.webp" alt="The vizz control panel: status line, collapsible sections, preset list and grouped parameter sliders.">
+  <figcaption>The control panel. The status line at the top stays visible; everything
+  above the presets folds away, because it is setup rather than performance.</figcaption>
+</figure>
+
+<h2 id="first-look">Build your first look</h2>
+
+<p>The fastest route in is to start from something that already looks like
+something, then pull it apart.</p>
+
+<ol class="steps">
+<li><strong>Click a preset.</strong> In the panel's <em>Presets</em> list, click
+<em>Butterfly</em> (the Lorenz attractor) or <em>Tunnel</em> (feedback, the
+high-energy one). The look glides in over a few hundred milliseconds rather
+than cutting.</li>
+<li><strong>Open a parameter group.</strong> The list below is grouped by
+address — <code>particles</code>, <code>shape</code>, <code>fx</code>,
+<code>color</code>, <code>camera</code>. Each header shows how many controls
+it holds.</li>
+<li><strong>Move something obvious.</strong> <code>/fx/trail</code> is the one
+that turns a particle field into VJ material: it is how much of the last
+frame survives into this one. Take it to 0.9 and add
+<code>/fx/zoom</code> for a tunnel.</li>
+<li><strong>Find a control by name.</strong> Press <kbd>/</kbd> and type. The
+groups flatten while you filter, because once you have typed a name you
+already know what you want.</li>
+<li><strong>Keep it.</strong> Type a name in the box under the preset list and
+press <kbd>Enter</kbd>. Your presets live beside the built-ins and can be
+recalled by number, MIDI or OSC.</li>
+</ol>
+
+<div class="note">
+<p><strong>Sliders that will not stay put.</strong> A parameter with a
+<code>~</code> beside it is being modulated — the value is still yours, and
+modulation rides on top as an offset. Hover the mark to see the current
+offset. The <code>&gt;&lt;</code> button narrows a slider's working range so a
+fader can sweep the part you care about.</p>
+</div>
+
+<h2 id="presets">Presets</h2>
+
+<p>A preset is <strong>where every knob is sitting</strong>. It is not the
+modulation graph — that is a <em>patch</em>, stored separately, so recalling a
+look never rewires your LFOs.</p>
+
+<p>Six ship with the app and cannot be overwritten: <strong>Slow bloom</strong>
+(a neutral opener), <strong>Butterfly</strong>, <strong>Tunnel</strong>,
+<strong>Stage</strong> (cloud inside the room, forced perspective),
+<strong>Confetti</strong> and <strong>Ribbon</strong>. Your own go beside them.</p>
+
+<ul>
+<li><strong>Recall</strong> — click it in the panel, press <kbd>1</kbd>–<kbd>9</kbd>
+or <kbd>0</kbd> for slots 1–10, send <code>/preset/recall</code>, or learn a
+MIDI button to it. All four are the same path.</li>
+<li><strong>Recall does not snap.</strong> Values arrive as targets and the
+per-parameter smoothing carries them from wherever they are — a glide, not a
+cut. That is what makes presets usable mid-track.</li>
+<li><strong>Each preset sets only what matters to its look</strong>, so recalling
+one leaves everything else where you left it.</li>
+<li><strong>Two things are never captured.</strong> <code>/master/dim</code> is
+the panic fader — a preset that restored it could black out the show, or
+silently undo a blackout somebody reached for. <code>/preset/recall</code>
+is excluded because a preset containing it would fire another preset on
+load.</li>
+</ul>
+
+<p>Slot 0 means <em>nothing selected</em> and presets start at 1, so a controller
+resting at zero cannot fire anything on startup. Recall is edge-triggered: it
+fires when the slot changes, so a button parked on a slot does not re-apply
+its preset every frame and pin the controls you are trying to adjust.</p>
+
+<h2 id="scenes">Scenes and transitions</h2>
+
+<p>A preset recalled by number is a cut. A <strong>scene</strong> is the other
+thing you want during a set: moving from one look to the next over musical
+time.</p>
+
+<p>Sixteen pads, laid out like a sequencer — four by four in the panel, sixteen
+across on the performance layout.</p>
+
+<ol class="steps">
+<li>Build a look.</li>
+<li>Click <strong>store</strong> to arm it, then press a pad. The pad now holds
+that look.</li>
+<li>Repeat for as many pads as you want to travel between.</li>
+<li>Press pads to move. Set <strong>blend</strong> to the transition length in
+seconds and pick a curve — linear, smooth, ease in, ease out, or cut.</li>
+</ol>
+
+<p><strong>The blend is in the data, not in the picture.</strong> Crossfading two
+rendered images of a particle field gives a double image that reads as a
+mistake. Interpolating the <em>parameters</em> gives one field whose settings
+are somewhere between the two — still one of everything, and it looks like the
+material moving rather than like a mixer.</p>
+
+<p>Two things do not interpolate. <strong>Switches jump at the half-way
+point</strong>: <code>/fx/mirror</code> has off, x and quad and nothing sensible
+between them. <strong>Cloud slots never blend</strong>, because half way between
+slot 0 and slot 2 is slot 1 — a different cloud entirely, which would flash on
+screen part-way through every move.</p>
+
+<p>Firing during a transition re-aims from wherever the blend has reached, so you
+are never locked out until the last move finishes.</p>
+
+<p><strong>Autopilot</strong> walks the filled pads in time with the beat clock,
+every <code>/scene/bars</code> bars. It fires on the bar boundary and never on
+the frame you switch it on. The performance layout shows it as a wide green
+bar naming the pad it is heading for.</p>
+
+<h2 id="punch">Punch FX</h2>
+
+<p>The things you do on the drop. All five are <strong>momentary</strong> — they
+apply while held and rest at zero — so nothing can leave the output stuck
+inverted, and no preset or scene can capture one.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Gesture</th><th>Address</th><th>What it does</th></tr>
+<tr><td>Flash</td><td><code>/punch/flash</code></td><td>White out. <kbd>Space</kbd> is the key.</td></tr>
+<tr><td>Black</td><td><code>/punch/black</code></td><td>Blackout — kills the colour, keeps the coverage.</td></tr>
+<tr><td>Invert</td><td><code>/punch/invert</code></td><td>Inverts the finished picture.</td></tr>
+<tr><td>Freeze</td><td><code>/punch/freeze</code></td><td>Holds the picture. The set keeps moving underneath, so releasing snaps to where the music got to.</td></tr>
+<tr><td>Strobe</td><td><code>/punch/strobe</code></td><td>Beat-synced. <code>/punch/strobe_div</code> sets beats per cycle.</td></tr>
+</table>
+</div>
+
+<p>On the performance layout they are the <strong>PUNCH</strong> row: press and
+hold, or <strong>shift-click to latch</strong> one on. A learned MIDI note is
+momentary for free, because the gesture rests at zero — press to fire, release
+to stop, with no mode to get stuck in.</p>
+
+<h2 id="gravity">Gravity</h2>
+
+<p>Four wells that pull or push the particles, sitting above whatever shape is
+on screen. Positive strength attracts, negative repels; radius sets the reach;
+<code>/gravity/amount</code> is the master depth for the whole layer.</p>
+
+<p>Gravity has <strong>its own 16-pad grid</strong>, with its own store, blend
+time and curve, so a gravity move can be fired independently of a scene change
+— the field can lurch without the look changing, or both can move at once on
+different timings.</p>
+
+<h2 id="faders">Performance faders</h2>
+
+<p>The <strong>CONTROLS</strong> row is fourteen assignable faders plus the
+master. Click a fader's caption to assign it to any parameter; click
+<em>learn</em> beneath it and move a controller to bind MIDI.</p>
+
+<figure>
+  <img src="/img/docs-stage.webp" alt="The vizz performance layout: status strip, punch row, scene grid, gravity grid, preset row and a row of faders.">
+  <figcaption>The performance layout. Status, punch, scenes, gravity, presets and
+  faders — read in a dark room at a glance, over a near-opaque scrim so a strobe
+  cannot take the readouts with it.</figcaption>
+</figure>
+
+<p>The <strong>master</strong> is <code>/master/dim</code>, the panic fader. It is
+never captured by a preset or a scene, so nothing you fire can undo a blackout
+you reached for.</p>
+
+<h2 id="shapes">Shapes and geometry</h2>
+
+<p><code>/shape/mode</code> sweeps through eight forms, and fractional values sit
+<em>between</em> two of them — it is a sweep, not a switch:</p>
+
+<p class="dim">0 sphere &middot; 1 torus &middot; 2 knot &middot; 3 grid &middot;
+4 shell &middot; 5 Lorenz &middot; 6 Aizawa &middot; 7 cloud pair &middot; 8 sphere again</p>
+
+<p>The range wraps, so the top morphs the Aizawa attractor back into the sphere.
+<code>/shape/morph</code> adds an extra blend into the next form and
+<code>/shape/twist</code> shears the whole field.</p>
+
+<p><strong>Lorenz and Aizawa are real strange attractors</strong>, integrated per
+particle rather than drawn as a static curve — the field genuinely flows along
+the attractor, which is why they read as motion rather than as a picture of a
+shape.</p>
+
+<h2 id="clouds">Point clouds, words and images</h2>
+
+<p>Eight cloud slots: two built-in attractors and <strong>six loadable</strong>.
+Files, typed words, images and a live stream all compete for the six.</p>
+
+<h3>From a file</h3>
+<p>Drag a <code>.ply</code>, <code>.xyz</code>, <code>.csv</code> or
+<code>.pts</code> onto the window, or start with <code>--cloud scan.ply</code>.
+PLY reads both ASCII and binary little-endian, with per-point colour where the
+file has it. A file that will not parse is a warning, never a startup failure.</p>
+
+<h3>From a word</h3>
+<p>Open the panel's <strong>clouds</strong> section, type into the
+<em>type a word</em> field and press <kbd>Enter</kbd>. The string is rasterized
+with the app's own font into a cloud you can morph against any other slot.
+Typed clouds persist as <code>text:WORD</code> and come back after a restart.</p>
+
+<h3>From an image</h3>
+<p>Drag a <code>.png</code> or <code>.jpg</code> on. Position comes from the pixel
+grid, colour from the pixel, and a shallow relief from luminance. Fully
+transparent pixels are skipped, so a logo keeps its silhouette instead of
+arriving as a rectangle.</p>
+
+<h3>From a live stream</h3>
+<pre><code>vizz --live-cloud tcp://192.168.1.9:9000    # connect to a streaming app
+vizz --live-cloud listen://0.0.0.0:9000     # wait for one to connect here
+vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten</code></pre>
+
+<h3>Showing and morphing them</h3>
+<div class="warn">
+<p><strong>A loaded cloud is not on screen until the shape is pointed at it.</strong>
+Set <code>/shape/mode</code> to <strong>7</strong> (<em>cloud pair</em>) — in the
+panel it is the <code>shape</code> group's <em>mode</em> row, which reads
+<code>cloud pair</code> at that position. Loading a cloud sets
+<code>/cloud/a</code> to the new slot for you, but if the shape is still on
+<em>sphere</em> you will keep seeing a sphere.</p>
+</div>
+
+<p><code>/cloud/a</code> and <code>/cloud/b</code> pick the two slots and
+<code>/cloud/morph</code> blends between them. Slot choice is stepped — half a
+slot is not a cloud — while the morph is swept and modulatable, so it can be
+driven from an LFO, the beat clock or an audio band.</p>
+
+<p>Particles keep their index across the blend, so the same point travels from
+one cloud to the other rather than the field being re-scattered. A blend
+between two unrelated clouds passes through a shapeless middle: that is
+inherent to index-based morphing. Clouds with related structure morph far
+better than arbitrary pairs.</p>
+
+<p>Clouds are centred and uniformly scaled into the same box the procedural
+shapes use, so <code>/particles/spread</code> means one thing everywhere.
+Fewer points than the slot holds means each is repeated with a small
+deterministic jitter, because a dense clump at the origin is far more
+visually wrong than slight duplication.</p>
+
+<h2 id="colour">Colour and palettes</h2>
+
+<p><code>/color/palette</code> starts at <strong>0 = plain HSV</strong> and
+crossfades up through four cosine gradients — warm, ember, ice, neon — with
+your own loaded palettes from 5 up. <code>/color/spread</code> is how much of
+the gradient the field spans; <code>/color/drive</code> picks what chooses each
+particle's colour:</p>
+
+<p class="dim">0 index &middot; 1 radius &middot; 2 depth &middot; 3 height</p>
+
+<p>Driving by <em>depth</em> is what makes a cloud read as three-dimensional on a
+flat screen. Driving by <em>index</em> keeps a scan's own colours coherent.</p>
+
+<p><strong>Your own palettes:</strong> drop a palette file on the window and it
+loads into the next slot and selects itself. Re-dropping an edited file
+reloads it in place, so you can iterate in a text editor with the app running.
+Imported cloud colour <em>multiplies</em> the palette rather than replacing it,
+so the palette still works as a tint and an uncoloured cloud is unaffected.</p>
+
+<h2 id="effects">Effects</h2>
+
+<p>The output chain, in order: feedback, mirror, glow, RGB shift.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Control</th><th>What it does</th></tr>
+<tr><td><code>/fx/trail</code></td><td>Feedback — how much of the last frame survives. The single most useful control in the app. Capped below 1.0, because at 1.0 nothing decays and the frame saturates to white within seconds.</td></tr>
+<tr><td><code>/fx/zoom</code></td><td>Per-frame zoom of the feedback. With trail up, this is a tunnel.</td></tr>
+<tr><td><code>/fx/spin</code></td><td>Per-frame rotation of the feedback. With zoom, a vortex.</td></tr>
+<tr><td><code>/fx/mirror</code></td><td>Off, mirror, quad, kaleido. A switch, not a sweep.</td></tr>
+<tr><td><code>/fx/glow</code></td><td>Bloom lift.</td></tr>
+<tr><td><code>/fx/shift</code></td><td>Radial RGB split — chromatic aberration.</td></tr>
+</table>
+</div>
+
+<h2 id="camera">Camera and room</h2>
+
+<p>A real camera looks into the field: <code>/camera/distance</code>,
+<code>/camera/orbit</code>, <code>/camera/elevation</code>,
+<code>/camera/fov</code>, and <code>/camera/pan_x</code> /
+<code>/camera/pan_y</code> to slide the view off-centre.
+<code>/camera/focus</code> and <code>/camera/defocus</code> give real
+depth of field — with defocus up, near and far particles bloom into soft
+discs and the field gains depth a flat render cannot fake.</p>
+
+<h3>The room</h3>
+<p>An optional wireframe room sized to the frame, for forced perspective and
+parallax. Raise <code>/room/brightness</code> to see it.
+<code>/room/depth</code> sets how far back it goes,
+<code>/room/converge</code> how hard the grid converges, and
+<code>/room/vanish_x</code> / <code>/room/vanish_y</code> move the vanishing
+point — which is how you match the room to where the audience actually sits
+relative to the screen.</p>
+
+<p><code>/room/anchor</code> places the cloud between the front and back of the
+room, and <code>/room/embed</code> bends the cloud's own perspective toward the
+room's, so the particles sit <em>in</em> the space rather than floating in
+front of a drawing of one. The built-in <strong>Stage</strong> preset is this
+set up and ready.</p>
+
+<h2 id="audio">Audio reactivity</h2>
+
+<p>vizz analyses an audio input into <strong>four bands</strong> plus a broadband
+level, and those are available as modulation sources.</p>
+
+<ol class="steps">
+<li>Open the panel's <strong>audio</strong> section and pick an input from the
+device list. (Or start with <code>--audio-device "Scarlett"</code> — it matches
+on a substring; <code>--list-audio</code> prints the names.)</li>
+<li>Play something typical of your set — not a quiet intro.</li>
+<li>Press <strong>fit</strong>. Every band's gain is scaled from the last few
+seconds of what actually arrived.</li>
+<li>Check the meters. Each band shows two stacked bars: what modulation
+receives on top, what is arriving underneath. A red mark on the right means
+the band is pinned and the gain is too high.</li>
+</ol>
+
+<p>Each band has editable low and high edges in Hz and a gain in dB. The defaults
+are low / lo-mid / hi-mid / high, but a kick-only band of 40–90 Hz driving
+size is often more musical than a broad one.</p>
+
+<div class="note">
+<p><strong>There is no correct default gain.</strong> It depends on the interface,
+the track and how hard it is being driven. <em>fit</em> is the honest answer —
+it reads your actual signal instead of guessing.</p>
+</div>
+
+<h2 id="tempo">Tempo and the beat clock</h2>
+
+<p>One beat clock drives the strobe, scene autopilot, phasors and beat triggers.
+It can get its tempo three ways:</p>
+
+<ul>
+<li><strong>Tap</strong> — the <em>tap</em> button on the status line, or a
+learned MIDI button. Four taps is enough.</li>
+<li><strong>Detected</strong> from the audio input.</li>
+<li><strong>MIDI clock</strong> from a DJ mixer or DAW. vizz follows the wire
+with a tempo estimator built to shrug off USB jitter; a Start message resets
+the downbeat.</li>
+</ul>
+
+<p>Tap and auto always win control back, so a stale clock source can never lock
+you out mid-set.</p>
+
+<h2 id="modulation">The modulation graph</h2>
+
+<p>Press <kbd>G</kbd>. Nodes on a canvas: sources on the left, operators in the
+middle, parameter sinks on the right. Drag from an output to an input to wire
+them.</p>
+
+<h3>Sources</h3>
+<div class="scroll">
+<table>
+<tr><td><strong>LFO</strong></td><td>Free-running or beat-locked, several shapes.</td></tr>
+<tr><td><strong>Band</strong></td><td>One of the four audio band envelopes, 0–1.</td></tr>
+<tr><td><strong>Level</strong></td><td>Broadband level.</td></tr>
+<tr><td><strong>Phasor</strong></td><td>A ramp 0–1 over N beats, locked to the beat clock, so the whole patch can phase off one saw.</td></tr>
+<tr><td><strong>Beat trigger</strong></td><td>A pulse on each beat division boundary. Every trigger of the same division fires together.</td></tr>
+<tr><td><strong>Constant</strong></td><td>A fixed value — useful as an offset or a manual depth.</td></tr>
+</table>
+</div>
+
+<h3>Operators</h3>
+<div class="scroll">
+<table>
+<tr><td><strong>Curve</strong></td><td>Bend a linear signal into something with shape.</td></tr>
+<tr><td><strong>Math</strong></td><td>Two inputs: add, multiply, min, max…</td></tr>
+<tr><td><strong>Scale</strong></td><td>Affine — the workhorse for turning a unipolar source bipolar (multiply 2, add &minus;1) or trimming a range.</td></tr>
+<tr><td><strong>Smooth</strong></td><td>Asymmetric attack/release slew. Tames anything twitchy.</td></tr>
+<tr><td><strong>Quantise</strong></td><td>Snap to N steps — turns a smooth sweep into something that lands.</td></tr>
+<tr><td><strong>Sample &amp; hold</strong></td><td>Latch a value when a trigger rises.</td></tr>
+<tr><td><strong>Gate</strong></td><td>1 above a threshold, 0 below, with hysteresis so a band hovering at the line does not chatter.</td></tr>
+<tr><td><strong>Envelope</strong></td><td>Attack/decay fired by a rising edge. Retriggering climbs from the current level instead of clicking to zero.</td></tr>
+</table>
+</div>
+
+<h3>A worked patch: kick in, size punches out</h3>
+<ol class="steps">
+<li>Add a <strong>Band</strong> node set to band 1 (the low band).</li>
+<li>Add a <strong>Gate</strong> and wire the band into it. Raise the threshold
+until it only opens on the kick.</li>
+<li>Add an <strong>Envelope</strong> — short attack, decay to taste — and wire
+the gate into its trigger.</li>
+<li>Add a <strong>Param</strong> sink addressed to <code>/particles/size</code>
+and wire the envelope in. Set <em>depth</em> for how far it moves.</li>
+</ol>
+<p>Swap the Band for a <strong>Beat trigger</strong> and the same chain is
+tempo-locked instead of audio-driven, with nothing else rewired.</p>
+
+<p>Patches are saved separately from presets. The canvas remembers its pan, zoom
+and patch name across launches. A wire that would make a loop is refused with
+a reason, and a Param node aimed at nothing says <em>missing</em> rather than
+failing silently.</p>
+
+<h2 id="midi">MIDI</h2>
+
+<p>Controllers connect automatically — plug one in and it appears in the panel's
+<strong>midi</strong> section. Nothing needs configuring first.</p>
+
+<h3>Learning a control</h3>
+<ol class="steps">
+<li>Go to the performance layout (<kbd>P</kbd>).</li>
+<li>Click <strong>learn</strong> under the fader you want, or on a scene pad,
+or on a preset button.</li>
+<li>Move the knob or press the pad. The binding appears as a chip
+(<code>ch1 cc21</code>) under the control.</li>
+</ol>
+
+<p>While learning, the panel echoes whatever is arriving — so a controller that
+is not sending at all is immediately distinguishable from a mapping problem.
+Bindings are saved as you make them and survive a restart.</p>
+
+<p><strong>Notes are momentary, CCs are absolute.</strong> A learned note on a
+punch gesture fires while held and releases when you let go, because the
+gesture rests at zero. A CC on a fader takes the fader's full range.</p>
+
+<h3>MIDI clock</h3>
+<p>If the device sends clock, vizz can follow it — see
+<a href="#tempo">Tempo</a>. Clock traffic can never be captured by a learn:
+an armed learn ignores clock messages, so arming a learn while a mixer is
+running does not immediately bind to the clock.</p>
+
+<h2 id="osc">OSC</h2>
+
+<p>Send standard OSC to <strong>UDP 7000</strong> (change it with
+<code>--osc-port</code>). Float, int, double and bool arguments are all
+accepted. Unknown addresses and malformed packets are logged and ignored —
+control input can never crash the renderer.</p>
+
+<pre><code># TouchOSC, Max, Pd, a Python script — anything that speaks OSC
+/fx/trail 0.92
+/shape/mode 5
+/preset/recall 3</code></pre>
+
+<p>Every parameter in the app is an OSC address, and every OSC address is a
+parameter — the panel is generated from the same table, so the two can never
+drift apart. The full list is <a href="#osc-table">below</a>.</p>
+
+<h2 id="keyboard">Keyboard</h2>
+
+<div class="scroll">
+<table>
+<tr><td><kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd></td><td>Fire preset slot 1–10</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Flash — white out while held</td></tr>
+<tr><td><kbd>Tab</kbd></td><td>Show or hide the control panel</td></tr>
+<tr><td><kbd>P</kbd></td><td>Performance layout</td></tr>
+<tr><td><kbd>G</kbd></td><td>Modulation canvas</td></tr>
+<tr><td><kbd>/</kbd></td><td>Filter the parameter list</td></tr>
+<tr><td><kbd>?</kbd></td><td>The shortcut list, on screen</td></tr>
+<tr><td><kbd>F11</kbd></td><td>Fullscreen on the window's monitor</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Leave fullscreen; otherwise quit (asks once)</td></tr>
+</table>
+</div>
+
+<p><kbd>Esc</kbd> asks before quitting because it is one key, next to nothing, on
+a machine whose whole job is not going black. A second press within a few
+seconds confirms.</p>
+
+<h2 id="outputs">Syphon, NDI and output sizes</h2>
+
+<h3>Syphon (macOS)</h3>
+<p>On by default. vizz publishes a source named <code>vizz</code> that appears in
+Resolume, VDMX, MadMapper and TouchDesigner with no configuration. It is
+zero-copy — the texture is shared on the GPU, never read back — so it costs
+almost nothing. Disable with <code>--no-syphon</code>; rename with
+<code>--syphon-name</code>.</p>
+
+<h3>NDI (all platforms)</h3>
+<pre><code>vizz --ndi                  # publish as "vizz"
+vizz --ndi --ndi-name Deck1 # or under your own name</code></pre>
+<p>NDI needs the runtime installed on the machine; vizz loads it at runtime and
+says so clearly if it is missing. Frames are read back asynchronously through
+a ring, so a slow network drops frames on the NDI output and never stalls the
+renderer.</p>
+
+<h3>Render size and output size</h3>
+<p>In the panel's <strong>outputs</strong> section: set the output size
+(720p / 1080p / 1440p / 4K presets, or type one), and a <em>render</em>
+multiplier from 0.5&times; to 2&times;. Rendering below output size is the
+cheapest way to hold frame rate on a laptop; above it is supersampling.</p>
+
+<p><strong>16-bit float master</strong> gives the feedback chain headroom before
+it clips — worth it when trails and glow are heavy. It doubles the master
+texture's memory and is off by default.</p>
+
+<h2 id="recording">Recording</h2>
+
+<p>vizz records the master output as a <strong>PNG sequence</strong>. Every
+finished frame is a finished file, so a crash mid-take costs nothing already
+written.</p>
+
+<ol class="steps">
+<li>Open the panel (<kbd>Tab</kbd>) and expand <strong>outputs</strong>.</li>
+<li>Click <strong>record</strong>. A red <strong>REC</strong> chip appears on the
+performance layout showing elapsed time, frames written and frames dropped.</li>
+<li>Click <strong>stop recording</strong> — or the REC chip — when you are done.
+A notice names the folder.</li>
+</ol>
+
+<p>Takes land in <code>~/Movies/vizz/vizz-&lt;timestamp&gt;/</code> on macOS and
+<code>~/Videos/vizz/…</code> elsewhere. Assemble one with ffmpeg:</p>
+
+<pre><code>ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4</code></pre>
+
+<p>Alongside the frames is a <code>frames.csv</code> of per-frame wall-clock
+times, so a take that dropped frames can be assembled honestly instead of
+silently running fast.</p>
+
+<div class="note">
+<p><strong>Recording never stalls the show.</strong> A slow disk drops frames on
+the recording only, and the drops are counted on the chip rather than hidden.
+A full disk stops the take with a notice instead of retrying sixty times a
+second. Expect drops at 1080p60 — PNG encoding is at the edge of one core —
+and lower the output size if the count climbs.</p>
+</div>
+
+<p><code>/record/active</code> is an ordinary parameter, so OSC and a learned MIDI
+button can start and stop a take too.</p>
+
+<h2 id="venue">Fullscreen and venue setup</h2>
+
+<p><kbd>F11</kbd> fills the monitor the window is on — drag the window to the
+projector first, then press it. The first <kbd>Esc</kbd> leaves fullscreen.</p>
+
+<pre><code>vizz --fullscreen              # start fullscreen
+vizz --fullscreen --monitor 1  # on a specific monitor</code></pre>
+
+<p>The last <kbd>F11</kbd> choice is remembered between launches, so a machine
+that always runs fullscreen does not need telling twice.</p>
+
+<h3>A venue checklist</h3>
+<ul>
+<li>Set the output size to match what the projector or the VJ software expects,
+before the doors open.</li>
+<li>Pick the audio input and press <strong>fit</strong> while the opening act is
+playing, not during soundcheck silence.</li>
+<li>Learn your controller once — the map is saved and reloads next time.</li>
+<li>Store the looks you plan to use into scene pads, in the order you expect to
+play them.</li>
+<li>Check <code>/master/dim</code> is bound to something you can reach in the
+dark.</li>
+<li>If you are feeding another app, confirm it sees the Syphon or NDI source
+before you go fullscreen.</li>
+</ul>
+
+<h2 id="osc-table">Every OSC address</h2>
+
+<p>Every parameter, with its range and default. This table is checked against the
+running app by a test, so it cannot drift out of date.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Address</th><th>Range</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>/particles/count</code></td><td>0 – 500000</td><td>60000</td><td>live particle count</td></tr>
+    <tr><td><code>/particles/size</code></td><td>0.001 – 0.2</td><td>0.015</td><td>sprite size</td></tr>
+    <tr><td><code>/particles/speed</code></td><td>0 – 4</td><td>0.6</td><td>motion rate (phase-continuous)</td></tr>
+    <tr><td><code>/particles/spread</code></td><td>0.05 – 3</td><td>1.2</td><td>field radius</td></tr>
+    <tr><td><code>/particles/hue</code></td><td>0 – 1</td><td>0.58</td><td>base hue</td></tr>
+    <tr><td><code>/particles/saturation</code></td><td>0 – 1</td><td>0.8</td><td>color saturation</td></tr>
+    <tr><td><code>/particles/brightness</code></td><td>0 – 2</td><td>1</td><td>value multiplier</td></tr>
+    <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
+    <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
+    <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>
+    <tr><td><code>/fx/trail</code></td><td>0 – 0.98</td><td>0</td><td>feedback: how much of last frame survives</td></tr>
+    <tr><td><code>/fx/zoom</code></td><td>0.9 – 1.1</td><td>1</td><td>per-frame zoom of the feedback (tunnels)</td></tr>
+    <tr><td><code>/fx/spin</code></td><td>-0.1 – 0.1</td><td>0</td><td>per-frame rotation of the feedback</td></tr>
+    <tr><td><code>/fx/mirror</code></td><td>0 – 3</td><td>0</td><td>0 off · 1 mirror · 2 quad · 3 kaleido</td></tr>
+    <tr><td><code>/fx/glow</code></td><td>0 – 1</td><td>0.25</td><td>bloom lift</td></tr>
+    <tr><td><code>/fx/shift</code></td><td>0 – 1</td><td>0</td><td>radial RGB split (chromatic aberration)</td></tr>
+    <tr><td><code>/punch/flash</code></td><td>0 – 1</td><td>0</td><td>white-out while held — Space, a punch button, or a learned MIDI note</td></tr>
+    <tr><td><code>/punch/black</code></td><td>0 – 1</td><td>0</td><td>blackout while held; rgb only, coverage stays</td></tr>
+    <tr><td><code>/punch/invert</code></td><td>0 – 1</td><td>0</td><td>invert the finished picture while held</td></tr>
+    <tr><td><code>/punch/freeze</code></td><td>0 – 1</td><td>0</td><td>hold the picture; the set keeps moving underneath</td></tr>
+    <tr><td><code>/punch/strobe</code></td><td>0 – 1</td><td>0</td><td>beat-synced strobe while held</td></tr>
+    <tr><td><code>/punch/strobe_div</code></td><td>0.25 – 4</td><td>0.5</td><td>beats per strobe cycle</td></tr>
+    <tr><td><code>/color/palette</code></td><td>0 – 15</td><td>0</td><td>palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes</td></tr>
+    <tr><td><code>/color/spread</code></td><td>0 – 1</td><td>0.12</td><td>how much of the palette the field spans</td></tr>
+    <tr><td><code>/color/drive</code></td><td>0 – 3</td><td>0</td><td>what picks the colour: 0 index · 1 radius · 2 depth · 3 height</td></tr>
+    <tr><td><code>/cloud/a</code></td><td>0 – 7</td><td>0</td><td>first slot of the cloud morph pair</td></tr>
+    <tr><td><code>/cloud/b</code></td><td>0 – 7</td><td>1</td><td>second slot of the cloud morph pair</td></tr>
+    <tr><td><code>/cloud/morph</code></td><td>0 – 1</td><td>0</td><td>blend position between the pair</td></tr>
+    <tr><td><code>/camera/distance</code></td><td>0.4 – 12</td><td>3.5</td><td>orbit distance from the field</td></tr>
+    <tr><td><code>/camera/orbit</code></td><td>-3.15 – 3.15</td><td>0</td><td>orbit angle around the field</td></tr>
+    <tr><td><code>/camera/elevation</code></td><td>-1.4 – 1.4</td><td>0.34</td><td>height angle of the orbit</td></tr>
+    <tr><td><code>/camera/fov</code></td><td>0.2 – 2</td><td>0.9</td><td>field of view, radians</td></tr>
+    <tr><td><code>/camera/focus</code></td><td>0 – 12</td><td>3.5</td><td>focus distance</td></tr>
+    <tr><td><code>/camera/defocus</code></td><td>0 – 1</td><td>0</td><td>depth-of-field blur amount</td></tr>
+    <tr><td><code>/camera/pan_x</code></td><td>-4 – 4</td><td>0</td><td>sideways pan of the view</td></tr>
+    <tr><td><code>/camera/pan_y</code></td><td>-4 – 4</td><td>0</td><td>vertical pan of the view</td></tr>
+    <tr><td><code>/room/brightness</code></td><td>0 – 1</td><td>0</td><td>wireframe room visibility</td></tr>
+    <tr><td><code>/room/depth</code></td><td>1 – 20</td><td>7</td><td>how deep the room extends</td></tr>
+    <tr><td><code>/room/fade</code></td><td>0 – 1</td><td>0.75</td><td>distance fade of the room lines</td></tr>
+    <tr><td><code>/room/converge</code></td><td>0 – 1</td><td>0.35</td><td>perspective convergence of the grid</td></tr>
+    <tr><td><code>/room/vanish_x</code></td><td>-1 – 1</td><td>0</td><td>vanishing point, sideways</td></tr>
+    <tr><td><code>/room/vanish_y</code></td><td>-1 – 1</td><td>0</td><td>vanishing point, vertical</td></tr>
+    <tr><td><code>/room/anchor</code></td><td>0 – 1</td><td>0.35</td><td>where the cloud sits between front and back</td></tr>
+    <tr><td><code>/room/embed</code></td><td>0 – 1</td><td>0</td><td>how much the room's perspective bends the cloud</td></tr>
+    <tr><td><code>/gravity/amount</code></td><td>0 – 1</td><td>0</td><td>master depth of the gravity layer</td></tr>
+    <tr><td><code>/gravity/N/x</code> (N = 0–3)</td><td>-3 – 3</td><td>0</td><td>well N position, X</td></tr>
+    <tr><td><code>/gravity/N/y</code> (N = 0–3)</td><td>-3 – 3</td><td>0</td><td>well N position, Y</td></tr>
+    <tr><td><code>/gravity/N/z</code> (N = 0–3)</td><td>-3 – 3</td><td>0</td><td>well N position, Z</td></tr>
+    <tr><td><code>/gravity/N/strength</code> (N = 0–3)</td><td>-2 – 2</td><td>0</td><td>pull (positive) or push (negative)</td></tr>
+    <tr><td><code>/gravity/N/radius</code> (N = 0–3)</td><td>0.05 – 4</td><td>1</td><td>well reach</td></tr>
+    <tr><td><code>/gravity/fire</code></td><td>0 – 16</td><td>0</td><td>fire gravity scene 1–16 on change; 0 = none</td></tr>
+    <tr><td><code>/gravity/time</code></td><td>0 – 60</td><td>2</td><td>gravity blend time, seconds</td></tr>
+    <tr><td><code>/gravity/curve</code></td><td>0 – 4</td><td>1</td><td>0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut</td></tr>
+    <tr><td><code>/gravity/auto</code></td><td>0 – 1</td><td>0</td><td>gravity autopilot on/off</td></tr>
+    <tr><td><code>/gravity/bars</code></td><td>0.25 – 16</td><td>4</td><td>bars between gravity autopilot steps</td></tr>
+    <tr><td><code>/bg/red</code></td><td>0 – 1</td><td>0.004</td><td>background red</td></tr>
+    <tr><td><code>/bg/green</code></td><td>0 – 1</td><td>0.004</td><td>background green</td></tr>
+    <tr><td><code>/bg/blue</code></td><td>0 – 1</td><td>0.008</td><td>background blue</td></tr>
+    <tr><td><code>/bg/alpha</code></td><td>0 – 1</td><td>1</td><td>background opacity; 0 delivers the field on nothing</td></tr>
+    <tr><td><code>/preset/recall</code></td><td>0 – 64</td><td>0</td><td>recall preset N on change; 0 = none</td></tr>
+    <tr><td><code>/scene/fire</code></td><td>0 – 16</td><td>0</td><td>fire scene 1–16 on change; 0 = none</td></tr>
+    <tr><td><code>/scene/time</code></td><td>0 – 60</td><td>2</td><td>scene blend time, seconds</td></tr>
+    <tr><td><code>/scene/curve</code></td><td>0 – 4</td><td>1</td><td>0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut</td></tr>
+    <tr><td><code>/scene/auto</code></td><td>0 – 1</td><td>0</td><td>scene autopilot on/off</td></tr>
+    <tr><td><code>/scene/bars</code></td><td>0.25 – 16</td><td>4</td><td>bars between scene autopilot steps</td></tr>
+    <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to a PNG sequence; 1 starts, 0 stops</td></tr>
+    <tr><td><code>/master/dim</code></td><td>0 – 1</td><td>1</td><td>master fader</td></tr>
+</table>
+</div>
+
+<h2 id="files">Files and folders</h2>
+
+<div class="scroll">
+<table>
+<tr><td><code>~/.config/vizz/presets/</code></td><td>Your saved looks, one JSON each</td></tr>
+<tr><td><code>~/.config/vizz/patches/</code></td><td>Modulation graphs</td></tr>
+<tr><td><code>~/.config/vizz/grid.json</code></td><td>The scene grid</td></tr>
+<tr><td><code>~/.config/vizz/midi.json</code></td><td>Your controller map</td></tr>
+<tr><td><code>~/.config/vizz/settings.json</code></td><td>Output size, audio device, loaded clouds, fullscreen</td></tr>
+<tr><td><code>~/Movies/vizz/</code></td><td>Recordings (macOS; <code>~/Videos/vizz/</code> elsewhere)</td></tr>
+</table>
+</div>
+
+<p>Built-in presets are compiled into the binary rather than written to disk, so
+they are always present, cannot be half-installed, and cannot be lost by
+clearing the config directory.</p>
+
+<h2 id="cli">Command line</h2>
+
+<pre><code>vizz --help                       # every flag
+vizz --width 1920 --height 1080   # output size for this run
+vizz --fullscreen --monitor 1     # start on a projector
+vizz --ndi --no-syphon            # NDI only
+vizz --audio-device "Scarlett"    # match an input by substring
+vizz --list-audio                 # print input names and exit
+vizz --cloud scan.ply             # load a cloud at startup
+vizz --osc-port 7001              # listen somewhere else
+vizz --headless --frames 600 --report bench.json</code></pre>
+
+<p>On macOS, double-clicking the app runs 1280&times;720 with OSC on 7000 and
+Syphon on; the window title shows the live settings. Flags need a terminal
+run.</p>
+
+<h2 id="trouble">Troubleshooting</h2>
+
+<h3>I loaded a cloud and nothing changed</h3>
+<p>Set <code>/shape/mode</code> to <strong>7</strong> — <em>cloud pair</em>. See
+<a href="#clouds">showing and morphing</a>.</p>
+
+<h3>The picture goes white and stays white</h3>
+<p><code>/fx/trail</code> is very high and the frame is saturating. Bring it
+down. (It is capped below 1.0 precisely so this is recoverable.)</p>
+
+<h3>Nothing reacts to the music</h3>
+<p>Check the panel's <strong>audio</strong> section shows a device and the meters
+are moving. If the bars move but nothing on screen does, no modulation is
+routed yet — see <a href="#modulation">the graph</a>. If the bars are pinned to
+full, press <strong>fit</strong>.</p>
+
+<h3>My controller does nothing</h3>
+<p>Open the panel's <strong>midi</strong> section: if the device is not listed,
+it is a connection problem, not a mapping one. If it is listed, arm a learn
+and watch the echo line — it names whatever arrives.</p>
+
+<h3>The receiving app cannot see vizz</h3>
+<p>Check the status line: each output has a dot, green when live. Syphon is
+macOS-only. NDI needs its runtime installed, and the panel says so if it is
+missing.</p>
+
+<h3>Frame rate is low</h3>
+<p>Open <strong>health</strong> in the panel for frame-time percentiles and the
+over-budget count. Lower the render multiplier first, then
+<code>/particles/count</code>. Heavy feedback plus glow at 4K is the usual
+culprit.</p>
+
+<h3>It asks twice before quitting</h3>
+<p>That is deliberate. <kbd>Esc</kbd> is one key next to nothing, and a single
+press ending the show is the one destructive keystroke worth guarding.</p>
+
+<footer>
+<p>vizz is <a href="https://github.com/legofsalmon/vizz">open source</a>, MIT
+licensed. Found something wrong or missing in these docs?
+<a href="https://github.com/legofsalmon/vizz/issues">Open an issue</a>.</p>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

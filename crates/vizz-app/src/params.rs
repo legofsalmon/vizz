@@ -740,6 +740,73 @@ mod reference_tests {
         }
     }
 
+    /// The docs site carries the same OSC reference as the README, and a
+    /// second copy is a second thing that can go stale — the exact
+    /// failure the README test exists for. Held against the registry the
+    /// same way, so publishing a docs page that documents a parameter
+    /// that no longer exists fails here.
+    #[test]
+    fn the_docs_site_osc_reference_matches_the_registry() {
+        let docs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../site/docs/index.html"
+        ))
+        .expect("site/docs/index.html");
+
+        // Rows look like:
+        // <tr><td><code>/addr</code></td><td>min – max</td><td>default</td>…
+        let mut rows = std::collections::BTreeMap::new();
+        for row in docs.split("<tr>") {
+            let Some(rest) = row.strip_prefix("<td><code>/") else { continue };
+            // The address cell may carry a suffix after the code span —
+            // gravity wells are written `/gravity/N/x` (N = 0–3), exactly
+            // as the README compacts them.
+            let Some((addr, rest)) = rest.split_once("</code>") else { continue };
+            let addr = format!("/{addr}");
+            let cells: Vec<&str> = rest
+                .split("<td>")
+                .skip(1)
+                .filter_map(|c| c.split("</td>").next())
+                .collect();
+            if cells.len() < 3 {
+                continue;
+            }
+            let Some((min, max)) = cells[0].split_once('–') else { continue };
+            let (Ok(min), Ok(max), Ok(default)) = (
+                min.trim().parse::<f32>(),
+                max.trim().parse::<f32>(),
+                cells[1].trim().parse::<f32>(),
+            ) else {
+                continue;
+            };
+            // Gravity wells are compacted the same way the README does it.
+            let addrs: Vec<String> = if addr.contains("/N/") {
+                (0..4).map(|i| addr.replace("/N/", &format!("/{i}/"))).collect()
+            } else {
+                vec![addr]
+            };
+            for a in addrs {
+                rows.insert(a, (min, max, default));
+            }
+        }
+        assert!(rows.len() > 50, "parsed only {} rows — docs table format changed?", rows.len());
+
+        let p = super::AppParams::build();
+        for (_, d) in p.registry.iter() {
+            let (min, max, default) = rows
+                .get(&d.addr)
+                .unwrap_or_else(|| panic!("the docs site's OSC reference is missing {}", d.addr));
+            assert_eq!((d.min, d.max), (*min, *max), "{}: docs range drifted", d.addr);
+            assert_eq!(d.default, *default, "{}: docs default drifted", d.addr);
+        }
+        for addr in rows.keys() {
+            assert!(
+                p.registry.id(addr).is_some(),
+                "the docs site documents {addr}, which no longer exists"
+            );
+        }
+    }
+
     /// The render_panel harness is the only place panel layout is ever
     /// looked at. It once drew 46 of 76 parameters — the whole gravity
     /// layer had never appeared in a single screenshot, which is how a
