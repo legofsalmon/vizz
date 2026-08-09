@@ -329,7 +329,30 @@ impl FrameEngine {
         };
         let offsets = self.modulation.tick(dt_s, &p.registry, levels);
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
-        self.vis_time += (dt_s * self.snapshot.get(p.speed)) as f64;
+        // Freeze holds the picture: visual time stops advancing, and the
+        // feedback pass is pinned to full trail below so the last frame
+        // survives unchanged. Parameters keep moving underneath — a
+        // transition in flight lands while frozen and shows on release,
+        // which is the gesture's contract: hold the picture, not the set.
+        let frozen = self.snapshot.get(p.punch_freeze) >= 0.5;
+        if !frozen {
+            self.vis_time += (dt_s * self.snapshot.get(p.speed)) as f64;
+        }
+        // The strobe's dark phase rides the same darkening as the black
+        // punch, so blackout and strobe cost one uniform between them.
+        // Computed from the beat clock after modulation ticked it, so the
+        // flashes land on the divisions the clock is actually on.
+        // A strobe with the clock stopped does nothing rather than
+        // parking wherever the beat froze — stuck in the dark phase it
+        // would read as a blackout that no button explains.
+        let strobe = self.snapshot.get(p.punch_strobe);
+        let strobe_dark = if strobe > 0.001 && self.modulation.clock.running {
+            let div = self.snapshot.get(p.punch_strobe_div).max(0.05) as f64;
+            let lit = (self.modulation.clock.beats / div).fract() < 0.3;
+            if lit { 0.0 } else { strobe }
+        } else {
+            0.0
+        };
 
         // Master dim multiplies *everything* that emits light. It is the
         // fader you grab when something is wrong on a big screen, so
@@ -420,7 +443,10 @@ impl FrameEngine {
                 room: placement,
             },
             post: PostUniforms {
-                trail: self.snapshot.get(p.trail),
+                // At trail 1.0 the feedback lerp passes history through
+                // unchanged — a genuine frame hold. Zoom and spin still
+                // apply, which is a look (a frozen frame you can tunnel).
+                trail: if frozen { 1.0 } else { self.snapshot.get(p.trail) },
                 zoom: self.snapshot.get(p.zoom),
                 spin: self.snapshot.get(p.spin),
                 // Rounded: mirror modes are discrete, and a smoothed value
@@ -429,7 +455,12 @@ impl FrameEngine {
                 glow: self.snapshot.get(p.glow),
                 aspect,
                 shift: self.snapshot.get(p.shift),
+                flash: self.snapshot.get(p.punch_flash),
+                invert: self.snapshot.get(p.punch_invert),
+                black: self.snapshot.get(p.punch_black).max(strobe_dark),
                 _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
             },
             room,
             room_visible: room_brightness > 0.002,
@@ -571,6 +602,94 @@ mod tests {
         assert!(
             (reg.target(glow) - 0.02).abs() < 1e-6,
             "a parked recall re-applied its preset and fought the user"
+        );
+    }
+
+    /// Freeze holds the picture: visual time must stop dead the frame
+    /// the gesture lands and resume from the same phase on release —
+    /// while the feedback pass is pinned to full trail so the last frame
+    /// survives.
+    #[test]
+    fn freeze_stops_visual_time_and_pins_the_trail() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        e.begin_frame(16.0 / 9.0, dt);
+
+        reg.set_by_addr("/punch/freeze", 1.0);
+        let a = e.begin_frame(16.0 / 9.0, dt);
+        let b = e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(a.uniforms.time, b.uniforms.time, "time advanced while frozen");
+        assert_eq!(b.post.trail, 1.0, "trail not pinned while frozen");
+
+        reg.set_by_addr("/punch/freeze", 0.0);
+        let c = e.begin_frame(16.0 / 9.0, dt);
+        assert!(c.uniforms.time > b.uniforms.time, "time did not resume");
+        assert!(c.post.trail < 1.0, "trail still pinned after release");
+    }
+
+    /// A flash that fades in is not a flash: the full value must reach
+    /// the GPU on the very frame it was set. This is the test that fails
+    /// if someone gives the punch params a smoothing constant.
+    #[test]
+    fn a_flash_lands_at_full_strength_on_the_same_frame() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        let dt = Some(Duration::from_millis(16));
+        e.begin_frame(16.0 / 9.0, dt);
+
+        reg.set_by_addr("/punch/flash", 1.0);
+        let f = e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(f.post.flash, 1.0, "flash was smoothed on its way to the GPU");
+
+        reg.set_by_addr("/punch/flash", 0.0);
+        let f = e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(f.post.flash, 0.0, "flash lingered after release");
+    }
+
+    /// The strobe alternates lit and dark phases on the beat clock, and
+    /// the dark phase rides the same uniform as the blackout.
+    #[test]
+    fn the_strobe_alternates_on_the_beat() {
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        // 60 bpm = one beat per second; a quarter-beat division makes a
+        // full strobe cycle every 250 ms, sampled well by 16 ms frames.
+        e.modulation.clock.bpm = 60.0;
+        let dt = Some(Duration::from_millis(16));
+        reg.set_by_addr("/punch/strobe", 1.0);
+        reg.set_by_addr("/punch/strobe_div", 0.25);
+
+        let (mut lit, mut dark) = (0, 0);
+        for _ in 0..60 {
+            let f = e.begin_frame(16.0 / 9.0, dt);
+            if f.post.black > 0.5 {
+                dark += 1;
+            } else {
+                lit += 1;
+            }
+        }
+        assert!(lit > 5, "strobe never lit ({lit} lit / {dark} dark)");
+        assert!(dark > 5, "strobe never went dark ({lit} lit / {dark} dark)");
+
+        reg.set_by_addr("/punch/strobe", 0.0);
+        let f = e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(f.post.black, 0.0, "strobe left the black uniform up");
+    }
+
+    /// Recalling a look must never replay somebody's blackout: no punch
+    /// gesture may be captured into a preset.
+    #[test]
+    fn a_captured_preset_carries_no_punch_state() {
+        let e = engine();
+        let reg = &e.params.registry;
+        reg.set_by_addr("/punch/black", 1.0);
+        reg.set_by_addr("/punch/freeze", 1.0);
+        let look = vizz_mod::preset::Preset::capture(reg);
+        assert!(
+            !look.values.keys().any(|a| a.starts_with("/punch/")),
+            "a preset captured punch state: {:?}",
+            look.values.keys().filter(|a| a.starts_with("/punch/")).collect::<Vec<_>>()
         );
     }
 

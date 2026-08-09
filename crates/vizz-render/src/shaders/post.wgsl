@@ -13,7 +13,12 @@ struct Post {
     glow: f32,    // extra bloom-ish lift
     aspect: f32,
     shift: f32,   // radial RGB split, 0 = off
+    flash: f32,   // punch: mix toward white, 0..1
+    invert: f32,  // punch: invert after the shoulder, 0..1
+    black: f32,   // punch: darken rgb (alpha untouched), 0..1
     _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Post;
@@ -142,5 +147,15 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     // highlights into flat white blobs. Weak enough to leave midtones
     // essentially untouched.
     color = color / (vec3<f32>(1.0) + color * 0.15);
+
+    // Punch gestures, last so they act on the finished picture. Invert
+    // sits after the shoulder on purpose — inverting HDR would make
+    // negative light. Flash raises alpha too (a flash must cover), black
+    // leaves alpha alone (a blackout dims the light, not the layer —
+    // the same contract as the master dim).
+    color = mix(color, vec3<f32>(1.0) - color, u.invert);
+    color = color * (1.0 - u.black);
+    color = mix(color, vec3<f32>(1.0), u.flash);
+    alpha = max(alpha, u.flash);
     return vec4<f32>(color, clamp(alpha, 0.0, 1.0));
 }

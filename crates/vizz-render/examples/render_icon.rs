@@ -116,7 +116,7 @@ fn main() {
         glow: 0.95,
         aspect: 1.0,
         shift: 0.12,
-        _pad0: 0.0,
+        ..Default::default()
     };
 
     for _ in 0..WARMUP {

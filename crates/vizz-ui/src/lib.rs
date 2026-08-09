@@ -59,6 +59,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
         .show(ctx, |ui| {
             for (key, what) in [
                 ("1 – 9, 0", "fire preset slot 1–10"),
+                ("Space", "flash — white out while held"),
                 ("Tab", "show or hide the control panel"),
                 ("G", "modulation canvas"),
                 ("P", "performance layout"),
@@ -175,6 +176,13 @@ pub struct Gui {
     pub focus_filter: bool,
     /// A number key was pressed: fire this preset slot.
     pub preset_key: Option<u32>,
+    /// Space went down (`Some(true)`) or up (`Some(false)`) this frame:
+    /// the flash gesture, taken by the app like `preset_key` so there is
+    /// one path writing the parameter. Held state is tracked here so a
+    /// release is only reported for a press this handler saw — a space
+    /// typed into a text field must not end as a flash release.
+    pub flash_key: Option<bool>,
+    space_flashing: bool,
     graph_view: graph_view::GraphView,
     macros: vizz_mod::perform::Macros,
     /// Slider working ranges, loaded once and saved when they change.
@@ -208,6 +216,8 @@ impl Gui {
             quit_armed: false,
             focus_filter: false,
             preset_key: None,
+            flash_key: None,
+            space_flashing: false,
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             ranges: vizz_mod::ranges::Ranges::load(),
@@ -277,6 +287,27 @@ impl Gui {
                 self.drop_text_focus();
             }
             return true;
+        }
+        // Space is the flash. Press and release both matter — it is the
+        // one held gesture on the keyboard — so it is handled before the
+        // pressed-only block below.
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+        {
+            if event.state.is_pressed()
+                && !event.repeat
+                && !self.ctx.egui_wants_keyboard_input()
+                && !self.space_flashing
+            {
+                self.space_flashing = true;
+                self.flash_key = Some(true);
+                return true;
+            }
+            if !event.state.is_pressed() && self.space_flashing {
+                self.space_flashing = false;
+                self.flash_key = Some(false);
+                return true;
+            }
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
@@ -521,7 +552,7 @@ impl Gui {
         // from the parameter list end up in the same map by the same path.
         actions.set_learn_target = perf.set_learn_target;
         actions.clear_binding = perf.clear_binding;
-        actions.clear_slot_binding = perf.clear_slot_binding.map(|v| (performance::RECALL.to_string(), v));
+        actions.clear_slot_binding = perf.clear_slot_binding;
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.

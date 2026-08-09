@@ -611,6 +611,7 @@ typed a name you already know what you want.
 
 ```
 1 – 9, 0   fire preset slot 1–10
+Space      flash — white out while held
 Tab        show or hide the control panel
 G          modulation canvas
 P          performance layout
@@ -907,6 +908,12 @@ control input can never crash the renderer.
 | `/fx/mirror` | 0 – 3 | 0 | 0 off · 1 mirror · 2 quad · 3 kaleido |
 | `/fx/glow` | 0 – 1 | 0.25 | bloom lift |
 | `/fx/shift` | 0 – 1 | 0 | radial RGB split (chromatic aberration) |
+| `/punch/flash` | 0 – 1 | 0 | white-out while held — Space, a punch button, or a learned MIDI note |
+| `/punch/black` | 0 – 1 | 0 | blackout while held; rgb only, coverage stays |
+| `/punch/invert` | 0 – 1 | 0 | invert the finished picture while held |
+| `/punch/freeze` | 0 – 1 | 0 | hold the picture; the set keeps moving underneath |
+| `/punch/strobe` | 0 – 1 | 0 | beat-synced strobe while held |
+| `/punch/strobe_div` | 0.25 – 4 | 0.5 | beats per strobe cycle |
 | `/color/palette` | 0 – 15 | 0 | palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes |
 | `/color/spread` | 0 – 1 | 0.12 | how much of the palette the field spans |
 | `/color/drive` | 0 – 3 | 0 | what picks the colour: 0 index · 1 radius · 2 depth · 3 height |

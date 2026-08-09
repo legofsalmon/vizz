@@ -795,6 +795,13 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
+        // Space writes the flash exactly as a MIDI note or the punch
+        // button would — one parameter, however it is played.
+        if let Some(pressed) = state.gui.flash_key.take() {
+            self.params
+                .registry
+                .set(self.params.punch_flash, if pressed { 1.0 } else { 0.0 });
+        }
         let actions = if let Some(preview) = &preview
             && state.gui.will_draw()
         {

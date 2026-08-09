@@ -51,6 +51,15 @@ pub const EXCLUDED: &[&str] = &[
     "/gravity/curve",
     "/gravity/auto",
     "/gravity/bars",
+    // Punch gestures. Not transport — they are performed, not scheduled —
+    // but equally not part of a look: recalling a preset must never
+    // replay somebody's blackout or leave a strobe running.
+    "/punch/flash",
+    "/punch/black",
+    "/punch/invert",
+    "/punch/freeze",
+    "/punch/strobe",
+    "/punch/strobe_div",
 ];
 
 fn excluded(addr: &str) -> bool {

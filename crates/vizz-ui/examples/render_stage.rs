@@ -51,6 +51,8 @@ fn main() {
     // whole question is whether you can read a fader's position at a
     // glance, and eight of the same tells you nothing.
     for (addr, v) in [
+        // One punch latched, so the engaged state is in the shot.
+        ("/punch/strobe", 1.0),
         ("/particles/size", 0.07),
         ("/particles/speed", 0.42),
         ("/particles/brightness", 0.88),
@@ -249,6 +251,12 @@ fn registry() -> ParamRegistry {
         "/color/palette",
         "/color/drive",
         "/color/spread",
+        "/punch/flash",
+        "/punch/strobe",
+        "/punch/black",
+        "/punch/freeze",
+        "/punch/invert",
+        "/punch/strobe_div",
         "/master/dim",
     ] {
         let def = ParamDef::new(addr, 0.0, 1.0, 0.4);
@@ -258,6 +266,7 @@ fn registry() -> ParamRegistry {
                 ParamDef::new(addr, 0.0, 4.0, 0.0).labels(&["hsv", "warm", "ember", "ice", "neon"])
             }
             "/particles/size" => ParamDef::new(addr, 0.001, 0.2, 0.015),
+            "/punch/strobe_div" => ParamDef::new(addr, 0.25, 4.0, 0.5).transport(),
             "/master/dim" => ParamDef::new(addr, 0.0, 1.0, 1.0),
             _ => def,
         });

@@ -123,7 +123,7 @@ pub struct PerformanceActions {
     /// from `clear_binding` because a slot parameter carries many
     /// bindings, and clearing the parameter would unmap every preset to
     /// unmap one.
-    pub clear_slot_binding: Option<f32>,
+    pub clear_slot_binding: Option<(String, f32)>,
 }
 
 pub fn draw(
@@ -168,6 +168,10 @@ pub fn draw(
                 ui.vertical(|ui| {
                     ui.set_width(inner_w);
                     status_strip(ui, state, &mut actions, inner_w);
+                    ui.add_space(10.0);
+
+                    section(ui, "PUNCH");
+                    punch_row(ui, registry, state, &mut actions);
                     ui.add_space(10.0);
 
                     section(ui, "SCENES");
@@ -290,7 +294,7 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
                 response.context_menu(|ui| match (&bound, waiting) {
                     (Some(s), _) => {
                         if ui.button(format!("unmap {}", s.label())).clicked() {
-                            actions.clear_slot_binding = Some(slot as f32);
+                            actions.clear_slot_binding = Some((RECALL.to_string(), slot as f32));
                             ui.close();
                         }
                     }
@@ -319,6 +323,146 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
 /// The preset recall address. Bindings name a parameter by address rather
 /// than by id, since they outlive the process.
 pub(crate) const RECALL: &str = "/preset/recall";
+
+/// The punch row: gestures held, not set. A punch is engaged while the
+/// button (or its MIDI note, or Space for flash) is down and gone when it
+/// is released — the one family of controls on this screen that does
+/// nothing when you let go. Shift-click latches for the moments both
+/// hands are elsewhere; a plain click on a latched button releases it.
+fn punch_row(
+    ui: &mut egui::Ui,
+    registry: &ParamRegistry,
+    state: &PerformanceState<'_>,
+    actions: &mut PerformanceActions,
+) {
+    const PUNCH: &[(&str, &str, &str)] = &[
+        ("/punch/flash", "FLASH", "white out while held · Space does the same"),
+        ("/punch/strobe", "STROBE", "beat-synced strobe while held"),
+        ("/punch/black", "BLACK", "black out while held"),
+        ("/punch/freeze", "FREEZE", "hold the picture while held"),
+        ("/punch/invert", "INVERT", "invert the picture while held"),
+    ];
+    ui.horizontal(|ui| {
+        for (addr, label, hint) in PUNCH {
+            punch_button(ui, registry, state, actions, addr, label, hint);
+        }
+        // The strobe's division lives beside the buttons it shapes. It is
+        // transport — the panel's parameter list hides it — so this is
+        // its home.
+        if let Some(id) = registry.id("/punch/strobe_div") {
+            let def = &registry.defs()[id.index()];
+            let mut div = registry.target(id);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut div)
+                        .speed(0.05)
+                        .range(def.min..=def.max)
+                        .fixed_decimals(2)
+                        .suffix(" beats"),
+                )
+                .on_hover_text("beats per strobe cycle")
+                .changed()
+            {
+                registry.set(id, div);
+            }
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn punch_button(
+    ui: &mut egui::Ui,
+    registry: &ParamRegistry,
+    state: &PerformanceState<'_>,
+    actions: &mut PerformanceActions,
+    addr: &str,
+    label: &str,
+    hint: &str,
+) {
+    let Some(id) = registry.id(addr) else { return };
+    let def = &registry.defs()[id.index()];
+    let lit = registry.target(id) > def.max * 0.5;
+    let bound = state.midi.map.source_for_value(addr, def.max);
+    let waiting = state.midi.learning_value(addr, def.max);
+
+    let (fill, ink) = if waiting {
+        (LEARN, Color32::from_rgb(46, 32, 12))
+    } else if lit {
+        // Engaged reads loud: this is the row whose whole job is to be
+        // unmissable while it is doing something to the output.
+        (Color32::from_rgb(232, 236, 242), Color32::from_rgb(24, 26, 32))
+    } else {
+        (Color32::from_rgb(36, 40, 48), INK)
+    };
+    let response = ui
+        .add(
+            egui::Button::new(egui::RichText::new(label).size(13.0).strong().color(ink))
+                .min_size(vec2(86.0, 34.0))
+                .fill(fill)
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(62, 68, 82))),
+        )
+        .on_hover_text(match &bound {
+            Some(s) => format!("{hint}  ·  {}", s.label()),
+            None => hint.to_string(),
+        });
+
+    // Hold, don't click: pressed engages, released disengages. The
+    // latch flag is decided at press time and consulted at release, so
+    // shift can only latch a press it started.
+    let held = response.is_pointer_button_down_on();
+    let held_id = egui::Id::new(("punch-held", addr));
+    let latch_id = egui::Id::new(("punch-latch", addr));
+    let was_held: bool = ui.ctx().data(|d| d.get_temp(held_id).unwrap_or(false));
+    let mut latched: bool = ui.ctx().data(|d| d.get_temp(latch_id).unwrap_or(false));
+    if held && !was_held {
+        let shift = ui.input(|i| i.modifiers.shift);
+        if shift && lit {
+            // Shift on a lit button unlatches and turns it off.
+            registry.set(id, def.min);
+            latched = false;
+        } else {
+            registry.set(id, def.max);
+            latched = shift;
+        }
+    }
+    if !held && was_held && !latched {
+        // A plain press on a latched button lands here too — press wrote
+        // max (a no-op) and cleared nothing, release turns it off. That
+        // is "click again to release", for free.
+        registry.set(id, def.min);
+    }
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(held_id, held);
+        d.insert_temp(latch_id, latched && (lit || held));
+    });
+
+    if state.midi.available {
+        response.context_menu(|ui| match (&bound, waiting) {
+            (Some(s), _) => {
+                if ui.button(format!("unmap {}", s.label())).clicked() {
+                    actions.clear_slot_binding = Some((addr.to_string(), def.max));
+                    ui.close();
+                }
+            }
+            (None, true) => {
+                if ui.button("cancel MIDI learn").clicked() {
+                    actions.set_learn_target = Some(None);
+                    ui.close();
+                }
+            }
+            (None, false) => {
+                if ui.button("MIDI learn").clicked() {
+                    actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::value(
+                        addr,
+                        def.max,
+                        label.to_lowercase(),
+                    )));
+                    ui.close();
+                }
+            }
+        });
+    }
+}
 
 fn status_strip(
     ui: &mut egui::Ui,
@@ -1002,6 +1146,9 @@ mod tests {
         b.add(ParamDef::new("/particles/size", 0.001, 0.2, 0.015));
         b.add(ParamDef::new("/fx/glow", 0.0, 1.0, 0.25));
         b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
+        b.add(ParamDef::new("/punch/flash", 0.0, 1.0, 0.0).gesture());
+        b.add(ParamDef::new("/punch/strobe", 0.0, 1.0, 0.0).gesture());
+        b.add(ParamDef::new("/punch/strobe_div", 0.25, 4.0, 0.5).transport());
         b.build()
     }
 
@@ -1086,6 +1233,13 @@ mod tests {
             "output status missing: {text}"
         );
         assert!(text.contains("128.0 bpm"), "tempo missing: {text}");
+        // The punch row draws for whichever gestures the registry has —
+        // and only those, so a build without a punch param shows no
+        // phantom button.
+        assert!(text.contains("PUNCH"), "punch section missing: {text}");
+        assert!(text.contains("FLASH"), "flash button missing: {text}");
+        assert!(text.contains("STROBE"), "strobe button missing: {text}");
+        assert!(!text.contains("BLACK"), "a button drew without its parameter: {text}");
         // The stale slot renders as an empty placeholder rather than
         // vanishing, so the fader layout does not reflow mid-set.
         assert!(
