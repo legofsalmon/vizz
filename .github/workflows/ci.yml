@@ -125,11 +125,19 @@ jobs:
           # run would pass on exit code alone.
           data = open("frame-video-macos.png", "rb").read()
           assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
-          idat = b"".join(
-              data[i + 8 : i + 8 + struct.unpack(">I", data[i - 4 : i])[0]]
-              for i in range(8, len(data))
-              if data[i : i + 4] == b"IDAT"
-          )
+          # Walk the chunk list properly rather than scanning for the
+          # IDAT tag: the payload starts right after the 4-byte type, and
+          # reading from four bytes further on hands zlib a mid-stream
+          # slice, which is what "incorrect header check" was.
+          idat, off = b"", 8
+          while off < len(data):
+              (length,) = struct.unpack(">I", data[off : off + 4])
+              kind = data[off + 4 : off + 8]
+              if kind == b"IDAT":
+                  idat += data[off + 8 : off + 8 + length]
+              elif kind == b"IEND":
+                  break
+              off += 12 + length
           raw = zlib.decompress(idat)
           lit = sum(1 for b in raw if b > 40)
           print(f"{lit} bright bytes in the dump")
