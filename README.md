@@ -38,6 +38,10 @@ Spout is the notable gap. Windows is built and tested in CI.
 
 ## Install (macOS, no developer tools)
 
+The download button on **[vizz.letissier.ie](https://vizz.letissier.ie)**
+always serves the newest release; the one-liner below does the same from
+a terminal.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/legofsalmon/vizz/main/scripts/install.sh | bash
 ```
