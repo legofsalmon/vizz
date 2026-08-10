@@ -9,6 +9,7 @@ members = [
     "crates/vizz-midi",
     "crates/vizz-mod",
     "crates/vizz-audio",
+    "crates/vizz-design",
     "crates/vizz-ui",
     "crates/vizz-update",
     "crates/vizz-app",
@@ -29,6 +30,7 @@ vizz-io = { path = "crates/vizz-io" }
 vizz-midi = { path = "crates/vizz-midi" }
 vizz-mod = { path = "crates/vizz-mod" }
 vizz-audio = { path = "crates/vizz-audio" }
+vizz-design = { path = "crates/vizz-design" }
 vizz-ui = { path = "crates/vizz-ui" }
 vizz-update = { path = "crates/vizz-update" }
 

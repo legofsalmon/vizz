@@ -36,34 +36,25 @@ fn pad_size(available: f32) -> egui::Vec2 {
 
 const GAP: f32 = 4.0;
 
-const FILLED: Color32 = Color32::from_rgb(58, 66, 84);
-const EMPTY: Color32 = Color32::from_rgb(34, 36, 42);
+const FILLED: Color32 = vizz_design::surface::SLOT;
+const EMPTY: Color32 = vizz_design::surface::SLOT_EMPTY;
 const CURRENT: Color32 = crate::theme::CURRENT;
-const ARRIVING: Color32 = Color32::from_rgb(255, 175, 80);
+const ARRIVING: Color32 = vizz_design::accent::ARRIVING;
 const ARMED: Color32 = crate::theme::ARMED;
 /// A pad whose preset no longer exists. This used to borrow `ARMED`, so a
 /// broken pad read as "the next press is destructive" — wrong twice over,
 /// since firing it does nothing at all. Broken is a warning, not an arm.
 const WARN: Color32 = crate::theme::WARN;
-/// The autopilot's own colour. Green rather than the blue of `CURRENT` or
-/// the amber of `ARRIVING`: those two say where the grid *is*, and this
-/// says something is driving it. Sharing a colour with either would make
-/// the sweep read as another transition.
-const AUTO_ON: Color32 = Color32::from_rgb(72, 160, 104);
-const AUTO_BED: Color32 = Color32::from_rgb(30, 46, 36);
+const AUTO_ON: Color32 = vizz_design::accent::AUTO;
+const AUTO_BED: Color32 = vizz_design::accent::AUTO_BED;
 /// A pad waiting for a MIDI control, and the chip on one that has found
 /// it. Amber, matching the learn colour the panel and the performance
 /// faders already use, so the state means the same thing everywhere.
 const LEARN: Color32 = crate::theme::LEARN;
-/// A pad's binding at rest — quiet enough that a fully mapped grid does
-/// not read as sixteen alarms, bright enough to survive the transition
-/// fill passing underneath it. The pad being blended to is exactly the pad
-/// you are most likely to be looking at, so the one place the chip sits on
-/// amber rather than on the pad colour is not a corner case.
-const MIDI_INK: Color32 = Color32::from_rgb(158, 180, 206);
+const MIDI_INK: Color32 = vizz_design::accent::BINDING;
 /// Secondary text. The egui default is dimmer than anything on a stage
 /// should be, so labels here are set explicitly rather than inherited.
-const LABEL: Color32 = Color32::from_rgb(178, 187, 200);
+const LABEL: Color32 = vizz_design::ink::SECONDARY;
 
 /// What the grid row needs to draw itself. Names rather than the `Grid`
 /// itself so this crate does not depend on the scene module's internals.
@@ -304,7 +295,7 @@ fn pad(
         egui::Align2::LEFT_CENTER,
         format!("{}", slot + 1),
         egui::FontId::monospace(9.0),
-        Color32::from_rgb(150, 155, 170),
+        vizz_design::ink::TERTIARY,
     );
     // The binding, along the bottom edge, where it cannot collide with the
     // name on the centre line. Only on a pad tall enough to have a bottom
@@ -339,7 +330,7 @@ fn pad(
             if broken {
                 WARN
             } else {
-                Color32::from_rgb(225, 228, 235)
+                vizz_design::ink::PRIMARY
             },
         );
     }
@@ -520,7 +511,7 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
     ui.horizontal(|ui| {
         let armed = state.mode == PadMode::Store;
         let store = egui::Button::new(if armed {
-            egui::RichText::new("store").color(Color32::from_rgb(50, 18, 12))
+            egui::RichText::new("store").color(crate::theme::ON_ARMED)
         } else {
             egui::RichText::new("store")
         })
@@ -538,7 +529,7 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
         }
         let arming = state.mode == PadMode::Clear;
         let clear = egui::Button::new(if arming {
-            egui::RichText::new("clear").color(Color32::from_rgb(50, 18, 12))
+            egui::RichText::new("clear").color(crate::theme::ON_ARMED)
         } else {
             egui::RichText::new("clear")
         })
@@ -572,7 +563,7 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
             // is waiting for your controller.
             let cancel = egui::Button::new(
                 egui::RichText::new(format!("waiting for {}", slot + 1))
-                    .color(Color32::from_rgb(46, 32, 12)),
+                    .color(crate::theme::ON_LEARN),
             )
             .fill(LEARN);
             if ui
@@ -586,7 +577,7 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
         }
         let learning = state.mode == PadMode::Learn;
         let midi = egui::Button::new(if learning {
-            egui::RichText::new("MIDI").color(Color32::from_rgb(46, 32, 12))
+            egui::RichText::new("MIDI").color(crate::theme::ON_LEARN)
         } else {
             egui::RichText::new("MIDI")
         })
