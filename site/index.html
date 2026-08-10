@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.13.0/vizz.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.14.0/vizz-0.14.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,36 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.14.0">0.14.0</a></div>
+      <ul>
+        <li><strong>Live input you can find.</strong> A <em>video in</em>
+          section in the panel, beside audio: it lists every NDI sender
+          on the network, every Syphon server on the Mac and every
+          camera or capture card, and connects to one with a click.
+          Syphon input and camera capture are new; NDI receive existed
+          but only as a command-line flag, which is a feature nobody
+          finds. The built-in test pattern sits at the top of the list,
+          because it is the thing to reach for when nothing appears.</li>
+        <li><strong>The panel reads as what it does.</strong> The
+          parameter list was generated from OSC addresses, so it showed
+          the network namespace — <code>pal</code>, <code>vec</code> and
+          four peers called <code>l1</code>…<code>l4</code>. It is now
+          organised into SHAPE, LOOK, PRINT, STAGE and OUTPUT, in the
+          order a look gets built, with a caption on every group saying
+          what it is for.</li>
+        <li><strong>The gravity sequencer had no way in.</strong> Its
+          row only appeared once a pad was filled — but the row held the
+          only button that could fill it, so on a fresh install the
+          layer was unreachable from every screen. The empty state now
+          offers a one-click capture.</li>
+        <li><strong>Downloads carry their version.</strong> Releases are
+          now <code>vizz-0.14.0.app.zip</code>, so a Downloads folder
+          holding several of them can be told apart without unzipping
+          each one.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.13.0">0.13.0</a></div>
