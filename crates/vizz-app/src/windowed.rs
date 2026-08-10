@@ -113,9 +113,6 @@ struct App {
     audio_bands: [vizz_audio::Band; 4],
     audio_auto_bpm: bool,
     tap: vizz_audio::TapTempo,
-    /// `/` was pressed this frame: focus the panel's parameter filter.
-    /// One-shot, cleared after the panel has drawn.
-    focus_filter: bool,
     /// Live point-cloud stream, if one was configured.
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
@@ -577,7 +574,7 @@ impl App {
                 log::warn!("nothing to do with a .{other} file");
                 if let Some(state) = &mut self.state {
                     state.gui.notify_error(format!(
-                        "can't load a .{other} — clouds are .ply .xyz .pts .csv .png .jpg, palettes .gpl .hex .txt"
+                        "can't load a .{other} — clouds are .ply .xyz .pts .csv .png .jpg .jpeg, palettes .gpl .hex .txt"
                     ));
                 }
             }
@@ -1136,6 +1133,10 @@ impl App {
                         clock_ticking: self.midi_view.clock_bpm.is_some(),
                     }
                 },
+                video: self.video.as_ref().map(|v| vizz_ui::VideoStatus {
+                    connected: v.connected(),
+                    label: v.label(),
+                }),
                 audio_bands: self.audio_bands,
                 audio_auto_bpm: self.audio_auto_bpm,
                 clouds: cloud_names,
@@ -1172,7 +1173,9 @@ impl App {
                         &self.library,
                     )
                 }),
-                focus_filter: std::mem::take(&mut self.focus_filter),
+                // The Gui owns the `/` shortcut and overwrites this before
+                // the panel reads it; the app has nothing to add.
+                focus_filter: false,
                 expand_sections: false,
                 bpm: self.engine.modulation.clock.bpm,
                 bar_phase: self.engine.modulation.clock.bar_phase(4.0),
@@ -2206,7 +2209,6 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: false,
         tap: vizz_audio::TapTempo::new(),
-        focus_filter: false,
         live: None,
         live_revision: 0,
         live_shown: false,

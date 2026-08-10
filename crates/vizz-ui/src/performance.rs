@@ -45,10 +45,10 @@ const HANDLE: Color32 = Color32::from_rgb(226, 233, 242);
 /// reads instantly. Matches the panel's own modulation colour.
 const MOD: Color32 = Color32::from_rgb(255, 190, 90);
 const MASTER_FILL: Color32 = Color32::from_rgb(178, 78, 78);
-const LIVE: Color32 = Color32::from_rgb(104, 208, 132);
+const LIVE: Color32 = crate::theme::LIVE;
 const DEAD: Color32 = Color32::from_rgb(96, 102, 112);
-const WARN: Color32 = Color32::from_rgb(242, 156, 92);
-const LEARN: Color32 = Color32::from_rgb(232, 132, 108);
+const WARN: Color32 = crate::theme::WARN;
+const LEARN: Color32 = crate::theme::LEARN;
 
 /// Faders per row. Sixteen slots as two rows of eight keeps each one wide
 /// enough to hit and mirrors the grid's sixteen above it.
@@ -182,18 +182,13 @@ pub fn draw(
                     }
 
                     section(ui, "SCENES");
-                    actions.grid =
-                        crate::grid_view::draw(ui, state.grid, crate::grid_view::Shape::Stage);
+                    actions.grid = crate::grid_view::draw(ui, state.grid);
                     ui.add_space(10.0);
 
                     if let Some(gravity) = state.gravity {
                         section(ui, "GRAVITY");
-                        actions.gravity = crate::grid_view::draw_with_id(
-                            ui,
-                            gravity,
-                            crate::grid_view::Shape::Stage,
-                            "gravity-grid",
-                        );
+                        actions.gravity =
+                            crate::grid_view::draw_with_id(ui, gravity, "gravity-grid");
                         ui.add_space(10.0);
                     }
 
@@ -284,7 +279,7 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
                 // line of caption text — which is what it was mistaken
                 // for when the fills sat 13 points off the background.
                 .stroke(if current {
-                    egui::Stroke::new(1.5, Color32::from_rgb(110, 180, 255))
+                    egui::Stroke::new(1.5, crate::theme::CURRENT)
                 } else {
                     egui::Stroke::new(1.0, Color32::from_rgb(62, 68, 82))
                 });
@@ -470,7 +465,7 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry) -> bool {
                 } else if bresp.secondary_clicked() {
                     registry.set(*blend, (bcur - 1.0).rem_euclid(bsteps));
                 }
-                bresp.on_hover_text("blend mode — click to cycle");
+                bresp.on_hover_text("blend mode — click to cycle, right-click back");
 
                 // Opacity and frequency as drags: the two you ride.
                 let mut op = registry.target(*opacity);
@@ -518,6 +513,9 @@ fn punch_button(
     let bound = state.midi.map.source_for_value(addr, def.max);
     let waiting = state.midi.learning_value(addr, def.max);
 
+    let latch_id = egui::Id::new(("punch-latch", addr));
+    let is_latched: bool =
+        lit && ui.ctx().data(|d| d.get_temp(latch_id).unwrap_or(false));
     let (fill, ink) = if waiting {
         (LEARN, Color32::from_rgb(46, 32, 12))
     } else if lit {
@@ -534,17 +532,41 @@ fn punch_button(
                 .fill(fill)
                 .stroke(egui::Stroke::new(1.0, Color32::from_rgb(62, 68, 82))),
         )
-        .on_hover_text(match &bound {
-            Some(s) => format!("{hint}  ·  {}", s.label()),
-            None => hint.to_string(),
+        .on_hover_text({
+            // Held and latched must be tellable apart on screen: a lit
+            // button under a finger releases when the finger does, a
+            // latched one stays until clicked, and confusing the two is
+            // a strobe you cannot stop. The hover names the state; the
+            // pip below marks it without hovering.
+            let state_note = if is_latched {
+                "  ·  LATCHED — click to release"
+            } else {
+                "  ·  shift-click latches"
+            };
+            match &bound {
+                Some(s) => format!("{hint}{state_note}  ·  {}", s.label()),
+                None => format!("{hint}{state_note}"),
+            }
         });
+    if is_latched {
+        // The latch pip: a small ARMED corner square, the one visual
+        // that says "this stays on when you let go".
+        let r = response.rect;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(r.right() - 8.0, r.top() + 2.0),
+                vec2(6.0, 6.0),
+            ),
+            1.0,
+            crate::theme::ARMED,
+        );
+    }
 
     // Hold, don't click: pressed engages, released disengages. The
     // latch flag is decided at press time and consulted at release, so
     // shift can only latch a press it started.
     let held = response.is_pointer_button_down_on();
     let held_id = egui::Id::new(("punch-held", addr));
-    let latch_id = egui::Id::new(("punch-latch", addr));
     let was_held: bool = ui.ctx().data(|d| d.get_temp(held_id).unwrap_or(false));
     let mut latched: bool = ui.ctx().data(|d| d.get_temp(latch_id).unwrap_or(false));
     if held && !was_held {
@@ -932,7 +954,7 @@ fn fader(
             let live = state.values.and_then(|v| v.get(param.index()).copied());
             let modulated = live.filter(|l| (l - value).abs() > (def.max - def.min) * 0.01);
 
-            if let Some(v) = vertical_fader(ui, value, modulated, def.min, def.max, w, h) {
+            if let Some(v) = vertical_fader(ui, value, modulated, def, w, h) {
                 registry.set(param, v);
             }
             let value = registry.target(param);
@@ -1212,12 +1234,17 @@ fn vertical_fader(
     ui: &mut egui::Ui,
     value: f32,
     modulated: Option<f32>,
-    min: f32,
-    max: f32,
+    def: &vizz_params::ParamDef,
     w: f32,
     h: f32,
 ) -> Option<f32> {
+    let (min, max) = (def.min, def.max);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click_and_drag());
+    // Right-click restores the default, honouring the overlay's promise
+    // that this works on any slider — these faders were the exception.
+    if response.secondary_clicked() {
+        return Some(def.default);
+    }
     let span = (max - min).max(f32::EPSILON);
     let t = ((value - min) / span).clamp(0.0, 1.0);
 
@@ -1358,7 +1385,11 @@ fn master(
             egui::StrokeKind::Inside,
         );
     }
-    if (response.dragged() || response.clicked())
+    // The same right-click reset as every other slider — a dimmed master
+    // is exactly the mess the gesture exists to get out of.
+    if response.secondary_clicked() {
+        registry.set(id, def.default);
+    } else if (response.dragged() || response.clicked())
         && let Some(pos) = response.interact_pointer_pos()
     {
         let nt = (1.0 - (pos.y - track.top()) / track.height()).clamp(0.0, 1.0);
@@ -1615,6 +1646,78 @@ mod tests {
                 .collect();
         }
         runs
+    }
+
+    /// Count the small ARMED-coloured fills — the latch pips. Small,
+    /// because the ARMED colour legitimately fills whole buttons
+    /// elsewhere (the grid's armed store/clear); the pip is a 6-point
+    /// corner square and nothing else that size wears that colour.
+    fn armed_pips(reg: &ParamRegistry, latched: bool) -> usize {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        if latched {
+            ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new(("punch-latch", "/punch/flash")), true);
+            });
+        }
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let state = PerformanceState {
+            recording: None,
+            preset_current: None,
+            outputs: &[],
+            audio: &audio,
+            fps: 60.0,
+            over_budget: false,
+            bpm: 128.0,
+            bar_phase: 0.1,
+            presets: &names,
+            grid: &grid,
+            gravity: None,
+            midi: &midi,
+            values: None,
+        };
+        let mut macros = Macros::default();
+        let mut count = 0;
+        // The clock advances so the window's fade-in finishes — mid-fade
+        // every colour is alpha-scaled and matches nothing.
+        for i in 0..6 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(1280.0, 800.0),
+                )),
+                time: Some(i as f64 * 0.2),
+                ..Default::default()
+            });
+            draw(&ctx, reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            count = out
+                .shapes
+                .iter()
+                .filter(|s| match &s.shape {
+                    egui::Shape::Rect(r) => {
+                        r.fill == crate::theme::ARMED && r.rect.width() <= 8.0
+                    }
+                    _ => false,
+                })
+                .count();
+        }
+        count
+    }
+
+    /// A latched punch must not look identical to a held one: one keeps
+    /// strobing when the finger leaves, and mistaking the two is a strobe
+    /// you cannot stop. The corner pip is the tell — present exactly when
+    /// the latch is on, absent on a plain lit hold.
+    #[test]
+    fn a_latched_punch_wears_a_pip_and_a_held_one_does_not() {
+        let reg = registry();
+        reg.set_by_addr("/punch/flash", 1.0); // lit either way
+        assert_eq!(armed_pips(&reg, false), 0, "a plain hold grew a latch pip");
+        assert!(armed_pips(&reg, true) >= 1, "the latched button has no pip");
     }
 
     /// Two faders whose parameters end in the same word are qualified

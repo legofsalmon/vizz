@@ -10,6 +10,7 @@ pub mod graph_view;
 pub mod notices;
 pub mod grid_view;
 pub mod panel;
+pub mod theme;
 pub mod performance;
 mod renderer;
 
@@ -25,7 +26,7 @@ pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{
     AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
-    PresetEntry, RecordingView,
+    PresetEntry, RecordingView, VideoStatus,
 };
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
@@ -77,7 +78,24 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
                 });
             }
             ui.separator();
-            ui.small("right-click any slider to reset it to its default");
+            // The mouse carries as many gestures as the keyboard, and they
+            // were harder to find: none of these appeared anywhere but the
+            // README (or nowhere at all) until this block.
+            for (gesture, what) in [
+                ("right-click", "reset a slider · menus on pads, presets and the canvas"),
+                ("shift-click", "latch a punch button until the next click"),
+                ("double-click", "rename a pad"),
+                ("scroll", "zoom the modulation canvas"),
+                ("Delete", "remove the selected canvas node"),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [92.0, 18.0],
+                        egui::Label::new(egui::RichText::new(gesture).strong().monospace()),
+                    );
+                    ui.label(what);
+                });
+            }
         });
 }
 
@@ -132,13 +150,13 @@ fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
         .show(ctx, |ui| {
             let r = egui::Frame::NONE
                 .fill(egui::Color32::from_rgb(64, 50, 18))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 90)))
+                .stroke(egui::Stroke::new(1.0, theme::LEARN))
                 .inner_margin(egui::Margin::symmetric(14, 8))
                 .corner_radius(6.0)
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "MIDI learn armed: the next control you move binds to {label} — click to cancel"
+                            "MIDI learn armed: the next control you move or press binds to {label} — click to cancel"
                         ))
                         .size(13.0)
                         .color(egui::Color32::from_rgb(255, 224, 170)),
@@ -445,6 +463,10 @@ impl Gui {
             log::error!("could not save slider ranges: {e:#}");
             self.notices.error(format!("could not save the slider ranges: {e}"));
         }
+        // The panel's button and the G key take the same door.
+        if actions.open_canvas {
+            self.graph_open = true;
+        }
         if self.graph_open {
             let mut open = true;
             // "modulation canvas", not "modulation": the panel already has
@@ -600,6 +622,7 @@ mod tests {
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
             audio: AudioView::default(),
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -640,6 +663,7 @@ mod tests {
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
             audio: AudioView::default(),
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -683,6 +707,7 @@ mod tests {
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
             audio: AudioView::default(),
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -728,6 +753,7 @@ mod tests {
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
             audio: AudioView::default(),
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -777,6 +803,7 @@ mod tests {
                 clock_midi: false,
                 clock_ticking: false,
             },
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
             modulated: Vec::new(),
@@ -865,6 +892,7 @@ mod tests {
                 clock_started: false,
             },
             audio: AudioView::default(),
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -902,6 +930,7 @@ mod tests {
             frame_budget_ms: 16.67,
             midi: MidiView::default(),
             audio: AudioView::default(),
+            video: None,
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -977,6 +1006,132 @@ mod tests {
             walk(&s.shape, &mut out);
         }
         out
+    }
+
+    /// Every rect-stroke colour the panel painted. The clock advances
+    /// across passes because a fresh Window fades in, and mid-fade every
+    /// colour is alpha-scaled into something no equality check knows.
+    fn panel_stroke_colours(reg: &ParamRegistry, state: &PanelState) -> Vec<egui::Color32> {
+        let ctx = egui::Context::default();
+        let mut out = Vec::new();
+        for i in 0..6 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(900.0, 1000.0),
+                )),
+                time: Some(i as f64 * 0.2),
+                ..Default::default()
+            });
+            let _ = panel::draw(
+                &ctx,
+                reg,
+                state,
+                &mut vizz_mod::ModEngine::with_defaults(),
+                &mut Default::default(),
+            );
+            fn walk(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+                match shape {
+                    egui::Shape::Rect(r) if !r.stroke.is_empty() => out.push(r.stroke.color),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            out.clear();
+            for s in &ctx.end_pass().shapes {
+                walk(&s.shape, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The panel's preset list marks the recalled slot the same way the
+    /// stage row does — same question ("where did the look on screen come
+    /// from"), same blue. It used to be marked on one screen and not the
+    /// other, which read as the panel forgetting.
+    #[test]
+    fn the_recalled_preset_is_outlined_in_the_panel_list_too() {
+        let reg = registry();
+        let state = |current: Option<usize>| PanelState {
+            recording: None,
+            preset_current: current,
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: true,
+            presets: vec![
+                PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
+                PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
+            ],
+            bar_phase: 0.0,
+        };
+        assert!(
+            !panel_stroke_colours(&reg, &state(None)).contains(&theme::CURRENT),
+            "nothing recalled, yet something wears the current-preset stroke"
+        );
+        assert!(
+            panel_stroke_colours(&reg, &state(Some(2))).contains(&theme::CURRENT),
+            "the recalled preset is not marked in the panel list"
+        );
+    }
+
+    /// The status strip only mentions video once a source is configured:
+    /// a permanent "no video" dot would alarm about an absence nobody
+    /// chose. With one configured, its name and its health belong on the
+    /// strip exactly as audio's do.
+    #[test]
+    fn the_status_strip_shows_video_only_when_a_source_exists() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let mut state = PanelState {
+            recording: None,
+            preset_current: None,
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: false,
+            presets: Vec::new(),
+            bar_phase: 0.0,
+        };
+        let without = run_panel(&ctx, &reg, &state);
+        assert!(
+            !without.contains("ndi:cam"),
+            "a video label appeared with no source configured: {without}"
+        );
+        state.video = Some(VideoStatus { connected: true, label: "ndi:cam".into() });
+        let ctx = egui::Context::default();
+        let with = run_panel(&ctx, &reg, &state);
+        assert!(with.contains("ndi:cam"), "the video source is not on the strip: {with}");
     }
 }
 

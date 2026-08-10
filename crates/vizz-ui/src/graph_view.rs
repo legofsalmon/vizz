@@ -204,6 +204,10 @@ impl GraphView {
     pub fn show(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph, registry: &ParamRegistry) -> bool {
         let mut changed = false;
         changed |= self.toolbar(ui, graph);
+        // The gestures, named once where they apply. Every one of these
+        // was invisible until tried: the canvas read as inert unless you
+        // happened to right-click it.
+        ui.small("right-click adds · drag ports to wire · drag an input off to unplug · Delete removes · scroll zooms");
         ui.separator();
         // Palette and canvas side by side. Width is taken from the parent
         // before the canvas allocates, for the same reason the inspector
@@ -287,11 +291,38 @@ impl GraphView {
             {
                 self.fit_requested = true;
             }
-            if ui.button("new").on_hover_text("clear the graph").clicked() {
+            // Armed, like preset delete: the most destructive click in the
+            // app must not fire on the first press. First click relabels the
+            // button red for a few seconds; a second click inside the window
+            // clears.
+            let arm_id = egui::Id::new("graph-new-armed");
+            let armed_at: Option<f64> = ui.memory_mut(|m| m.data.get_temp(arm_id));
+            let now = ui.input(|i| i.time);
+            let armed = armed_at.is_some_and(|t| now - t < 3.0);
+            let new_btn = if armed {
+                egui::Button::new(
+                    egui::RichText::new("clear?").color(Color32::from_rgb(255, 236, 232)),
+                )
+                .fill(Color32::from_rgb(150, 52, 46))
+            } else {
+                egui::Button::new("new")
+            };
+            let clicked = ui
+                .add(new_btn)
+                .on_hover_text(if armed {
+                    "click again to clear the whole graph — there is no undo"
+                } else {
+                    "clear the graph (asks once)"
+                })
+                .clicked();
+            if clicked && armed {
+                ui.memory_mut(|m| m.data.remove_temp::<f64>(arm_id));
                 *graph = NodeGraph::default();
                 self.selected = None;
                 self.patch_name.clear();
                 changed = true;
+            } else if clicked {
+                ui.memory_mut(|m| m.data.insert_temp(arm_id, now));
             }
             ui.checkbox(&mut self.show_palette, "palette");
 
@@ -1211,6 +1242,123 @@ mod tests {
         };
         v.restore(m.clone());
         assert_eq!(v.memory(), m);
+    }
+
+    /// One frame of the toolbar under a real event stream. Returns the
+    /// centre of the first painted text run equal to `find`, so the next
+    /// frame can click it.
+    fn toolbar_frame(
+        ctx: &egui::Context,
+        view: &mut GraphView,
+        graph: &mut NodeGraph,
+        reg: &vizz_params::ParamRegistry,
+        events: Vec<egui::Event>,
+        t: f64,
+        find: &str,
+    ) -> Option<Pos2> {
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 600.0))),
+            events,
+            time: Some(t),
+            ..Default::default()
+        });
+        egui::Area::new(egui::Id::new("canvas-test")).show(ctx, |ui| {
+            ui.set_min_size(vec2(880.0, 560.0));
+            view.show(ui, graph, reg);
+        });
+        let mut found = None;
+        for s in &ctx.end_pass().shapes {
+            if let egui::Shape::Text(text) = &s.shape {
+                let painted: String = text
+                    .galley
+                    .rows
+                    .iter()
+                    .flat_map(|r| r.glyphs.iter().map(|g| g.chr))
+                    .collect();
+                if painted == find && found.is_none() {
+                    found = Some(text.pos + text.galley.rect.size() / 2.0);
+                }
+            }
+        }
+        found
+    }
+
+    fn click(at: Pos2, down: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: down,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    /// "new" is the most destructive click on the canvas — the whole
+    /// patch, no undo. The first click must arm, not clear; the second,
+    /// while armed, clears. This drives the real button with real
+    /// pointer events, because a test of the *labels* would pass with
+    /// the guard deleted.
+    #[test]
+    fn new_arms_on_the_first_click_and_clears_on_the_second() {
+        let reg = vizz_params::ParamRegistry::builder().build();
+        let ctx = egui::Context::default();
+        let mut view = GraphView::default();
+        let mut graph = NodeGraph::default();
+        graph.add(NodeKind::Level, [40.0, 40.0]);
+
+        let run = |view: &mut GraphView,
+                   graph: &mut NodeGraph,
+                   events: Vec<egui::Event>,
+                   t: f64,
+                   find: &str| {
+            toolbar_frame(&ctx, view, graph, &reg, events, t, find)
+        };
+
+        // A fresh Area's first pass only measures; shapes appear on the
+        // second. Warm up, then find the button and press and release it.
+        run(&mut view, &mut graph, vec![], 0.0, "new");
+        let new_pos = run(&mut view, &mut graph, vec![], 0.05, "new")
+            .expect("no 'new' button on the toolbar");
+        run(&mut view, &mut graph, click(new_pos, true), 0.1, "new");
+        // The click lands mid-frame, after the button drew as "new"; the
+        // relabel shows from the next frame.
+        run(&mut view, &mut graph, click(new_pos, false), 0.2, "clear?");
+        let armed_pos = run(&mut view, &mut graph, vec![], 0.3, "clear?");
+        assert_eq!(graph.nodes.len(), 1, "the first click already cleared the graph");
+        let armed_pos = armed_pos.expect("the armed button does not say 'clear?'");
+
+        // The second click, on the armed button, clears.
+        run(&mut view, &mut graph, click(armed_pos, true), 0.3, "clear?");
+        run(&mut view, &mut graph, click(armed_pos, false), 0.4, "new");
+        assert!(graph.nodes.is_empty(), "the armed click did not clear");
+    }
+
+    /// And an armed "new" left alone must disarm on its own: three
+    /// seconds later a click is a first click again, not the second half
+    /// of one from another song.
+    #[test]
+    fn an_armed_new_expires_back_to_safe() {
+        let reg = vizz_params::ParamRegistry::builder().build();
+        let ctx = egui::Context::default();
+        let mut view = GraphView::default();
+        let mut graph = NodeGraph::default();
+        graph.add(NodeKind::Level, [40.0, 40.0]);
+
+        toolbar_frame(&ctx, &mut view, &mut graph, &reg, vec![], 0.0, "new");
+        let new_pos = toolbar_frame(&ctx, &mut view, &mut graph, &reg, vec![], 0.05, "new")
+            .expect("no 'new' button");
+        toolbar_frame(&ctx, &mut view, &mut graph, &reg, click(new_pos, true), 0.1, "new");
+        toolbar_frame(&ctx, &mut view, &mut graph, &reg, click(new_pos, false), 0.2, "new");
+        // Well past the window: the label is "new" again and a click
+        // arms rather than clears.
+        let later =
+            toolbar_frame(&ctx, &mut view, &mut graph, &reg, vec![], 4.0, "clear?");
+        assert!(later.is_none(), "the arm never expired");
+        toolbar_frame(&ctx, &mut view, &mut graph, &reg, click(new_pos, true), 4.1, "new");
+        toolbar_frame(&ctx, &mut view, &mut graph, &reg, click(new_pos, false), 4.2, "new");
+        assert_eq!(graph.nodes.len(), 1, "a click after expiry cleared straight away");
     }
 
     #[test]

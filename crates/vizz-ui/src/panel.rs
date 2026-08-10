@@ -77,6 +77,9 @@ pub struct PanelActions {
     pub output_setup: Option<OutputSetup>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
+    /// Open the modulation canvas window. The canvas was reachable only
+    /// through `G`, which made it a feature you had to already know about.
+    pub open_canvas: bool,
 }
 
 /// How big the output is and how hard it is worked.
@@ -120,6 +123,12 @@ pub struct PanelState {
     pub frame_budget_ms: f32,
     pub midi: MidiView,
     pub audio: AudioView,
+    /// The video input, when one was configured. `None` draws nothing:
+    /// most rigs have no video, and a permanent "no video" dot would be
+    /// an alarm about an absence nobody chose. Once a source exists its
+    /// health belongs on the strip like audio's does — before this, the
+    /// only sign a feed had died was the cloud freezing.
+    pub video: Option<VideoStatus>,
     /// Current analysis settings, mirrored here so the widgets have
     /// something to edit without locking the analysis thread while drawing.
     pub audio_bands: [vizz_audio::Band; 4],
@@ -164,6 +173,16 @@ pub struct PanelState {
     /// there is nobody to click a header, and asserting on content that
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
+}
+
+/// Video input state, for the status strip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoStatus {
+    /// Frames are actually arriving — the difference between "wired up"
+    /// and "watching a source that went away".
+    pub connected: bool,
+    /// The source's own name: "ndi:Cam 1", "test pattern".
+    pub label: String,
 }
 
 /// A recording in progress, for the panel and the performance strip.
@@ -273,7 +292,7 @@ pub fn draw(
             egui::CollapsingHeader::new("modulation")
                 .id_salt("modulation")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| modulation_section(ui, registry, modulation));
+                .show(ui, |ui| modulation_section(ui, registry, modulation, &mut actions));
             ui.separator();
             // No scene grid here any more.
             //
@@ -327,6 +346,17 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         dot(ui, audio.connected, if audio.connected { GOOD } else { WARN })
             .on_hover_text(if audio.connected { "audio input" } else { "no audio input" });
         ui.small(audio.device.as_deref().unwrap_or("no audio"));
+        // Only when a source was configured — see the field's comment.
+        if let Some(v) = &state.video {
+            dot(ui, v.connected, if v.connected { GOOD } else { WARN }).on_hover_text(
+                if v.connected {
+                    "video frames arriving"
+                } else {
+                    "video source configured but not sending"
+                },
+            );
+            ui.small(&v.label);
+        }
         // Same reason: 99.5 and 128.0 are different widths otherwise.
         ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
         if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
@@ -352,8 +382,8 @@ fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
     response
 }
 
-const GOOD: egui::Color32 = egui::Color32::from_rgb(120, 220, 160);
-const WARN: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+const GOOD: egui::Color32 = crate::theme::LIVE;
+const WARN: egui::Color32 = crate::theme::WARN;
 
 /// Notify, never install: the link opens the release page and the user
 /// picks the moment. Nothing about a running show changes.
@@ -413,7 +443,10 @@ fn clouds_section(
     if state.clouds.is_empty() {
         ui.small("no cloud slots");
     }
-    ui.small("drag a .ply, .xyz, .csv, .pts, .png or .jpg onto the window to load one");
+    // This list and the router in `windowed.rs::load_dropped` must agree;
+    // a hint that omits an accepted extension teaches people it will not
+    // work, which is worse than no hint.
+    ui.small("drag a .ply, .xyz, .csv, .pts, .png, .jpg or .jpeg onto the window to load one");
     // Or type one. A word becomes a cloud: the particles form the
     // letters, morphable against any other slot like any shape.
     ui.horizontal(|ui| {
@@ -456,7 +489,7 @@ fn palettes_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegis
             }
         });
     }
-    ui.small("drag a .gpl or a list of hex colours onto the window to add one");
+    ui.small("drag a .gpl, .hex or .txt list of hex colours onto the window to add one");
 }
 
 /// The background colour, and whether there is one at all.
@@ -548,8 +581,10 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             .map(|s| s.label())
             .unwrap_or_else(|| "nothing yet".into());
         ui.colored_label(
-            egui::Color32::from_rgb(255, 200, 90),
-            format!("learning {} — move a control (seen: {seen})", target.label),
+            crate::theme::LEARN,
+            // "move or press": sweeps are moved, triggers are pressed, and
+            // this line is shown for both kinds of learn.
+            format!("learning {} — move or press a control (seen: {seen})", target.label),
         );
     }
 }
@@ -590,7 +625,7 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
                 egui::vec2(3.0, rect.height()),
             ),
             0.0,
-            egui::Color32::from_rgb(255, 120, 90),
+            WARN,
         );
     }
 }
@@ -746,12 +781,34 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             }
             bands = fitted;
         }
-        if ui
-            .button("reset")
-            .on_hover_text("back to the shipped bands and gains")
-            .clicked()
-        {
+        // Armed, matching the other destructive clicks: this sits one
+        // button away from "fit" and throws away a gain setup that took
+        // real material to dial in.
+        let arm_id = egui::Id::new("audio-reset-armed");
+        let armed_at: Option<f64> = ui.memory_mut(|m| m.data.get_temp(arm_id));
+        let now = ui.input(|i| i.time);
+        let armed = armed_at.is_some_and(|t| now - t < 3.0);
+        let reset = if armed {
+            egui::Button::new(
+                egui::RichText::new("reset?").color(egui::Color32::from_rgb(255, 236, 232)),
+            )
+            .fill(egui::Color32::from_rgb(150, 52, 46))
+        } else {
+            egui::Button::new("reset")
+        };
+        let clicked = ui
+            .add(reset)
+            .on_hover_text(if armed {
+                "click again for the shipped bands and gains"
+            } else {
+                "back to the shipped bands and gains (asks once)"
+            })
+            .clicked();
+        if clicked && armed {
+            ui.memory_mut(|m| m.data.remove_temp::<f64>(arm_id));
             bands = vizz_audio::default_bands();
+        } else if clicked {
+            ui.memory_mut(|m| m.data.insert_temp(arm_id, now));
         }
         ui.small("play something first — fit reads the last few seconds");
     });
@@ -809,7 +866,12 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     }
 }
 
-fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEngine) {
+fn modulation_section(
+    ui: &mut egui::Ui,
+    registry: &ParamRegistry,
+    m: &mut ModEngine,
+    actions: &mut PanelActions,
+) {
     ui.horizontal(|ui| {
         // Beat indicator: brightest on the downbeat, so tempo is visible
         // at a glance rather than inferred from a number.
@@ -900,7 +962,18 @@ fn modulation_section(ui: &mut egui::Ui, registry: &ParamRegistry, m: &mut ModEn
         m.routes.remove(i);
     }
     if m.routes.is_empty() {
-        ui.small("no routes — use “LFO 1” next to a parameter");
+        ui.small("no routes — use “LFO 1” next to a parameter, or wire nodes on the canvas");
+    }
+    // The canvas is this section's bigger sibling — envelopes, gates,
+    // beat-synced patterns — and `G` was its only door. A section about
+    // modulation that never mentions the modulation canvas is how a
+    // feature stays unfound.
+    if ui
+        .button("open the canvas (G)")
+        .on_hover_text("the node editor: audio bands, envelopes and LFOs wired to parameters")
+        .clicked()
+    {
+        actions.open_canvas = true;
     }
     let _ = registry;
 }
@@ -913,12 +986,12 @@ fn health_section(ui: &mut egui::Ui, state: &PanelState) {
 
     // Colour the headline by whether we are actually holding the budget —
     // this is the number that matters mid-set, readable at a glance.
+    // The same WARN as the status strip's "over budget" word: one
+    // phrase, one colour, even though the two read different windows
+    // (the strip watches the recent percentage, this headline compares
+    // the running average against the budget).
     let over = h.frame_avg_ms > state.frame_budget_ms;
-    let color = if over {
-        egui::Color32::from_rgb(255, 120, 90)
-    } else {
-        egui::Color32::from_rgb(120, 220, 150)
-    };
+    let color = if over { WARN } else { GOOD };
     ui.horizontal(|ui| {
         ui.heading(egui::RichText::new(format!("{:.0} fps", h.fps)).color(color));
         ui.label(
@@ -1025,17 +1098,21 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
         // 8192 matches the app's own side limit (wgpu's default texture
         // ceiling), and lets 8K DCI through; the total-pixel budget is
         // enforced where the textures are allocated, not here.
-        let w = ui.add(
-            egui::DragValue::new(&mut next.width)
-                .range(160..=8192)
-                .speed(8.0),
-        );
+        let w = ui
+            .add(
+                egui::DragValue::new(&mut next.width)
+                    .range(160..=8192)
+                    .speed(8.0),
+            )
+            .on_hover_text("applying stops any recording");
         ui.label("x");
-        let h = ui.add(
-            egui::DragValue::new(&mut next.height)
-                .range(160..=8192)
-                .speed(8.0),
-        );
+        let h = ui
+            .add(
+                egui::DragValue::new(&mut next.height)
+                    .range(160..=8192)
+                    .speed(8.0),
+            )
+            .on_hover_text("applying stops any recording");
         commit |= settled(&w) || settled(&h);
     });
     // The sizes people actually output at, because typing 3840 by dragging
@@ -1047,13 +1124,25 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
             ("1440p", 2560, 1440),
             ("4K", 3840, 2160),
         ] {
-            if ui.small_button(label).clicked() {
+            if ui
+                .small_button(label)
+                .on_hover_text("applying stops any recording")
+                .clicked()
+            {
                 next.width = w;
                 next.height = h;
                 commit = true;
             }
         }
     });
+    // Said out loud while it matters, not only on hover: rebuilding the
+    // output tears down the recorder, and the first sign used to be a
+    // shorter file discovered after the show.
+    if state.recording.is_some() {
+        ui.small(
+            egui::RichText::new("recording — changing the output stops it").color(WARN),
+        );
+    }
 
     ui.horizontal(|ui| {
         ui.label("render");
@@ -1188,12 +1277,71 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                     // and therefore a MIDI button addresses. Showing it
                     // saves counting rows to work out what to bind.
                     ui.small(format!("{:>2}", i + 1));
-                    let mut button = ui.button(&p.name);
-                    if let Some(about) = &p.about {
-                        button = button.on_hover_text(about);
+                    let slot = (i + 1) as f32;
+                    // Marked as on the stage row: the recalled slot is the
+                    // answer to "where did the look on screen come from",
+                    // and the two preset lists must not disagree about
+                    // whether the app remembers.
+                    let current = state.preset_current == Some(i + 1);
+                    let bound =
+                        state.midi.map.source_for_value(crate::performance::RECALL, slot);
+                    let waiting =
+                        state.midi.learning_value(crate::performance::RECALL, slot);
+                    let mut b = egui::Button::new(&p.name);
+                    if waiting {
+                        b = b.fill(crate::theme::LEARN);
                     }
+                    if current {
+                        b = b.stroke(egui::Stroke::new(1.5, crate::theme::CURRENT));
+                    }
+                    let hover = if waiting {
+                        "press a button on your controller".to_string()
+                    } else {
+                        let mut h = match &p.about {
+                            Some(about) => format!("{about} — replaces the current look"),
+                            None => "replaces the current look".to_string(),
+                        };
+                        if let Some(s) = &bound {
+                            h = format!("{h}  ·  {}", s.label());
+                        }
+                        h
+                    };
+                    let button = ui.add(b).on_hover_text(hover);
                     if button.clicked() {
                         actions.preset_load = Some(p.name.clone());
+                    }
+                    // The same learn menu as the stage row: the two lists
+                    // address the same `/preset/recall` slots, so a
+                    // binding must be reachable from either.
+                    if state.midi.available {
+                        button.context_menu(|ui| match (&bound, waiting) {
+                            (Some(s), _) => {
+                                if ui.button(format!("unmap {}", s.label())).clicked() {
+                                    actions.clear_slot_binding = Some((
+                                        crate::performance::RECALL.to_string(),
+                                        slot,
+                                    ));
+                                    ui.close();
+                                }
+                            }
+                            (None, true) => {
+                                if ui.button("cancel MIDI learn").clicked() {
+                                    actions.set_learn_target = Some(None);
+                                    ui.close();
+                                }
+                            }
+                            (None, false) => {
+                                if ui.button("MIDI learn").clicked() {
+                                    actions.set_learn_target =
+                                        Some(Some(vizz_midi::LearnTarget::value(
+                                            crate::performance::RECALL,
+                                            slot,
+                                            format!("preset {}", i + 1),
+                                        )));
+                                    ui.close();
+                                }
+                            }
+                        });
                     }
                     if p.builtin {
                         return;
@@ -1323,7 +1471,7 @@ fn name_clash<'a>(name: &str, presets: &'a [PresetEntry]) -> Option<Clash<'a>> {
 /// Warnings in the panel. Warm, matching the modulation marker's family
 /// rather than shouting red — this is "look at this", not "something
 /// broke".
-const WARN_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+const WARN_COLOR: egui::Color32 = crate::theme::WARN;
 
 /// Room for a handful of presets before the list scrolls. Smaller than the
 /// parameter list: presets are chosen, not scanned.
@@ -1437,7 +1585,10 @@ fn params_section(
                     });
             }
         });
-    ui.small("right-click a slider to reset it · / filters · learn binds the next control you move");
+    // One pointer, not a second list: this footer used to carry its own
+    // three-item shortcut digest, which drifted from the overlay's and
+    // then disagreed with it — two sources of truth about the same keys.
+    ui.small("? shows every shortcut");
 }
 
 /// One address-prefix group, e.g. everything under `/room/`.
@@ -1756,7 +1907,7 @@ fn param_row(
 /// as "something else is touching this" at a glance.
 const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
 /// The "this row is what you are seeing" marker in the slot legends.
-const LIVE_MARK: egui::Color32 = egui::Color32::from_rgb(110, 180, 255);
+const LIVE_MARK: egui::Color32 = crate::theme::CURRENT;
 
 /// Marks a parameter that presets do not capture. Cool against the
 /// modulation marker's warm, since the two appear side by side and mean
