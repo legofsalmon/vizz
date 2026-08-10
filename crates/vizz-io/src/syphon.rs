@@ -70,6 +70,26 @@ const SERVER_CLASS: &CStr = c"SyphonMetalServer";
 /// Failure is sticky (retrying dlopen every frame would be pointless);
 /// the error string explains every path that was tried.
 fn syphon_class() -> Result<&'static AnyClass> {
+    class_named(SERVER_CLASS)
+}
+
+/// Any class from Syphon.framework, loading the framework if needed.
+///
+/// Shared with the *receive* side (`syphon_recv`), which needs
+/// `SyphonServerDirectory` and `SyphonMetalClient` out of the same
+/// bundle — one dlopen, one error message, one place that knows where a
+/// framework might live.
+pub(crate) fn class_named(name: &CStr) -> Result<&'static AnyClass> {
+    load_framework()?;
+    AnyClass::get(name).ok_or_else(|| {
+        anyhow!(
+            "Syphon.framework loaded but has no {} class — it is older than this build expects",
+            name.to_string_lossy()
+        )
+    })
+}
+
+fn load_framework() -> Result<()> {
     static LOADED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
     let result = LOADED.get_or_init(|| {
         // Already present? (statically linked, or a host app loaded it)
@@ -106,8 +126,7 @@ fn syphon_class() -> Result<&'static AnyClass> {
         ))
     });
     match result {
-        Ok(()) => AnyClass::get(SERVER_CLASS)
-            .ok_or_else(|| anyhow!("SyphonMetalServer class vanished after load")),
+        Ok(()) => Ok(()),
         Err(msg) => Err(anyhow!("{msg}")),
     }
 }

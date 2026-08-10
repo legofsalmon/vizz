@@ -81,7 +81,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         }
     });
     let video = opts.video_source.as_deref().and_then(|spec| {
-        match crate::videoin::open(spec) {
+        match crate::videoin::open(spec, Some(&ctx.device)) {
             Ok(v) => {
                 log::info!("video input: {}", v.label());
                 Some(v)

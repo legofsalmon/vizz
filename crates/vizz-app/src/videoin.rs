@@ -179,18 +179,298 @@ impl VideoSource for TestPattern {
     }
 }
 
-/// Build a source from what the user asked for on the command line.
+/// A Syphon server on this Mac, received as frames.
+#[cfg(target_os = "macos")]
+pub struct SyphonSource(vizz_io::syphon_recv::SyphonInput);
+
+#[cfg(target_os = "macos")]
+impl SyphonSource {
+    /// The device is the renderer's own: Syphon shares an IOSurface
+    /// with it, and a texture created against a different device is not
+    /// readable by the upload that follows.
+    pub fn connect(device: &wgpu::Device, needle: &str) -> Result<Self> {
+        Ok(Self(vizz_io::syphon_recv::SyphonInput::connect(device, needle)?))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl VideoSource for SyphonSource {
+    fn label(&self) -> String {
+        format!("syphon: {}", self.0.label())
+    }
+
+    fn connected(&self) -> bool {
+        self.0.connected()
+    }
+
+    fn revision(&self) -> u64 {
+        // Pumping here rather than on a thread: Syphon hands frames over
+        // on whatever thread asks, and the render thread is the only one
+        // that may touch the Metal device.
+        self.0.pump();
+        self.0.revision()
+    }
+
+    fn with_latest(&self, f: &mut dyn FnMut(VideoFrame<'_>)) {
+        self.0.with_latest(|w, h, bgra| {
+            f(VideoFrame { width: w, height: h, stride: w * 4, bgra })
+        });
+    }
+}
+
+/// What is available to receive from, right now.
 ///
-/// `test` is the built-in pattern; anything else is matched against NDI
-/// source names as a substring, the way `--audio-device` is, because
-/// full NDI names carry the host and nobody wants to type
-/// `STUDIO-PC (OBS)` exactly.
-pub fn open(spec: &str) -> Result<Box<dyn VideoSource>> {
+/// Gathered on demand — when the panel's video section is opened or its
+/// rescan is pressed — never per frame: NDI discovery blocks for its
+/// announcement window, and enumerating capture devices wakes hardware.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sources {
+    pub ndi: Vec<String>,
+    pub syphon: Vec<String>,
+    pub cameras: Vec<String>,
+    /// Why a kind found nothing, when the reason is not "nothing is
+    /// there" — no NDI runtime installed, no Syphon.framework. An empty
+    /// list and a broken installation look identical otherwise, and the
+    /// difference is the whole question when a feed will not appear.
+    pub notes: Vec<String>,
+}
+
+/// How long to wait for NDI's asynchronous announcements. Long enough to
+/// hear a sender that is already running, short enough that the panel
+/// does not appear to hang when there is nothing on the network.
+const NDI_DISCOVERY_MS: u32 = 600;
+
+pub fn discover() -> Sources {
+    let mut out = Sources::default();
+    match vizz_io::ndi_recv::sources(NDI_DISCOVERY_MS) {
+        Ok(names) => out.ndi = names,
+        Err(e) => out.notes.push(format!("NDI: {e}")),
+    }
+    match syphon_servers() {
+        Ok(names) => out.syphon = names,
+        Err(e) => out.notes.push(format!("Syphon: {e}")),
+    }
+    match cameras() {
+        Ok(names) => out.cameras = names,
+        Err(e) => out.notes.push(format!("cameras: {e}")),
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn syphon_servers() -> Result<Vec<String>> {
+    vizz_io::syphon_recv::servers()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn syphon_servers() -> Result<Vec<String>> {
+    Ok(Vec::new())
+}
+
+/// Build a source from a spec.
+///
+/// The prefixed forms name a kind exactly — `ndi:`, `syphon:`,
+/// `camera:` — and everything after the colon is matched as a substring,
+/// the way `--audio-device` is, because full names carry the host and
+/// nobody wants to type `STUDIO-PC (OBS)` exactly. `test` is the
+/// built-in pattern.
+///
+/// A bare name with no prefix still means NDI, which is what
+/// `--video-source` accepted before the other kinds existed; breaking
+/// that would break every script and every note anyone has written.
+pub fn open(spec: &str, device: Option<&wgpu::Device>) -> Result<Box<dyn VideoSource>> {
+    let spec = spec.trim();
     if spec.eq_ignore_ascii_case("test") {
         return Ok(Box::new(TestPattern::new()));
     }
-    let needle = if spec.eq_ignore_ascii_case("ndi") { "" } else { spec };
+    if let Some(name) = spec.strip_prefix("syphon:") {
+        let device = device.ok_or_else(|| {
+            anyhow::anyhow!("Syphon input needs the renderer's GPU, which is not up yet")
+        })?;
+        return open_syphon(device, name.trim());
+    }
+    if let Some(name) = spec.strip_prefix("camera:") {
+        return open_camera(name.trim());
+    }
+    let needle = spec.strip_prefix("ndi:").unwrap_or(spec).trim();
+    let needle = if needle.eq_ignore_ascii_case("ndi") { "" } else { needle };
     Ok(Box::new(NdiSource::connect(needle)?))
+}
+
+#[cfg(target_os = "macos")]
+fn open_syphon(device: &wgpu::Device, name: &str) -> Result<Box<dyn VideoSource>> {
+    Ok(Box::new(SyphonSource::connect(device, name)?))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_syphon(_device: &wgpu::Device, _name: &str) -> Result<Box<dyn VideoSource>> {
+    anyhow::bail!("Syphon input is macOS only")
+}
+
+/// A camera or capture card, on macOS.
+///
+/// The capture itself is `nokhwa`'s AVFoundation backend rather than
+/// hand-written Objective-C. Camera capture is a delegate protocol, a
+/// session lifecycle and half a dozen pixel formats to convert from; a
+/// maintained crate that already handles all of it is a far better bet
+/// than interop written blind, and this crate is only pulled in on
+/// macOS so nothing else in the workspace grows a dependency.
+///
+/// Frames arrive on a worker thread and land in a mutex the render
+/// thread reads. Same shape as the NDI receiver: the render thread must
+/// never wait on a device.
+#[cfg(target_os = "macos")]
+pub struct CameraSource {
+    name: String,
+    latest: std::sync::Arc<std::sync::Mutex<Option<(u32, u32, Vec<u8>)>>>,
+    revision: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Cleared on drop, which is how the worker learns to stop.
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(target_os = "macos")]
+impl CameraSource {
+    pub fn connect(needle: &str) -> Result<Self> {
+        use nokhwa::utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType};
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let devices = nokhwa::query(ApiBackend::AVFoundation)
+            .map_err(|e| anyhow::anyhow!("could not list cameras: {e}"))?;
+        let found = devices
+            .iter()
+            .find(|d| needle.is_empty() || d.human_name().to_lowercase().contains(&needle.to_lowercase()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no camera matching {needle:?} — {} connected",
+                    devices.len()
+                )
+            })?;
+        let name = found.human_name();
+        let index = found.index().clone();
+
+        let latest = Arc::new(Mutex::new(None));
+        let revision = Arc::new(AtomicU64::new(0));
+        let running = Arc::new(AtomicBool::new(true));
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let (latest, revision, running) = (latest.clone(), revision.clone(), running.clone());
+            std::thread::Builder::new()
+                .name("camera".into())
+                .spawn(move || {
+                    // Whatever the device likes best: asking for a
+                    // specific size is how a capture card that only does
+                    // 1080i59.94 ends up refusing to open at all.
+                    let format = RequestedFormat::new::<nokhwa::pixel_format::RgbAFormat>(
+                        RequestedFormatType::AbsoluteHighestFrameRate,
+                    );
+                    let mut cam = match nokhwa::Camera::new(index, format) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = tx.send(Err(format!("{e}")));
+                            return;
+                        }
+                    };
+                    if let Err(e) = cam.open_stream() {
+                        let _ = tx.send(Err(format!("{e}")));
+                        return;
+                    }
+                    let _ = tx.send(Ok(()));
+                    while running.load(Ordering::Relaxed) {
+                        let Ok(frame) = cam.frame() else {
+                            // A dropped frame is not a dead camera; a
+                            // dead camera stops reporting connected
+                            // because the revision stops moving.
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            continue;
+                        };
+                        let Ok(rgba) = frame.decode_image::<nokhwa::pixel_format::RgbAFormat>()
+                        else {
+                            continue;
+                        };
+                        let (w, h) = (rgba.width(), rgba.height());
+                        // The renderer wants BGRA; nokhwa decodes RGBA.
+                        let mut bgra = rgba.into_raw();
+                        for px in bgra.chunks_exact_mut(4) {
+                            px.swap(0, 2);
+                        }
+                        if let Ok(mut slot) = latest.lock() {
+                            *slot = Some((w, h, bgra));
+                        }
+                        revision.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let _ = cam.stop_stream();
+                })
+                .map_err(|e| anyhow::anyhow!("could not start the camera thread: {e}"))?;
+        }
+        // Wait for the open to succeed or fail, so a bad pick is an error
+        // the panel can show rather than a source that silently never
+        // produces a frame.
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                running.store(false, Ordering::Relaxed);
+                anyhow::bail!("could not open {name}: {e}");
+            }
+            Err(_) => {
+                running.store(false, Ordering::Relaxed);
+                anyhow::bail!("{name} did not start within five seconds");
+            }
+        }
+        Ok(Self { name, latest, revision, running })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for CameraSource {
+    fn drop(&mut self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl VideoSource for CameraSource {
+    fn label(&self) -> String {
+        format!("camera: {}", self.name)
+    }
+
+    fn connected(&self) -> bool {
+        self.latest.lock().map(|l| l.is_some()).unwrap_or(false)
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn with_latest(&self, f: &mut dyn FnMut(VideoFrame<'_>)) {
+        let Ok(slot) = self.latest.lock() else { return };
+        if let Some((w, h, bgra)) = slot.as_ref() {
+            f(VideoFrame { width: *w, height: *h, stride: w * 4, bgra });
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cameras() -> Result<Vec<String>> {
+    let devices = nokhwa::query(nokhwa::utils::ApiBackend::AVFoundation)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(devices.iter().map(|d| d.human_name()).collect())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cameras() -> Result<Vec<String>> {
+    Ok(Vec::new())
+}
+
+#[cfg(target_os = "macos")]
+fn open_camera(name: &str) -> Result<Box<dyn VideoSource>> {
+    Ok(Box::new(CameraSource::connect(name)?))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_camera(_name: &str) -> Result<Box<dyn VideoSource>> {
+    anyhow::bail!("camera capture is macOS only in this build")
 }
 
 #[cfg(test)]
@@ -230,7 +510,7 @@ mod tests {
     /// prove the runtime is not the problem.
     #[test]
     fn the_test_spec_never_touches_ndi() {
-        let s = open("test").expect("the test pattern needs no runtime");
+        let s = open("test", None).expect("the test pattern needs no runtime");
         assert_eq!(s.label(), "test pattern");
         assert!(s.connected());
     }

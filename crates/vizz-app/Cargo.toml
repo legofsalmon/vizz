@@ -32,3 +32,10 @@ ab_glyph.workspace = true
 epaint_default_fonts.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# Camera and capture-card input, macOS only. Capture is a delegate
+# protocol, a session lifecycle and a pile of pixel formats; a
+# maintained crate that handles all of it beats interop written blind,
+# and gating it here keeps every other platform's build untouched.
+[target.'cfg(target_os = "macos")'.dependencies]
+nokhwa = { version = "0.10", default-features = false, features = ["input-avfoundation"] }

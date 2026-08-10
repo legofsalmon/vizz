@@ -26,7 +26,7 @@ pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{
     AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
-    PresetEntry, RecordingView, VideoStatus,
+    PresetEntry, RecordingView, VideoSources, VideoStatus,
 };
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
@@ -623,6 +623,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -664,6 +665,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -708,6 +710,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -754,6 +757,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -804,6 +808,7 @@ mod tests {
                 clock_ticking: false,
             },
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: true,
             modulated: Vec::new(),
@@ -893,6 +898,7 @@ mod tests {
             },
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -931,6 +937,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -968,18 +975,31 @@ mod tests {
     /// open at once, which no real window ever is: an egui window sizes to
     /// its content and anything past the bottom edge is not drawn at all,
     /// so a short screen here reports controls as missing that merely sit
-    /// below the fold.
+    /// below the fold. The number therefore has to grow when the panel
+    /// does — sections and their captions added roughly two hundred
+    /// points, and the first sign was the last group's row arriving
+    /// half-drawn.
     fn run_panel(ctx: &egui::Context, reg: &ParamRegistry, state: &PanelState) -> String {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
-                egui::vec2(900.0, 1000.0),
+                egui::vec2(900.0, 1400.0),
             )),
             ..Default::default()
         };
         let mut text = String::new();
-        for _ in 0..2 {
-            ctx.begin_pass(input.clone());
+        // Several passes with the clock advancing, like every other
+        // harness in this workspace. Two passes with a frozen clock are
+        // enough for a flat list and not enough for one with sections:
+        // a ScrollArea culls using the previous pass's geometry, so
+        // content below the first screenful needs a pass to settle
+        // before it is laid out at all. The live app renders
+        // continuously and never notices; a two-shot test reports the
+        // tail of the list as missing.
+        for i in 0..6 {
+            let mut input = input.clone();
+            input.time = Some(i as f64 * 0.05);
+            ctx.begin_pass(input);
             let _ = panel::draw(ctx, reg, state, &mut vizz_mod::ModEngine::with_defaults(), &mut Default::default());
             text = collect_text(&ctx.end_pass().shapes);
         }
@@ -1063,6 +1083,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -1109,6 +1130,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            video_sources: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: false,
             modulated: Vec::new(),
@@ -1133,5 +1155,57 @@ mod tests {
         let with = run_panel(&ctx, &reg, &state);
         assert!(with.contains("ndi:cam"), "the video source is not on the strip: {with}");
     }
-}
 
+    /// The video section must list what was found and offer a way in.
+    ///
+    /// This is the fix for "I can't see how I can take in a live input":
+    /// every source vizz can receive from was command-line-only, so the
+    /// feature existed and the door did not. A section that draws but
+    /// lists nothing would pass a weaker test, so this checks the names
+    /// themselves reach the screen — and that the test pattern, the
+    /// thing to reach for when nothing appears, is always offered.
+    #[test]
+    fn the_video_section_lists_every_kind_of_source() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            recording: None,
+            preset_current: None,
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            video_sources: VideoSources {
+                ndi: vec!["STUDIO-PC (OBS)".into()],
+                syphon: vec!["Resolume Arena".into()],
+                cameras: vec!["FaceTime HD Camera".into()],
+                notes: vec!["NDI: runtime not installed".into()],
+            },
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: true,
+            presets: Vec::new(),
+            bar_phase: 0.0,
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("test pattern"), "no test pattern offered: {text}");
+        assert!(text.contains("STUDIO-PC"), "NDI sender not listed: {text}");
+        assert!(text.contains("Resolume"), "Syphon server not listed: {text}");
+        assert!(text.contains("FaceTime"), "camera not listed: {text}");
+        assert!(text.contains("rescan"), "no way to look again: {text}");
+        // A missing runtime must not read as an empty network.
+        assert!(text.contains("runtime not installed"), "the note is not shown: {text}");
+    }
+}

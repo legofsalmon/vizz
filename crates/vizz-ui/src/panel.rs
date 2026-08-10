@@ -77,6 +77,12 @@ pub struct PanelActions {
     pub output_setup: Option<OutputSetup>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
+    /// Connect the video input to this spec, or `Some(None)` to stop
+    /// the one running. The app owns opening: it holds the GPU and the
+    /// runtimes, and the panel only ever asks.
+    pub video_open: Option<Option<String>>,
+    /// Look for sources again.
+    pub video_rescan: bool,
     /// Open the modulation canvas window. The canvas was reachable only
     /// through `G`, which made it a feature you had to already know about.
     pub open_canvas: bool,
@@ -123,6 +129,9 @@ pub struct PanelState {
     pub frame_budget_ms: f32,
     pub midi: MidiView,
     pub audio: AudioView,
+    /// What is available to receive from, refreshed on demand. Empty
+    /// until the section is opened, because discovery blocks.
+    pub video_sources: VideoSources,
     /// The video input, when one was configured. `None` draws nothing:
     /// most rigs have no video, and a permanent "no video" dot would be
     /// an alarm about an absence nobody chose. Once a source exists its
@@ -173,6 +182,18 @@ pub struct PanelState {
     /// there is nobody to click a header, and asserting on content that
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
+}
+
+/// What the panel can offer to connect to. Plain strings: this crate
+/// knows nothing about NDI, Syphon or AVFoundation, and should not —
+/// the app discovers, the panel lists.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VideoSources {
+    pub ndi: Vec<String>,
+    pub syphon: Vec<String>,
+    pub cameras: Vec<String>,
+    /// Why a kind found nothing, when the reason is not "nothing there".
+    pub notes: Vec<String>,
 }
 
 /// Video input state, for the status strip.
@@ -289,6 +310,10 @@ pub fn draw(
                 .id_salt("audio")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| audio_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("video in")
+                .id_salt("video-in")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| video_section(ui, state, &mut actions));
             egui::CollapsingHeader::new("modulation")
                 .id_salt("modulation")
                 .default_open(state.expand_sections)
@@ -954,6 +979,94 @@ fn modulation_section(
     let _ = registry;
 }
 
+/// Where the picture comes in from.
+///
+/// Parity with the audio section, and for the same reason: an input you
+/// can only select on the command line is an input most people never
+/// find. Everything here is discovered by the app on demand — NDI
+/// announcements take a moment and enumerating capture devices wakes
+/// hardware, so neither happens per frame.
+fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    ui.horizontal(|ui| {
+        match &state.video {
+            Some(v) => {
+                dot(ui, v.connected, if v.connected { GOOD } else { WARN });
+                ui.label(&v.label);
+                if ui
+                    .small_button("stop")
+                    .on_hover_text("disconnect the video input")
+                    .clicked()
+                {
+                    actions.video_open = Some(None);
+                }
+            }
+            None => {
+                dot(ui, false, vizz_design::ink::FAINT);
+                ui.small("no video input");
+            }
+        }
+        if ui
+            .small_button("rescan")
+            .on_hover_text("look for senders, servers and cameras again")
+            .clicked()
+        {
+            actions.video_rescan = true;
+        }
+    });
+    if let Some(v) = &state.video
+        && !v.connected
+    {
+        // Configured but silent is the state worth a word: the source
+        // was found once and has stopped, which is a different problem
+        // from never having connected.
+        ui.small(egui::RichText::new("no frames arriving").color(WARN));
+    }
+
+    let src = &state.video_sources;
+    // The test pattern first and always: it is the thing to reach for
+    // when nothing appears, because it proves the whole path downstream
+    // of the source without a network, a runtime or a device.
+    ui.horizontal(|ui| {
+        if ui
+            .button("test pattern")
+            .on_hover_text("a moving picture through the identical path — proves everything downstream")
+            .clicked()
+        {
+            actions.video_open = Some(Some("test".into()));
+        }
+    });
+
+    let mut list = |ui: &mut egui::Ui, title: &str, prefix: &str, names: &[String]| {
+        if names.is_empty() {
+            return;
+        }
+        ui.small(title);
+        for name in names {
+            if ui
+                .button(name)
+                .on_hover_text(format!("receive from {name}"))
+                .clicked()
+            {
+                actions.video_open = Some(Some(format!("{prefix}{name}")));
+            }
+        }
+    };
+    list(ui, "NDI on the network", "ndi:", &src.ndi);
+    list(ui, "Syphon on this Mac", "syphon:", &src.syphon);
+    list(ui, "cameras and capture cards", "camera:", &src.cameras);
+
+    if src.ndi.is_empty() && src.syphon.is_empty() && src.cameras.is_empty() {
+        ui.small("nothing found — press rescan once a sender or camera is running");
+    }
+    for note in &src.notes {
+        // A missing runtime is not the same as an empty network, and
+        // the difference is the whole question when a feed will not
+        // appear. Said plainly rather than left as an absence.
+        ui.small(egui::RichText::new(note).color(WARN));
+    }
+    ui.small("the picture arrives as a point cloud — select its slot with /cloud/a");
+}
+
 fn health_section(ui: &mut egui::Ui, state: &PanelState) {
     let Some(h) = &state.health else {
         ui.small("collecting health data…");
@@ -1518,22 +1631,54 @@ fn params_section(
             // All open by default. Collapsing is the user's call — and
             // closing any group by default hides whatever is inside it,
             // which for `master` would mean hiding the panic fader.
-            for group in groups(registry) {
-                let name = group.name;
-                egui::CollapsingHeader::new(group.label(modulation, registry))
-                    .id_salt(group.name)
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for (id, def) in group.params {
-                            param_row(ui, registry, id, def, state, modulation, ranges, actions);
-                        }
-                        if name == "camera" {
-                            camera_buttons(ui, registry);
-                        }
-                        if name == "room" {
-                            room_buttons(ui, registry);
-                        }
-                    });
+            for section in sections(registry) {
+                // The section headings are the map: five words that say
+                // what the whole list is for, in the order a look gets
+                // built. Groups keep their own headers underneath.
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(section.title)
+                        .size(vizz_design::text::SECTION)
+                        .strong()
+                        .monospace()
+                        .color(vizz_design::ink::TERTIARY),
+                );
+                // Each section gets its own id namespace. Without it a
+                // group's id depends on how many widgets were emitted
+                // before it in this Ui — so adding the heading above
+                // shifted every following group's identity, and a
+                // CollapsingHeader whose id moves loses the open state
+                // that `default_open` set, drawing its header and
+                // nothing else. Salting per section makes a group's
+                // identity depend on where it *is*, not on what came
+                // before it.
+                ui.push_id(section.title, |ui| {
+                for group in section.groups {
+                    let name = group.name;
+                    let about = group.about;
+                    let title = if group.title.is_empty() { name } else { group.title };
+                    egui::CollapsingHeader::new(group.label(modulation, registry))
+                        .id_salt(name)
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            // What the group is for, in the group. A
+                            // title alone is only self-explanatory to
+                            // whoever chose it.
+                            ui.small(egui::RichText::new(about).color(vizz_design::ink::FAINT));
+                            for (id, def) in group.params {
+                                param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                            }
+                            if name == "camera" {
+                                camera_buttons(ui, registry);
+                            }
+                            if name == "room" {
+                                room_buttons(ui, registry);
+                            }
+                        })
+                        .header_response
+                        .on_hover_text(format!("{title} — {about}"));
+                }
+                });
             }
         });
     // One pointer, not a second list: this footer used to carry its own
@@ -1542,9 +1687,19 @@ fn params_section(
     ui.small("? shows every shortcut");
 }
 
-/// One address-prefix group, e.g. everything under `/room/`.
+/// One group of parameters, named for what it does.
 struct Group<'a> {
+    /// The address prefix this group collects, e.g. `particles`. Kept
+    /// because the camera and room buttons attach by it, and because a
+    /// stable id_salt must not change when a title is reworded.
     name: &'a str,
+    /// What a person calls it. `pal` is a namespace; "palette" is the
+    /// thing on screen.
+    title: &'static str,
+    /// One line saying what the group is for, shown inside it. A group
+    /// called "vector layers" is only self-explanatory to whoever built
+    /// it.
+    about: &'static str,
     params: Vec<(vizz_params::ParamId, &'a vizz_params::ParamDef)>,
 }
 
@@ -1559,12 +1714,121 @@ impl Group<'_> {
             .filter(|(_, d)| modulation.drives(&d.addr))
             .count();
         if moving > 0 {
-            format!("{}  ({} · {moving}~)", self.name, self.params.len())
+            format!("{}  ({} · {moving}~)", self.title, self.params.len())
         } else {
-            format!("{}  ({})", self.name, self.params.len())
+            format!("{}  ({})", self.title, self.params.len())
         }
     }
 }
+
+/// The panel's shape: sections in the order you build a look, each
+/// holding groups named for what they change.
+///
+/// The list used to be generated from the first segment of every OSC
+/// address, which meant the screen showed the *network namespace* —
+/// `pal`, `vec`, `bg` and four peers called `l1`…`l4` sitting beside
+/// `particles`. That is the right structure for a wire protocol and the
+/// wrong one for a person: it groups by who owns the address rather
+/// than by what the control does, and it cannot say what a group is
+/// for.
+///
+/// This table is the human layout. It is deliberately a table and not a
+/// naming convention on the addresses, because the OSC surface is
+/// public and stable — renaming `/pal/0/r` to please a panel would
+/// break every show file and every script anyone has written.
+///
+/// A prefix missing from here still appears, under its own name, in a
+/// final "more" section. That is the rule that keeps this honest: a
+/// parameter added tomorrow shows up without being registered twice,
+/// and shows up somewhere visible enough that someone will come and
+/// place it properly.
+struct SectionSpec {
+    title: &'static str,
+    /// Address prefixes, in the order they should read.
+    groups: &'static [(&'static str, &'static str, &'static str)],
+}
+
+const SECTIONS: &[SectionSpec] = &[
+    SectionSpec {
+        title: "SHAPE",
+        groups: &[
+            (
+                "particles",
+                "particles",
+                "how many points there are, how big and how bright",
+            ),
+            (
+                "shape",
+                "form",
+                "which shape the points take, and the morph between two of them",
+            ),
+            (
+                "cloud",
+                "clouds",
+                "which of the eight loaded clouds the morph runs between",
+            ),
+            (
+                "gravity",
+                "gravity",
+                "the attract / repel layer that pulls points off their shape",
+            ),
+        ],
+    },
+    SectionSpec {
+        title: "LOOK",
+        groups: &[
+            ("color", "colour", "palette choice, hue spread and saturation"),
+            ("pal", "vector palette", "the four inks the vector layers print with"),
+            ("bg", "background", "paper colour behind everything, and its alpha"),
+            ("fx", "effects", "the feedback chain: trails, zoom, spin, mirror, glow"),
+        ],
+    },
+    SectionSpec {
+        title: "PRINT",
+        groups: &[
+            (
+                "l1",
+                "vector layer 1",
+                "hard-edged pattern: generator, blend mode, frequency and ink",
+            ),
+            (
+                "l2",
+                "vector layer 2",
+                "a second layer — near frequencies interfere into moiré",
+            ),
+            (
+                "l3",
+                "vector layer 3",
+                "a third layer — off by default, like the fourth",
+            ),
+            (
+                "l4",
+                "vector layer 4",
+                "the fourth and last layer of the print stack",
+            ),
+            (
+                "vec",
+                "vector placement",
+                "whether the stack lives inside the feedback chain or prints clean over it",
+            ),
+        ],
+    },
+    SectionSpec {
+        title: "STAGE",
+        groups: &[
+            ("camera", "camera", "where you are standing: orbit, distance, lens and pan"),
+            ("room", "room", "the box around the field, and its wireframe"),
+            ("video", "live video", "how an incoming picture becomes relief"),
+        ],
+    },
+    SectionSpec {
+        title: "OUTPUT",
+        groups: &[
+            ("master", "master", "the last thing before the output — dim, and the panic fader"),
+            ("punch", "punch", "the hold-to-engage gestures, also on the performance row"),
+        ],
+    },
+];
 
 /// Split the registry by the first path segment, preserving registry order
 /// both within and between groups.
@@ -1585,8 +1849,22 @@ fn is_transport(def: &vizz_params::ParamDef) -> bool {
     def.transport
 }
 
-fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
-    let mut out: Vec<Group<'_>> = Vec::new();
+/// A section of the parameter list: a title and the groups under it.
+struct Section<'a> {
+    title: &'static str,
+    groups: Vec<Group<'a>>,
+}
+
+/// Build the panel's sections from the registry.
+///
+/// Groups still come from the address prefix — that is what actually
+/// ties a set of parameters together — but their order, their titles
+/// and which section they sit in come from [`SECTIONS`]. Anything the
+/// table does not mention lands in a final "more" section under its own
+/// prefix, so a new parameter is never invisible.
+fn sections(registry: &ParamRegistry) -> Vec<Section<'_>> {
+    let mut by_prefix: Vec<(&str, Vec<(vizz_params::ParamId, &vizz_params::ParamDef)>)> =
+        Vec::new();
     for (id, def) in registry.iter() {
         if is_transport(def) {
             continue;
@@ -1597,10 +1875,43 @@ fn groups(registry: &ParamRegistry) -> Vec<Group<'_>> {
             .split('/')
             .next()
             .unwrap_or("other");
-        match out.iter_mut().find(|g| g.name == name) {
-            Some(g) => g.params.push((id, def)),
-            None => out.push(Group { name, params: vec![(id, def)] }),
+        match by_prefix.iter_mut().find(|(p, _)| *p == name) {
+            Some((_, params)) => params.push((id, def)),
+            None => by_prefix.push((name, vec![(id, def)])),
         }
+    }
+
+    let mut out = Vec::new();
+    for spec in SECTIONS {
+        let mut groups = Vec::new();
+        for (prefix, title, about) in spec.groups {
+            // `swap_remove`-by-search rather than a lookup: what is left
+            // over at the end is exactly the set nothing claimed, which
+            // is how the "more" section stays correct without a second
+            // list to keep in step.
+            if let Some(i) = by_prefix.iter().position(|(p, _)| p == prefix) {
+                let (name, params) = by_prefix.remove(i);
+                groups.push(Group { name, title, about, params });
+            }
+        }
+        if !groups.is_empty() {
+            out.push(Section { title: spec.title, groups });
+        }
+    }
+    if !by_prefix.is_empty() {
+        // Unplaced. Named after their address because that is all this
+        // code knows about them — and visible, because a parameter you
+        // cannot find is worse than one in the wrong company.
+        let groups = by_prefix
+            .into_iter()
+            .map(|(name, params)| Group {
+                name,
+                title: "",
+                about: "not yet placed in a section — see SECTIONS in panel.rs",
+                params,
+            })
+            .collect();
+        out.push(Section { title: "MORE", groups });
     }
     out
 }
@@ -1923,6 +2234,89 @@ mod save_name_tests {
         match name_clash("Butterfly", &e) {
             Some(Clash::Builtin(n)) => assert_eq!(n, "Butterfly"),
             _ => panic!("a built-in's name was not recognised as one"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use vizz_params::ParamDef;
+
+    fn registry_with(addrs: &[&str]) -> ParamRegistry {
+        let mut b = ParamRegistry::builder();
+        for a in addrs {
+            b.add(ParamDef::new(*a, 0.0, 1.0, 0.5));
+        }
+        b.build()
+    }
+
+    /// Every prefix the table names must be spelled the way the
+    /// registry spells it.
+    ///
+    /// A typo here is silent and expensive: the group simply never
+    /// matches, so its parameters fall through to "more" wearing their
+    /// raw address, which looks exactly like a parameter nobody has got
+    /// round to placing yet.
+    #[test]
+    fn every_named_section_group_matches_a_real_prefix() {
+        // The app's real address surface, as the panel will see it.
+        let addrs = [
+            "/particles/count", "/shape/mode", "/cloud/a", "/gravity/mode",
+            "/color/palette", "/pal/0/r", "/bg/red", "/fx/glow",
+            "/l1/kind", "/l2/kind", "/l3/kind", "/l4/kind", "/vec/place",
+            "/camera/orbit", "/room/size", "/video/depth",
+            "/master/dim", "/punch/flash",
+        ];
+        let reg = registry_with(&addrs);
+        let built = sections(&reg);
+        assert!(
+            !built.iter().any(|s| s.title == "MORE"),
+            "a known prefix fell through to MORE — check SECTIONS for a typo"
+        );
+        // And the titles are human, not namespaces.
+        let titles: Vec<&str> = built
+            .iter()
+            .flat_map(|s| s.groups.iter().map(|g| g.title))
+            .collect();
+        assert!(titles.contains(&"palette") || titles.contains(&"vector palette"));
+        assert!(!titles.contains(&"pal"), "a raw namespace reached the screen");
+        assert!(!titles.contains(&"l1"), "a raw namespace reached the screen");
+    }
+
+    /// A parameter under a prefix nobody placed must still be drawn.
+    ///
+    /// The failure this prevents is the quiet one: a group added to the
+    /// registry, forgotten in the table, and therefore invisible in the
+    /// panel — which is how a control ships that only OSC can reach.
+    #[test]
+    fn an_unplaced_prefix_still_appears() {
+        let reg = registry_with(&["/particles/count", "/newthing/size"]);
+        let built = sections(&reg);
+        let more = built
+            .iter()
+            .find(|s| s.title == "MORE")
+            .expect("an unplaced prefix vanished from the panel");
+        assert!(
+            more.groups.iter().any(|g| g.name == "newthing"),
+            "the unplaced group is not in MORE"
+        );
+    }
+
+    /// Sections read in the order a look gets built, and every group
+    /// carries a line saying what it is for.
+    #[test]
+    fn sections_are_ordered_and_every_group_explains_itself() {
+        let order: Vec<&str> = SECTIONS.iter().map(|s| s.title).collect();
+        assert_eq!(order, ["SHAPE", "LOOK", "PRINT", "STAGE", "OUTPUT"]);
+        for spec in SECTIONS {
+            for (prefix, title, about) in spec.groups {
+                assert!(!title.is_empty(), "{prefix} has no human title");
+                assert!(
+                    about.len() > 20,
+                    "{prefix}'s caption is too short to say anything useful"
+                );
+            }
         }
     }
 }
