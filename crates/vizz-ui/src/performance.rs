@@ -954,9 +954,7 @@ fn fader(
             let live = state.values.and_then(|v| v.get(param.index()).copied());
             let modulated = live.filter(|l| (l - value).abs() > (def.max - def.min) * 0.01);
 
-            if let Some(v) =
-                vertical_fader(ui, value, modulated, def.min, def.max, def.default, w, h)
-            {
+            if let Some(v) = vertical_fader(ui, value, modulated, def, w, h) {
                 registry.set(param, v);
             }
             let value = registry.target(param);
@@ -1236,17 +1234,16 @@ fn vertical_fader(
     ui: &mut egui::Ui,
     value: f32,
     modulated: Option<f32>,
-    min: f32,
-    max: f32,
-    default: f32,
+    def: &vizz_params::ParamDef,
     w: f32,
     h: f32,
 ) -> Option<f32> {
+    let (min, max) = (def.min, def.max);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click_and_drag());
     // Right-click restores the default, honouring the overlay's promise
     // that this works on any slider — these faders were the exception.
     if response.secondary_clicked() {
-        return Some(default);
+        return Some(def.default);
     }
     let span = (max - min).max(f32::EPSILON);
     let t = ((value - min) / span).clamp(0.0, 1.0);
