@@ -975,18 +975,31 @@ mod tests {
     /// open at once, which no real window ever is: an egui window sizes to
     /// its content and anything past the bottom edge is not drawn at all,
     /// so a short screen here reports controls as missing that merely sit
-    /// below the fold.
+    /// below the fold. The number therefore has to grow when the panel
+    /// does — sections and their captions added roughly two hundred
+    /// points, and the first sign was the last group's row arriving
+    /// half-drawn.
     fn run_panel(ctx: &egui::Context, reg: &ParamRegistry, state: &PanelState) -> String {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
-                egui::vec2(900.0, 1000.0),
+                egui::vec2(900.0, 1400.0),
             )),
             ..Default::default()
         };
         let mut text = String::new();
-        for _ in 0..2 {
-            ctx.begin_pass(input.clone());
+        // Several passes with the clock advancing, like every other
+        // harness in this workspace. Two passes with a frozen clock are
+        // enough for a flat list and not enough for one with sections:
+        // a ScrollArea culls using the previous pass's geometry, so
+        // content below the first screenful needs a pass to settle
+        // before it is laid out at all. The live app renders
+        // continuously and never notices; a two-shot test reports the
+        // tail of the list as missing.
+        for i in 0..6 {
+            let mut input = input.clone();
+            input.time = Some(i as f64 * 0.05);
+            ctx.begin_pass(input);
             let _ = panel::draw(ctx, reg, state, &mut vizz_mod::ModEngine::with_defaults(), &mut Default::default());
             text = collect_text(&ctx.end_pass().shapes);
         }
