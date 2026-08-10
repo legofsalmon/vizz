@@ -215,6 +215,88 @@ pub fn session_bytes(engine: &crate::ModEngine) -> Vec<u8> {
     serde_json::to_vec(engine).unwrap_or_default()
 }
 
+/// A modulation patch shipped with the app, mirroring
+/// [`crate::preset::BUILTINS`]: always present, read-only, and safe from
+/// a cleared config directory. The graph is built in code rather than
+/// parsed from bundled JSON, so a patch that names a node variant which
+/// no longer exists fails to compile instead of failing to load.
+pub struct BuiltinPatch {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub build: fn() -> crate::graph::NodeGraph,
+}
+
+/// The shipped patches. One for now: the patch that makes the vector
+/// layers move with music the moment it is loaded, because a modulation
+/// system whose first patch you must wire yourself is a system most
+/// people never hear.
+pub const BUILTIN_PATCHES: &[BuiltinPatch] = &[BuiltinPatch {
+    name: "Pulse",
+    about: "Kick gates a snap envelope into layer 2's opacity; a four-beat \
+            phasor drifts layer 1's phase. The vector layers, on the beat.",
+    build: pulse,
+}];
+
+/// Kick band -> gate -> envelope -> /l2/opacity, and a slow phasor into
+/// /l1/phase. Laid out left-to-right on the canvas the way a hand-built
+/// patch would be, because a shipped patch is also a worked example.
+fn pulse() -> crate::graph::NodeGraph {
+    use crate::graph::{NodeGraph, NodeKind};
+    let mut g = NodeGraph::default();
+    let band = g.add(NodeKind::Band(0), [40.0, 60.0]);
+    let gate = g.add(NodeKind::Gate { threshold: 0.5 }, [220.0, 60.0]);
+    let env = g.add(
+        NodeKind::Envelope { attack: 0.005, decay: 0.18 },
+        [400.0, 60.0],
+    );
+    let opacity = g.add(
+        NodeKind::Param { addr: "/l2/opacity".into(), depth: -0.9 },
+        [580.0, 60.0],
+    );
+    g.connect(band, gate, 0);
+    g.connect(gate, env, 0);
+    g.connect(env, opacity, 0);
+
+    let phasor = g.add(NodeKind::Phasor { beats: 4.0 }, [40.0, 220.0]);
+    let phase = g.add(
+        NodeKind::Param { addr: "/l1/phase".into(), depth: 1.0 },
+        [220.0, 220.0],
+    );
+    g.connect(phasor, phase, 0);
+    g
+}
+
+/// Every patch name the load menu should offer: shipped first, then the
+/// user's files. Mirrors `preset::all_names`.
+pub fn all_names() -> Vec<String> {
+    let mut names: Vec<String> = BUILTIN_PATCHES.iter().map(|b| b.name.to_string()).collect();
+    names.extend(list());
+    names
+}
+
+/// Load by name, preferring the shipped patches — a user file cannot
+/// shadow one, for the same reason a preset cannot: "put it back how it
+/// shipped" has to stay available.
+pub fn by_name(name: &str) -> Option<crate::graph::NodeGraph> {
+    if let Some(b) = BUILTIN_PATCHES.iter().find(|b| b.name == name) {
+        return Some((b.build)());
+    }
+    load(name).ok()
+}
+
+/// A save name that cannot collide with a shipped patch, mirroring
+/// `preset::capture_name`.
+pub fn patch_save_name(wanted: &str) -> String {
+    let shadowed = |n: &str| BUILTIN_PATCHES.iter().any(|b| b.name == n);
+    if !shadowed(wanted) {
+        return wanted.to_string();
+    }
+    (2..)
+        .map(|i| format!("{wanted} {i}"))
+        .find(|n| !shadowed(n))
+        .expect("the integers do not run out")
+}
+
 #[cfg(test)]
 mod tests {
 

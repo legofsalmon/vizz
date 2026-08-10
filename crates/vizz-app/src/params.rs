@@ -817,6 +817,30 @@ mod tests {
 
 #[cfg(test)]
 mod reference_tests {
+    /// A shipped patch that names a parameter which no longer exists
+    /// would load into a canvas full of "missing" sinks — the exact
+    /// failure the preset test below guards looks against, applied to
+    /// the modulation side.
+    #[test]
+    fn every_builtin_patch_targets_real_parameters() {
+        let p = super::AppParams::build();
+        for b in vizz_mod::library::BUILTIN_PATCHES {
+            let graph = (b.build)();
+            let mut sinks = 0;
+            for node in &graph.nodes {
+                if let vizz_mod::graph::NodeKind::Param { addr, .. } = &node.kind {
+                    sinks += 1;
+                    assert!(
+                        p.registry.id(addr).is_some(),
+                        "builtin patch {:?} targets {addr}, which does not exist",
+                        b.name
+                    );
+                }
+            }
+            assert!(sinks > 0, "builtin patch {:?} drives nothing", b.name);
+        }
+    }
+
     /// Expand a compacted table row into the addresses it stands for.
     /// `/gravity/N/x` covers wells 0–3; `/lN/kind` covers layers 1–4.
     /// Everything else stands for itself. Shared by the README and docs

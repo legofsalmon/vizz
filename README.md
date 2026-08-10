@@ -871,6 +871,53 @@ without it is the network or the sender. It moves, deliberately: a still
 pattern proves a frame arrived once, a moving one proves frames are
 still arriving.
 
+## Vector layers
+
+The print side of the app: four layers of hard-edged procedural
+pattern — rings, stripes, checker, polygon, star, rays, dots — in flat
+ink colours from a shared four-slot palette, composited with
+multiply/screen/difference-style blends. Two layers at near frequencies
+interfere into moiré, which is the aesthetic this exists for. Edges are
+analytically antialiased and stay razor-sharp at any resolution; the
+full design note is in `docs/vector.md`.
+
+**Start from a preset.** Three vector looks ship after the six particle
+ones: **Interference** (two ring fields multiplied), **Poster** (a star
+cut from a checkerboard by exclusion) and **Signal** (rays through a
+dot grid on dark). Recall one and the print look arrives whole — the
+particle field steps aside via `/particles/count 0`, which is itself
+part of the look and comes back with the next particle preset.
+
+**The performance layout grows a LAYERS strip** when any layer is on —
+hidden otherwise, like the gravity grid, so the screen spends nothing
+on it until it is in use. Per layer: the ink swatch, the generator
+(click cycles, right-click cycles back — off is on the wheel), the
+blend mode, and drags for opacity and frequency. Faders remain the way
+to ride any layer parameter under MIDI.
+
+```
+/vec/place    0 scene · 1 print
+```
+
+**Where the stack renders is a choice.** `scene`, the default, sits
+behind the particles inside the feedback chain — trails, punch and the
+tone-map all apply, and layering with the field works. `print` draws
+after the post chain: exact ink bytes, unaffected by feedback — and
+deliberately out of reach of punch gestures and particles. A preset
+captures its placement, so recalling a look also restores where it
+lives; sending a `/vec/place` override in the same burst as a recall
+will lose to the preset — send it after the recall lands.
+
+**The "Pulse" patch** ships in the modulation canvas's load menu: the
+kick band gates a snap envelope that blinks layer 2 out on each hit,
+and a four-beat phasor drifts layer 1's phase. Load it on top of any
+vector preset and the layers move with the music.
+
+Driving it from a script: OSC strings are NUL-terminated *then* padded
+to four bytes — always one to four NULs. `/l1/kind` is exactly eight
+bytes, so a pad that appends nothing produces packets that are
+silently dropped.
+
 ## Colour
 
 `/color/palette` starts at **0 = the original HSV behaviour** and
