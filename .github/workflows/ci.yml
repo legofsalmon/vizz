@@ -144,6 +144,32 @@ jobs:
           if lit < 10000:
               sys.exit("::error::the video-cloud dump is blank — the field drew nothing")
           PY
+      # The vector layer stack is the newest shader work; the contact
+      # sheet exercises every generator and blend mode on real Metal and
+      # the check requires real pixels, not just a zero exit.
+      - name: Vector contact sheet on real Metal
+        run: |
+          cargo run -p vizz-render --example render_vector -- vector-sheet-macos.png
+          python3 - <<'PY'
+          from struct import unpack
+          import zlib, sys
+          data = open("vector-sheet-macos.png", "rb").read()
+          assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+          idat, off = b"", 8
+          while off < len(data):
+              (length,) = unpack(">I", data[off : off + 4])
+              kind = data[off + 4 : off + 8]
+              if kind == b"IDAT":
+                  idat += data[off + 8 : off + 8 + length]
+              elif kind == b"IEND":
+                  break
+              off += 12 + length
+          raw = zlib.decompress(idat)
+          lit = sum(1 for b in raw if b > 40)
+          print(f"{lit} bright bytes")
+          if lit < 100000:
+              sys.exit("::error::the vector contact sheet is blank")
+          PY
       - name: Upload benchmark + frame
         if: always()
         uses: actions/upload-artifact@v4

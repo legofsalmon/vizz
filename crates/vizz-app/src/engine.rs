@@ -80,6 +80,16 @@ pub struct FrameInputs {
     /// field is delivered on a transparent background so vizz can be a
     /// layer in a mixer rather than the whole picture.
     pub background: wgpu::Color,
+    /// The vector layer stack, packed for the shader. The caller fills
+    /// the render height into `bg[3]` before drawing — the engine does
+    /// not know the target size, and the shader derives its analytic
+    /// pixel footprint from it.
+    pub vector: vizz_render::vector::StackU,
+    /// Whether any layer is on. When false the vector pass is skipped
+    /// entirely and the frame is byte-identical to one rendered before
+    /// vector layers existed — the guarantee that makes shipping an
+    /// experimental renderer inside the live instrument tolerable.
+    pub vector_active: bool,
 }
 
 impl FrameEngine {
@@ -394,6 +404,66 @@ impl FrameEngine {
             self.snapshot.get(p.room_embed),
         );
 
+        // The vector stack. Paper shares the /bg colour the clear uses,
+        // sRGB-encoded as registered, and rides the master dim inside
+        // the shader (globals lane) rather than pre-multiplied — the
+        // shader dims the composited page, which is what a printed tint
+        // under a fader should do. Alpha is not carried: the vector
+        // page is opaque by construction, and the transparent-master
+        // routing feature applies only while the stack is off.
+        let mut vector = vizz_render::vector::StackU {
+            globals: [aspect, self.vis_time as f32, dim, p.vector_layers.len() as f32],
+            bg: [
+                self.snapshot.get(p.bg_r),
+                self.snapshot.get(p.bg_g),
+                self.snapshot.get(p.bg_b),
+                0.0, // render height, filled by the caller
+            ],
+            ..Default::default()
+        };
+        for (slot, ids) in p.vector_palette.iter().enumerate() {
+            vector.palette[slot] = [
+                self.snapshot.get(ids[0]),
+                self.snapshot.get(ids[1]),
+                self.snapshot.get(ids[2]),
+                1.0,
+            ];
+        }
+        let mut vector_active = false;
+        for (i, l) in p.vector_layers.iter().enumerate() {
+            let kind = self.snapshot.get(l.kind).round();
+            vector_active |= kind >= 0.5;
+            vector.layers[i] = vizz_render::vector::LayerU {
+                xform: [
+                    self.snapshot.get(l.x),
+                    self.snapshot.get(l.y),
+                    self.snapshot.get(l.rot),
+                    self.snapshot.get(l.scale),
+                ],
+                // Phase advances with visual time so the whole stack
+                // drifts at /particles/speed's rate like everything
+                // else; the parameter is the offset on top.
+                pat: [
+                    kind,
+                    self.snapshot.get(l.freq),
+                    self.snapshot.get(l.phase) + self.vis_time as f32 * 0.1,
+                    self.snapshot.get(l.duty),
+                ],
+                shape: [
+                    self.snapshot.get(l.sides),
+                    self.snapshot.get(l.inset),
+                    self.snapshot.get(l.fold),
+                    self.snapshot.get(l.invert).round(),
+                ],
+                style: [
+                    self.snapshot.get(l.blend).round(),
+                    self.snapshot.get(l.opacity),
+                    self.snapshot.get(l.color).round(),
+                    0.0,
+                ],
+            };
+        }
+
         FrameInputs {
             uniforms: Uniforms {
                 view_proj: cam.view_proj,
@@ -474,6 +544,8 @@ impl FrameEngine {
             },
             room,
             room_visible: room_brightness > 0.002,
+            vector,
+            vector_active,
             count: self.snapshot.get(p.count).max(0.0) as u32,
             background: wgpu::Color {
                 // The master dim scales the background as well as the
@@ -811,5 +883,57 @@ mod tests {
                 "index {index} disturbed a parameter"
             );
         }
+    }
+}
+#[cfg(test)]
+mod vector_pack_tests {
+    use super::*;
+
+    /// The lane map, held to code. `begin_frame` writes each parameter
+    /// into a specific component of a specific vec4; getting one wrong
+    /// does not fail — it makes a knob move the wrong thing, which on
+    /// stage reads as "the app is haunted". Distinctive values in, exact
+    /// lanes out.
+    #[test]
+    fn vector_packing_puts_each_parameter_in_its_lane() {
+        let params = std::sync::Arc::new(crate::params::AppParams::build());
+        let p = &*params;
+        let l3 = p.vector_layers[2];
+        p.registry.set(l3.kind, 5.0);
+        p.registry.set(l3.freq, 23.0);
+        p.registry.set(l3.blend, 4.0);
+        p.registry.set(l3.opacity, 0.75);
+        p.registry.set(p.vector_palette[2][1], 0.33);
+
+        let mut engine = FrameEngine::new(
+            std::sync::Arc::clone(&params),
+            vizz_audio::AudioEngine::start(Some("\0none")),
+        );
+        // Two long steps so the smoothed params reach their targets.
+        engine.begin_frame(16.0 / 9.0, Some(std::time::Duration::from_secs(5)));
+        let inputs = engine.begin_frame(16.0 / 9.0, Some(std::time::Duration::from_secs(5)));
+
+        let l = &inputs.vector.layers[2];
+        assert_eq!(l.pat[0], 5.0, "kind lane");
+        assert!((l.pat[1] - 23.0).abs() < 0.05, "freq lane: {}", l.pat[1]);
+        assert_eq!(l.style[0], 4.0, "blend lane");
+        assert!((l.style[1] - 0.75).abs() < 0.02, "opacity lane: {}", l.style[1]);
+        assert!(
+            (inputs.vector.palette[2][1] - 0.33).abs() < 0.02,
+            "palette lane: {}",
+            inputs.vector.palette[2][1]
+        );
+        assert!(inputs.vector_active, "a layer with a kind is an active stack");
+
+        // And the guarantee the render order depends on: everything at
+        // defaults means inactive, so the pass is skipped and the frame
+        // is byte-identical to the pre-vector app.
+        let fresh = std::sync::Arc::new(crate::params::AppParams::build());
+        let mut engine = FrameEngine::new(
+            std::sync::Arc::clone(&fresh),
+            vizz_audio::AudioEngine::start(Some("\0none")),
+        );
+        let inputs = engine.begin_frame(16.0 / 9.0, Some(std::time::Duration::from_secs(1)));
+        assert!(!inputs.vector_active, "defaults must leave the stack off");
     }
 }

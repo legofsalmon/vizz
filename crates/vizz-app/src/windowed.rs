@@ -63,6 +63,7 @@ pub struct WindowedOpts {
 struct RenderState {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
+    vector: vizz_render::vector::VectorScene,
     config: wgpu::SurfaceConfiguration,
     ctx: GpuContext,
     scene: ParticleScene,
@@ -332,6 +333,7 @@ impl App {
         let post = PostChain::new(&ctx, rw, rh, master_format);
         // The scene draws into the post chain's HDR buffer, not straight
         // to the master: feedback needs somewhere to accumulate.
+        let vector = vizz_render::vector::VectorScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
         // Show what was asked for. `load_clouds` fills slots and nothing
@@ -434,6 +436,7 @@ impl App {
         Ok(RenderState {
             window,
             surface,
+            vector,
             config,
             ctx,
             scene,
@@ -878,13 +881,30 @@ impl App {
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        // Room first: it clears the scene texture and the particles then
-        // add on top. Skipped entirely when dark, since it is off by
-        // default and drawing invisible lines is wasted work.
-        if inputs.room_visible {
+        // The vector stack paints first when any layer is on — the whole
+        // page including the paper colour, so it takes over the clear.
+        // Skipped entirely otherwise, which keeps the no-layers frame
+        // byte-identical to one rendered before vector layers existed.
+        let mut inputs = inputs;
+        if inputs.vector_active {
+            inputs.vector.bg[3] = state.output.height as f32;
             state
-                .room
-                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.room, inputs.background);
+                .vector
+                .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.vector);
+        }
+        // Room next: it clears when nothing painted before it, and the
+        // particles then add on top. Skipped entirely when dark, since
+        // it is off by default and drawing invisible lines is wasted
+        // work.
+        if inputs.room_visible {
+            state.room.render(
+                &state.ctx,
+                &mut encoder,
+                &state.post.scene_view,
+                &inputs.room,
+                inputs.background,
+                !inputs.vector_active,
+            );
         }
         state.scene.render(
             &state.ctx,
@@ -892,7 +912,7 @@ impl App {
             &state.post.scene_view,
             &inputs.uniforms,
             inputs.count,
-            !inputs.room_visible,
+            !inputs.room_visible && !inputs.vector_active,
             inputs.background,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);

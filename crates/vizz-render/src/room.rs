@@ -276,6 +276,7 @@ impl Room {
         target: &wgpu::TextureView,
         uniforms: &RoomUniforms,
         background: wgpu::Color,
+        clear: bool,
     ) {
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
@@ -290,7 +291,13 @@ impl Room {
                     // turning the room on does not change what the
                     // background is — the one thing that would make the
                     // setting look broken.
-                    load: wgpu::LoadOp::Clear(background),
+                    // First pass of the frame clears; when the vector
+                    // stack has already painted the page, load it.
+                    load: if clear {
+                        wgpu::LoadOp::Clear(background)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,

@@ -1029,6 +1029,33 @@ control input can never crash the renderer.
 | `/cloud/morph` | 0 – 1 | 0 | blend position between the pair |
 | `/video/depth` | -2 – 2 | 0.6 | how far the picture's relief pushes along z; 0 is flat |
 | `/video/relief` | 0 – 3 | 0 | what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma |
+| `/lN/kind` (N = 1–4) | 0 – 7 | 0 | layer generator: off · rings · stripes · checker · polygon · star · rays · dots |
+| `/lN/freq` (N = 1–4) | 0.5 – 64 | 8 | pattern frequency |
+| `/lN/phase` (N = 1–4) | 0 – 1 | 0 | pattern phase offset; unsmoothed, so steps snap |
+| `/lN/duty` (N = 1–4) | 0.05 – 0.95 | 0.5 | ink/paper ratio within a period |
+| `/lN/sides` (N = 1–4) | 2 – 16 | 4 | polygon/star sides; a sweep, fractional counts morph |
+| `/lN/inset` (N = 1–4) | 0 – 1 | 0.5 | star valley depth |
+| `/lN/fold` (N = 1–4) | 0 – 12 | 0 | kaleidoscope wedges; below 2 is off |
+| `/lN/invert` (N = 1–4) | 0 – 1 | 0 | 0 fill · 1 invert |
+| `/lN/x` (N = 1–4) | -2 – 2 | 0 | layer centre, sideways |
+| `/lN/y` (N = 1–4) | -2 – 2 | 0 | layer centre, vertical |
+| `/lN/rot` (N = 1–4) | -2 – 2 | 0 | layer rotation, turns |
+| `/lN/scale` (N = 1–4) | 0.05 – 8 | 1 | layer scale |
+| `/lN/color` (N = 1–4) | 0 – 3 | 0 | which ink the layer prints with |
+| `/lN/blend` (N = 1–4) | 0 – 6 | 0 | normal · multiply · screen · add · difference · exclusion · subtract |
+| `/lN/opacity` (N = 1–4) | 0 – 1 | 1 | layer opacity |
+| `/pal/0/r` | 0 – 1 | 0.05 | ink 0 (near-black), r channel |
+| `/pal/0/g` | 0 – 1 | 0.05 | ink 0 (near-black), g channel |
+| `/pal/0/b` | 0 – 1 | 0.05 | ink 0 (near-black), b channel |
+| `/pal/1/r` | 0 – 1 | 0.92 | ink 1 (red), r channel |
+| `/pal/1/g` | 0 – 1 | 0.1 | ink 1 (red), g channel |
+| `/pal/1/b` | 0 – 1 | 0.14 | ink 1 (red), b channel |
+| `/pal/2/r` | 0 – 1 | 0.1 | ink 2 (blue), r channel |
+| `/pal/2/g` | 0 – 1 | 0.3 | ink 2 (blue), g channel |
+| `/pal/2/b` | 0 – 1 | 0.95 | ink 2 (blue), b channel |
+| `/pal/3/r` | 0 – 1 | 0.98 | ink 3 (yellow), r channel |
+| `/pal/3/g` | 0 – 1 | 0.8 | ink 3 (yellow), g channel |
+| `/pal/3/b` | 0 – 1 | 0.05 | ink 3 (yellow), b channel |
 | `/camera/distance` | 0.4 – 12 | 3.5 | orbit distance from the field |
 | `/camera/orbit` | -3.15 – 3.15 | 0 | orbit angle around the field |
 | `/camera/elevation` | -1.4 – 1.4 | 0.34 | height angle of the orbit |
