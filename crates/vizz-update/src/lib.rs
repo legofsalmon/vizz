@@ -178,4 +178,43 @@ mod tests {
         assert_eq!(extract_tag(r#"{"tag_name": "unterminated"#), None);
         assert_eq!(extract_tag(r#"{"tag_name": "#), None);
     }
+
+    /// The site's download button must name the version this workspace
+    /// builds.
+    ///
+    /// The button used to use GitHub's `/releases/latest/download/`
+    /// permalink, which never goes stale — but a permalink can only
+    /// resolve a constant filename, and the published download is now
+    /// version-stamped so a Downloads folder full of them can be told
+    /// apart. Pinning the link is the price of that, and a pinned link
+    /// is exactly the kind of thing that is forgotten during a release
+    /// and discovered by a user downloading the wrong version. So it is
+    /// checked here, against the version the binaries will report.
+    ///
+    /// Only the release path is asserted, not the filename: the naming
+    /// scheme is enforced where the asset is produced (make-app.sh and
+    /// release.yml), and releases published before the scheme changed
+    /// legitimately carry the older name.
+    #[test]
+    fn the_sites_download_button_points_at_this_version() {
+        let site = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../site/index.html");
+        let html = std::fs::read_to_string(&site).expect("site/index.html missing");
+        let href = html
+            .split("href=\"")
+            .find(|h| h.contains("/releases/download/"))
+            .map(|h| h.split('"').next().unwrap_or_default())
+            .expect("no pinned download link on the landing page");
+        let want = format!("/releases/download/v{}/", env!("CARGO_PKG_VERSION"));
+        assert!(
+            href.contains(&want),
+            "the download button points at {href}, but this workspace is \
+             version {} — update site/index.html in the version-bump commit",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(
+            href.contains("vizz") && href.ends_with(".app.zip"),
+            "the download button does not point at an app bundle: {href}"
+        );
+    }
 }

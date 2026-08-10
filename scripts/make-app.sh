@@ -109,6 +109,13 @@ else
   codesign --force -s - "$app"
 fi
 
+# The zip carries the version; the bundle inside does not. A Downloads
+# folder of "vizz.app.zip", "vizz.app-1.zip", "vizz.app-2.zip" cannot be
+# told apart without unzipping each one and reading Get Info — while the
+# .app itself must keep its plain name, because that is the application's
+# identity in /Applications, in the Dock and as the Syphon server.
+#
 # ditto preserves the framework's symlink structure, unlike plain zip -r.
-ditto -c -k --keepParent "$app" dist/vizz.app.zip
-echo "Built $app and dist/vizz.app.zip"
+zip="dist/vizz-$version.app.zip"
+ditto -c -k --keepParent "$app" "$zip"
+echo "Built $app and $zip"

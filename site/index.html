@@ -138,10 +138,13 @@
       feeding Resolume, TouchDesigner and MadMapper over Syphon and NDI,
       played live over OSC and MIDI.</p>
     <div class="cta">
-      <!-- /releases/latest/download/ is a GitHub permalink to the newest
-           release's asset, so this page never needs republishing when a
-           release is cut. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/latest/download/vizz.app.zip">Download for macOS</a>
+      <!-- Pinned to a released version rather than /releases/latest/,
+           because the download is now version-stamped and GitHub's
+           permalink can only resolve a constant filename. The cost is
+           that this link moves with every release; a test in
+           vizz-update fails the build if it stops matching the
+           workspace version, so it cannot quietly go stale. -->
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.13.0/vizz.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
