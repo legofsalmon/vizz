@@ -29,24 +29,24 @@ use vizz_params::ParamRegistry;
 
 use crate::panel::{AudioView, MidiView, OutputStatus};
 
-/// The text ramp. Four stops, used consistently: anything that matters is
-/// at `INK` or `INK_2`, and `INK_4` means "this is off".
-const INK: Color32 = Color32::from_rgb(236, 240, 246);
-const INK_2: Color32 = Color32::from_rgb(178, 187, 200);
-const INK_3: Color32 = Color32::from_rgb(132, 141, 156);
-const INK_4: Color32 = Color32::from_rgb(94, 101, 114);
+// Local aliases into the design system, kept because this module says
+// `INK` several dozen times and the short names read better in layout
+// code. The values live in `vizz-design` — one place, every screen.
+const INK: Color32 = vizz_design::ink::PRIMARY;
+const INK_2: Color32 = vizz_design::ink::SECONDARY;
+const INK_3: Color32 = vizz_design::ink::TERTIARY;
+const INK_4: Color32 = vizz_design::ink::FAINT;
 
-const PANEL_BG: Color32 = Color32::from_rgb(23, 25, 30);
-const TRACK: Color32 = Color32::from_rgb(38, 41, 48);
-const FILL: Color32 = Color32::from_rgb(74, 128, 178);
-const FILL_TOP: Color32 = Color32::from_rgb(96, 158, 214);
-const HANDLE: Color32 = Color32::from_rgb(226, 233, 242);
-/// Modulation, warm against the blues so "something else is moving this"
-/// reads instantly. Matches the panel's own modulation colour.
-const MOD: Color32 = Color32::from_rgb(255, 190, 90);
-const MASTER_FILL: Color32 = Color32::from_rgb(178, 78, 78);
+const PANEL_BG: Color32 = vizz_design::surface::BASE;
+const TRACK: Color32 = vizz_design::surface::RAISED;
+const FILL: Color32 = vizz_design::accent::FILL;
+const FILL_TOP: Color32 = vizz_design::accent::FILL_BRIGHT;
+const HANDLE: Color32 = vizz_design::surface::HANDLE;
+const MOD: Color32 = vizz_design::accent::MOD;
+const MASTER_FILL: Color32 = vizz_design::accent::MASTER;
 const LIVE: Color32 = crate::theme::LIVE;
-const DEAD: Color32 = Color32::from_rgb(96, 102, 112);
+/// An output that is not sending: off, in the ink ramp's word for it.
+const DEAD: Color32 = vizz_design::ink::FAINT;
 const WARN: Color32 = crate::theme::WARN;
 const LEARN: Color32 = crate::theme::LEARN;
 
@@ -237,7 +237,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
                 egui::pos2(rect.left() + 4.0, y),
                 egui::pos2(rect.right(), y),
             ],
-            egui::Stroke::new(1.0, Color32::from_rgb(44, 48, 56)),
+            egui::Stroke::new(1.0, vizz_design::surface::HAIRLINE),
         );
     });
     ui.add_space(4.0);
@@ -273,7 +273,7 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
                 .fill(if waiting {
                     LEARN
                 } else {
-                    Color32::from_rgb(36, 40, 48)
+                    vizz_design::surface::RAISED
                 })
                 // An edge, so the row reads as buttons rather than as a
                 // line of caption text — which is what it was mistaken
@@ -281,7 +281,7 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
                 .stroke(if current {
                     egui::Stroke::new(1.5, crate::theme::CURRENT)
                 } else {
-                    egui::Stroke::new(1.0, Color32::from_rgb(62, 68, 82))
+                    egui::Stroke::new(1.0, vizz_design::surface::EDGE)
                 });
             let response = ui.add(button);
             if response.clicked() {
@@ -517,20 +517,20 @@ fn punch_button(
     let is_latched: bool =
         lit && ui.ctx().data(|d| d.get_temp(latch_id).unwrap_or(false));
     let (fill, ink) = if waiting {
-        (LEARN, Color32::from_rgb(46, 32, 12))
+        (LEARN, crate::theme::ON_LEARN)
     } else if lit {
         // Engaged reads loud: this is the row whose whole job is to be
         // unmissable while it is doing something to the output.
-        (Color32::from_rgb(232, 236, 242), Color32::from_rgb(24, 26, 32))
+        (vizz_design::surface::ENGAGED, vizz_design::surface::ON_ENGAGED)
     } else {
-        (Color32::from_rgb(36, 40, 48), INK)
+        (vizz_design::surface::RAISED, INK)
     };
     let response = ui
         .add(
             egui::Button::new(egui::RichText::new(label).size(13.0).strong().color(ink))
                 .min_size(vec2(86.0, 34.0))
                 .fill(fill)
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(62, 68, 82))),
+                .stroke(egui::Stroke::new(1.0, vizz_design::surface::EDGE)),
         )
         .on_hover_text({
             // Held and latched must be tellable apart on screen: a lit
@@ -706,7 +706,7 @@ fn status_strip(
                                 String::new()
                             }
                         ),
-                        Color32::from_rgb(150, 40, 36),
+                        vizz_design::accent::REC,
                         Color32::WHITE,
                         "recording the master — click to stop",
                     ),
@@ -716,8 +716,8 @@ fn status_strip(
                     // for a take in progress.
                     None => (
                         "REC".to_string(),
-                        Color32::from_rgb(38, 26, 28),
-                        Color32::from_rgb(196, 106, 100),
+                        vizz_design::accent::REC_BED,
+                        vizz_design::accent::REC_INK,
                         "record the master as a PNG sequence — click to start",
                     ),
                 };
@@ -734,9 +734,9 @@ fn status_strip(
                 // ticks arrive, warning-amber while the wire is silent
                 // and the clock is running free on its last tempo.
                 let (word, colour) = if state.audio.clock_ticking {
-                    ("MIDI", Color32::from_rgb(90, 200, 120))
+                    ("MIDI", LIVE)
                 } else {
-                    ("MIDI?", Color32::from_rgb(240, 150, 90))
+                    ("MIDI?", WARN)
                 };
                 ui.label(egui::RichText::new(word).size(13.0).strong().color(colour));
             }
@@ -795,7 +795,7 @@ fn audio_strip(ui: &mut egui::Ui, audio: &AudioView, width: f32) {
             ui.painter().rect_stroke(
                 r,
                 2.0,
-                (1.0, Color32::from_rgb(64, 70, 84)),
+                (1.0, vizz_design::surface::TICK),
                 egui::StrokeKind::Inside,
             );
             ui.painter().rect_filled(
@@ -1027,7 +1027,7 @@ fn fader(
             ui.painter().rect_stroke(
                 track,
                 5.0,
-                egui::Stroke::new(1.0, Color32::from_rgb(46, 50, 58)),
+                egui::Stroke::new(1.0, vizz_design::surface::HAIRLINE),
                 egui::StrokeKind::Inside,
             );
             ui.label(egui::RichText::new("—").size(13.0).color(INK_4));
@@ -1279,7 +1279,7 @@ fn vertical_fader(
                 egui::pos2(track.left() + 2.0, y),
                 egui::pos2(track.left() + 7.0, y),
             ],
-            egui::Stroke::new(1.0, Color32::from_rgb(70, 76, 88)),
+            egui::Stroke::new(1.0, vizz_design::surface::TICK),
         );
     }
 
@@ -1312,7 +1312,7 @@ fn vertical_fader(
         p.rect_stroke(
             rect,
             5.0,
-            egui::Stroke::new(1.5, Color32::from_rgb(120, 150, 185)),
+            egui::Stroke::new(1.5, vizz_design::surface::FOCUS),
             egui::StrokeKind::Inside,
         );
     }
@@ -1407,7 +1407,7 @@ fn master(
         egui::RichText::new("MASTER")
             .size(12.0)
             .strong()
-            .color(Color32::from_rgb(226, 150, 150)),
+            .color(vizz_design::accent::MASTER_INK),
     );
     ui.label(egui::RichText::new(" ").size(11.0));
 }

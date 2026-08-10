@@ -115,19 +115,19 @@ fn quit_prompt(ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::NONE
-                .fill(egui::Color32::from_rgb(120, 40, 36))
+                .fill(vizz_design::feedback::DANGER_BED)
                 .inner_margin(egui::Margin::symmetric(22, 16))
                 .corner_radius(6.0)
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new("press Esc again to quit")
                             .size(20.0)
-                            .color(egui::Color32::from_rgb(255, 240, 236)),
+                            .color(vizz_design::feedback::ON_DANGER),
                     );
                     ui.label(
                         egui::RichText::new("any other key carries on")
                             .size(13.0)
-                            .color(egui::Color32::from_rgb(240, 200, 194)),
+                            .color(vizz_design::feedback::ON_DANGER_DIM),
                     );
                 });
         });
@@ -149,7 +149,7 @@ fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let r = egui::Frame::NONE
-                .fill(egui::Color32::from_rgb(64, 50, 18))
+                .fill(vizz_design::feedback::LEARN_BED)
                 .stroke(egui::Stroke::new(1.0, theme::LEARN))
                 .inner_margin(egui::Margin::symmetric(14, 8))
                 .corner_radius(6.0)
@@ -159,7 +159,7 @@ fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
                             "MIDI learn armed: the next control you move or press binds to {label} — click to cancel"
                         ))
                         .size(13.0)
-                        .color(egui::Color32::from_rgb(255, 224, 170)),
+                        .color(vizz_design::feedback::ON_LEARN_BED),
                     );
                 })
                 .response

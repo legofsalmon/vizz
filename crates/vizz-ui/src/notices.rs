@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 /// How long a row stays. Info is confirmation — it can go quickly.
 /// An error has to survive until the performer next looks over.
-const INFO_TTL: Duration = Duration::from_secs(4);
-const ERROR_TTL: Duration = Duration::from_secs(15);
+const INFO_TTL: Duration = vizz_design::motion::NOTICE_TTL;
+const ERROR_TTL: Duration = vizz_design::motion::NOTICE_ERROR_TTL;
 
 /// More than this and the stack is noise; the oldest rows go first.
 const MAX_ROWS: usize = 6;
@@ -102,14 +102,14 @@ impl Notices {
                 for (i, n) in self.items.iter().enumerate() {
                     let (fill, ink) = match n.level {
                         Level::Info => (
-                            egui::Color32::from_rgb(26, 34, 30),
-                            egui::Color32::from_rgb(170, 220, 185),
+                            vizz_design::feedback::OK_BED,
+                            vizz_design::feedback::ON_OK,
                         ),
                         // The quit prompt's family: red enough to be found
                         // at a glance, dark enough not to strobe the room.
                         Level::Error => (
-                            egui::Color32::from_rgb(110, 38, 34),
-                            egui::Color32::from_rgb(255, 236, 232),
+                            vizz_design::feedback::DANGER_BED,
+                            vizz_design::feedback::ON_DANGER,
                         ),
                     };
                     let r = egui::Frame::NONE

@@ -292,37 +292,23 @@ impl GraphView {
                 self.fit_requested = true;
             }
             // Armed, like preset delete: the most destructive click in the
-            // app must not fire on the first press. First click relabels the
-            // button red for a few seconds; a second click inside the window
-            // clears.
-            let arm_id = egui::Id::new("graph-new-armed");
-            let armed_at: Option<f64> = ui.memory_mut(|m| m.data.get_temp(arm_id));
-            let now = ui.input(|i| i.time);
-            let armed = armed_at.is_some_and(|t| now - t < 3.0);
-            let new_btn = if armed {
-                egui::Button::new(
-                    egui::RichText::new("clear?").color(Color32::from_rgb(255, 236, 232)),
-                )
-                .fill(Color32::from_rgb(150, 52, 46))
-            } else {
-                egui::Button::new("new")
-            };
-            let clicked = ui
-                .add(new_btn)
-                .on_hover_text(if armed {
-                    "click again to clear the whole graph — there is no undo"
-                } else {
-                    "clear the graph (asks once)"
-                })
-                .clicked();
-            if clicked && armed {
-                ui.memory_mut(|m| m.data.remove_temp::<f64>(arm_id));
+            // app must not fire on the first press.
+            if vizz_design::widgets::armed_button(
+                ui,
+                egui::Id::new("graph-new-armed"),
+                0,
+                vizz_design::widgets::Armed {
+                    idle_label: "new",
+                    armed_label: "clear?",
+                    idle_hover: "clear the graph (asks once)",
+                    armed_hover: "click again to clear the whole graph — there is no undo",
+                    small: false,
+                },
+            ) {
                 *graph = NodeGraph::default();
                 self.selected = None;
                 self.patch_name.clear();
                 changed = true;
-            } else if clicked {
-                ui.memory_mut(|m| m.data.insert_temp(arm_id, now));
             }
             ui.checkbox(&mut self.show_palette, "palette");
 
@@ -331,11 +317,15 @@ impl GraphView {
                 // changed graph reads as a fresh result. Failures hold
                 // longer and read red — "load failed" in the same friendly
                 // green as "saved" was how errors went unnoticed here.
-                let ttl = if *error { 8.0 } else { 4.0 };
-                let colour = if *error {
-                    Color32::from_rgb(235, 150, 140)
+                let ttl = if *error {
+                    vizz_design::motion::STATUS_ERROR_TTL
                 } else {
-                    Color32::from_rgb(150, 200, 160)
+                    vizz_design::motion::STATUS_TTL
+                };
+                let colour = if *error {
+                    vizz_design::feedback::ERR_TEXT
+                } else {
+                    vizz_design::feedback::OK_TEXT
                 };
                 let age = ui.ctx().input(|i| i.time) - at;
                 if age < ttl {
@@ -451,7 +441,7 @@ impl GraphView {
             self.fit(graph, rect);
         }
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 4.0, Color32::from_rgb(24, 26, 30));
+        painter.rect_filled(rect, 4.0, vizz_design::surface::BASE);
 
         let lay = self.layout(rect.min);
         self.draw_grid(&painter, rect, &lay);
@@ -638,7 +628,7 @@ impl GraphView {
         while y < rect.bottom() {
             let mut x = start.x;
             while x < rect.right() {
-                p.circle_filled(pos2(x, y), 1.0, Color32::from_rgb(44, 48, 54));
+                p.circle_filled(pos2(x, y), 1.0, vizz_design::surface::HAIRLINE);
                 x += step;
             }
             y += step;
@@ -699,7 +689,7 @@ impl GraphView {
                 _ => false,
             };
 
-            p.rect_filled(rect, 5.0, Color32::from_rgb(38, 41, 47));
+            p.rect_filled(rect, 5.0, vizz_design::surface::RAISED);
             let border = if in_cycle {
                 Stroke::new(2.0, Color32::from_rgb(190, 80, 70))
             } else if self.selected == Some(NodeId(i)) {
@@ -727,7 +717,7 @@ impl GraphView {
                 Align2::LEFT_CENTER,
                 truncate(&n.kind.title(), max_chars),
                 FontId::proportional(fs),
-                Color32::from_rgb(232, 236, 240),
+                vizz_design::ink::PRIMARY,
             );
             // Port labels and the live readout need more room than the
             // title; below this they are dropped rather than overlapped.
@@ -749,7 +739,7 @@ impl GraphView {
                 // the Operator amber for red-green colour-blind eyes,
                 // and a border alone was the only cue.
                 let (readout, ink) = if in_cycle {
-                    ("cycle".to_string(), Color32::from_rgb(235, 150, 140))
+                    ("cycle".to_string(), vizz_design::feedback::ERR_TEXT)
                 } else if dead_param {
                     let text = if matches!(&n.kind, NodeKind::Param { addr, .. } if addr.is_empty())
                     {
@@ -811,7 +801,7 @@ impl GraphView {
         };
         let mut delete = false;
         egui::Frame::new()
-            .fill(Color32::from_rgb(30, 33, 38))
+            .fill(vizz_design::surface::WELL)
             .inner_margin(6.0)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -968,9 +958,9 @@ fn group_label(c: Category) -> &'static str {
 
 fn category_color(c: Category) -> Color32 {
     match c {
-        Category::Source => Color32::from_rgb(70, 120, 175),
-        Category::Operator => Color32::from_rgb(150, 120, 60),
-        Category::Sink => Color32::from_rgb(70, 140, 100),
+        Category::Source => vizz_design::accent::NODE_SOURCE,
+        Category::Operator => vizz_design::accent::NODE_OPERATOR,
+        Category::Sink => vizz_design::accent::NODE_SINK,
     }
 }
 

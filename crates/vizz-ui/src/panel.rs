@@ -365,21 +365,9 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
     });
 }
 
-/// A status dot, painted rather than written.
-///
-/// egui's default font has no U+25CF, so a text bullet renders as a
-/// missing-glyph box — which is exactly what happened the first time the
-/// status strip was written, despite the comment in `outputs_section`
-/// saying so. Filled means live, hollow means not.
+/// A status dot — the design system's, under the short local name.
 fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-    if live {
-        ui.painter().circle_filled(rect.center(), 4.0, color);
-    } else {
-        ui.painter()
-            .circle_stroke(rect.center(), 4.0, egui::Stroke::new(1.0, color));
-    }
-    response
+    vizz_design::widgets::status_dot(ui, live, color)
 }
 
 const GOOD: egui::Color32 = crate::theme::LIVE;
@@ -391,7 +379,7 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
     let Some(version) = &state.update_available else { return };
     ui.horizontal(|ui| {
         ui.colored_label(
-            egui::Color32::from_rgb(255, 200, 90),
+            WARN,
             format!("vizz {version} available"),
         );
         ui.hyperlink_to("download", vizz_update::RELEASES_URL);
@@ -607,7 +595,7 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
             egui::vec2(rect.width() * env.clamp(0.0, 1.0), h),
         ),
         1.0,
-        egui::Color32::from_rgb(120, 200, 255),
+        vizz_design::accent::METER,
     );
     p.rect_filled(
         egui::Rect::from_min_size(
@@ -615,7 +603,7 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
             egui::vec2(rect.width() * raw.clamp(0.0, 1.0), h),
         ),
         1.0,
-        egui::Color32::from_rgb(70, 95, 125),
+        vizz_design::accent::METER_DIM,
     );
     // Clipping marker: at 1.0 the band is pinned and the gain is too high.
     if env >= 0.999 {
@@ -671,9 +659,9 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             dot.center(),
             4.0,
             if state.audio.connected {
-                egui::Color32::from_rgb(90, 200, 120)
+                GOOD
             } else {
-                egui::Color32::from_rgb(110, 110, 110)
+                vizz_design::ink::FAINT
             },
         );
         ui.label("input");
@@ -698,7 +686,7 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         // A device that has gone away should not look like a live one.
         if !state.audio.connected {
             ui.label(
-                egui::RichText::new("not capturing").color(egui::Color32::from_rgb(240, 150, 90)),
+                egui::RichText::new("not capturing").color(WARN),
             );
         }
     });
@@ -784,31 +772,19 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         // Armed, matching the other destructive clicks: this sits one
         // button away from "fit" and throws away a gain setup that took
         // real material to dial in.
-        let arm_id = egui::Id::new("audio-reset-armed");
-        let armed_at: Option<f64> = ui.memory_mut(|m| m.data.get_temp(arm_id));
-        let now = ui.input(|i| i.time);
-        let armed = armed_at.is_some_and(|t| now - t < 3.0);
-        let reset = if armed {
-            egui::Button::new(
-                egui::RichText::new("reset?").color(egui::Color32::from_rgb(255, 236, 232)),
-            )
-            .fill(egui::Color32::from_rgb(150, 52, 46))
-        } else {
-            egui::Button::new("reset")
-        };
-        let clicked = ui
-            .add(reset)
-            .on_hover_text(if armed {
-                "click again for the shipped bands and gains"
-            } else {
-                "back to the shipped bands and gains (asks once)"
-            })
-            .clicked();
-        if clicked && armed {
-            ui.memory_mut(|m| m.data.remove_temp::<f64>(arm_id));
+        if vizz_design::widgets::armed_button(
+            ui,
+            egui::Id::new("audio-reset-armed"),
+            0,
+            vizz_design::widgets::Armed {
+                idle_label: "reset",
+                armed_label: "reset?",
+                idle_hover: "back to the shipped bands and gains (asks once)",
+                armed_hover: "click again for the shipped bands and gains",
+                small: false,
+            },
+        ) {
             bands = vizz_audio::default_bands();
-        } else if clicked {
-            ui.memory_mut(|m| m.data.insert_temp(arm_id, now));
         }
         ui.small("play something first — fit reads the last few seconds");
     });
@@ -851,7 +827,7 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             // is running free on its last tempo, not following anything.
             ui.small(
                 egui::RichText::new("no ticks")
-                    .color(egui::Color32::from_rgb(240, 150, 90)),
+                    .color(WARN),
             );
         }
         // Same words as the status strip's tap: three surfaces telling
@@ -936,7 +912,7 @@ fn modulation_section(
             ui.painter().circle_filled(
                 egui::pos2(x, rect.center().y),
                 3.0,
-                egui::Color32::from_rgb(130, 190, 255),
+                vizz_design::accent::METER,
             );
         });
     }
@@ -1067,7 +1043,7 @@ fn sparkline(ui: &mut egui::Ui, samples: &[f32], budget_ms: f32) {
         .collect();
     painter.add(egui::Shape::line(
         points,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(130, 190, 255)),
+        egui::Stroke::new(1.0, vizz_design::accent::METER),
     ));
 }
 
@@ -1198,9 +1174,9 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegist
             let label = if on { "stop recording" } else { "record" };
             let button = egui::Button::new(
                 egui::RichText::new(label).color(if on {
-                    egui::Color32::from_rgb(240, 120, 110)
+                    vizz_design::feedback::ERR_TEXT
                 } else {
-                    egui::Color32::from_rgb(200, 205, 214)
+                    vizz_design::ink::SECONDARY
                 }),
             );
             if ui
@@ -1250,19 +1226,6 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegist
 /// So the list stays here even though a version of it exists there: it is
 /// the only place a preset can be created or removed, and creating them is
 /// the entire purpose of this screen.
-/// A delete that has been clicked once and is waiting to be meant.
-#[derive(Clone)]
-struct ArmedDelete {
-    name: String,
-    at: std::time::Instant,
-}
-
-impl Default for ArmedDelete {
-    fn default() -> Self {
-        Self { name: String::new(), at: std::time::Instant::now() }
-    }
-}
-
 fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     ui.label(egui::RichText::new("Presets").strong());
     ui.small("click to open a look and keep editing it");
@@ -1350,39 +1313,27 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                     // idiom. One click on a 14-point "x" permanently
                     // erasing a file — with no undo anywhere — was the
                     // cheapest destruction in the app, sitting a few
-                    // pixels from the load button.
-                    let arm_id = egui::Id::new("preset-delete-armed");
-                    let armed: Option<ArmedDelete> =
-                        ui.memory_mut(|m| m.data.get_temp(arm_id));
-                    let armed_here = armed
-                        .as_ref()
-                        .is_some_and(|a| a.name == p.name && a.at.elapsed().as_secs() < 3);
-                    if armed_here {
-                        let sure = egui::Button::new(
-                            egui::RichText::new("delete?")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(255, 236, 232)),
-                        )
-                        .fill(egui::Color32::from_rgb(150, 52, 46));
-                        if ui
-                            .add(sure)
-                            .on_hover_text("click again to delete for good — there is no undo")
-                            .clicked()
-                        {
-                            actions.preset_delete = Some(p.name.clone());
-                            ui.memory_mut(|m| m.data.remove_temp::<ArmedDelete>(arm_id));
-                        }
-                    } else if ui
-                        .small_button("x")
-                        .on_hover_text("delete this preset (asks once)")
-                        .clicked()
-                    {
-                        ui.memory_mut(|m| {
-                            m.data.insert_temp(
-                                arm_id,
-                                ArmedDelete { name: p.name.clone(), at: std::time::Instant::now() },
-                            )
-                        });
+                    // pixels from the load button. Keyed by name inside
+                    // one group, so arming one row disarms any other.
+                    let key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::hash::DefaultHasher::new();
+                        p.name.hash(&mut h);
+                        h.finish()
+                    };
+                    if vizz_design::widgets::armed_button(
+                        ui,
+                        egui::Id::new("preset-delete-armed"),
+                        key,
+                        vizz_design::widgets::Armed {
+                            idle_label: "x",
+                            armed_label: "delete?",
+                            idle_hover: "delete this preset (asks once)",
+                            armed_hover: "click again to delete for good — there is no undo",
+                            small: true,
+                        },
+                    ) {
+                        actions.preset_delete = Some(p.name.clone());
                     }
                 });
             }
@@ -1905,7 +1856,7 @@ fn param_row(
 
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
 /// as "something else is touching this" at a glance.
-const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+const MOD_COLOR: egui::Color32 = vizz_design::accent::MOD;
 /// The "this row is what you are seeing" marker in the slot legends.
 const LIVE_MARK: egui::Color32 = crate::theme::CURRENT;
 
@@ -1913,7 +1864,7 @@ const LIVE_MARK: egui::Color32 = crate::theme::CURRENT;
 /// modulation marker's warm, since the two appear side by side and mean
 /// unrelated things: one is "something else is moving this", the other is
 /// "nothing else will touch this".
-const GLOBAL_COLOR: egui::Color32 = egui::Color32::from_rgb(120, 170, 220);
+const GLOBAL_COLOR: egui::Color32 = vizz_design::accent::GLOBAL;
 
 #[cfg(test)]
 mod save_name_tests {

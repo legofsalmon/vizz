@@ -3258,6 +3258,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vizz-design"
+version = "0.12.0"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "vizz-health"
 version = "0.12.0"
 dependencies = [
@@ -3343,6 +3350,7 @@ dependencies = [
  "log",
  "pollster",
  "vizz-audio",
+ "vizz-design",
  "vizz-health",
  "vizz-midi",
  "vizz-mod",
