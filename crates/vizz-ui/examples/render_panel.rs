@@ -209,6 +209,7 @@ fn main() {
         "/pal/3/r",
         "/pal/3/g",
         "/pal/3/b",
+        "/vec/place",
         "/video/depth",
         "/video/relief",
         "/record/active",
@@ -242,6 +243,7 @@ fn main() {
             a if a.ends_with("/invert") && a.starts_with("/l") => {
                 def.labels(&["fill", "invert"])
             }
+            "/vec/place" => def.labels(&["scene", "print"]),
             "/video/relief" => {
                 def.labels(&["luminance", "hue", "saturation", "chroma"])
             }

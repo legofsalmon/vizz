@@ -90,6 +90,9 @@ pub struct FrameInputs {
     /// vector layers existed — the guarantee that makes shipping an
     /// experimental renderer inside the live instrument tolerable.
     pub vector_active: bool,
+    /// True when `/vec/place` says "print": the stack draws after the
+    /// post chain instead of into it.
+    pub vector_print: bool,
 }
 
 impl FrameEngine {
@@ -546,6 +549,7 @@ impl FrameEngine {
             room_visible: room_brightness > 0.002,
             vector,
             vector_active,
+            vector_print: self.snapshot.get(p.vec_place).round() >= 0.5,
             count: self.snapshot.get(p.count).max(0.0) as u32,
             background: wgpu::Color {
                 // The master dim scales the background as well as the

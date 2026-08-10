@@ -64,6 +64,11 @@ struct RenderState {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     vector: vizz_render::vector::VectorScene,
+    /// A second pipeline over the same shader, built at the output
+    /// format for print mode — the stack drawn after the post chain,
+    /// exact and untouched by it. Rebuilt whenever the output format is
+    /// (the wide-master toggle changes it).
+    vector_print: vizz_render::vector::VectorScene,
     config: wgpu::SurfaceConfiguration,
     ctx: GpuContext,
     scene: ParticleScene,
@@ -334,6 +339,7 @@ impl App {
         // The scene draws into the post chain's HDR buffer, not straight
         // to the master: feedback needs somewhere to accumulate.
         let vector = vizz_render::vector::VectorScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+        let vector_print = vizz_render::vector::VectorScene::new(&ctx, master_format);
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         scene.load_clouds(&ctx, &self.opts.clouds);
         // Show what was asked for. `load_clouds` fills slots and nothing
@@ -437,6 +443,7 @@ impl App {
             window,
             surface,
             vector,
+            vector_print,
             config,
             ctx,
             scene,
@@ -483,6 +490,7 @@ impl App {
 
         state.output = OutputTarget::with_format(&state.ctx.device, ow, oh, format);
         state.post = PostChain::new(&state.ctx, rw, rh, format);
+        state.vector_print = vizz_render::vector::VectorScene::new(&state.ctx, format);
         state.blit_bind = state.blit.bind(&state.ctx.device, &state.output.view);
         let (publish, publish_blit) = if state.output.publishable() {
             (None, None)
@@ -888,6 +896,10 @@ impl App {
         let mut inputs = inputs;
         if inputs.vector_active {
             inputs.vector.bg[3] = state.output.height as f32;
+        }
+        // Scene placement: behind the particles, inside the feedback
+        // chain. Print placement skips this and draws after post below.
+        if inputs.vector_active && !inputs.vector_print {
             state
                 .vector
                 .render(&state.ctx, &mut encoder, &state.post.scene_view, &inputs.vector);
@@ -896,6 +908,7 @@ impl App {
         // particles then add on top. Skipped entirely when dark, since
         // it is off by default and drawing invisible lines is wasted
         // work.
+        let vector_in_scene = inputs.vector_active && !inputs.vector_print;
         if inputs.room_visible {
             state.room.render(
                 &state.ctx,
@@ -903,7 +916,7 @@ impl App {
                 &state.post.scene_view,
                 &inputs.room,
                 inputs.background,
-                !inputs.vector_active,
+                !vector_in_scene,
             );
         }
         state.scene.render(
@@ -912,10 +925,21 @@ impl App {
             &state.post.scene_view,
             &inputs.uniforms,
             inputs.count,
-            !inputs.room_visible && !inputs.vector_active,
+            !inputs.room_visible && !vector_in_scene,
             inputs.background,
         );
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
+        // Print placement: the stack replaces the finished frame, drawn
+        // at the output format so no tone-map shoulder or feedback ever
+        // touches the ink. The particles and punch gestures deliberately
+        // do not reach it — layering wants scene placement.
+        if inputs.vector_active && inputs.vector_print {
+            let mut print = inputs.vector;
+            print.bg[3] = state.output.height as f32;
+            state
+                .vector_print
+                .render(&state.ctx, &mut encoder, &state.output.view, &print);
+        }
 
         // Only now does the window enter into it. The master above is the
         // show — it is what Syphon and NDI carry to the projector — and

@@ -49,6 +49,8 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
     let mut post = PostChain::new(&ctx, opts.width, opts.height, vizz_render::output::OUTPUT_FORMAT);
     let vector = vizz_render::vector::VectorScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
+    let vector_print =
+        vizz_render::vector::VectorScene::new(&ctx, vizz_render::output::OUTPUT_FORMAT);
     let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
     scene.load_clouds(&ctx, &opts.clouds);
     let params_for_video = Arc::clone(&params);
@@ -128,21 +130,28 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        // Vector stack first when active — it paints the whole page and
-        // takes over the clear, exactly as the windowed path does.
+        // Vector stack first when active in scene placement — it paints
+        // the whole page and takes over the clear, exactly as the
+        // windowed path does. Print placement draws after post instead.
         let mut inputs = inputs;
         if inputs.vector_active {
             inputs.vector.bg[3] = output.height as f32;
+        }
+        let vector_in_scene = inputs.vector_active && !inputs.vector_print;
+        if vector_in_scene {
             vector.render(&ctx, &mut encoder, &post.scene_view, &inputs.vector);
         }
         // Room next: it clears when nothing painted before it.
         if inputs.room_visible {
             room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room, inputs.background,
-                !inputs.vector_active);
+                !vector_in_scene);
         }
         scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count,
-            !inputs.room_visible && !inputs.vector_active, inputs.background);
+            !inputs.room_visible && !vector_in_scene, inputs.background);
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
+        if inputs.vector_active && inputs.vector_print {
+            vector_print.render(&ctx, &mut encoder, &output.view, &inputs.vector);
+        }
         ctx.queue.submit([encoder.finish()]);
         senders.publish(&ctx.device, &ctx.queue, &output.texture);
         // Headless has no vsync backpressure: wait for the GPU so frame

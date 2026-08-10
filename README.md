@@ -1056,6 +1056,7 @@ control input can never crash the renderer.
 | `/pal/3/r` | 0 – 1 | 0.98 | ink 3 (yellow), r channel |
 | `/pal/3/g` | 0 – 1 | 0.8 | ink 3 (yellow), g channel |
 | `/pal/3/b` | 0 – 1 | 0.05 | ink 3 (yellow), b channel |
+| `/vec/place` | 0 – 1 | 0 | where the stack renders: 0 scene (behind particles, in the feedback chain) · 1 print (after post, exact ink) |
 | `/camera/distance` | 0.4 – 12 | 3.5 | orbit distance from the field |
 | `/camera/orbit` | -3.15 – 3.15 | 0 | orbit angle around the field |
 | `/camera/elevation` | -1.4 – 1.4 | 0.34 | height angle of the orbit |

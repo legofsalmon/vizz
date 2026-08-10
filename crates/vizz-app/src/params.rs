@@ -93,6 +93,7 @@ pub struct AppParams {
     pub video_relief: ParamId,
     pub vector_layers: Vec<VectorLayer>,
     pub vector_palette: Vec<[ParamId; 3]>,
+    pub vec_place: ParamId,
     pub cam_dist: ParamId,
     pub cam_orbit: ParamId,
     pub cam_elev: ParamId,
@@ -331,6 +332,17 @@ impl AppParams {
                 }
             })
             .collect();
+        // Where the stack renders. "scene" sits behind the particles
+        // inside the feedback chain — trails, punch and the tone-map
+        // shoulder all apply. "print" draws after the post chain,
+        // opaque: exact ink bytes, razor edges under any feedback, and
+        // deliberately untouched by punch gestures or particles. A
+        // stepped switch, not a sweep — half-way between placements is
+        // not a picture — and captured by presets, because a look *is*
+        // its placement.
+        let vec_place = b.add(
+            ParamDef::new("/vec/place", 0.0, 1.0, 0.0).labels(&["scene", "print"]),
+        );
         // The four inks, shared by every layer. A small fixed palette is
         // the discipline this look is built on: per-layer free colour
         // invites mud, four inks invite a print. Defaults match
@@ -530,6 +542,7 @@ impl AppParams {
             video_relief,
             vector_layers,
             vector_palette,
+            vec_place,
             cam_dist,
             cam_orbit,
             cam_elev,
