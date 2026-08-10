@@ -18,66 +18,33 @@ use egui::{Color32, Sense, vec2};
 /// so the row cannot silently stop showing the last pads.
 pub const SLOTS: usize = 16;
 
-/// Where the row is being drawn, which decides how wide it may be and
-/// whether the transition settings come with it.
+/// Pad size for the width actually on offer.
 ///
 /// One row of sixteen is the shape this wants — it is the shape of a
-/// sequencer, and it is what makes pad 11 findable without counting. But
-/// sixteen pads wide enough to carry a name is wider than the control
-/// panel has any business being, so the panel folds it to four by four and
-/// the performance layout, which owns the whole window, lays it out
-/// straight.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shape {
-    /// In the control panel: four by four, pads only. The transition
-    /// settings are parameters like everything else and already have rows
-    /// in the list below — drawing them twice would give the panel two
-    /// controls for one value.
-    Panel,
-    /// On the performance layout: sixteen across, with the settings, since
-    /// changing a blend time mid-set must not mean leaving the layout.
-    Stage,
-}
-
-impl Shape {
-    fn cols(self) -> usize {
-        match self {
-            Shape::Panel => 4,
-            Shape::Stage => SLOTS,
-        }
-    }
-
-    /// Pad size for the width actually on offer.
-    ///
-    /// Sixteen across only works if sixteen fit: at a fixed width the row
-    /// runs past the right edge of a 900-point window, and everything laid
-    /// out from that edge — the frame rate, the tempo, the tap button —
-    /// goes with it. So the stage row divides up what it is given instead,
-    /// with a floor below which the pads stop being hittable and the row
-    /// is better off overflowing visibly than shrinking to nothing.
-    fn pad(self, available: f32) -> egui::Vec2 {
-        match self {
-            Shape::Panel => vec2(66.0, 24.0),
-            Shape::Stage => {
-                let cols = self.cols() as f32;
-                let each = (available - (cols - 1.0) * GAP) / cols;
-                vec2(each.clamp(34.0, 96.0), 46.0)
-            }
-        }
-    }
-
-    fn settings(self) -> bool {
-        self == Shape::Stage
-    }
+/// sequencer, and it is what makes pad 11 findable without counting.
+/// Sixteen across only works if sixteen fit: at a fixed width the row
+/// runs past the right edge of a 900-point window, and everything laid
+/// out from that edge — the frame rate, the tempo, the tap button —
+/// goes with it. So the row divides up what it is given instead, with a
+/// floor below which the pads stop being hittable and the row is better
+/// off overflowing visibly than shrinking to nothing.
+fn pad_size(available: f32) -> egui::Vec2 {
+    let cols = SLOTS as f32;
+    let each = (available - (cols - 1.0) * GAP) / cols;
+    vec2(each.clamp(34.0, 96.0), 46.0)
 }
 
 const GAP: f32 = 4.0;
 
 const FILLED: Color32 = Color32::from_rgb(58, 66, 84);
 const EMPTY: Color32 = Color32::from_rgb(34, 36, 42);
-const CURRENT: Color32 = Color32::from_rgb(110, 180, 255);
+const CURRENT: Color32 = crate::theme::CURRENT;
 const ARRIVING: Color32 = Color32::from_rgb(255, 175, 80);
-const ARMED: Color32 = Color32::from_rgb(255, 120, 90);
+const ARMED: Color32 = crate::theme::ARMED;
+/// A pad whose preset no longer exists. This used to borrow `ARMED`, so a
+/// broken pad read as "the next press is destructive" — wrong twice over,
+/// since firing it does nothing at all. Broken is a warning, not an arm.
+const WARN: Color32 = crate::theme::WARN;
 /// The autopilot's own colour. Green rather than the blue of `CURRENT` or
 /// the amber of `ARRIVING`: those two say where the grid *is*, and this
 /// says something is driving it. Sharing a colour with either would make
@@ -87,7 +54,7 @@ const AUTO_BED: Color32 = Color32::from_rgb(30, 46, 36);
 /// A pad waiting for a MIDI control, and the chip on one that has found
 /// it. Amber, matching the learn colour the panel and the performance
 /// faders already use, so the state means the same thing everywhere.
-const LEARN: Color32 = Color32::from_rgb(255, 200, 90);
+const LEARN: Color32 = crate::theme::LEARN;
 /// A pad's binding at rest — quiet enough that a fully mapped grid does
 /// not read as sixteen alarms, bright enough to survive the transition
 /// fill passing underneath it. The pad being blended to is exactly the pad
@@ -221,6 +188,11 @@ pub struct GridState {
     pub mode: PadMode,
     /// The slot whose name is being edited, and the text so far.
     editing: Option<(usize, String)>,
+    /// The slot the context menu armed to clear: the next press on it
+    /// clears it, a press anywhere else disarms. The menu's "clear" used
+    /// to empty the pad on the spot while the mode-button route armed
+    /// first — one action, two doors, and only one of them had a guard.
+    clear_armed: Option<usize>,
 }
 
 /// Draw the row, keeping its arm state in egui's own memory.
@@ -229,8 +201,8 @@ pub struct GridState {
 /// the panel, the performance layout, the preview example and every test.
 /// This is exactly what egui's temporary storage is for, and it keeps the
 /// grid a drop-in widget rather than something with a lifetime.
-pub fn draw(ui: &mut egui::Ui, view: &GridView, shape: Shape) -> GridActions {
-    draw_with_id(ui, view, shape, "scene-grid")
+pub fn draw(ui: &mut egui::Ui, view: &GridView) -> GridActions {
+    draw_with_id(ui, view, "scene-grid")
 }
 
 /// As [`draw`], under a distinct identity.
@@ -239,50 +211,32 @@ pub fn draw(ui: &mut egui::Ui, view: &GridView, shape: Shape) -> GridActions {
 /// on the scene row and then pressing a gravity pad would capture the
 /// wrong layer into the wrong slot, which is a data-loss bug rather than
 /// a cosmetic one.
-pub fn draw_with_id(
-    ui: &mut egui::Ui,
-    view: &GridView,
-    shape: Shape,
-    salt: &str,
-) -> GridActions {
+pub fn draw_with_id(ui: &mut egui::Ui, view: &GridView, salt: &str) -> GridActions {
     let id = ui.make_persistent_id(salt);
     let mut state: GridState = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
-    let actions = draw_with(ui, view, &mut state, shape);
+    let actions = draw_with(ui, view, &mut state);
     ui.data_mut(|d| d.insert_temp(id, state));
     actions
 }
 
 /// As [`draw`], with the state passed in. For tests, which need to drive
 /// the arm state directly rather than through clicks.
-pub fn draw_with(
-    ui: &mut egui::Ui,
-    view: &GridView,
-    state: &mut GridState,
-    shape: Shape,
-) -> GridActions {
+pub fn draw_with(ui: &mut egui::Ui, view: &GridView, state: &mut GridState) -> GridActions {
     let mut actions = GridActions::default();
-    pads(ui, view, state, shape, &mut actions);
+    pads(ui, view, state, &mut actions);
     modes(ui, view, state, &mut actions);
-    if shape.settings() {
-        ui.add_space(4.0);
-        controls(ui, view, &mut actions);
-    }
+    ui.add_space(4.0);
+    controls(ui, view, &mut actions);
     if let Some((slot, text)) = state.editing.clone() {
         rename_row(ui, slot, text, state, &mut actions);
     }
     actions
 }
 
-fn pads(
-    ui: &mut egui::Ui,
-    view: &GridView,
-    state: &mut GridState,
-    shape: Shape,
-    actions: &mut GridActions,
-) {
-    let cols = shape.cols();
+fn pads(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mut GridActions) {
+    let cols = SLOTS;
     // Measured once, before the first row narrows it.
-    let size = shape.pad(ui.available_width());
+    let size = pad_size(ui.available_width());
     for row in 0..SLOTS.div_ceil(cols) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
@@ -321,14 +275,18 @@ fn pad(
         p.rect_filled(fill, 3.0, ARRIVING.gamma_multiply(0.5));
     }
 
-    // A dangling reference outranks every other outline: a pad that will
+    // An armed clear outranks everything — the next press here destroys —
+    // then a waiting learn, then a dangling reference: a pad that will
     // not fire is more urgent than which pad you are on.
     let broken = view.missing.get(slot).copied().unwrap_or(false);
     let waiting = view.learning == Some(slot);
-    let outline = if waiting {
+    let armed_clear = state.clear_armed == Some(slot);
+    let outline = if armed_clear {
+        Some(ARMED)
+    } else if waiting {
         Some(LEARN)
     } else if broken {
-        Some(ARMED)
+        Some(WARN)
     } else if view.in_flight.map(|(to, _)| to) == Some(slot) {
         Some(ARRIVING)
     } else if view.current == Some(slot) {
@@ -379,7 +337,7 @@ fn pad(
             name,
             egui::FontId::proportional(11.0),
             if broken {
-                ARMED
+                WARN
             } else {
                 Color32::from_rgb(225, 228, 235)
             },
@@ -389,7 +347,7 @@ fn pad(
     let response = response.on_hover_text(tooltip(
         state.mode,
         slot,
-        Pad { name, noun: view.noun, broken, waiting, bound },
+        Pad { name, noun: view.noun, broken, waiting, bound, armed_clear },
     ));
     // Double-click to rename, which is where a name gets edited in every
     // other program. The context menu keeps its entry: this is a second
@@ -406,6 +364,15 @@ fn pad(
         state.editing = Some((slot, name.unwrap_or_default().to_string()));
     }
     if response.clicked() && !response.double_clicked() {
+        if armed_clear {
+            state.clear_armed = None;
+            actions.clear = Some(slot);
+            return;
+        }
+        // A press on any other pad disarms — the same rule as the mode
+        // buttons, so the worst case is one extra click, never a clear
+        // landing on a pad the menu was not opened over.
+        state.clear_armed = None;
         match state.mode {
             // Firing an empty pad is a no-op in the grid itself, so this
             // does not need a guard — but offering a rename on it is the
@@ -430,7 +397,7 @@ fn pad(
         // Assignment first: a scene names a preset, so choosing which
         // preset is the primary thing you do to a pad. Capture is below
         // it, as the shortcut it now is.
-        ui.menu_button("play preset...", |ui| {
+        ui.menu_button("assign preset…", |ui| {
             if view.presets.is_empty() {
                 ui.label("no presets saved yet");
                 return;
@@ -457,8 +424,20 @@ fn pad(
                 state.editing = Some((slot, name.unwrap_or_default().to_string()));
                 ui.close();
             }
-            if ui.button("clear").clicked() {
-                actions.clear = Some(slot);
+            // Arms rather than clears: the mode-button route asks for a
+            // second press, and one action must not be guarded through one
+            // door and instant through the other.
+            if armed_clear {
+                if ui.button("cancel clear").clicked() {
+                    state.clear_armed = None;
+                    ui.close();
+                }
+            } else if ui
+                .button("clear")
+                .on_hover_text("arms the pad — press it to empty it")
+                .clicked()
+            {
+                state.clear_armed = Some(slot);
                 ui.close();
             }
         }
@@ -499,6 +478,7 @@ struct Pad<'a> {
     broken: bool,
     waiting: bool,
     bound: Option<&'a str>,
+    armed_clear: bool,
 }
 
 /// What a pad says on hover.
@@ -508,8 +488,11 @@ struct Pad<'a> {
 /// hardcoded "scene" described the wrong layer on every gravity pad, which
 /// is worse than describing nothing.
 fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
-    let Pad { name, noun, broken, waiting, bound } = pad;
+    let Pad { name, noun, broken, waiting, bound, armed_clear } = pad;
     let n = slot + 1;
+    if armed_clear {
+        return format!("armed — press to empty {noun} {n}, press anything else to keep it");
+    }
     match mode {
         PadMode::Fire if broken => format!(
             "{} — this preset no longer exists; right-click to pick another",
@@ -517,7 +500,7 @@ fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
         ),
         PadMode::Fire if waiting => format!("waiting for a control to fire {noun} {n}"),
         PadMode::Fire => name.map_or_else(
-            || format!("{noun} {n} — empty; right-click to play a preset here"),
+            || format!("{noun} {n} — empty; right-click to assign a preset"),
             // The rename is advertised here because it was previously only
             // on the right-click menu, where nobody found it. A hover that
             // names the gesture is the cheapest possible fix, and the
@@ -808,7 +791,7 @@ mod tests {
         for _ in 0..2 {
             ctx.begin_pass(input.clone());
             egui::Area::new(egui::Id::new("grid-test")).show(&ctx, |ui| {
-                draw_with(ui, view, state, Shape::Stage);
+                draw_with(ui, view, state);
             });
             text = collect_text(&ctx.end_pass().shapes);
         }
@@ -909,7 +892,14 @@ mod tests {
     /// hold something else.
     #[test]
     fn a_pad_never_describes_the_other_layer() {
-        let pad = |noun| Pad { name: None, noun, broken: false, waiting: false, bound: None };
+        let pad = |noun| Pad {
+            name: None,
+            noun,
+            broken: false,
+            waiting: false,
+            bound: None,
+            armed_clear: false,
+        };
         for mode in [PadMode::Fire, PadMode::Store, PadMode::Clear, PadMode::Learn] {
             let text = tooltip(mode, 2, pad("gravity"));
             assert!(text.contains("gravity"), "{mode:?} did not say gravity: {text}");
@@ -933,10 +923,95 @@ mod tests {
                 broken: false,
                 waiting: false,
                 bound: Some("ch1 note36"),
+                armed_clear: false,
             },
         );
         assert!(text.contains("ch1 note36"), "binding not named on hover: {text}");
         assert!(text.contains("rename"), "lost the rename hint: {text}");
+    }
+
+    /// Every rect-stroke colour the row painted — the outlines. Fills are
+    /// deliberately excluded: the armed mode buttons fill in ARMED, and
+    /// counting them would let a pad without its outline pass.
+    fn stroke_colours(view: &GridView, state: &mut GridState) -> Vec<Color32> {
+        let ctx = egui::Context::default();
+        let mut out = Vec::new();
+        // The clock must advance across passes: a fresh Area fades in, and
+        // while it does every colour is alpha-scaled — an ARMED stroke
+        // read mid-fade equals no colour this test knows about.
+        for i in 0..6 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(500.0, 700.0),
+                )),
+                time: Some(i as f64 * 0.2),
+                ..Default::default()
+            };
+            ctx.begin_pass(input);
+            egui::Area::new(egui::Id::new("grid-test")).show(&ctx, |ui| {
+                draw_with(ui, view, state);
+            });
+            fn walk(shape: &egui::Shape, out: &mut Vec<Color32>) {
+                match shape {
+                    egui::Shape::Rect(r) if !r.stroke.is_empty() => out.push(r.stroke.color),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            out.clear();
+            for s in &ctx.end_pass().shapes {
+                walk(&s.shape, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The context menu's clear arms instead of firing — the same guard
+    /// as the mode-button route. An armed pad has to say so: the ARMED
+    /// outline, and a hover naming what the next press will do.
+    #[test]
+    fn a_pad_armed_to_clear_wears_the_armed_outline_and_says_so() {
+        let v = view();
+        let mut state = GridState::default();
+        assert!(
+            !stroke_colours(&v, &mut state).contains(&ARMED),
+            "an unarmed grid painted the armed colour"
+        );
+        state.clear_armed = Some(0);
+        assert!(
+            stroke_colours(&v, &mut state).contains(&ARMED),
+            "the armed pad has no armed outline"
+        );
+        let text = tooltip(
+            PadMode::Fire,
+            0,
+            Pad {
+                name: Some("opener"),
+                noun: "scene",
+                broken: false,
+                waiting: false,
+                bound: None,
+                armed_clear: true,
+            },
+        );
+        assert!(text.contains("armed"), "the hover does not name the armed state: {text}");
+    }
+
+    /// A broken pad is a warning, not an armed action: nothing about it
+    /// destroys on the next press. It borrowed the ARMED colour for a
+    /// while, which claimed exactly that.
+    #[test]
+    fn a_broken_pad_warns_rather_than_reading_armed() {
+        let mut v = view();
+        v.missing[0] = true;
+        let mut state = GridState::default();
+        let colours = stroke_colours(&v, &mut state);
+        assert!(colours.contains(&WARN), "no warning outline on the broken pad");
+        assert!(
+            !colours.contains(&ARMED),
+            "a broken pad still reads as an armed destructive action"
+        );
     }
 
     /// Arming store must be visible. An invisible mode that changes what

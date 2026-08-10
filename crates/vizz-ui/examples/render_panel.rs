@@ -286,6 +286,9 @@ fn main() {
         // A plausible live reading, so the preview shows the meters doing
         // something rather than four empty bars.
         audio: audio_view(),
+        // A live feed, so the strip's video dot appears in the preview —
+        // it only draws when a source was configured.
+        video: Some(vizz_ui::VideoStatus { connected: true, label: "ndi:cam".into() }),
         audio_bands: vizz_audio::default_bands(),
         audio_auto_bpm: true,
         modulated: Vec::new(),
