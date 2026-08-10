@@ -38,6 +38,17 @@ CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
   || fail "workspace version is $CARGO_VERSION but the tag says $WANT_VERSION — bump Cargo.toml first"
 ok "workspace version $CARGO_VERSION matches $TAG"
 
+# --- the landing page's download button ------------------------------------
+# The published download is version-stamped, so the site cannot use
+# GitHub's /releases/latest/download/ permalink (it resolves a constant
+# filename) and instead pins the release. A pinned link is exactly what
+# gets forgotten in a release and found by a user downloading the wrong
+# version. The vizz-update test checks this too, on every CI run; it is
+# repeated here because this is the last gate before a tag exists.
+grep -q "/releases/download/$TAG/" site/index.html \
+  || fail "site/index.html's download button does not point at $TAG"
+ok "site download button points at $TAG"
+
 # --- repository state ------------------------------------------------------
 [[ -z "$(git status --porcelain)" ]] || fail "working tree is dirty"
 ok "working tree clean"

@@ -1234,8 +1234,26 @@ Releases are cut by `.github/workflows/release.yml`, either way round:
   re-attaches the bundle, which repairs a release that is missing its
   download.
 
-The job fails if `vizz.app.zip` does not end up attached, so a release
-can never silently ship without the app.
+The download is named for its version — `vizz-0.14.0.app.zip` — so a
+Downloads folder holding several of them can be told apart without
+unzipping each one and reading Get Info. The bundle *inside* stays plain
+`vizz.app`: that name is the application's identity in `/Applications`,
+in the Dock and as the Syphon server. The job fails if the versioned
+asset does not end up attached, so a release can never silently ship
+without the app.
+
+Because the filename now moves, the landing page's download button pins
+a release rather than using GitHub's `/releases/latest/download/`
+permalink, which can only resolve a constant name. Two checks keep that
+pin honest: a test in `vizz-update` (so CI fails on the version-bump PR)
+and `preflight-release.sh` (so it fails before a tag exists). The order
+to cut a release is therefore:
+
+1. One PR bumping `Cargo.toml`, the site's download link and its
+   changelog entry; merge it on green CI.
+2. `./scripts/preflight-release.sh vX.Y.Z` on `main`.
+3. Dispatch the release workflow — promptly, since the site is already
+   advertising the new file by then.
 
 CI itself can also be re-run on demand via **Actions → CI → Run
 workflow** (useful to regenerate the `vizz.app` artifact without an

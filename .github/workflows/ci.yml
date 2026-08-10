@@ -186,4 +186,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vizz.app
-          path: dist/vizz.app.zip
+          path: dist/vizz-*.app.zip

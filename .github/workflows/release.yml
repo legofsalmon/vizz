@@ -49,6 +49,13 @@ jobs:
             # so this run stays the only build for the tag.
             git push origin "$RELEASE_TAG"
           fi
+          # The published download carries its version, so a Downloads
+          # folder full of them can be told apart without unzipping each
+          # one. Derived from the tag rather than from Cargo.toml so the
+          # asset can never disagree with the release it hangs on — and
+          # the two are already required to match by the preflight and by
+          # the smoke test below.
+          echo "ASSET=vizz-${RELEASE_TAG#v}.app.zip" >> "$GITHUB_ENV"
       - name: Detect signing configuration
         env:
           CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
@@ -94,7 +101,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ env.HAVE_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-        run: ./scripts/make-app.sh
+        run: |
+          ./scripts/make-app.sh
+          # make-app.sh names the zip from Cargo.toml; the release names
+          # it from the tag, and the two legitimately differ for a
+          # prerelease — Cargo.toml says 1.0.0 while the tag says
+          # v1.0.0-rc1. The published file takes the release's name; what
+          # is *inside* it is checked separately by the smoke test below,
+          # which fails the run if the binary's version does not match the
+          # tag. So this is a rename, not a decision.
+          built=(dist/vizz-*.app.zip)
+          if [ ! -f "${built[0]}" ]; then
+            echo "::error::make-app.sh produced no app zip"; exit 1
+          fi
+          [ "${built[0]}" = "dist/$ASSET" ] || mv "${built[0]}" "dist/$ASSET"
 
       # Notarize and staple. Stapling matters: without it the bundle needs
       # a network round-trip to Apple on first launch, which at a venue
@@ -126,8 +146,8 @@ jobs:
 
           # Re-zip so the published asset is the stapled bundle, not the
           # pre-notarization one.
-          rm -f dist/vizz.app.zip
-          ditto -c -k --keepParent dist/vizz.app dist/vizz.app.zip
+          rm -f dist/vizz-*.app.zip
+          ditto -c -k --keepParent dist/vizz.app "dist/$ASSET"
 
       # Compiling is not evidence that it runs. Launch the binary that is
       # actually inside the bundle and make it render: a build that dies on
@@ -183,20 +203,21 @@ jobs:
           fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG exists — uploading bundle to it."
-            gh release upload "$RELEASE_TAG" dist/vizz.app.zip --clobber
+            gh release upload "$RELEASE_TAG" "dist/$ASSET" --clobber
             # Notes on an existing release are left alone: it may have
             # been written by hand from the UI, and clobbering someone's
             # release text to fix one sentence is the worse trade.
           else
             echo "Creating release $RELEASE_TAG with bundle."
-            gh release create "$RELEASE_TAG" dist/vizz.app.zip \
+            gh release create "$RELEASE_TAG" "dist/$ASSET" \
               --title "vizz $RELEASE_TAG" \
               --generate-notes \
               --notes "$notes"
           fi
           # Fail loudly if the asset somehow did not land — a release with
-          # no download silently breaks scripts/install.sh.
+          # no download silently breaks scripts/install.sh and the site's
+          # download button, which names this exact file.
           gh release view "$RELEASE_TAG" --json assets \
-            | grep -q "vizz.app.zip" \
-            || { echo "::error::vizz.app.zip missing from release $RELEASE_TAG"; exit 1; }
-          echo "vizz.app.zip published to release $RELEASE_TAG."
+            | grep -q "$ASSET" \
+            || { echo "::error::$ASSET missing from release $RELEASE_TAG"; exit 1; }
+          echo "$ASSET published to release $RELEASE_TAG."
