@@ -22,7 +22,7 @@
 //! CI self-loop test is what proves it: vizz publishes its own output as
 //! `syphon:vizz` and reads it back here, checking real pixels.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 
 use anyhow::{Result, anyhow, bail};
 use objc2::encode::{Encode, Encoding};
@@ -153,14 +153,12 @@ impl SyphonInput {
         let client_class = crate::syphon::class_named(CLIENT_CLASS)?;
         let needle_lower = needle.to_lowercase();
 
-        // The raw MTLDevice behind wgpu, exactly as the sender does it.
-        let raw_device = unsafe {
-            device.as_hal::<wgpu::hal::api::Metal, _, _>(|d| {
-                d.map(|d| d.raw_device().lock().as_ptr() as *mut AnyObject)
-            })
-        }
-        .flatten()
-        .ok_or_else(|| anyhow!("this is not a Metal device — Syphon input needs one"))?;
+        // The raw MTLDevice behind wgpu, exactly as the sender gets it —
+        // same call, same deref, so the two directions cannot drift apart
+        // when wgpu changes this API under us.
+        let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
+            .ok_or_else(|| anyhow!("Syphon input requires the Metal backend"))?;
+        let raw_device = (&**hal.raw_device()) as *const _ as *mut AnyObject;
 
         autoreleasepool(|_| unsafe {
             let directory: *mut AnyObject = msg_send![directory_class, sharedDirectory];
@@ -206,7 +204,7 @@ impl SyphonInput {
                 initWithServerDescription: chosen,
                 device: raw_device,
                 options: std::ptr::null::<AnyObject>(),
-                newFrameHandler: std::ptr::null::<AnyObject>(),
+                newFrameHandler: std::ptr::null::<AnyObject>()
             ];
             if client.is_null() {
                 bail!("SyphonMetalClient refused to connect to {chosen_label}");
@@ -267,7 +265,7 @@ impl SyphonInput {
                 getBytes: buf.as_mut_ptr().cast::<std::ffi::c_void>(),
                 bytesPerRow: stride,
                 fromRegion: region,
-                mipmapLevel: 0usize,
+                mipmapLevel: 0usize
             ];
             if let Ok(mut slot) = self.latest.lock() {
                 *slot = Some((width as u32, height as u32, buf));
@@ -292,11 +290,4 @@ impl Drop for SyphonInput {
             let _: () = msg_send![self.client, release];
         });
     }
-}
-
-/// Keeps the unused-import lint honest about `CString`, which the
-/// dictionary helpers would want if keys were ever built at runtime.
-#[allow(dead_code)]
-fn _unused(s: &str) -> Option<CString> {
-    CString::new(s).ok()
 }
