@@ -53,6 +53,19 @@ fn main() {
     for (addr, v) in [
         // One punch latched, so the engaged state is in the shot.
         ("/punch/strobe", 1.0),
+        // Two layers on, so the strip shows in the review shot.
+        ("/l1/kind", 1.0),
+        ("/l1/blend", 1.0),
+        ("/l1/color", 1.0),
+        ("/l2/kind", 2.0),
+        ("/l2/blend", 4.0),
+        ("/l2/color", 2.0),
+        ("/pal/1/r", 0.92),
+        ("/pal/1/g", 0.10),
+        ("/pal/1/b", 0.14),
+        ("/pal/2/r", 0.10),
+        ("/pal/2/g", 0.30),
+        ("/pal/2/b", 0.95),
         ("/particles/size", 0.07),
         ("/particles/speed", 0.42),
         ("/particles/brightness", 0.88),
@@ -263,6 +276,81 @@ fn registry() -> ParamRegistry {
         // no way to record — which is the state this harness was used to
         // review, and missed.
         "/record/active",
+        // The vector layer surface, so the strip can appear in the one
+        // screenshot this layout is reviewed in.
+        "/l1/kind",
+        "/l1/freq",
+        "/l1/phase",
+        "/l1/duty",
+        "/l1/sides",
+        "/l1/inset",
+        "/l1/fold",
+        "/l1/invert",
+        "/l1/x",
+        "/l1/y",
+        "/l1/rot",
+        "/l1/scale",
+        "/l1/color",
+        "/l1/blend",
+        "/l1/opacity",
+        "/l2/kind",
+        "/l2/freq",
+        "/l2/phase",
+        "/l2/duty",
+        "/l2/sides",
+        "/l2/inset",
+        "/l2/fold",
+        "/l2/invert",
+        "/l2/x",
+        "/l2/y",
+        "/l2/rot",
+        "/l2/scale",
+        "/l2/color",
+        "/l2/blend",
+        "/l2/opacity",
+        "/l3/kind",
+        "/l3/freq",
+        "/l3/phase",
+        "/l3/duty",
+        "/l3/sides",
+        "/l3/inset",
+        "/l3/fold",
+        "/l3/invert",
+        "/l3/x",
+        "/l3/y",
+        "/l3/rot",
+        "/l3/scale",
+        "/l3/color",
+        "/l3/blend",
+        "/l3/opacity",
+        "/l4/kind",
+        "/l4/freq",
+        "/l4/phase",
+        "/l4/duty",
+        "/l4/sides",
+        "/l4/inset",
+        "/l4/fold",
+        "/l4/invert",
+        "/l4/x",
+        "/l4/y",
+        "/l4/rot",
+        "/l4/scale",
+        "/l4/color",
+        "/l4/blend",
+        "/l4/opacity",
+        "/pal/0/r",
+        "/pal/0/g",
+        "/pal/0/b",
+        "/pal/1/r",
+        "/pal/1/g",
+        "/pal/1/b",
+        "/pal/2/r",
+        "/pal/2/g",
+        "/pal/2/b",
+        "/pal/3/r",
+        "/pal/3/g",
+        "/pal/3/b",
+        "/vec/place",
         "/master/dim",
     ] {
         let def = ParamDef::new(addr, 0.0, 1.0, 0.4);
@@ -274,6 +362,23 @@ fn registry() -> ParamRegistry {
             "/particles/size" => ParamDef::new(addr, 0.001, 0.2, 0.015),
             "/punch/strobe_div" => ParamDef::new(addr, 0.25, 4.0, 0.5).transport(),
             "/record/active" => ParamDef::new(addr, 0.0, 1.0, 0.0).transport(),
+            a if a.starts_with("/l") && a.ends_with("/kind") => {
+                ParamDef::new(addr, 0.0, 7.0, 0.0).labels(&[
+                    "off", "rings", "stripes", "checker", "polygon", "star", "rays", "dots",
+                ])
+            }
+            a if a.starts_with("/l") && a.ends_with("/blend") => {
+                ParamDef::new(addr, 0.0, 6.0, 0.0).labels(&[
+                    "normal", "multiply", "screen", "add", "difference", "exclusion", "subtract",
+                ])
+            }
+            a if a.starts_with("/l") && a.ends_with("/freq") => {
+                ParamDef::new(addr, 0.5, 64.0, 8.0)
+            }
+            a if a.starts_with("/l") && a.ends_with("/color") => {
+                ParamDef::new(addr, 0.0, 3.0, 0.0)
+            }
+            "/vec/place" => ParamDef::new(addr, 0.0, 1.0, 0.0).labels(&["scene", "print"]),
             "/master/dim" => ParamDef::new(addr, 0.0, 1.0, 1.0),
             _ => def,
         });

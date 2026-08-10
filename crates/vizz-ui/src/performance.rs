@@ -177,6 +177,10 @@ pub fn draw(
                     punch_row(ui, registry, state, &mut actions);
                     ui.add_space(10.0);
 
+                    if layer_strip(ui, registry) {
+                        ui.add_space(10.0);
+                    }
+
                     section(ui, "SCENES");
                     actions.grid =
                         crate::grid_view::draw(ui, state.grid, crate::grid_view::Shape::Stage);
@@ -370,6 +374,132 @@ fn punch_row(
             }
         }
     });
+}
+
+/// The vector layer strip: one compact row per active stack.
+///
+/// Follows the gravity grid's rule — drawn only when there is something
+/// in it (any layer's kind not "off"), so the default layout spends no
+/// height on a feature not in use, and the fader block below keeps its
+/// budget. All controls write the registry directly, the way faders do;
+/// the labels come from the parameter definitions, so the strip cannot
+/// drift from what the shader actually has.
+fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry) -> bool {
+    let layer_ids: Vec<_> = (1..=8)
+        .map_while(|i| {
+            Some((
+                registry.id(&format!("/l{i}/kind"))?,
+                registry.id(&format!("/l{i}/blend"))?,
+                registry.id(&format!("/l{i}/opacity"))?,
+                registry.id(&format!("/l{i}/freq"))?,
+                registry.id(&format!("/l{i}/color"))?,
+            ))
+        })
+        .collect();
+    if layer_ids.is_empty() {
+        return false;
+    }
+    let any_on = layer_ids
+        .iter()
+        .any(|(kind, ..)| registry.target(*kind).round() >= 0.5);
+    if !any_on {
+        return false;
+    }
+
+    section(ui, "LAYERS");
+    ui.horizontal(|ui| {
+        for (i, (kind, blend, opacity, freq, color)) in layer_ids.iter().enumerate() {
+            let kind_def = &registry.defs()[kind.index()];
+            let cur = registry.target(*kind).round();
+            let on = cur >= 0.5;
+
+            // The ink swatch: the layer's palette slot, read live, so
+            // the chip is the colour the layer prints with.
+            let slot = registry.target(*color).round().max(0.0) as usize;
+            let ink = ["r", "g", "b"]
+                .map(|ch| registry.id(&format!("/pal/{slot}/{ch}")).map(|id| registry.target(id)));
+            let swatch = match ink {
+                [Some(r), Some(g), Some(b)] => Color32::from_rgb(
+                    (r * 255.0) as u8,
+                    (g * 255.0) as u8,
+                    (b * 255.0) as u8,
+                ),
+                _ => TRACK,
+            };
+            let (rect, _) = ui.allocate_exact_size(vec2(10.0, 22.0), Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, if on { swatch } else { TRACK });
+
+            // Kind: click cycles forward through the generators, right
+            // click back — off is on the wheel, so a layer is silenced
+            // by cycling to it. The label is the definition's own.
+            let kind_label = kind_def.label_for(cur).unwrap_or("?");
+            let resp = ui.add(
+                egui::Button::new(
+                    egui::RichText::new(kind_label)
+                        .size(12.0)
+                        .color(if on { INK } else { INK_4 }),
+                )
+                .min_size(vec2(62.0, 22.0)),
+            );
+            let steps = kind_def.max - kind_def.min + 1.0;
+            if resp.clicked() {
+                registry.set(*kind, (cur + 1.0) % steps);
+            } else if resp.secondary_clicked() {
+                registry.set(*kind, (cur - 1.0).rem_euclid(steps));
+            }
+            resp.on_hover_text(format!(
+                "layer {} generator — click to cycle, right-click back",
+                i + 1
+            ));
+
+            if on {
+                // Blend, same wheel.
+                let blend_def = &registry.defs()[blend.index()];
+                let bcur = registry.target(*blend).round();
+                let bresp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(blend_def.label_for(bcur).unwrap_or("?"))
+                            .size(12.0)
+                            .color(INK_2),
+                    )
+                    .min_size(vec2(66.0, 22.0)),
+                );
+                let bsteps = blend_def.max - blend_def.min + 1.0;
+                if bresp.clicked() {
+                    registry.set(*blend, (bcur + 1.0) % bsteps);
+                } else if bresp.secondary_clicked() {
+                    registry.set(*blend, (bcur - 1.0).rem_euclid(bsteps));
+                }
+                bresp.on_hover_text("blend mode — click to cycle");
+
+                // Opacity and frequency as drags: the two you ride.
+                let mut op = registry.target(*opacity);
+                if ui
+                    .add(egui::DragValue::new(&mut op).speed(0.01).range(0.0..=1.0).fixed_decimals(2))
+                    .on_hover_text("opacity")
+                    .changed()
+                {
+                    registry.set(*opacity, op);
+                }
+                let freq_def = &registry.defs()[freq.index()];
+                let mut fr = registry.target(*freq);
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut fr)
+                            .speed(0.1)
+                            .range(freq_def.min..=freq_def.max)
+                            .fixed_decimals(1),
+                    )
+                    .on_hover_text("frequency")
+                    .changed()
+                {
+                    registry.set(*freq, fr);
+                }
+            }
+            ui.add_space(10.0);
+        }
+    });
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1265,6 +1395,18 @@ mod tests {
         b.add(ParamDef::new("/punch/strobe", 0.0, 1.0, 0.0).gesture());
         b.add(ParamDef::new("/punch/strobe_div", 0.25, 4.0, 0.5).transport());
         b.add(ParamDef::new("/record/active", 0.0, 1.0, 0.0).transport());
+        // A vector layer, for the strip tests. Kind 0 = off, the default.
+        b.add(
+            ParamDef::new("/l1/kind", 0.0, 7.0, 0.0).labels(&[
+                "off", "rings", "stripes", "checker", "polygon", "star", "rays", "dots",
+            ]),
+        );
+        b.add(ParamDef::new("/l1/blend", 0.0, 6.0, 0.0).labels(&[
+            "normal", "multiply", "screen", "add", "difference", "exclusion", "subtract",
+        ]));
+        b.add(ParamDef::new("/l1/opacity", 0.0, 1.0, 1.0));
+        b.add(ParamDef::new("/l1/freq", 0.5, 64.0, 8.0));
+        b.add(ParamDef::new("/l1/color", 0.0, 3.0, 0.0));
         // A clashing pair: both end in "spread", so both faders have to
         // wear their group word to be told apart.
         b.add(ParamDef::new("/color/spread", 0.0, 1.0, 0.12));
@@ -1566,6 +1708,34 @@ mod tests {
                 "a label was cut short at {size:?}: {text}"
             );
         }
+    }
+
+    /// The layer strip follows the gravity grid's rule: absent until a
+    /// layer is on, so the default layout spends nothing on it — and
+    /// present the moment one is, or the print side of the app has no
+    /// home on the screen you play from. Checked both ways, because a
+    /// strip that always draws would pass any single-state test.
+    #[test]
+    fn the_layer_strip_appears_only_when_a_layer_is_on() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let idle = render(&mut macros, &reg);
+        assert!(
+            !idle.contains("LAYERS"),
+            "the strip drew with every layer off: {idle}"
+        );
+
+        reg.set_by_addr("/l1/kind", 1.0);
+        let on = render(&mut macros, &reg);
+        assert!(on.contains("LAYERS"), "no strip with a layer on: {on}");
+        assert!(
+            on.contains("rings"),
+            "the strip does not name the layer's generator: {on}"
+        );
+        assert!(
+            on.contains("normal"),
+            "the strip does not name the blend mode: {on}"
+        );
     }
 
     /// The fader labels must be on the window, not merely drawn.

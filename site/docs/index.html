@@ -199,6 +199,7 @@
   <a href="#shapes">Shapes and geometry</a>
   <a href="#clouds">Point clouds, words, images</a>
   <a href="#video">Live video as a cloud</a>
+  <a href="#vector">Vector layers</a>
   <a href="#colour">Colour and palettes</a>
   <a href="#effects">Effects</a>
   <a href="#camera">Camera and room</a>
@@ -552,6 +553,54 @@ output without it is the network or the sender. It moves on purpose: a still
 pattern proves a frame arrived once, a moving one proves frames are still
 arriving.</p>
 </div>
+
+<h2 id="vector">Vector layers</h2>
+
+<p>The print side of the app: four layers of hard-edged procedural pattern —
+rings, stripes, checker, polygon, star, rays, dots — in flat ink colours from
+a shared four-slot palette (<code>/pal/0..3</code>), composited with
+multiply/screen/difference-style blends. Two layers at near frequencies
+interfere into moiré. Edges are analytically antialiased and stay razor-sharp
+at any resolution.</p>
+
+<figure>
+  <img src="/img/docs-vector-moire.webp" alt="Two ring fields multiplied into red and blue moiré interference.">
+  <figcaption>The <em>Interference</em> preset: one recall from a cold start.</figcaption>
+</figure>
+
+<p><strong>Start from a preset.</strong> Three vector looks ship after the six
+particle ones — <em>Interference</em>, <em>Poster</em> and <em>Signal</em>.
+Recall one and the print look arrives whole; the particle field steps aside
+via <code>/particles/count 0</code>, which is part of the look and comes back
+with the next particle preset.</p>
+
+<p><strong>The performance layout grows a LAYERS strip</strong> when any layer
+is on — hidden otherwise, like the gravity grid. Per layer: the ink swatch,
+the generator (click cycles, right-click back — off is on the wheel), the
+blend mode, and drags for opacity and frequency. Faders remain the way to
+ride a layer parameter under MIDI.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Control</th><th>What it does</th></tr>
+<tr><td><code>/vec/place</code></td><td><em>scene</em> (default): behind the particles, inside the feedback chain — trails, punch and the tone-map apply, layering works. <em>print</em>: after the post chain — exact ink bytes, untouched by feedback, and deliberately out of reach of punch and particles.</td></tr>
+</table>
+</div>
+
+<p>A preset captures its placement. A <code>/vec/place</code> override sent in
+the same burst as a recall loses to the preset — send it after the recall
+lands.</p>
+
+<p><strong>The "Pulse" patch</strong> ships in the modulation canvas's load
+menu: the kick band gates a snap envelope that blinks layer 2 out on each
+hit, and a four-beat phasor drifts layer 1's phase. Load it over any vector
+preset and the layers move with the music.</p>
+
+<figure>
+  <img src="/img/docs-vector-sheet.webp" alt="Six vector looks: ring moiré, stripe difference, checker and star, dots and rays, kaleidoscope, grey multiply test.">
+  <figcaption>The renderer's contact sheet: every generator, the kaleido fold,
+  and five blend modes.</figcaption>
+</figure>
 
 <h2 id="colour">Colour and palettes</h2>
 
@@ -924,6 +973,7 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/pal/3/r</code></td><td>0 – 1</td><td>0.98</td><td>ink 3 (yellow), r channel</td></tr>
     <tr><td><code>/pal/3/g</code></td><td>0 – 1</td><td>0.8</td><td>ink 3 (yellow), g channel</td></tr>
     <tr><td><code>/pal/3/b</code></td><td>0 – 1</td><td>0.05</td><td>ink 3 (yellow), b channel</td></tr>
+    <tr><td><code>/vec/place</code></td><td>0 – 1</td><td>0</td><td>where the stack renders: 0 scene (behind particles, in the feedback chain) · 1 print (after post, exact ink)</td></tr>
     <tr><td><code>/camera/distance</code></td><td>0.4 – 12</td><td>3.5</td><td>orbit distance from the field</td></tr>
     <tr><td><code>/camera/orbit</code></td><td>-3.15 – 3.15</td><td>0</td><td>orbit angle around the field</td></tr>
     <tr><td><code>/camera/elevation</code></td><td>-1.4 – 1.4</td><td>0.34</td><td>height angle of the orbit</td></tr>
@@ -1027,6 +1077,13 @@ and watch the echo line — it names whatever arrives.</p>
 <p>Check the status line: each output has a dot, green when live. Syphon is
 macOS-only. NDI needs its runtime installed, and the panel says so if it is
 missing.</p>
+
+<h3>I set layer parameters and nothing changed</h3>
+<p>Check the layer's <em>kind</em> is not <em>off</em> — kind 0 removes the
+layer regardless of its other settings — and check <code>/vec/place</code>:
+in <em>print</em> placement the stack replaces the finished frame, so if
+another look is on screen the stack may be in <em>scene</em> placement behind
+an opaque particle field. Recalling a vector preset resets all of this.</p>
 
 <h3>Frame rate is low</h3>
 <p>Open <strong>health</strong> in the panel for frame-time percentiles and the

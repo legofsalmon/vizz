@@ -241,7 +241,11 @@ impl GraphView {
                     .desired_width(140.0),
             );
             if ui.button("save").clicked() {
-                match library::save(&self.patch_name, graph) {
+                // Saving under a shipped patch's name steps aside to
+                // "Name 2" rather than shadowing it — "put it back how
+                // it shipped" has to stay reachable, same as presets.
+                let name = library::patch_save_name(&self.patch_name);
+                match library::save(&name, graph) {
                     Ok(p) => {
                         // Show the sanitised name back: a patch saved as
                         // "café/bar" lands as "caf__bar", and silently
@@ -261,20 +265,17 @@ impl GraphView {
                     // is read while the menu is open rather than on every
                     // frame the canvas is — dozens of directory scans a
                     // second for a list nobody was looking at.
-                    let patches = library::list();
-                    if patches.is_empty() {
-                        ui.label(egui::RichText::new("no saved patches").small());
-                    }
+                    let patches = library::all_names();
                     for name in &patches {
                         if ui.selectable_label(false, name).clicked() {
-                            match library::load(name) {
-                                Ok(g) => {
+                            match library::by_name(name) {
+                                Some(g) => {
                                     *graph = g;
                                     self.patch_name = name.clone();
                                     self.selected = None;
                                     changed = true;
                                 }
-                                Err(e) => self.set_error(ui, format!("load failed: {e}")),
+                                None => self.set_error(ui, format!("could not load {name}")),
                             }
                         }
                     }
