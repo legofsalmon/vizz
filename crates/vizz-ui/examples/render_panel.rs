@@ -133,6 +133,82 @@ fn main() {
         // transport row and preset recall are what the grids and the
         // preset list read, and a panel preview missing them is a
         // preview of a different app.
+        // The vector layer surface, listed literally rather than built
+        // with format!() in a loop: the mirrors test greps this file for
+        // each address as a string, and a loop would hide them from it.
+        // Tedious is the price of greppable.
+        "/l1/kind",
+        "/l1/freq",
+        "/l1/phase",
+        "/l1/duty",
+        "/l1/sides",
+        "/l1/inset",
+        "/l1/fold",
+        "/l1/invert",
+        "/l1/x",
+        "/l1/y",
+        "/l1/rot",
+        "/l1/scale",
+        "/l1/color",
+        "/l1/blend",
+        "/l1/opacity",
+        "/l2/kind",
+        "/l2/freq",
+        "/l2/phase",
+        "/l2/duty",
+        "/l2/sides",
+        "/l2/inset",
+        "/l2/fold",
+        "/l2/invert",
+        "/l2/x",
+        "/l2/y",
+        "/l2/rot",
+        "/l2/scale",
+        "/l2/color",
+        "/l2/blend",
+        "/l2/opacity",
+        "/l3/kind",
+        "/l3/freq",
+        "/l3/phase",
+        "/l3/duty",
+        "/l3/sides",
+        "/l3/inset",
+        "/l3/fold",
+        "/l3/invert",
+        "/l3/x",
+        "/l3/y",
+        "/l3/rot",
+        "/l3/scale",
+        "/l3/color",
+        "/l3/blend",
+        "/l3/opacity",
+        "/l4/kind",
+        "/l4/freq",
+        "/l4/phase",
+        "/l4/duty",
+        "/l4/sides",
+        "/l4/inset",
+        "/l4/fold",
+        "/l4/invert",
+        "/l4/x",
+        "/l4/y",
+        "/l4/rot",
+        "/l4/scale",
+        "/l4/color",
+        "/l4/blend",
+        "/l4/opacity",
+        "/pal/0/r",
+        "/pal/0/g",
+        "/pal/0/b",
+        "/pal/1/r",
+        "/pal/1/g",
+        "/pal/1/b",
+        "/pal/2/r",
+        "/pal/2/g",
+        "/pal/2/b",
+        "/pal/3/r",
+        "/pal/3/g",
+        "/pal/3/b",
         "/video/depth",
         "/video/relief",
         "/record/active",
@@ -154,6 +230,18 @@ fn main() {
             "/fx/mirror" => def.labels(&["off", "mirror", "quad", "kaleido"]),
             "/color/drive" => def.labels(&["index", "radius", "depth", "height"]),
             "/color/palette" => def.labels(&["hsv", "warm", "ember", "ice", "neon"]),
+            a if a.ends_with("/kind") && a.starts_with("/l") => def.labels(&[
+                "off", "rings", "stripes", "checker", "polygon", "star", "rays", "dots",
+            ]),
+            a if a.ends_with("/blend") && a.starts_with("/l") => def.labels(&[
+                "normal", "multiply", "screen", "add", "difference", "exclusion", "subtract",
+            ]),
+            a if a.ends_with("/color") && a.starts_with("/l") => {
+                def.labels(&["ink 1", "ink 2", "ink 3", "ink 4"])
+            }
+            a if a.ends_with("/invert") && a.starts_with("/l") => {
+                def.labels(&["fill", "invert"])
+            }
             "/video/relief" => {
                 def.labels(&["luminance", "hue", "saturation", "chroma"])
             }

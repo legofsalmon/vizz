@@ -20,6 +20,32 @@ pub const GRAVITY_WELLS: usize = 4;
 /// a form before this one; the test below holds it to the label.
 pub const SHAPE_CLOUD_PAIR: f32 = 7.0;
 
+/// The parameter ids for one vector layer.
+#[derive(Debug, Clone, Copy)]
+pub struct VectorLayer {
+    pub kind: ParamId,
+    pub freq: ParamId,
+    pub phase: ParamId,
+    pub duty: ParamId,
+    pub sides: ParamId,
+    pub inset: ParamId,
+    pub fold: ParamId,
+    pub invert: ParamId,
+    pub x: ParamId,
+    pub y: ParamId,
+    pub rot: ParamId,
+    pub scale: ParamId,
+    pub color: ParamId,
+    pub blend: ParamId,
+    pub opacity: ParamId,
+}
+
+/// Vector layers the registry exposes. The shader holds
+/// [`vizz_render::vector::MAX_LAYERS`] — capacity there is free, but
+/// every layer here is fifteen parameters in the panel, the tables and
+/// the presets, so the surface starts smaller than the ceiling.
+pub const VECTOR_LAYERS: usize = 4;
+
 /// The parameter ids for one well.
 #[derive(Debug, Clone, Copy)]
 pub struct GravityWell {
@@ -65,6 +91,8 @@ pub struct AppParams {
     pub cloud_morph: ParamId,
     pub video_depth: ParamId,
     pub video_relief: ParamId,
+    pub vector_layers: Vec<VectorLayer>,
+    pub vector_palette: Vec<[ParamId; 3]>,
     pub cam_dist: ParamId,
     pub cam_orbit: ParamId,
     pub cam_elev: ParamId,
@@ -257,6 +285,74 @@ impl AppParams {
             ParamDef::new("/video/relief", 0.0, 3.0, 0.0)
                 .labels(&["luminance", "hue", "saturation", "chroma"]),
         );
+        // Vector layers: the hard-edged print-look counterpart to the
+        // particle field, drawn behind it. Kind 0 is "off", which is
+        // both the default and the way a controller removes a layer —
+        // so a fresh launch renders exactly what it did before these
+        // existed. Kind and blend are switches (unsmoothed + labelled),
+        // which is also what makes scene transitions flip them at the
+        // midpoint instead of sweeping through modes neither look asked
+        // for. Sides is a sweep on purpose: the polygon SDF is
+        // continuous in it, and a triangle melting into a hexagon is a
+        // move worth having.
+        let vector_layers: Vec<VectorLayer> = (1..=VECTOR_LAYERS)
+            .map(|i| {
+                let a = |name: &str| format!("/l{i}/{name}");
+                VectorLayer {
+                    kind: b.add(
+                        ParamDef::new(a("kind"), 0.0, 7.0, 0.0)
+                            .labels(vizz_render::vector::KIND_LABELS),
+                    ),
+                    freq: b.add(ParamDef::new(a("freq"), 0.5, 64.0, 8.0).smooth(0.15)),
+                    // Unsmoothed: phase is the strobe/step control, and
+                    // a phase that glides is a pattern that drifts when
+                    // it was told to jump.
+                    phase: b.add(ParamDef::new(a("phase"), 0.0, 1.0, 0.0)),
+                    duty: b.add(ParamDef::new(a("duty"), 0.05, 0.95, 0.5).smooth(0.1)),
+                    sides: b.add(ParamDef::new(a("sides"), 2.0, 16.0, 4.0).smooth(0.2)),
+                    inset: b.add(ParamDef::new(a("inset"), 0.0, 1.0, 0.5).smooth(0.15)),
+                    fold: b.add(ParamDef::new(a("fold"), 0.0, 12.0, 0.0)),
+                    invert: b.add(
+                        ParamDef::new(a("invert"), 0.0, 1.0, 0.0).labels(&["fill", "invert"]),
+                    ),
+                    x: b.add(ParamDef::new(a("x"), -2.0, 2.0, 0.0).smooth(0.2)),
+                    y: b.add(ParamDef::new(a("y"), -2.0, 2.0, 0.0).smooth(0.2)),
+                    rot: b.add(ParamDef::new(a("rot"), -2.0, 2.0, 0.0).smooth(0.2)),
+                    scale: b.add(ParamDef::new(a("scale"), 0.05, 8.0, 1.0).smooth(0.2)),
+                    color: b.add(
+                        ParamDef::new(a("color"), 0.0, 3.0, 0.0)
+                            .labels(&["ink 1", "ink 2", "ink 3", "ink 4"]),
+                    ),
+                    blend: b.add(
+                        ParamDef::new(a("blend"), 0.0, 6.0, 0.0)
+                            .labels(vizz_render::vector::BLEND_LABELS),
+                    ),
+                    opacity: b.add(ParamDef::new(a("opacity"), 0.0, 1.0, 1.0).smooth(0.1)),
+                }
+            })
+            .collect();
+        // The four inks, shared by every layer. A small fixed palette is
+        // the discipline this look is built on: per-layer free colour
+        // invites mud, four inks invite a print. Defaults match
+        // `StackU::default()` so the two ways of reaching the renderer
+        // agree about what "untouched" looks like.
+        let ink_defaults: [[f32; 3]; 4] = [
+            [0.05, 0.05, 0.05],
+            [0.92, 0.10, 0.14],
+            [0.10, 0.30, 0.95],
+            [0.98, 0.80, 0.05],
+        ];
+        let vector_palette: Vec<[ParamId; 3]> = (0..vizz_render::vector::PALETTE_SLOTS)
+            .map(|i| {
+                let mut add = |j: usize, ch: &str| {
+                    b.add(
+                        ParamDef::new(format!("/pal/{i}/{ch}"), 0.0, 1.0, ink_defaults[i][j])
+                            .smooth(0.1),
+                    )
+                };
+                [add(0, "r"), add(1, "g"), add(2, "b")]
+            })
+            .collect();
         // Camera. Distance and field of view are two different kinds of
         // zoom — moving closer changes the perspective, narrowing the lens
         // does not — so both are exposed rather than conflated.
@@ -432,6 +528,8 @@ impl AppParams {
             cloud_morph,
             video_depth,
             video_relief,
+            vector_layers,
+            vector_palette,
             cam_dist,
             cam_orbit,
             cam_elev,
@@ -706,6 +804,22 @@ mod tests {
 
 #[cfg(test)]
 mod reference_tests {
+    /// Expand a compacted table row into the addresses it stands for.
+    /// `/gravity/N/x` covers wells 0–3; `/lN/kind` covers layers 1–4.
+    /// Everything else stands for itself. Shared by the README and docs
+    /// table tests so the two cannot drift in what they accept.
+    fn expand_compacted(addr: &str) -> Vec<String> {
+        if addr.contains("/N/") {
+            return (0..4).map(|i| addr.replace("/N/", &format!("/{i}/"))).collect();
+        }
+        if let Some(rest) = addr.strip_prefix("/lN/") {
+            return (1..=super::VECTOR_LAYERS)
+                .map(|i| format!("/l{i}/{rest}"))
+                .collect();
+        }
+        vec![addr.to_string()]
+    }
+
     /// The README's OSC reference used to claim completeness while
     /// documenting 21 of 76 addresses, with ranges two releases stale.
     /// This parses the table back out of the README and holds it against
@@ -738,12 +852,7 @@ mod reference_tests {
             let (Ok(min), Ok(max), Ok(default)) = (min, max, cols[2].parse::<f32>()) else {
                 continue;
             };
-            let addrs: Vec<String> = if addr.contains("/N/") {
-                (0..4).map(|i| addr.replace("/N/", &format!("/{i}/"))).collect()
-            } else {
-                vec![addr]
-            };
-            for a in addrs {
+            for a in expand_compacted(&addr) {
                 rows.insert(a, (min, max, default));
             }
         }
@@ -824,13 +933,8 @@ mod reference_tests {
             ) else {
                 continue;
             };
-            // Gravity wells are compacted the same way the README does it.
-            let addrs: Vec<String> = if addr.contains("/N/") {
-                (0..4).map(|i| addr.replace("/N/", &format!("/{i}/"))).collect()
-            } else {
-                vec![addr]
-            };
-            for a in addrs {
+            // Compacted rows expand the same way the README's do.
+            for a in expand_compacted(&addr) {
                 rows.insert(a, (min, max, default));
             }
         }

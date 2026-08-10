@@ -897,6 +897,33 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/cloud/morph</code></td><td>0 – 1</td><td>0</td><td>blend position between the pair</td></tr>
     <tr><td><code>/video/depth</code></td><td>-2 – 2</td><td>0.6</td><td>how far the picture's relief pushes along z; 0 is flat</td></tr>
     <tr><td><code>/video/relief</code></td><td>0 – 3</td><td>0</td><td>what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma</td></tr>
+    <tr><td><code>/lN/kind</code> (N = 1–4)</td><td>0 – 7</td><td>0</td><td>layer generator: off · rings · stripes · checker · polygon · star · rays · dots</td></tr>
+    <tr><td><code>/lN/freq</code> (N = 1–4)</td><td>0.5 – 64</td><td>8</td><td>pattern frequency</td></tr>
+    <tr><td><code>/lN/phase</code> (N = 1–4)</td><td>0 – 1</td><td>0</td><td>pattern phase offset; unsmoothed, so steps snap</td></tr>
+    <tr><td><code>/lN/duty</code> (N = 1–4)</td><td>0.05 – 0.95</td><td>0.5</td><td>ink/paper ratio within a period</td></tr>
+    <tr><td><code>/lN/sides</code> (N = 1–4)</td><td>2 – 16</td><td>4</td><td>polygon/star sides; a sweep, fractional counts morph</td></tr>
+    <tr><td><code>/lN/inset</code> (N = 1–4)</td><td>0 – 1</td><td>0.5</td><td>star valley depth</td></tr>
+    <tr><td><code>/lN/fold</code> (N = 1–4)</td><td>0 – 12</td><td>0</td><td>kaleidoscope wedges; below 2 is off</td></tr>
+    <tr><td><code>/lN/invert</code> (N = 1–4)</td><td>0 – 1</td><td>0</td><td>0 fill · 1 invert</td></tr>
+    <tr><td><code>/lN/x</code> (N = 1–4)</td><td>-2 – 2</td><td>0</td><td>layer centre, sideways</td></tr>
+    <tr><td><code>/lN/y</code> (N = 1–4)</td><td>-2 – 2</td><td>0</td><td>layer centre, vertical</td></tr>
+    <tr><td><code>/lN/rot</code> (N = 1–4)</td><td>-2 – 2</td><td>0</td><td>layer rotation, turns</td></tr>
+    <tr><td><code>/lN/scale</code> (N = 1–4)</td><td>0.05 – 8</td><td>1</td><td>layer scale</td></tr>
+    <tr><td><code>/lN/color</code> (N = 1–4)</td><td>0 – 3</td><td>0</td><td>which ink the layer prints with</td></tr>
+    <tr><td><code>/lN/blend</code> (N = 1–4)</td><td>0 – 6</td><td>0</td><td>normal · multiply · screen · add · difference · exclusion · subtract</td></tr>
+    <tr><td><code>/lN/opacity</code> (N = 1–4)</td><td>0 – 1</td><td>1</td><td>layer opacity</td></tr>
+    <tr><td><code>/pal/0/r</code></td><td>0 – 1</td><td>0.05</td><td>ink 0 (near-black), r channel</td></tr>
+    <tr><td><code>/pal/0/g</code></td><td>0 – 1</td><td>0.05</td><td>ink 0 (near-black), g channel</td></tr>
+    <tr><td><code>/pal/0/b</code></td><td>0 – 1</td><td>0.05</td><td>ink 0 (near-black), b channel</td></tr>
+    <tr><td><code>/pal/1/r</code></td><td>0 – 1</td><td>0.92</td><td>ink 1 (red), r channel</td></tr>
+    <tr><td><code>/pal/1/g</code></td><td>0 – 1</td><td>0.1</td><td>ink 1 (red), g channel</td></tr>
+    <tr><td><code>/pal/1/b</code></td><td>0 – 1</td><td>0.14</td><td>ink 1 (red), b channel</td></tr>
+    <tr><td><code>/pal/2/r</code></td><td>0 – 1</td><td>0.1</td><td>ink 2 (blue), r channel</td></tr>
+    <tr><td><code>/pal/2/g</code></td><td>0 – 1</td><td>0.3</td><td>ink 2 (blue), g channel</td></tr>
+    <tr><td><code>/pal/2/b</code></td><td>0 – 1</td><td>0.95</td><td>ink 2 (blue), b channel</td></tr>
+    <tr><td><code>/pal/3/r</code></td><td>0 – 1</td><td>0.98</td><td>ink 3 (yellow), r channel</td></tr>
+    <tr><td><code>/pal/3/g</code></td><td>0 – 1</td><td>0.8</td><td>ink 3 (yellow), g channel</td></tr>
+    <tr><td><code>/pal/3/b</code></td><td>0 – 1</td><td>0.05</td><td>ink 3 (yellow), b channel</td></tr>
     <tr><td><code>/camera/distance</code></td><td>0.4 – 12</td><td>3.5</td><td>orbit distance from the field</td></tr>
     <tr><td><code>/camera/orbit</code></td><td>-3.15 – 3.15</td><td>0</td><td>orbit angle around the field</td></tr>
     <tr><td><code>/camera/elevation</code></td><td>-1.4 – 1.4</td><td>0.34</td><td>height angle of the orbit</td></tr>
