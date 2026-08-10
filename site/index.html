@@ -246,6 +246,66 @@
     <p class="sub">Newest first. Full notes on each release page.</p>
 
     <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.13.0">0.13.0</a></div>
+      <ul>
+        <li><strong>Vector layers.</strong> The print side of the app:
+          four layers of hard-edged procedural pattern — rings, stripes,
+          checker, polygon, star, rays, dots — in flat ink colours from a
+          shared four-slot palette, composited with
+          multiply/screen/difference blends. Two layers at near
+          frequencies interfere into moiré, which is the whole point.
+          Edges are analytically antialiased, so they stay razor-sharp at
+          any resolution, and blending happens in encoded space the way
+          print does. Three looks ship on the preset row:
+          <em>Interference</em>, <em>Poster</em> and <em>Signal</em>.</li>
+        <li><strong>Play them like everything else.</strong> The layers
+          are ordinary parameters, so OSC, MIDI learn, presets, scene
+          morphing and the modulation canvas all work on them unwired. A
+          dedicated LAYERS strip on the performance layout cycles
+          generator and blend mode without leaving the screen, and the
+          shipped <em>Pulse</em> patch makes a layer breathe on the kick
+          out of the box. <code>/vec/place</code> switches the stack
+          between living inside the feedback chain and printing clean
+          over the top.</li>
+        <li><strong>An interaction review of the whole instrument.</strong>
+          Nineteen fixes against Nielsen's heuristics. Every destructive
+          click now arms before it fires — including the canvas
+          <em>new</em> button, which used to erase a patch on one press
+          with no undo. Latched punch buttons look different from held
+          ones, the recalled preset is marked on both screens, right-click
+          reset finally works on the performance faders as the overlay
+          always promised, and the shortcuts list learned the mouse
+          gestures nobody could discover.</li>
+        <li><strong>One design language.</strong> Colour, type, spacing,
+          radii, motion timings and the shared widgets moved into a
+          <code>vizz-design</code> crate — one meaning, one colour,
+          everywhere, enforced by a test that fails if a screen restates
+          a state colour by hand.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.12.0">0.12.0</a></div>
+      <ul>
+        <li><strong>Live video as a point cloud.</strong> An incoming NDI
+          feed becomes particles: each pixel a point, with the z axis
+          offset by luminance or colour so a face turns into relief you
+          can orbit, morph against any other cloud, and drive with
+          everything else. <code>/video/depth</code> sets how far the
+          relief pushes and <code>/video/relief</code> chooses what
+          drives it.</li>
+        <li><strong>A test pattern that needs no network.</strong> The
+          built-in source proves the whole video path with no NDI runtime
+          and no sender on the wire — which is also what lets CI run the
+          video shader on real Metal hardware and check the pixels, not
+          just the exit code.</li>
+        <li><strong>A documentation site.</strong> Every OSC address,
+          held to the parameter registry by a test, so the reference
+          cannot drift from the app.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.11.0">0.11.0</a></div>
       <ul>
         <li><strong>Punch FX.</strong> The things you do on the drop:
