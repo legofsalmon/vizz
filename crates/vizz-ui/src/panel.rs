@@ -77,6 +77,12 @@ pub struct PanelActions {
     pub output_setup: Option<OutputSetup>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
+    /// Connect the video input to this spec, or `Some(None)` to stop
+    /// the one running. The app owns opening: it holds the GPU and the
+    /// runtimes, and the panel only ever asks.
+    pub video_open: Option<Option<String>>,
+    /// Look for sources again.
+    pub video_rescan: bool,
     /// Open the modulation canvas window. The canvas was reachable only
     /// through `G`, which made it a feature you had to already know about.
     pub open_canvas: bool,
@@ -123,6 +129,9 @@ pub struct PanelState {
     pub frame_budget_ms: f32,
     pub midi: MidiView,
     pub audio: AudioView,
+    /// What is available to receive from, refreshed on demand. Empty
+    /// until the section is opened, because discovery blocks.
+    pub video_sources: VideoSources,
     /// The video input, when one was configured. `None` draws nothing:
     /// most rigs have no video, and a permanent "no video" dot would be
     /// an alarm about an absence nobody chose. Once a source exists its
@@ -173,6 +182,18 @@ pub struct PanelState {
     /// there is nobody to click a header, and asserting on content that
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
+}
+
+/// What the panel can offer to connect to. Plain strings: this crate
+/// knows nothing about NDI, Syphon or AVFoundation, and should not —
+/// the app discovers, the panel lists.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VideoSources {
+    pub ndi: Vec<String>,
+    pub syphon: Vec<String>,
+    pub cameras: Vec<String>,
+    /// Why a kind found nothing, when the reason is not "nothing there".
+    pub notes: Vec<String>,
 }
 
 /// Video input state, for the status strip.
@@ -289,6 +310,10 @@ pub fn draw(
                 .id_salt("audio")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| audio_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("video in")
+                .id_salt("video-in")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| video_section(ui, state, &mut actions));
             egui::CollapsingHeader::new("modulation")
                 .id_salt("modulation")
                 .default_open(state.expand_sections)
@@ -952,6 +977,94 @@ fn modulation_section(
         actions.open_canvas = true;
     }
     let _ = registry;
+}
+
+/// Where the picture comes in from.
+///
+/// Parity with the audio section, and for the same reason: an input you
+/// can only select on the command line is an input most people never
+/// find. Everything here is discovered by the app on demand — NDI
+/// announcements take a moment and enumerating capture devices wakes
+/// hardware, so neither happens per frame.
+fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    ui.horizontal(|ui| {
+        match &state.video {
+            Some(v) => {
+                dot(ui, v.connected, if v.connected { GOOD } else { WARN });
+                ui.label(&v.label);
+                if ui
+                    .small_button("stop")
+                    .on_hover_text("disconnect the video input")
+                    .clicked()
+                {
+                    actions.video_open = Some(None);
+                }
+            }
+            None => {
+                dot(ui, false, vizz_design::ink::FAINT);
+                ui.small("no video input");
+            }
+        }
+        if ui
+            .small_button("rescan")
+            .on_hover_text("look for senders, servers and cameras again")
+            .clicked()
+        {
+            actions.video_rescan = true;
+        }
+    });
+    if let Some(v) = &state.video
+        && !v.connected
+    {
+        // Configured but silent is the state worth a word: the source
+        // was found once and has stopped, which is a different problem
+        // from never having connected.
+        ui.small(egui::RichText::new("no frames arriving").color(WARN));
+    }
+
+    let src = &state.video_sources;
+    // The test pattern first and always: it is the thing to reach for
+    // when nothing appears, because it proves the whole path downstream
+    // of the source without a network, a runtime or a device.
+    ui.horizontal(|ui| {
+        if ui
+            .button("test pattern")
+            .on_hover_text("a moving picture through the identical path — proves everything downstream")
+            .clicked()
+        {
+            actions.video_open = Some(Some("test".into()));
+        }
+    });
+
+    let mut list = |ui: &mut egui::Ui, title: &str, prefix: &str, names: &[String]| {
+        if names.is_empty() {
+            return;
+        }
+        ui.small(title);
+        for name in names {
+            if ui
+                .button(name)
+                .on_hover_text(format!("receive from {name}"))
+                .clicked()
+            {
+                actions.video_open = Some(Some(format!("{prefix}{name}")));
+            }
+        }
+    };
+    list(ui, "NDI on the network", "ndi:", &src.ndi);
+    list(ui, "Syphon on this Mac", "syphon:", &src.syphon);
+    list(ui, "cameras and capture cards", "camera:", &src.cameras);
+
+    if src.ndi.is_empty() && src.syphon.is_empty() && src.cameras.is_empty() {
+        ui.small("nothing found — press rescan once a sender or camera is running");
+    }
+    for note in &src.notes {
+        // A missing runtime is not the same as an empty network, and
+        // the difference is the whole question when a feed will not
+        // appear. Said plainly rather than left as an absence.
+        ui.small(egui::RichText::new(note).color(WARN));
+    }
+    ui.small("the picture arrives as a point cloud — select its slot with /cloud/a");
 }
 
 fn health_section(ui: &mut egui::Ui, state: &PanelState) {

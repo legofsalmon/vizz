@@ -29,6 +29,8 @@ pub mod readback;
 pub mod recorder;
 #[cfg(target_os = "macos")]
 pub mod syphon;
+#[cfg(target_os = "macos")]
+pub mod syphon_recv;
 
 /// A sink that publishes frames to the outside world (Syphon/Spout/NDI).
 ///

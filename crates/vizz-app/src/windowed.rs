@@ -117,6 +117,10 @@ struct App {
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
     live_revision: u64,
+    /// What discovery last found, handed to the panel each frame. Only
+    /// refreshed when asked: NDI announcements block, and enumerating
+    /// capture devices wakes hardware.
+    video_sources: vizz_ui::VideoSources,
     /// The live video input, if one opened.
     video: Option<Box<dyn crate::videoin::VideoSource>>,
     /// Revision last uploaded, so a still source costs no upload.
@@ -383,7 +387,7 @@ impl App {
         // A stream that will not start is a warning, never a startup
         // failure — the same trade as a cloud file that will not parse.
         if let Some(spec) = self.opts.video_source.clone() {
-            match crate::videoin::open(&spec) {
+            match crate::videoin::open(&spec, Some(&ctx.device)) {
                 Ok(v) => {
                     log::info!("video input: {}", v.label());
                     self.video = Some(v);
@@ -1133,6 +1137,7 @@ impl App {
                         clock_ticking: self.midi_view.clock_bpm.is_some(),
                     }
                 },
+                video_sources: self.video_sources.clone(),
                 video: self.video.as_ref().map(|v| vizz_ui::VideoStatus {
                     connected: v.connected(),
                     label: v.label(),
@@ -1207,6 +1212,52 @@ impl App {
                     &mut self.tap,
                     &mut self.clock_source,
                 );
+                // Video input: discovery and connect/stop, both on
+                // demand. Discovery blocks for NDI's announcement window,
+                // so it happens on a press and never on a frame that was
+                // not asked for.
+                if actions.video_rescan {
+                    self.video_sources = {
+                        let found = crate::videoin::discover();
+                        vizz_ui::VideoSources {
+                            ndi: found.ndi,
+                            syphon: found.syphon,
+                            cameras: found.cameras,
+                            notes: found.notes,
+                        }
+                    };
+                }
+                if let Some(want) = actions.video_open.clone() {
+                    match want {
+                        // Dropping the source is what stops it: every
+                        // backend's Drop tears its thread or client down.
+                        None => {
+                            self.video = None;
+                            self.video_live = false;
+                            state.gui.notify_info("video input stopped");
+                        }
+                        Some(spec) => {
+                            let device = &state.ctx.device;
+                            match crate::videoin::open(&spec, Some(device)) {
+                                Ok(v) => {
+                                    let label = v.label();
+                                    self.video = Some(v);
+                                    self.video_revision = 0;
+                                    self.video_shown = false;
+                                    self.video_live = false;
+                                    state.gui.notify_info(format!("video input: {label}"));
+                                }
+                                // Never fatal: a camera someone unplugged
+                                // or a sender that went away must not end
+                                // the set, it must say so and carry on.
+                                Err(e) => {
+                                    log::warn!("could not open {spec}: {e:#}");
+                                    state.gui.notify_error(format!("{spec}: {e}"));
+                                }
+                            }
+                        }
+                    }
+                }
                 let mut notes: Notes = Vec::new();
                 apply_preset_actions(
                     &actions,
@@ -2213,6 +2264,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         live_revision: 0,
         live_shown: false,
         video: None,
+        video_sources: Default::default(),
         video_revision: 0,
         video_shown: false,
         video_live: false,
