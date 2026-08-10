@@ -1162,17 +1162,17 @@ impl App {
                     SCENE_FIRE,
                     "scene",
                 ),
-                // Shown only once the layer is in use. Sixteen empty pads for
-                // a layer nobody has touched is a lot of the performance
-                // screen spent saying nothing.
-                gravity_grid: (!self.engine.gravity_grid.is_empty()).then(|| {
-                    gravity_grid_view(
-                        &self.engine.gravity_grid,
-                        self.engine.modulation.clock.beats,
-                        &self.midi_view,
-                        &self.library,
-                    )
-                }),
+                // Always built. The performance layout decides how much of
+                // it to draw — one teaching row while every pad is empty,
+                // the full sixteen once one is filled. Deciding *here* by
+                // emptiness is what hid the row's own store button and
+                // left no way to fill it.
+                gravity_grid: Some(gravity_grid_view(
+                    &self.engine.gravity_grid,
+                    self.engine.modulation.clock.beats,
+                    &self.midi_view,
+                    &self.library,
+                )),
                 // The Gui owns the `/` shortcut and overwrites this before
                 // the panel reads it; the app has nothing to add.
                 focus_filter: false,

@@ -187,8 +187,20 @@ pub fn draw(
 
                     if let Some(gravity) = state.gravity {
                         section(ui, "GRAVITY");
-                        actions.gravity =
-                            crate::grid_view::draw_with_id(ui, gravity, "gravity-grid");
+                        // Sixteen empty pads for a layer nobody has touched
+                        // is a lot of screen spent saying nothing — but
+                        // hiding the row entirely hid its *store* button
+                        // too, which was the only way to fill it. That is
+                        // not a hidden feature, it is a locked door with
+                        // the key inside. Empty draws one teaching row
+                        // whose button captures the first pad; the full
+                        // grid takes over from there.
+                        if gravity.names.iter().all(|n| n.is_none()) {
+                            gravity_ghost(ui, &mut actions);
+                        } else {
+                            actions.gravity =
+                                crate::grid_view::draw_with_id(ui, gravity, "gravity-grid");
+                        }
                         ui.add_space(10.0);
                     }
 
@@ -199,6 +211,18 @@ pub fn draw(
                     }
 
                     section(ui, "CONTROLS");
+                    // The faders are user-chosen, and the gesture that
+                    // chooses them is clicking text that does not look
+                    // clickable. One line naming it is the cheapest fix;
+                    // the hovers on the label and the "assign" placeholder
+                    // say the same thing up close.
+                    ui.label(
+                        egui::RichText::new(
+                            "click a fader's name to reassign it · right-click a fader to reset it",
+                        )
+                        .size(11.0)
+                        .color(INK_4),
+                    );
                     // Whatever vertical space is left goes to the faders,
                     // which are the thing you actually play. Measured from
                     // the cursor rather than guessed, so adding a row above
@@ -221,6 +245,44 @@ pub fn draw(
 /// A section rule: a small caps label with a hairline running to the right
 /// edge. Cheap, and it turns a flat stack of rows into three named regions
 /// you can find without reading them.
+/// The gravity row before anything has been put in it.
+///
+/// One line: what the layer is, and a button that captures the current
+/// gravity settings into the first pad. After that press the real
+/// sixteen-pad row appears and behaves exactly like the scene row —
+/// this exists only to get past the empty state, which previously had
+/// no exit at all from any screen.
+fn gravity_ghost(ui: &mut egui::Ui, actions: &mut PerformanceActions) {
+    ui.horizontal(|ui| {
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("capture gravity into pad 1")
+                        .size(13.0)
+                        .color(INK),
+                )
+                .min_size(vec2(0.0, 28.0))
+                .fill(Color32::from_rgb(36, 40, 48))
+                .stroke(egui::Stroke::new(1.0, vizz_design::surface::EDGE)),
+            )
+            .on_hover_text(
+                "store the attract/repel settings you have now as gravity 1 — \
+                 the full sixteen-pad row appears once a pad is filled",
+            )
+            .clicked()
+        {
+            actions.gravity.store = Some(0);
+        }
+        ui.label(
+            egui::RichText::new(
+                "the attract / repel layer — shape it in the panel's gravity group, then capture it here",
+            )
+            .size(12.0)
+            .color(INK_3),
+        );
+    });
+}
+
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.horizontal(|ui| {
         ui.label(
@@ -684,7 +746,16 @@ fn status_strip(
                 egui::RichText::new(format!("{:.1} bpm", state.bpm))
                     .size(15.0)
                     .color(INK),
-            );
+            )
+            // Where the tempo comes from, and where to change that. The
+            // MIDI-clock switch lives in the panel's audio section, and
+            // naming it here is the difference between a feature that
+            // exists and one anybody finds.
+            .on_hover_text(if state.audio.clock_midi {
+                "following MIDI clock — panel ▸ audio ▸ midi clock to go back to the internal one"
+            } else {
+                "internal clock — tap to set it, or panel ▸ audio ▸ midi clock to follow your mixer"
+            });
             // Recording, both ways round. This chip used to appear only
             // once a take was already running, which made it a stop
             // button wearing a record button's name: the only way to
@@ -1706,6 +1777,85 @@ mod tests {
                 .count();
         }
         count
+    }
+
+    /// Draw the layout with a gravity grid in a given state, and return
+    /// what was painted.
+    fn render_with_gravity(reg: &ParamRegistry, gravity: &crate::grid_view::GridView) -> String {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let state = PerformanceState {
+            recording: None,
+            preset_current: None,
+            outputs: &[],
+            audio: &audio,
+            fps: 60.0,
+            over_budget: false,
+            bpm: 128.0,
+            bar_phase: 0.1,
+            presets: &names,
+            grid: &grid,
+            gravity: Some(gravity),
+            midi: &midi,
+            values: None,
+        };
+        let mut macros = Macros::default();
+        let size = vec2(1280.0, 900.0);
+        let mut text = String::new();
+        for i in 0..8 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(i as f64 * 0.05),
+                ..Default::default()
+            });
+            draw(&ctx, reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            text = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if on_screen(t, screen) => Some(painted(&t.galley)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+        text
+    }
+
+    /// An empty gravity grid must still offer the way into itself.
+    ///
+    /// The row used to be hidden entirely until a pad was filled — but
+    /// the store button lives *in* the row, and no other screen draws a
+    /// grid, so a fresh install had no way to fill it from anywhere.
+    /// Hidden-when-empty is fine; hidden-when-empty with the only key
+    /// inside is a locked door.
+    #[test]
+    fn an_empty_gravity_row_still_offers_a_way_to_fill_it() {
+        let reg = registry();
+        let empty = crate::grid_view::GridView::default();
+        let text = render_with_gravity(&reg, &empty);
+        assert!(text.contains("GRAVITY"), "the gravity section vanished: {text}");
+        assert!(
+            text.contains("capture"),
+            "an empty gravity row offers no way to fill it: {text}"
+        );
+
+        // And once a pad holds something, the real row takes over: the
+        // teaching line goes and the pad numbers arrive.
+        let mut filled = crate::grid_view::GridView::default();
+        filled.names[0] = Some("pull in".into());
+        let text = render_with_gravity(&reg, &filled);
+        assert!(text.contains("pull in"), "the filled pad is not drawn: {text}");
+        assert!(
+            text.contains("store"),
+            "the full row's own store button is missing: {text}"
+        );
     }
 
     /// A latched punch must not look identical to a held one: one keeps
