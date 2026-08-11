@@ -369,9 +369,179 @@ pub fn normalize(points: &mut [Point]) {
     }
 }
 
+
+/// Normalisation that holds still while the subject moves.
+///
+/// [`normalize`] is right for a file: measure the cloud, centre it, scale
+/// it to fit, once. Run the same thing on every frame of a live stream
+/// and the result swims. A LiDAR frame's bounding box is never twice the
+/// same — one stray point at the back of the room changes the extent, so
+/// the *whole* cloud rescales; the subject leans and the centre moves, so
+/// the whole cloud slides. Nothing about the geometry jittered, only the
+/// frame it was measured against.
+///
+/// So the fit is measured robustly and then eased into:
+///
+/// - Centre and spread come from the mean and standard deviation rather
+///   than from min and max. A single outlier moves a mean by a
+///   thousandth and pins a min/max entirely, which is the difference
+///   between a stable cloud and a twitching one.
+/// - The transform follows the measurement through a low-pass, so a real
+///   move arrives over about half a second and per-frame noise does not
+///   arrive at all.
+#[derive(Debug, Clone)]
+pub struct StreamFit {
+    centre: [f32; 3],
+    scale: f32,
+    /// Nothing measured yet: the first frame is adopted outright rather
+    /// than eased into from an arbitrary starting point, which would
+    /// otherwise fly in from the origin at every stream start.
+    started: bool,
+    /// Per-frame follow rate. 0.08 at 30 fps is roughly a half-second
+    /// settle — slow enough to reject frame noise, quick enough that
+    /// stepping sideways does not leave the cloud behind.
+    rate: f32,
+}
+
+impl Default for StreamFit {
+    fn default() -> Self {
+        Self { centre: [0.0; 3], scale: 1.0, started: false, rate: 0.08 }
+    }
+}
+
+impl StreamFit {
+    /// Centre and scale `points` in place, easing the fit toward this
+    /// frame's measurement.
+    pub fn apply(&mut self, points: &mut [Point]) {
+        if points.is_empty() {
+            return;
+        }
+        let n = points.len() as f32;
+        let mut mean = [0.0f32; 3];
+        for p in points.iter() {
+            for (m, v) in mean.iter_mut().zip(p.pos) {
+                *m += v;
+            }
+        }
+        for m in &mut mean {
+            *m /= n;
+        }
+        // Spread as the largest per-axis standard deviation. Two of them
+        // covers the bulk of a cloud; the tail lands outside the unit box
+        // and is none the worse for it, which is the trade that keeps a
+        // far wall from shrinking the subject to nothing.
+        let mut var = [0.0f32; 3];
+        for p in points.iter() {
+            for ((v, c), x) in var.iter_mut().zip(mean).zip(p.pos) {
+                let d = x - c;
+                *v += d * d;
+            }
+        }
+        let spread = (0..3).fold(0.0f32, |m, i| m.max((var[i] / n).sqrt()));
+        let want = if spread > 1e-9 { 1.0 / (2.0 * spread) } else { 1.0 };
+
+        if !self.started {
+            self.started = true;
+            self.centre = mean;
+            self.scale = want;
+        } else {
+            let k = self.rate;
+            for (c, m) in self.centre.iter_mut().zip(mean) {
+                *c += (m - *c) * k;
+            }
+            self.scale += (want - self.scale) * k;
+        }
+
+        for p in points.iter_mut() {
+            for (v, c) in p.pos.iter_mut().zip(self.centre) {
+                *v = (*v - c) * self.scale;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live cloud must not swim when one point moves.
+    ///
+    /// This is the jitter: `normalize` measures min/max per frame, so a
+    /// single stray return at the back of the room changes the extent
+    /// and rescales everything, and a subject leaning moves the centre
+    /// and slides everything. The geometry was steady; the frame it was
+    /// measured against was not.
+    #[test]
+    fn a_stream_fit_holds_still_when_an_outlier_appears() {
+        let body = || {
+            (0..200)
+                .map(|i| Point {
+                    pos: [(i % 10) as f32 * 0.1, (i / 10) as f32 * 0.1, 0.0],
+                    color: [255, 255, 255],
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Per-frame min/max normalisation: the same body, plus one far
+        // point on the second frame, comes back at a different size.
+        let mut a = body();
+        normalize(&mut a);
+        let mut b = body();
+        b.push(Point { pos: [50.0, 0.0, 0.0], color: [255, 255, 255] });
+        normalize(&mut b);
+        let moved = (a[0].pos[0] - b[0].pos[0]).abs();
+        assert!(
+            moved > 0.5,
+            "the test's own premise is wrong — min/max normalisation did not move ({moved})"
+        );
+
+        // The streaming fit barely notices.
+        let mut fit = StreamFit::default();
+        let mut a = body();
+        fit.apply(&mut a);
+        let mut b = body();
+        b.push(Point { pos: [50.0, 0.0, 0.0], color: [255, 255, 255] });
+        fit.apply(&mut b);
+        let moved = (a[0].pos[0] - b[0].pos[0]).abs();
+        assert!(
+            moved < 0.15,
+            "one outlier moved the whole cloud by {moved} — this is the jitter"
+        );
+    }
+
+    /// It must still follow the subject, or a performer who takes a step
+    /// leaves the frame and never comes back.
+    #[test]
+    fn a_stream_fit_follows_a_real_move() {
+        let at = |x: f32| {
+            (0..200)
+                .map(|i| Point {
+                    pos: [x + (i % 10) as f32 * 0.1, (i / 10) as f32 * 0.1, 0.0],
+                    color: [255, 255, 255],
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut fit = StreamFit::default();
+        let mut first = at(0.0);
+        fit.apply(&mut first);
+        let centred = first[0].pos[0];
+
+        // Hold a moved subject for two seconds of frames. Two rather
+        // than one because the follow is deliberately slow — a big jump
+        // settles over about a second and a half, and buying that back
+        // would mean letting per-frame noise through, which is the whole
+        // thing being fixed.
+        let mut last = Vec::new();
+        for _ in 0..60 {
+            last = at(5.0);
+            fit.apply(&mut last);
+        }
+        assert!(
+            (last[0].pos[0] - centred).abs() < 0.2,
+            "the fit never caught up with a subject that moved: {} vs {centred}",
+            last[0].pos[0]
+        );
+    }
 
     fn ply_ascii() -> &'static str {
         "ply\n\

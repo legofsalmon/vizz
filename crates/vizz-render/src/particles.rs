@@ -101,6 +101,9 @@ pub struct ParticleScene {
     /// The live video input. Public so the app can ask what has arrived
     /// without the scene re-exporting every field.
     pub video: crate::video::Video,
+    /// How a live stream is fitted to the view, held across frames so
+    /// the fit can be eased rather than recomputed from each frame.
+    stream_fit: crate::pointcloud::StreamFit,
     /// The cloud bank. Kept for the bind group's texture view, and
     /// mutated when a cloud is loaded.
     attractors: Attractors,
@@ -240,6 +243,7 @@ impl ParticleScene {
             bind_group,
             bgl,
             video,
+            stream_fit: Default::default(),
             attractors,
             palettes,
             loaded_palettes: 0,
@@ -440,6 +444,36 @@ impl ParticleScene {
         let mut owned = points.to_vec();
         crate::pointcloud::normalize(&mut owned);
         self.attractors.load_slot(ctx, slot, &owned, name);
+    }
+
+    /// Upload a frame of a live stream.
+    ///
+    /// Separate from [`Self::set_cloud`] because measuring a cloud and
+    /// fitting it to the view is right exactly once for a file and wrong
+    /// every frame for a stream: re-measuring per frame means a stray
+    /// LiDAR return at the back of the room rescales everything and a
+    /// subject leaning slides everything, so a steady cloud arrives
+    /// visibly swimming. The streaming fit is eased and outlier-resistant
+    /// instead; it lives on the scene so it persists between frames.
+    pub fn set_cloud_streaming(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        points: &[crate::pointcloud::Point],
+        name: &str,
+    ) {
+        if points.is_empty() {
+            return;
+        }
+        let mut owned = points.to_vec();
+        self.stream_fit.apply(&mut owned);
+        self.attractors.load_slot(ctx, slot, &owned, name);
+    }
+
+    /// Forget the streaming fit, so the next stream measures itself
+    /// afresh rather than easing over from the last one's framing.
+    pub fn reset_stream_fit(&mut self) {
+        self.stream_fit = Default::default();
     }
 
     /// The slot a live stream writes into: the last loadable one, so a

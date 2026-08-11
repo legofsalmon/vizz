@@ -86,8 +86,11 @@ the window never changes what receivers see.
 The master texture is published as a Syphon server named `vizz` (change
 with `--syphon-name`). It appears automatically in Resolume, VDMX,
 MadMapper, Syphon Simple Client, etc. Flags: `--no-syphon` disables it;
-`--syphon-flip` marks frames vertically flipped if your receiver shows
-the image upside down.
+Syphon frames are published the right way up by default: Metal renders
+with the origin at the top left and Syphon's convention is OpenGL's,
+origin at the bottom, so the flip flag has to be set for receivers to
+show vizz upright. Pass `--syphon-flip false` if your receiving app
+corrects for the flip itself and so shows vizz upside down.
 
 Syphon.framework is loaded at runtime — no link-time dependency — so the
 binary runs without it (the output just reports unavailable). Easiest

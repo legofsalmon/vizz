@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.1/vizz-0.15.1.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.2/vizz-0.15.2.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,29 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.2">0.15.2</a></div>
+      <ul>
+        <li><strong>Syphon output is the right way up.</strong> Metal
+          renders with the origin at the top left and Syphon's convention
+          is OpenGL's, origin at the bottom, so published frames needed a
+          flip flag that defaulted to off — every receiver showed vizz
+          upside down, and the only remedy was a command-line flag nobody
+          double-clicking the app can reach.</li>
+        <li><strong>Live point clouds hold still.</strong> A streamed
+          cloud was re-measured and re-fitted every frame, so one stray
+          LiDAR return at the back of the room rescaled everything and a
+          subject leaning slid everything — steady geometry arriving
+          visibly swimming. Streams now use an outlier-resistant fit that
+          eases rather than snapping.</li>
+        <li><strong>Streaming waits for the sender by default</strong>,
+          which is the direction apps like LOTA actually work: they push
+          to a receiver address rather than serving. The app also asks
+          for local network access, which macOS 15 gates and which fails
+          silently without it.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.1">0.15.1</a></div>

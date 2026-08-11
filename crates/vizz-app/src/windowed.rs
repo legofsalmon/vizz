@@ -859,7 +859,11 @@ impl App {
             let revision = live.revision();
             if revision != self.live_revision {
                 let uploaded = live.with_latest(|points| {
-                    state.scene.set_cloud(
+                    // The streaming path, not set_cloud: a live cloud
+                    // re-measured every frame swims, because the frame it
+                    // is measured against changes even when the geometry
+                    // does not.
+                    state.scene.set_cloud_streaming(
                         &state.ctx,
                         ParticleScene::LIVE_SLOT,
                         points,
@@ -1284,6 +1288,8 @@ impl App {
                         Ok(source) => match vizz_render::plystream::LiveCloud::start(source) {
                             Ok(live) => {
                                 state.gui.notify_info(format!("receiving from {}", live.label()));
+                                state.scene.reset_stream_fit();
+                                self.live_shown = false;
                                 self.live = Some(live);
                             }
                             Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),

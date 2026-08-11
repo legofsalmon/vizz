@@ -188,8 +188,13 @@ unsafe impl Send for SyphonSender {}
 
 impl SyphonSender {
     /// Start a Syphon server named `name` on the Metal device wgpu is using.
-    /// `flipped` tells receivers the image is vertically flipped — set it if
-    /// the picture arrives upside down in your receiving app.
+    ///
+    /// `flipped` should normally be true, and the caller's default says
+    /// so. Metal renders with the origin at the top left; Syphon's
+    /// convention is OpenGL's, origin at the bottom. Publishing a Metal
+    /// texture without the flag therefore hands receivers an image that
+    /// is upside down by exactly one convention — which is what shipped,
+    /// and what every receiving app showed.
     pub fn new(device: &wgpu::Device, name: &str, flipped: bool) -> Result<Self> {
         let class = syphon_class()?;
         let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }

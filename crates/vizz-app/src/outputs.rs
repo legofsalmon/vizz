@@ -242,6 +242,34 @@ mod tests {
         (device, queue, texture)
     }
 
+
+    /// Syphon output goes out the right way up.
+    ///
+    /// Metal's origin is the top left and Syphon's convention is
+    /// OpenGL's, origin at the bottom, so a published Metal texture must
+    /// carry the flip flag to arrive upright. It defaulted to off and
+    /// shipped that way: every receiver showed vizz upside down, and the
+    /// only remedy was a command-line flag — unreachable to anyone
+    /// double-clicking the app, which is how it is meant to be used.
+    ///
+    /// Asserted on the parsed command line rather than on a rendered
+    /// frame because there is no Syphon to receive from in CI: this is
+    /// the value that reaches the server, and it is the value that was
+    /// wrong.
+    #[test]
+    fn syphon_publishes_the_right_way_up_by_default() {
+        use clap::Parser;
+        let args = crate::Args::parse_from(["vizz"]);
+        assert!(
+            args.syphon_flip,
+            "Syphon output defaults to upside down in every receiver"
+        );
+        // And it can still be turned off, for a receiver that corrects
+        // for the flip itself.
+        let off = crate::Args::parse_from(["vizz", "--syphon-flip", "false"]);
+        assert!(!off.syphon_flip, "the flip cannot be turned off");
+    }
+
     fn opts() -> OutputOpts {
         OutputOpts {
             syphon: false,

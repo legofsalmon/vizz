@@ -504,6 +504,14 @@ mod tests {
             plist.contains("NSMicrophoneUsageDescription"),
             "the Info.plist lost its microphone usage description"
         );
+        // Receiving a live point cloud from a phone on the same wifi is
+        // local network access, gated the same way since macOS 15 — and
+        // it fails silently, which is worse than failing loudly.
+        assert!(
+            plist.contains("NSLocalNetworkUsageDescription"),
+            "the Info.plist has no local network usage description — \
+             receiving from a device on the wifi will silently do nothing"
+        );
         let ents = std::fs::read_to_string(root.join("scripts/vizz.entitlements"))
             .expect("vizz.entitlements missing");
         assert!(
