@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.2/vizz-0.15.2.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.3/vizz-0.15.3.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,18 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.3">0.15.3</a></div>
+      <ul>
+        <li><strong>No change to the app itself</strong> — same build as
+          0.15.2. Releases are now built against the committed lockfile
+          rather than whatever resolves on the day, so a signed download
+          contains the dependency versions that were actually reviewed,
+          and a version bump that forgets the lockfile stops the release
+          instead of slipping past it.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.2">0.15.2</a></div>

@@ -75,8 +75,15 @@ fi
 # whole path a live set uses minus the swapchain, and is the cheapest thing
 # that would catch a bundle that builds and then dies on startup.
 echo "preflight: building release binary…"
-cargo build --release --quiet
-ok "release build"
+# --locked: build with the committed Cargo.lock exactly as it stands, and
+# fail rather than rewrite it. Without this the build quietly regenerated
+# the lock — so a version bump left Cargo.toml and Cargo.lock disagreeing,
+# the clean-tree check above passed (it ran before the build dirtied
+# anything), and the release shipped with a lockfile naming the previous
+# version. It also means the release is built from the dependency versions
+# that were reviewed, not whatever resolves on the day.
+cargo build --release --quiet --locked
+ok "release build, against the committed lockfile"
 
 REPORT=$(mktemp)
 trap 'rm -f "$REPORT"' EXIT
