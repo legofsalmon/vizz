@@ -117,6 +117,16 @@ struct App {
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
     live_revision: u64,
+    /// How the next take is written, and the limits it stops at.
+    record_settings: vizz_io::recorder::Settings,
+    /// Seconds to count down before the first frame, and the moment the
+    /// count started. A take you have to reach the keyboard to start is
+    /// a take with a hand in the first second of it.
+    record_countdown_secs: u32,
+    record_countdown_from: Option<std::time::Instant>,
+    /// The last whole second announced, so the count is one notice a
+    /// second rather than one a frame.
+    record_countdown_last: Option<u32>,
     /// What discovery last found, handed to the panel each frame. Only
     /// refreshed when asked: NDI announcements block, and enumerating
     /// capture devices wakes hardware.
@@ -1137,6 +1147,25 @@ impl App {
                         clock_ticking: self.midi_view.clock_bpm.is_some(),
                     }
                 },
+                record: {
+                    let (w, h) = (state.output.width, state.output.height);
+                    let per_frame = self.record_settings.format.bytes_per_frame(w, h);
+                    vizz_ui::RecordSetup {
+                        lossless: matches!(
+                            self.record_settings.format,
+                            vizz_io::recorder::Format::Png
+                        ),
+                        quality: match self.record_settings.format {
+                            vizz_io::recorder::Format::Jpeg { quality } => quality,
+                            vizz_io::recorder::Format::Png => 92,
+                        },
+                        fps: self.record_settings.fps,
+                        max_secs: self.record_settings.max_secs,
+                        countdown_secs: self.record_countdown_secs,
+                        bytes_per_sec: (per_frame as f32 * self.record_settings.fps) as u64,
+                        free_bytes: vizz_io::recorder::free_space(&crate::settings::take_dir()),
+                    }
+                },
                 video_sources: self.video_sources.clone(),
                 video: self.video.as_ref().map(|v| vizz_ui::VideoStatus {
                     connected: v.connected(),
@@ -1226,6 +1255,32 @@ impl App {
                             notes: found.notes,
                         }
                     };
+                }
+                // Show a cloud the panel asked for: the same call the
+                // drop path makes, so there is one way a cloud gets on
+                // screen rather than two that can disagree.
+                if let Some((slot, as_b)) = actions.cloud_show {
+                    if as_b {
+                        self.params.registry.set(self.params.cloud_b, slot as f32);
+                        self.params
+                            .registry
+                            .set(self.params.shape, crate::params::SHAPE_CLOUD_PAIR);
+                    } else {
+                        Self::show_cloud_slot(&self.params, slot);
+                    }
+                }
+                if let Some(setup) = actions.record_setup {
+                    self.record_settings = vizz_io::recorder::Settings {
+                        format: if setup.lossless {
+                            vizz_io::recorder::Format::Png
+                        } else {
+                            vizz_io::recorder::Format::Jpeg { quality: setup.quality }
+                        },
+                        fps: setup.fps,
+                        max_secs: setup.max_secs,
+                        ..self.record_settings
+                    };
+                    self.record_countdown_secs = setup.countdown_secs;
                 }
                 if let Some(want) = actions.video_open.clone() {
                     match want {
@@ -1361,12 +1416,35 @@ impl App {
         let want_recording = self.params.registry.target(self.params.record_active) >= 0.5;
         match (&mut self.recorder, want_recording) {
             (slot @ None, true) => {
+                // Countdown: the parameter is already on, so the chip
+                // reads as recording — but no frames are taken until it
+                // elapses. Held here rather than in the recorder because
+                // a Recorder that exists but is not recording would be a
+                // second state for everything downstream to reason about.
+                if self.record_countdown_secs > 0 {
+                    let from = *self
+                        .record_countdown_from
+                        .get_or_insert_with(std::time::Instant::now);
+                    let left = self.record_countdown_secs as f32 - from.elapsed().as_secs_f32();
+                    if left > 0.0 {
+                        // Once a second, not every frame.
+                        let whole = left.ceil() as u32;
+                        if self.record_countdown_last != Some(whole) {
+                            self.record_countdown_last = Some(whole);
+                            state.gui.notify_info(format!("recording in {whole}…"));
+                        }
+                        return;
+                    }
+                    self.record_countdown_from = None;
+                    self.record_countdown_last = None;
+                }
                 let dir = crate::settings::take_dir();
                 match vizz_io::recorder::Recorder::new(
                     &state.ctx.device,
                     &dir,
                     publish.width(),
                     publish.height(),
+                    self.record_settings,
                 ) {
                     Ok(rec) => {
                         state.gui.notify_info(format!("recording to {}", dir.display()));
@@ -1384,7 +1462,31 @@ impl App {
             }
             (Some(rec), true) => {
                 rec.publish(&state.ctx.device, &state.ctx.queue, publish);
-                if let Some(e) = rec.take_error() {
+                // A take that ended itself: the duration ran out, or the
+                // volume reached its floor. Both keep everything already
+                // written — stopping early is the recoverable outcome,
+                // and a full disk is the one that is not.
+                if let Some(reason) = rec.stopped() {
+                    let (frames, _) = rec.progress();
+                    let note = match reason {
+                        vizz_io::recorder::StopReason::Duration => {
+                            format!("recording finished — {frames} frames")
+                        }
+                        vizz_io::recorder::StopReason::DiskLow => format!(
+                            "recording stopped after {frames} frames: the disk is nearly full"
+                        ),
+                    };
+                    match reason {
+                        vizz_io::recorder::StopReason::Duration => {
+                            state.gui.notify_info(note)
+                        }
+                        vizz_io::recorder::StopReason::DiskLow => {
+                            state.gui.notify_error(note)
+                        }
+                    }
+                    self.params.registry.set(self.params.record_active, 0.0);
+                    self.recorder = None;
+                } else if let Some(e) = rec.take_error() {
                     // The worker died (disk full, most likely). Stop and
                     // say so once, keeping whatever was already written.
                     let (frames, _) = rec.progress();
@@ -1394,6 +1496,13 @@ impl App {
                     self.params.registry.set(self.params.record_active, 0.0);
                     self.recorder = None;
                 }
+            }
+            (None, false) => {
+                // Not recording and not asked to: clear any half-run
+                // countdown, so cancelling and starting again counts
+                // from the top rather than resuming someone else's.
+                self.record_countdown_from = None;
+                self.record_countdown_last = None;
             }
             (slot @ Some(_), false) => {
                 let rec = slot.take().expect("matched Some");
@@ -1410,7 +1519,6 @@ impl App {
                     .notify_info(format!("recorded {frames} frames{drops} — {dir}"));
                 log::info!("recording finished: {frames} frames{drops} in {dir}");
             }
-            (None, false) => {}
         }
         // Announce liveness *transitions*. The roster keeps dead outputs
         // visible in the panel; this is the shove for the moment it
@@ -2264,6 +2372,10 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         live_revision: 0,
         live_shown: false,
         video: None,
+        record_settings: Default::default(),
+        record_countdown_secs: 0,
+        record_countdown_from: None,
+        record_countdown_last: None,
         video_sources: Default::default(),
         video_revision: 0,
         video_shown: false,

@@ -477,6 +477,45 @@ fn open_camera(_name: &str) -> Result<Box<dyn VideoSource>> {
 mod tests {
     use super::*;
 
+    /// The bundle must ask for the camera, in both of the two places
+    /// macOS requires.
+    ///
+    /// A capture device needs `NSCameraUsageDescription` in the
+    /// Info.plist *and* `com.apple.security.device.camera` in the
+    /// entitlements once the hardened runtime is on — which it is,
+    /// because notarization requires it. With either missing,
+    /// AVFoundation refuses with "add new input: Rejected", an error
+    /// that names the input rather than the permission and sends you
+    /// looking at the camera. This shipped exactly that way.
+    ///
+    /// Checked by reading the build script rather than a built bundle,
+    /// so it fails in every CI run on every platform, not only where an
+    /// .app can be made.
+    #[test]
+    fn the_bundle_asks_for_camera_permission_both_ways() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let plist = std::fs::read_to_string(root.join("scripts/make-app.sh"))
+            .expect("make-app.sh missing");
+        assert!(
+            plist.contains("NSCameraUsageDescription"),
+            "the Info.plist has no camera usage description — capture will be refused"
+        );
+        assert!(
+            plist.contains("NSMicrophoneUsageDescription"),
+            "the Info.plist lost its microphone usage description"
+        );
+        let ents = std::fs::read_to_string(root.join("scripts/vizz.entitlements"))
+            .expect("vizz.entitlements missing");
+        assert!(
+            ents.contains("com.apple.security.device.camera"),
+            "the hardened runtime has no camera entitlement — capture will be refused"
+        );
+        assert!(
+            ents.contains("com.apple.security.device.audio-input"),
+            "the hardened runtime lost its audio-input entitlement"
+        );
+    }
+
     /// The pattern must be a well-formed frame, because it is the thing
     /// people will reach for to decide whether the *rest* of the path
     /// works. A malformed one would send them looking in the wrong place.

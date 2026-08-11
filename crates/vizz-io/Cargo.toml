@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 wgpu.workspace = true
 anyhow.workspace = true
+# Free space on the recording volume: a take that fills the disk is the
+# one failure here that costs something outside the app.
+sysinfo.workspace = true
 log.workspace = true
 # NDI is loaded at runtime on every platform, so this is not target-gated.
 libloading = "0.8"

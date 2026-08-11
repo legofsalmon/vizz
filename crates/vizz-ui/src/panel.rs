@@ -77,6 +77,11 @@ pub struct PanelActions {
     pub output_setup: Option<OutputSetup>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
+    /// Put this cloud slot on screen. `true` sets it as the far end of
+    /// the morph (b) rather than the near end (a).
+    pub cloud_show: Option<(usize, bool)>,
+    /// Recording settings the user changed this frame.
+    pub record_setup: Option<RecordSetup>,
     /// Connect the video input to this spec, or `Some(None)` to stop
     /// the one running. The app owns opening: it holds the GPU and the
     /// runtimes, and the panel only ever asks.
@@ -129,6 +134,8 @@ pub struct PanelState {
     pub frame_budget_ms: f32,
     pub midi: MidiView,
     pub audio: AudioView,
+    /// How the next take is written. Edited here, applied by the app.
+    pub record: RecordSetup,
     /// What is available to receive from, refreshed on demand. Empty
     /// until the section is opened, because discovery blocks.
     pub video_sources: VideoSources,
@@ -182,6 +189,42 @@ pub struct PanelState {
     /// there is nobody to click a header, and asserting on content that
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
+}
+
+/// How the next take is written, and what it will cost.
+///
+/// A mirror of `vizz_io::recorder::Settings` plus the two numbers that
+/// make it a decision rather than a surprise: the rate it will write at
+/// and the space there is to write into. vizz-ui does not depend on
+/// vizz-io, so the app converts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordSetup {
+    /// Lossless PNG when true, JPEG otherwise.
+    pub lossless: bool,
+    pub quality: u8,
+    pub fps: f32,
+    /// Seconds, or `None` to run until stopped.
+    pub max_secs: Option<f32>,
+    /// Seconds to count down before the first frame.
+    pub countdown_secs: u32,
+    /// Bytes a second at the current output size and settings.
+    pub bytes_per_sec: u64,
+    /// Free space on the volume takes are written to, when known.
+    pub free_bytes: Option<u64>,
+}
+
+impl Default for RecordSetup {
+    fn default() -> Self {
+        Self {
+            lossless: false,
+            quality: 92,
+            fps: 30.0,
+            max_secs: None,
+            countdown_secs: 0,
+            bytes_per_sec: 0,
+            free_bytes: None,
+        }
+    }
 }
 
 /// What the panel can offer to connect to. Plain strings: this crate
@@ -310,6 +353,10 @@ pub fn draw(
                 .id_salt("audio")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| audio_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("recording")
+                .id_salt("recording")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| recording_section(ui, state, &mut actions));
             egui::CollapsingHeader::new("video in")
                 .id_salt("video-in")
                 .default_open(state.expand_sections)
@@ -431,10 +478,33 @@ fn clouds_section(
         registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
     };
     let (a, b) = (slot("/cloud/a"), slot("/cloud/b"));
+    // What the pair actually is, said once. "a" and "b" are the two ends
+    // of a morph, not a playlist — and they are set with number sliders
+    // whose value is a slot index, which is the least guessable control
+    // in the app. The buttons below do the setting; this says why there
+    // are two.
+    ui.small("“a” and “b” are the two ends of the morph — show one, or set both and blend");
     for (i, name) in state.clouds.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
-            ui.label(name);
+            // Click the name to put this cloud on screen: sets the shape
+            // to cloud, points a at this slot and takes the morph fully
+            // to it. Exactly what dropping a file does — which was the
+            // only way to reach it, and only at the moment of the drop.
+            if ui
+                .add(egui::Label::new(name).sense(egui::Sense::click()))
+                .on_hover_text("show this cloud — click “b” to make it the far end of the morph instead")
+                .clicked()
+            {
+                actions.cloud_show = Some((i, false));
+            }
+            if ui
+                .small_button("b")
+                .on_hover_text("make this the far end of the morph, and leave “a” where it is")
+                .clicked()
+            {
+                actions.cloud_show = Some((i, true));
+            }
             // Say which rows the morph pair is showing right now. The
             // legend explained what the numbers meant but not which of
             // them was on screen — the one question a legend is for.
@@ -1065,6 +1135,134 @@ fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         ui.small(egui::RichText::new(note).color(WARN));
     }
     ui.small("the picture arrives as a point cloud — select its slot with /cloud/a");
+}
+
+/// How the next take is written, and what it will cost.
+///
+/// Recording had no settings at all: lossless PNG, every rendered frame,
+/// full output size, until something stopped it — about 800 MB a second
+/// at 1080p60, which is a laptop's free space in well under a minute
+/// with nothing said before or during. The headline here is therefore
+/// the *rate*, not the format: the number that tells you whether the
+/// take you are about to start fits on the disk you have.
+fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let mut next = state.record;
+
+    // The cost line first, because it is the reason this section exists.
+    let per_sec = next.bytes_per_sec as f64 / 1_000_000.0;
+    let headline = format!("{per_sec:.0} MB/s at the current size");
+    match next.free_bytes {
+        Some(free) if next.bytes_per_sec > 0 => {
+            let secs = free / next.bytes_per_sec.max(1);
+            let free_gb = free as f64 / 1_000_000_000.0;
+            // Colour by how long you have, not by how fast it writes: a
+            // fast rate onto an empty array is fine, a slow one onto a
+            // full disk is not.
+            let colour = if secs < 120 { WARN } else { vizz_design::ink::SECONDARY };
+            ui.label(
+                egui::RichText::new(format!(
+                    "{headline} · {free_gb:.0} GB free · about {} left",
+                    fmt_duration(secs)
+                ))
+                .small()
+                .color(colour),
+            );
+        }
+        _ => {
+            ui.small(egui::RichText::new(headline).color(vizz_design::ink::SECONDARY));
+        }
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("format");
+        // Lossless is the exception now, not the default: takes almost
+        // always go into an edit, and JPEG is a tenth the size.
+        if ui
+            .selectable_label(!next.lossless, "jpeg")
+            .on_hover_text("about a tenth the size of PNG — the sane default for footage")
+            .clicked()
+        {
+            next.lossless = false;
+        }
+        if ui
+            .selectable_label(next.lossless, "png")
+            .on_hover_text("lossless and large — for compositing, not for long takes")
+            .clicked()
+        {
+            next.lossless = true;
+        }
+        if !next.lossless {
+            ui.add(
+                egui::DragValue::new(&mut next.quality)
+                    .range(40..=100)
+                    .speed(1.0)
+                    .prefix("q "),
+            )
+            .on_hover_text("JPEG quality — 92 is visually clean");
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("record at");
+        ui.add(
+            egui::DragValue::new(&mut next.fps)
+                .range(1.0..=120.0)
+                .speed(1.0)
+                .suffix(" fps"),
+        )
+        .on_hover_text(
+            "frames captured a second, independent of the render rate — \
+             halving this halves the files and the disk rate",
+        );
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("stop after");
+        let mut limited = next.max_secs.is_some();
+        if ui.checkbox(&mut limited, "").changed() {
+            next.max_secs = limited.then_some(30.0);
+        }
+        match &mut next.max_secs {
+            Some(secs) => {
+                ui.add(
+                    egui::DragValue::new(secs)
+                        .range(1.0..=3600.0)
+                        .speed(1.0)
+                        .suffix(" s"),
+                )
+                .on_hover_text("the take ends itself and keeps everything written");
+            }
+            None => {
+                ui.small("runs until stopped");
+            }
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("countdown");
+        ui.add(
+            egui::DragValue::new(&mut next.countdown_secs)
+                .range(0..=30)
+                .speed(1.0)
+                .suffix(" s"),
+        )
+        .on_hover_text("time to get your hands to the controls before the first frame");
+    });
+
+    ui.small("takes are stopped automatically if the disk gets close to full");
+
+    if next != state.record {
+        actions.record_setup = Some(next);
+    }
+}
+
+/// "3 min", "2 h" — long enough to act on, short enough to read.
+fn fmt_duration(secs: u64) -> String {
+    match secs {
+        0..=90 => format!("{secs} s"),
+        91..=5400 => format!("{} min", secs / 60),
+        _ => format!("{} h", secs / 3600),
+    }
 }
 
 fn health_section(ui: &mut egui::Ui, state: &PanelState) {

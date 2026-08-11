@@ -20,5 +20,13 @@
     <!-- Audio input. Paired with NSMicrophoneUsageDescription in the
          Info.plist: the key explains the request, this permits it. -->
     <key>com.apple.security.device.audio-input</key><true/>
+
+    <!-- Camera and capture cards, and the same pairing: the Info.plist's
+         NSCameraUsageDescription explains the request, this entitlement
+         permits it, and the hardened runtime needs both. With either one
+         missing, AVFoundation refuses the device with "add new input:
+         Rejected" — which names the input, not the permission, and sends
+         you looking at the camera. -->
+    <key>com.apple.security.device.camera</key><true/>
 </dict>
 </plist>

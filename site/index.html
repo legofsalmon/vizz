@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.14.0/vizz-0.14.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.0/vizz-0.15.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,32 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.0">0.15.0</a></div>
+      <ul>
+        <li><strong>Recording that cannot quietly eat the disk.</strong>
+          A take used to be lossless PNG of every rendered frame at full
+          size — about 800 MB a second at 1080p60, with nothing said
+          before or during. Now the panel shows the rate, the free space
+          and how long that gives you before you start; the take stops
+          itself at a disk floor or an optional duration, keeping
+          everything written. New settings: a record frame rate
+          independent of the render rate, JPEG at quality 92 by default
+          (roughly a tenth of PNG, with lossless one click away), and a
+          countdown so a take does not open on the hand that started
+          it.</li>
+        <li><strong>Camera input actually works.</strong> A bundled app
+          needs both a usage description and a hardened-runtime
+          entitlement to open a capture device, and 0.14.0 shipped
+          neither — AVFoundation refused with “add new input: Rejected”,
+          an error that names the input rather than the permission.</li>
+        <li><strong>Loaded clouds have a way in.</strong> Click a cloud
+          in the list to put it on screen, or its “b” button to make it
+          the far end of the morph. The mechanism was three parameters
+          apart and only ever set by the drop itself.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.14.0">0.14.0</a></div>

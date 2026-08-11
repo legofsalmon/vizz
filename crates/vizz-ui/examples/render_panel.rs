@@ -289,6 +289,11 @@ fn main() {
         // A live feed, so the strip's video dot appears in the preview —
         // it only draws when a source was configured.
         video: Some(vizz_ui::VideoStatus { connected: true, label: "ndi:cam".into() }),
+        record: vizz_ui::RecordSetup {
+            bytes_per_sec: 62_000_000,
+            free_bytes: Some(240_000_000_000),
+            ..Default::default()
+        },
         video_sources: vizz_ui::VideoSources {
             ndi: vec!["STUDIO-PC (OBS)".into()],
             syphon: vec!["Resolume Arena — Composition".into()],

@@ -82,6 +82,14 @@ cat > "$app/Contents/Info.plist" <<EOF
          this key vizz.app dies at launch as soon as audio input opens.
          A CLI run does not show it, because it inherits Terminal's grant. -->
     <key>NSMicrophoneUsageDescription</key><string>vizz analyses audio input to drive visuals from the music.</string>
+    <!-- Same rule as the microphone, and it bit exactly the same way: a
+         bundled app that opens a capture device without a usage
+         description gets no frames from TCC. The session starts, the
+         camera light may even come on, and every frame is withheld — so
+         it reads as "no frames arriving" rather than as a refusal, which
+         sends you looking at the camera instead of at this file. A CLI
+         run does not show it, because it inherits Terminal's grant. -->
+    <key>NSCameraUsageDescription</key><string>vizz can turn a camera or capture card into live visuals.</string>
 </dict>
 </plist>
 EOF

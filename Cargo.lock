@@ -3468,7 +3468,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vizz-app"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -3497,7 +3497,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-audio"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -3508,14 +3508,14 @@ dependencies = [
 
 [[package]]
 name = "vizz-design"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "egui",
 ]
 
 [[package]]
 name = "vizz-health"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "log",
  "serde",
@@ -3524,7 +3524,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-io"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "image",
@@ -3532,12 +3532,13 @@ dependencies = [
  "log",
  "objc2 0.6.4",
  "pollster",
+ "sysinfo",
  "wgpu",
 ]
 
 [[package]]
 name = "vizz-midi"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "log",
@@ -3549,7 +3550,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-mod"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "log",
@@ -3560,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-osc"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "log",
  "rosc",
@@ -3569,14 +3570,14 @@ dependencies = [
 
 [[package]]
 name = "vizz-params"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "vizz-render"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3589,7 +3590,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-ui"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3611,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-update"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "log",
