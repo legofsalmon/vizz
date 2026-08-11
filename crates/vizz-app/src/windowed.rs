@@ -1166,6 +1166,12 @@ impl App {
                         free_bytes: vizz_io::recorder::free_space(&crate::settings::take_dir()),
                     }
                 },
+                live_cloud: self.live.as_ref().map(|live| vizz_ui::LiveCloudStatus {
+                    label: live.label().to_string(),
+                    connected: live.connected(),
+                    points: live.with_latest(|pts| pts.len()).unwrap_or(0),
+                    dropped: live.dropped(),
+                }),
                 video_sources: self.video_sources.clone(),
                 video: self.video.as_ref().map(|v| vizz_ui::VideoStatus {
                     connected: v.connected(),
@@ -1268,6 +1274,27 @@ impl App {
                     } else {
                         Self::show_cloud_slot(&self.params, slot);
                     }
+                }
+                // Start or stop receiving a live cloud. Failing to
+                // connect is a notice, not a crash: the usual cause is
+                // the sending app not being switched on yet, which is a
+                // thing to retry rather than a thing to be stopped by.
+                match actions.live_cloud.clone() {
+                    Some(Some(addr)) => match addr.parse::<vizz_render::plystream::Source>() {
+                        Ok(source) => match vizz_render::plystream::LiveCloud::start(source) {
+                            Ok(live) => {
+                                state.gui.notify_info(format!("receiving from {}", live.label()));
+                                self.live = Some(live);
+                            }
+                            Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),
+                        },
+                        Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),
+                    },
+                    Some(None) => {
+                        self.live = None;
+                        state.gui.notify_info("live cloud stopped");
+                    }
+                    None => {}
                 }
                 if let Some(setup) = actions.record_setup {
                     self.record_settings = vizz_io::recorder::Settings {

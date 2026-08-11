@@ -88,6 +88,9 @@ pub struct PanelActions {
     pub video_open: Option<Option<String>>,
     /// Look for sources again.
     pub video_rescan: bool,
+    /// Start a live cloud stream at this address, or stop the running
+    /// one with `None`.
+    pub live_cloud: Option<Option<String>>,
     /// Open the modulation canvas window. The canvas was reachable only
     /// through `G`, which made it a feature you had to already know about.
     pub open_canvas: bool,
@@ -145,6 +148,8 @@ pub struct PanelState {
     /// health belongs on the strip like audio's does — before this, the
     /// only sign a feed had died was the cloud freezing.
     pub video: Option<VideoStatus>,
+    /// The live point-cloud stream: `None` when nothing is running.
+    pub live_cloud: Option<LiveCloudStatus>,
     /// Current analysis settings, mirrored here so the widgets have
     /// something to edit without locking the analysis thread while drawing.
     pub audio_bands: [vizz_audio::Band; 4],
@@ -437,6 +442,81 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
     });
 }
 
+
+/// Receiving a cloud over the network, rather than from a file.
+///
+/// Lives with the clouds rather than in a section of its own because
+/// that is what it produces: another cloud, morphable against the loaded
+/// ones like any other. A separate "streaming" section would file it
+/// under transport, which is not how anyone looks for it.
+///
+/// The address is one field with a sensible default rather than a
+/// transport picker. Apps that stream point clouds — LOTA among them —
+/// serve on a port and wait to be connected to, so "connect to this
+/// address" is the whole decision, and the two wire formats are told
+/// apart from the bytes rather than from a menu.
+fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    ui.separator();
+    let id = egui::Id::new("live-cloud-addr");
+    let mut addr = ui.data_mut(|d| {
+        d.get_temp::<String>(id)
+            .unwrap_or_else(|| DEFAULT_LIVE_CLOUD.to_string())
+    });
+    match &state.live_cloud {
+        Some(live) => {
+            ui.horizontal(|ui| {
+                // Connected is not the same as receiving: a listener with
+                // nobody attached, and a sender that has gone quiet, both
+                // look identical without the point count.
+                dot(ui, live.connected, GOOD);
+                ui.small(&live.label);
+                if live.connected {
+                    ui.small(format!("{} pts", live.points));
+                } else {
+                    ui.small("waiting for the sender");
+                }
+                if ui
+                    .small_button("stop")
+                    .on_hover_text("stop receiving; loaded clouds are unaffected")
+                    .clicked()
+                {
+                    actions.live_cloud = Some(None);
+                }
+            });
+        }
+        None => {
+            ui.horizontal(|ui| {
+                ui.small("stream:");
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut addr)
+                        .desired_width(140.0)
+                        .hint_text(DEFAULT_LIVE_CLOUD),
+                );
+                if field.changed() {
+                    ui.data_mut(|d| d.insert_temp(id, addr.clone()));
+                }
+                let go = ui.small_button("receive").on_hover_text(
+                    "connect to an app streaming point clouds — LOTA's default port is 9848",
+                );
+                let entered =
+                    field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if go.clicked() || entered {
+                    let want = if addr.trim().is_empty() {
+                        DEFAULT_LIVE_CLOUD.to_string()
+                    } else {
+                        addr.trim().to_string()
+                    };
+                    actions.live_cloud = Some(Some(want));
+                }
+            });
+        }
+    }
+}
+
+/// Where a live cloud comes from unless told otherwise: LOTA's streaming
+/// port, on this machine.
+pub const DEFAULT_LIVE_CLOUD: &str = "127.0.0.1:9848";
+
 /// A status dot — the design system's, under the short local name.
 fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
     vizz_design::widgets::status_dot(ui, live, color)
@@ -457,6 +537,23 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
         ui.hyperlink_to("download", vizz_update::RELEASES_URL);
     });
     ui.separator();
+}
+
+
+/// What a running live-cloud stream is doing, for the panel to show.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LiveCloudStatus {
+    /// Where it is reading from, as the user would recognise it.
+    pub label: String,
+    /// A sender is attached. False while listening or retrying.
+    pub connected: bool,
+    /// Points in the most recent cloud — the number that says a stream
+    /// is not only connected but carrying something.
+    pub points: usize,
+    /// Clouds that arrived faster than the renderer took them. Some
+    /// dropping is normal and healthy; all of them means the sender is
+    /// outrunning us.
+    pub dropped: u64,
 }
 
 /// What is in each cloud slot, and how to put something there.
@@ -526,6 +623,7 @@ fn clouds_section(
     if state.clouds.is_empty() {
         ui.small("no cloud slots");
     }
+    live_cloud_row(ui, state, actions);
     // This list and the router in `windowed.rs::load_dropped` must agree;
     // a hint that omits an accepted extension teaches people it will not
     // work, which is worse than no hint.
