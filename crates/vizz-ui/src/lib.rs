@@ -25,8 +25,8 @@ use winit::window::Window;
 pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
 pub use panel::{
-    AudioEdits, AudioView, MidiView, OutputSetup, OutputStatus, PanelActions, PanelState,
-    PresetEntry, RecordSetup, RecordingView, VideoSources, VideoStatus,
+    AudioEdits, AudioView, LiveCloudStatus, MidiView, OutputSetup, OutputStatus, PanelActions,
+    PanelState, PresetEntry, RecordSetup, RecordingView, VideoSources, VideoStatus,
 };
 
 /// Exposed for the offscreen preview, so the overlay is reviewed through
@@ -623,6 +623,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -666,6 +667,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -712,6 +714,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -760,6 +763,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -812,6 +816,7 @@ mod tests {
                 clock_ticking: false,
             },
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -903,6 +908,7 @@ mod tests {
             },
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -943,6 +949,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -1090,6 +1097,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -1138,6 +1146,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -1188,6 +1197,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             record: Default::default(),
             video_sources: VideoSources {
                 ndi: vec!["STUDIO-PC (OBS)".into()],
@@ -1242,6 +1252,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            live_cloud: None,
             video_sources: Default::default(),
             record: Default::default(),
             audio_bands: vizz_audio::default_bands(),
@@ -1267,5 +1278,81 @@ mod tests {
         );
         // And there is a control for the far end, not only the near one.
         assert!(text.contains('b'), "no way to set the far end: {text}");
+    }
+
+    /// Receiving a stream must be reachable from the panel, and must
+    /// report whether anything is arriving.
+    ///
+    /// The engine for this existed for versions behind `--live-cloud`,
+    /// which is not a flow: it can only be chosen before launch, by
+    /// someone who already knows the flag exists, and it says nothing
+    /// afterwards. A VJ whose stream drops mid-set could not tell
+    /// whether the sender had stopped or vizz had.
+    #[test]
+    fn a_live_cloud_stream_can_be_started_and_read_from_the_panel() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let mut state = PanelState {
+            recording: None,
+            preset_current: None,
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            live_cloud: None,
+            video_sources: Default::default(),
+            record: Default::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: vec!["torso-scan".into()],
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: true,
+            presets: Vec::new(),
+            bar_phase: 0.0,
+        };
+        // Idle: there is a way in, and the default address is offered
+        // rather than left as an empty field to guess at.
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("receive"), "no way to start a stream: {text}");
+        assert!(
+            text.contains("9848"),
+            "the default streaming port is not offered: {text}"
+        );
+
+        // Running but with nobody sending yet — the state that used to be
+        // indistinguishable from a working stream showing nothing.
+        state.live_cloud = Some(LiveCloudStatus {
+            label: "tcp://127.0.0.1:9848".into(),
+            connected: false,
+            points: 0,
+            dropped: 0,
+        });
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(
+            text.contains("waiting"),
+            "a stream with no sender does not say so: {text}"
+        );
+
+        // Receiving: the point count is what proves frames are arriving,
+        // not merely that a socket is open.
+        state.live_cloud = Some(LiveCloudStatus {
+            label: "tcp://127.0.0.1:9848".into(),
+            connected: true,
+            points: 40_000,
+            dropped: 3,
+        });
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("40000 pts"), "no point count: {text}");
+        assert!(text.contains("stop"), "no way to stop the stream: {text}");
     }
 }

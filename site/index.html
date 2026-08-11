@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.0/vizz-0.15.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.1/vizz-0.15.1.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,26 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.1">0.15.1</a></div>
+      <ul>
+        <li><strong>Receive a live point cloud from LOTA.</strong> vizz
+          read only concatenated PLY files — a header declaring the
+          vertex count, then the body. Apps that stream point clouds
+          often send no header at all, just a count and then fixed-size
+          points, so there was nothing to parse and the stream was
+          refused. Both wire formats are now read, and which one is on
+          the socket is worked out from the bytes rather than chosen from
+          a menu.</li>
+        <li><strong>A stream can be started from the panel.</strong>
+          Receiving used to be a launch flag: set before startup, by
+          someone who knew it existed, silent afterwards. The clouds
+          section now takes an address, and once running shows whether a
+          sender is attached and how many points are arriving — the
+          number that tells a quiet socket from a working one mid-set.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.0">0.15.0</a></div>

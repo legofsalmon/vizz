@@ -47,6 +47,121 @@ const MAX_VERTICES: usize = 20_000_000;
 /// real stride and is survivable if a hostile peer asks for all of it.
 const MAX_FRAME_BYTES: usize = 256 << 20;
 
+
+/// Which wire format a frame is in.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Wire {
+    /// Whole PLY files, back to back: the ASCII magic, a header
+    /// declaring `element vertex N`, then the body.
+    Ply,
+    /// A count and then fixed-size points, with no header: 4-byte
+    /// little-endian count, then 15 bytes per point — 3 `f32` of
+    /// position followed by 3 bytes of RGB.
+    Packed,
+}
+
+/// Bytes per point in the packed format: 3 × `f32` + 3 × `u8`.
+const PACKED_STRIDE: usize = 15;
+
+/// A reader with the format-sniffing bytes put back in front of it.
+///
+/// The three bytes have to be consumed to be recognised, and the parser
+/// that follows needs to see them, so they are handed back as the head
+/// of the stream rather than remembered as a special case.
+type Sniffed<R> = std::io::Chain<Cursor<Vec<u8>>, R>;
+
+/// Decide the format for a whole connection, with a blocking read.
+///
+/// The per-frame sniff cannot wait for a slow first byte — `fill_buf`
+/// will not top up a buffer that already holds something, so asking
+/// again just returns the same two bytes forever. This reads the three
+/// magic bytes properly, and hands them back with the reader so nothing
+/// is lost: the format cannot change mid-connection, so once is enough.
+fn sniff_connection<R: BufRead>(
+    mut reader: R,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<(Wire, Sniffed<R>)>> {
+    let mut head = [0u8; 3];
+    let mut filled = 0;
+    while filled < head.len() {
+        match reader.read(&mut head[filled..]) {
+            // Nothing at all is the sender closing between frames, which
+            // is normal shutdown; a partial magic is a truncated stream.
+            Ok(0) if filled == 0 => return Ok(None),
+            Ok(0) => bail!("stream ended inside the first {filled} bytes"),
+            Ok(n) => filled += n,
+            Err(e) if is_timeout(&e) => {
+                if stop() {
+                    return Ok(None);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let wire = if &head == b"ply" { Wire::Ply } else { Wire::Packed };
+    Ok(Some((wire, std::io::Read::chain(Cursor::new(head.to_vec()), reader))))
+}
+
+/// Read one packed frame: a little-endian `u32` count, then that many
+/// 15-byte points.
+///
+/// Little-endian is stated rather than assumed from the host: both
+/// platforms vizz builds for are little-endian today, so a `from_ne`
+/// would pass every test here and silently corrupt every coordinate the
+/// day it ran anywhere else.
+fn read_packed_patient(
+    reader: &mut impl BufRead,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Vec<Point>>> {
+    // The count is read byte-aware rather than with `read_exact_patient`,
+    // which cannot tell "the sender closed cleanly between frames" from
+    // "the sender vanished mid-frame". Between frames is normal shutdown.
+    let mut head = [0u8; 4];
+    let mut filled = 0;
+    while filled < head.len() {
+        match reader.read(&mut head[filled..]) {
+            Ok(0) if filled == 0 => return Ok(None),
+            Ok(0) => bail!("packed stream ended inside a frame header"),
+            Ok(n) => filled += n,
+            Err(e) if is_timeout(&e) => {
+                if stop() {
+                    return Ok(None);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let count = u32::from_le_bytes(head) as usize;
+    // The count comes off the wire and sizes an allocation, so it is
+    // bounded the same way the PLY path bounds its vertex count — before
+    // a single byte of body has arrived.
+    if count > MAX_VERTICES {
+        bail!("packed frame claims {count} points, over the {MAX_VERTICES} limit");
+    }
+    let len = count * PACKED_STRIDE;
+    if len > MAX_FRAME_BYTES {
+        bail!("packed frame body over the {} MiB limit", MAX_FRAME_BYTES >> 20);
+    }
+    let mut body = vec![0u8; len];
+    if !read_exact_patient(reader, &mut body, stop)? {
+        return Ok(None);
+    }
+    let points = body
+        .chunks_exact(PACKED_STRIDE)
+        .map(|c| Point {
+            pos: [
+                f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+            ],
+            color: [c[12], c[13], c[14]],
+        })
+        .collect();
+    Ok(Some(points))
+}
+
 /// What the header says about the body that follows it.
 #[derive(Debug, PartialEq)]
 struct FrameShape {
@@ -74,6 +189,23 @@ pub fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<Point>>> {
 /// and simply waits more, consulting `stop`; a stop while waiting is a
 /// clean end of stream, not an error.
 pub fn read_frame_patient(
+    reader: &mut impl BufRead,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Vec<Point>>> {
+    // Which of the two wire formats is on this socket, decided per frame
+    // from the bytes themselves rather than from a setting.
+    //
+    // Not every app that streams point clouds streams *PLY*. LOTA sends
+    // a packed frame — a count, then fixed-size points — with no header
+    // at all, which is the sensible thing to send and unreadable to a
+    // parser looking for the ASCII magic. Sniffing means one input works
+    // with both, and nobody has to know which their app speaks in order
+    // to choose correctly from a menu.
+    read_ply_patient(reader, stop)
+}
+
+/// Read one PLY frame, the format already decided.
+fn read_ply_patient(
     reader: &mut impl BufRead,
     stop: &dyn Fn() -> bool,
 ) -> Result<Option<Vec<Point>>> {
@@ -526,7 +658,16 @@ fn pump(
     // Without a timeout, a sender that goes quiet without closing leaves
     // this thread blocked in read forever and the app unable to shut down.
     stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))?;
-    let mut reader = std::io::BufReader::new(stream);
+    let reader = std::io::BufReader::new(stream);
+    // Settle the format before the first frame, not per frame: a slow
+    // first packet cannot be sniffed by peeking, and the answer cannot
+    // change while the connection lasts.
+    let Some((wire, mut reader)) =
+        sniff_connection(reader, &|| stop.load(Ordering::Relaxed))?
+    else {
+        return Ok(());
+    };
+    log::info!("live cloud: reading {wire:?} frames");
     slot.connected.store(true, Ordering::Relaxed);
     while !stop.load(Ordering::Relaxed) {
         // Timeouts are ridden out *inside* the read, holding position.
@@ -534,7 +675,12 @@ fn pump(
         // between frames was an idle sender and mid-frame threw away the
         // bytes already consumed — the next attempt parsed a header out
         // of the middle of a body, and the stream never recovered.
-        match read_frame_patient(&mut reader, &|| stop.load(Ordering::Relaxed)) {
+        let stopping = || stop.load(Ordering::Relaxed);
+        let got = match wire {
+            Wire::Ply => read_ply_patient(&mut reader, &stopping),
+            Wire::Packed => read_packed_patient(&mut reader, &stopping),
+        };
+        match got {
             Ok(Some(points)) => publish(slot, points),
             // Clean close: the sender is done (or we are), not broken.
             Ok(None) => return Ok(()),
@@ -574,6 +720,114 @@ fn watch_file(
 
 #[cfg(test)]
 mod tests {
+
+    /// LOTA's wire format, read off a socket.
+    ///
+    /// This is the format that made the feature not work: a 4-byte
+    /// little-endian count then 15 bytes a point, with no PLY header
+    /// anywhere. The reader used to scan those count bytes for the ASCII
+    /// magic and give up.
+    #[test]
+    fn a_packed_frame_reads_back_exactly() {
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&2u32.to_le_bytes());
+        for (pos, color) in [
+            ([1.5f32, -2.25, 3.0], [255u8, 0, 128]),
+            ([0.0, 0.5, -1.0], [10, 20, 30]),
+        ] {
+            for v in pos {
+                wire.extend_from_slice(&v.to_le_bytes());
+            }
+            wire.extend_from_slice(&color);
+        }
+        // Exactly the size the format claims, or one side has drifted.
+        assert_eq!(wire.len(), 4 + 2 * 15);
+
+        let (wire_kind, mut reader) = connection(wire);
+        assert_eq!(wire_kind, Wire::Packed, "LOTA's format was not recognised");
+        let points = read_packed_patient(&mut reader, &|| false).unwrap().expect("a frame");
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].pos, [1.5, -2.25, 3.0]);
+        assert_eq!(points[0].color, [255, 0, 128]);
+        assert_eq!(points[1].pos, [0.0, 0.5, -1.0]);
+        assert_eq!(points[1].color, [10, 20, 30]);
+    }
+
+    /// Back-to-back packed frames stay in step. Framing is the whole
+    /// problem with a stream: one byte of drift and every frame after it
+    /// is noise.
+    #[test]
+    fn packed_frames_do_not_drift() {
+        let mut wire = Vec::new();
+        for n in 1..=3u32 {
+            wire.extend_from_slice(&n.to_le_bytes());
+            for i in 0..n {
+                for v in [i as f32, 0.0, 0.0] {
+                    wire.extend_from_slice(&v.to_le_bytes());
+                }
+                wire.extend_from_slice(&[1, 2, 3]);
+            }
+        }
+        let (_, mut reader) = connection(wire);
+        for n in 1..=3 {
+            let f = read_packed_patient(&mut reader, &|| false).unwrap().expect("a frame");
+            assert_eq!(f.len(), n, "frame {n} came back the wrong length");
+            assert_eq!(f[n - 1].pos[0], (n - 1) as f32);
+        }
+        // And then a clean end, not an error.
+        assert!(read_packed_patient(&mut reader, &|| false).unwrap().is_none());
+    }
+
+    /// The format is settled once per connection, from its first bytes,
+    /// and a PLY sender is still read as PLY.
+    ///
+    /// Deciding per frame instead looks tidier and is wrong: a PLY
+    /// sender may pad with blank lines between clouds, so a frame can
+    /// begin "\n\np" — which is not the magic, and would send every
+    /// padded frame down the packed path to be read as noise.
+    #[test]
+    fn the_format_is_decided_once_per_connection() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nend_header\n1 2 3\n";
+        let (kind, mut reader) = connection(ply.to_vec());
+        assert_eq!(kind, Wire::Ply);
+        let f = read_ply_patient(&mut reader, &|| false).unwrap().expect("a frame");
+        assert_eq!(f[0].pos, [1.0, 2.0, 3.0]);
+
+        let mut packed = Vec::new();
+        packed.extend_from_slice(&1u32.to_le_bytes());
+        packed.extend_from_slice(&7.5f32.to_le_bytes());
+        packed.extend_from_slice(&0f32.to_le_bytes());
+        packed.extend_from_slice(&0f32.to_le_bytes());
+        packed.extend_from_slice(&[9, 9, 9]);
+        let (kind, mut reader) = connection(packed);
+        assert_eq!(kind, Wire::Packed);
+        let f = read_packed_patient(&mut reader, &|| false).unwrap().expect("a frame");
+        assert_eq!(f[0].pos[0], 7.5);
+        assert_eq!(f[0].color, [9, 9, 9]);
+    }
+
+    /// What `pump` does to a fresh connection, without a socket.
+    fn connection(
+        bytes: Vec<u8>,
+    ) -> (Wire, Sniffed<std::io::BufReader<Cursor<Vec<u8>>>>) {
+        let reader = std::io::BufReader::new(Cursor::new(bytes));
+        sniff_connection(reader, &|| false).unwrap().expect("a connection")
+    }
+
+    /// A count off the wire sizes an allocation, so it is bounded before
+    /// any body arrives — a hostile or corrupt 4 billion must be an
+    /// error, not four billion points of memory.
+    #[test]
+    fn an_absurd_packed_count_is_refused_not_allocated() {
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&u32::MAX.to_le_bytes());
+        let (_, mut reader) = connection(wire);
+        let err = read_packed_patient(&mut reader, &|| false).expect_err("should refuse");
+        assert!(
+            format!("{err:#}").contains("limit"),
+            "refused for the wrong reason: {err:#}"
+        );
+    }
     use super::*;
 
     fn binary_frame(n: u32) -> Vec<u8> {
