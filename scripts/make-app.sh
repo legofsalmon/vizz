@@ -90,6 +90,13 @@ cat > "$app/Contents/Info.plist" <<EOF
          sends you looking at the camera instead of at this file. A CLI
          run does not show it, because it inherits Terminal's grant. -->
     <key>NSCameraUsageDescription</key><string>vizz can turn a camera or capture card into live visuals.</string>
+    <!-- Receiving from a phone, tablet or another Mac on the same wifi
+         is local network access, which macOS 15 gates the same way it
+         gates the camera. The failure looks like nothing at all: the
+         listener binds, the sender reports it is sending, and no bytes
+         cross. Same lesson as NSCameraUsageDescription above, on a
+         different permission. -->
+    <key>NSLocalNetworkUsageDescription</key><string>vizz receives live point clouds and video from apps on your local network.</string>
 </dict>
 </plist>
 EOF

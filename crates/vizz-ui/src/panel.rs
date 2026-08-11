@@ -473,7 +473,10 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                 if live.connected {
                     ui.small(format!("{} pts", live.points));
                 } else {
-                    ui.small("waiting for the sender");
+                    // Which address to point the sender at is the whole
+                    // question while nothing is attached, and the label
+                    // already carries it.
+                    ui.small("waiting — point the sender here");
                 }
                 if ui
                     .small_button("stop")
@@ -496,7 +499,9 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                     ui.data_mut(|d| d.insert_temp(id, addr.clone()));
                 }
                 let go = ui.small_button("receive").on_hover_text(
-                    "connect to an app streaming point clouds — LOTA's default port is 9848",
+                    "wait for an app to send point clouds here — in LOTA, set its \
+                     receiver to this Mac's address on port 9848. To dial out to an \
+                     app that serves instead, type host:port.",
                 );
                 let entered =
                     field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -513,9 +518,21 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
     }
 }
 
-/// Where a live cloud comes from unless told otherwise: LOTA's streaming
-/// port, on this machine.
-pub const DEFAULT_LIVE_CLOUD: &str = "127.0.0.1:9848";
+/// Where a live cloud comes from unless told otherwise: waiting on
+/// LOTA's streaming port, for LOTA to connect in.
+///
+/// Listening rather than connecting out, because that is the direction
+/// the apps actually work. LOTA is configured with a *receiver* address
+/// — it pushes to wherever you point it — so something has to be
+/// waiting at that address when it does. The first version of this
+/// defaulted to connecting out to 127.0.0.1, which meant both ends sat
+/// waiting for the other to start the conversation and nothing ever
+/// happened.
+///
+/// 0.0.0.0 rather than 127.0.0.1 because the sender is usually a phone
+/// or tablet on the same wifi, not another app on this machine:
+/// loopback would refuse the one connection people actually make.
+pub const DEFAULT_LIVE_CLOUD: &str = "listen://0.0.0.0:9848";
 
 /// A status dot — the design system's, under the short local name.
 fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
