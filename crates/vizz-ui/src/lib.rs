@@ -1188,6 +1188,7 @@ mod tests {
             midi: MidiView::default(),
             audio: AudioView::default(),
             video: None,
+            record: Default::default(),
             video_sources: VideoSources {
                 ndi: vec!["STUDIO-PC (OBS)".into()],
                 syphon: vec!["Resolume Arena".into()],
@@ -1216,5 +1217,55 @@ mod tests {
         assert!(text.contains("rescan"), "no way to look again: {text}");
         // A missing runtime must not read as an empty network.
         assert!(text.contains("runtime not installed"), "the note is not shown: {text}");
+    }
+
+    /// A loaded cloud must offer a way onto the screen.
+    ///
+    /// The mechanism existed and was three parameters apart: /shape/mode
+    /// set to 'cloud', /cloud/a pointed at the slot, /cloud/morph taken
+    /// to that end. Dropping a file did all three and said so — but only
+    /// at the moment of the drop, so a cloud restored on the next launch,
+    /// or one displaced by a preset recall, sat in the list looking
+    /// inert with nothing to click.
+    #[test]
+    fn a_cloud_row_offers_a_way_onto_the_screen() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            recording: None,
+            preset_current: None,
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            video_sources: Default::default(),
+            record: Default::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: vec!["torso-scan".into(), "logo.png".into()],
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: true,
+            presets: Vec::new(),
+            bar_phase: 0.0,
+        };
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(text.contains("torso-scan"), "the cloud is not listed: {text}");
+        // The pair is explained rather than left as two mystery numbers.
+        assert!(
+            text.contains("both ends") || text.contains("two ends"),
+            "nothing says what a and b are: {text}"
+        );
+        // And there is a control for the far end, not only the near one.
+        assert!(text.contains('b'), "no way to set the far end: {text}");
     }
 }

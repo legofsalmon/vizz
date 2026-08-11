@@ -77,6 +77,9 @@ pub struct PanelActions {
     pub output_setup: Option<OutputSetup>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
+    /// Put this cloud slot on screen. `true` sets it as the far end of
+    /// the morph (b) rather than the near end (a).
+    pub cloud_show: Option<(usize, bool)>,
     /// Recording settings the user changed this frame.
     pub record_setup: Option<RecordSetup>,
     /// Connect the video input to this spec, or `Some(None)` to stop
@@ -475,10 +478,33 @@ fn clouds_section(
         registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
     };
     let (a, b) = (slot("/cloud/a"), slot("/cloud/b"));
+    // What the pair actually is, said once. "a" and "b" are the two ends
+    // of a morph, not a playlist — and they are set with number sliders
+    // whose value is a slot index, which is the least guessable control
+    // in the app. The buttons below do the setting; this says why there
+    // are two.
+    ui.small("“a” and “b” are the two ends of the morph — show one, or set both and blend");
     for (i, name) in state.clouds.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
-            ui.label(name);
+            // Click the name to put this cloud on screen: sets the shape
+            // to cloud, points a at this slot and takes the morph fully
+            // to it. Exactly what dropping a file does — which was the
+            // only way to reach it, and only at the moment of the drop.
+            if ui
+                .add(egui::Label::new(name).sense(egui::Sense::click()))
+                .on_hover_text("show this cloud — click “b” to make it the far end of the morph instead")
+                .clicked()
+            {
+                actions.cloud_show = Some((i, false));
+            }
+            if ui
+                .small_button("b")
+                .on_hover_text("make this the far end of the morph, and leave “a” where it is")
+                .clicked()
+            {
+                actions.cloud_show = Some((i, true));
+            }
             // Say which rows the morph pair is showing right now. The
             // legend explained what the numbers meant but not which of
             // them was on screen — the one question a legend is for.

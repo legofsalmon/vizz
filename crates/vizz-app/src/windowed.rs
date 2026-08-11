@@ -1256,6 +1256,19 @@ impl App {
                         }
                     };
                 }
+                // Show a cloud the panel asked for: the same call the
+                // drop path makes, so there is one way a cloud gets on
+                // screen rather than two that can disagree.
+                if let Some((slot, as_b)) = actions.cloud_show {
+                    if as_b {
+                        self.params.registry.set(self.params.cloud_b, slot as f32);
+                        self.params
+                            .registry
+                            .set(self.params.shape, crate::params::SHAPE_CLOUD_PAIR);
+                    } else {
+                        Self::show_cloud_slot(&self.params, slot);
+                    }
+                }
                 if let Some(setup) = actions.record_setup {
                     self.record_settings = vizz_io::recorder::Settings {
                         format: if setup.lossless {
@@ -1506,7 +1519,6 @@ impl App {
                     .notify_info(format!("recorded {frames} frames{drops} — {dir}"));
                 log::info!("recording finished: {frames} frames{drops} in {dir}");
             }
-            (None, false) => {}
         }
         // Announce liveness *transitions*. The roster keeps dead outputs
         // visible in the panel; this is the shove for the moment it
