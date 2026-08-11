@@ -99,9 +99,17 @@ struct Args {
     #[arg(long, default_value = "vizz")]
     syphon_name: String,
 
-    /// Mark published Syphon frames as vertically flipped. Use this if
-    /// the image is upside down in your receiving app.
-    #[arg(long)]
+    /// Publish Syphon frames the right way up. On by default; pass
+    /// `--syphon-flip false` if your receiving app shows vizz upside
+    /// down, which would mean it is correcting for the flip itself.
+    ///
+    /// Metal renders with the origin at the top left and Syphon's
+    /// convention is OpenGL's, with the origin at the bottom, so a
+    /// published Metal texture needs the flip flag set to arrive the
+    /// right way up. This defaulted to off and shipped that way: every
+    /// receiver showed vizz upside down, and the only remedy was a
+    /// command-line flag that nobody double-clicking the app can reach.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     syphon_flip: bool,
 
     /// Load a point cloud (.ply, .xyz, .csv, .pts) or an image
