@@ -837,6 +837,105 @@ mod tests {
         );
     }
 
+
+    /// Arming clear and then pressing a pad actually clears it.
+    ///
+    /// Reported: the clear button arms — the pads visibly change — and
+    /// then a press on a pad does nothing, on every scene. The gesture
+    /// is destructive when it works, so a version that silently does
+    /// nothing is the failure where a user cannot tell whether their set
+    /// is safe.
+    ///
+    /// Driven through the persistent-id entry point and real pointer
+    /// events across frames, because the arm has to survive a frame
+    /// boundary to be any use — and that is the part a test which passes
+    /// its own state in cannot see.
+    #[test]
+    fn arming_clear_then_pressing_a_pad_clears_it() {
+        let view = view();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(500.0, 700.0));
+        let mut actions = GridActions::default();
+
+        let mut frame = |click: Option<egui::Pos2>, ctx: &egui::Context| -> Vec<(String, egui::Pos2)> {
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                input.events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                });
+                input.events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                });
+            }
+            ctx.begin_pass(input);
+            egui::Area::new(egui::Id::new("grid-test"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    actions = draw_with_id(ui, &view, "scene-grid");
+                });
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => {
+                        out.push((t.galley.job.text.clone(), t.pos + t.galley.rect.center().to_vec2()))
+                    }
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        // Two passes to lay out, then find the clear button by its own
+        // label rather than by guessing where the row put it.
+        frame(None, &ctx);
+        let texts = frame(None, &ctx);
+        let clear_at = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "clear")
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| panic!("no clear button among {:?}", texts.iter().map(|(t, _)| t).collect::<Vec<_>>()));
+
+        // Arm it.
+        frame(Some(clear_at), &ctx);
+        // A frame later — the arm has to survive the frame boundary —
+        // press a pad that has something in it.
+        let pad = pad_centre(0);
+        frame(Some(pad), &ctx);
+
+        assert_eq!(
+            actions.clear,
+            Some(0),
+            "arming clear and pressing pad 1 produced no clear"
+        );
+    }
+
+    /// Where pad `slot` sits, from the same arithmetic the layout uses.
+    fn pad_centre(slot: usize) -> egui::Pos2 {
+        let avail = 500.0;
+        let cols = columns(avail);
+        let size = pad_size_for(cols, avail);
+        let (row, col) = (slot / cols, slot % cols);
+        egui::pos2(
+            col as f32 * (size.x + GAP) + size.x * 0.5,
+            row as f32 * (size.y + GAP) + size.y * 0.5,
+        )
+    }
+
     fn view() -> GridView {
         let mut names = vec![None; SLOTS];
         names[0] = Some("opener".into());

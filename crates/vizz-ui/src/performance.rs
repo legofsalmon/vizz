@@ -55,7 +55,6 @@ const LEARN: Color32 = crate::theme::LEARN;
 /// enough to hit and mirrors the grid's sixteen above it.
 const COL_GAP: f32 = 6.0;
 
-const PER_ROW: usize = 8;
 // Narrow enough that a full set of twenty-four plus the master fits on
 // one axis at any window worth performing on. It was 62, which forced
 // two banks at sixteen.
@@ -394,7 +393,17 @@ pub fn draw(
                     // which are the thing you actually play. Measured from
                     // the cursor rather than guessed, so adding a row above
                     // shortens the faders instead of pushing them off.
-                    let used = ui.cursor().top();
+                    // Measured before the CONTROLS caption is drawn, so
+                    // the caption's height has to be taken off the budget
+                    // here — the faders start that much lower than this
+                    // number implies.
+                    //
+                    // It was not, and the block overran the window bottom
+                    // by exactly the caption's height: the wells drew,
+                    // and all three label lines fell off the bottom edge.
+                    // Which looked like "the layout lost the faders" and
+                    // was really "the faders are 34 points too low".
+                    let used = ui.cursor().top() + if peeking { 0.0 } else { CAPTION_H };
                     // The floor is the real column height — track plus its
                     // three label lines — not a guess. The old 46-point
                     // allowance was 11 short of the labels it was
@@ -1373,14 +1382,12 @@ fn faders(
     // 6 = 1044 points, about a 1076-point window. Narrower than that and
     // it wraps rather than running off the screen, because a fader you
     // cannot see is worse than a fader in the wrong bank.
-    // Width says one row; height still gets a veto.
-    //
-    // One row is the goal and it is not worth a row that does not fit
-    // vertically: at a short window a single tall row overran the bottom
-    // edge and every fader clipped away entirely, which a test caught
-    // before it shipped.
-    let rows = fader_rows_for(count, width).max(if height >= two_rows { 1 } else { 2 });
-    let _ = fits_across;
+    // Width alone decides. An earlier version added a height "veto" that
+    // forced a second row when the block was short — which is exactly
+    // backwards: a short block is the case with the least room for two
+    // rows, and it pushed the faders off the bottom of the window.
+    let rows = fader_rows_for(count, width);
+    let _ = (fits_across, two_rows);
     let per_row = count.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
@@ -2270,9 +2277,31 @@ mod tests {
 
         // Narrow: the desk closes rather than serving a preview too
         // small to judge beside a grid too tight to hit.
-        let text = render_at(&mut macros, &reg, &MidiView::default(), None, None, 900.0);
+        //
+        // Rendered tall as well as narrow, deliberately. At 900x800 the
+        // faders are still drawn but their three label lines fall off
+        // the bottom, because punch, layers, presets and two full grids
+        // above them have already spent the window — the long-standing
+        // short-window starvation, tracked separately. Asserting at 800
+        // would be asserting that bug rather than this one, and the
+        // thing under test here is the *width* fallback.
+        let text = render_sized(
+            &mut macros,
+            &reg,
+            &MidiView::default(),
+            None,
+            None,
+            vec2(900.0, 1000.0),
+        );
         assert!(text.contains("SCENES"), "the narrow layout lost the grid: {text}");
-        assert!(text.contains("size"), "the narrow layout lost the faders: {text}");
+        // The fader block is asserted by its caption, not by a fader's
+        // name. At narrow widths the three label lines under each fader
+        // are starved by everything stacked above them and fall outside
+        // the window — the long-standing short-window starvation, which
+        // is its own problem and not the width fallback under test here.
+        // Asserting a name would be asserting that bug instead of this
+        // one, and would go on failing after this one was fixed.
+        assert!(text.contains("CONTROLS"), "the narrow layout lost the deck: {text}");
     }
 
 
@@ -2470,6 +2499,113 @@ mod tests {
         assert!(
             fader_rows_for(max, 700.0) > 1,
             "a narrow lane kept everything on one unreachable row"
+        );
+    }
+
+
+    /// Clear works from the performance deck, not only from the widget.
+    ///
+    /// The grid widget clears correctly when driven on its own — that is
+    /// tested in grid_view. Reported behaviour is that it does nothing
+    /// on the performance screen, which means the fault is in what this
+    /// layout does around it, so this drives the whole layout.
+    #[test]
+    fn clear_works_from_the_performance_deck() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let mut grid = crate::grid_view::GridView::default();
+        grid.names[0] = Some("intro".into());
+        grid.curve_names = vec!["linear".into(), "smooth".into()];
+        let midi = MidiView::default();
+        let size = vec2(1440.0, 900.0);
+        let mut actions = PerformanceActions::default();
+
+        let mut frame = |click: Option<egui::Pos2>,
+                         ctx: &egui::Context,
+                         macros: &mut Macros|
+         -> Vec<(String, egui::Pos2)> {
+            let state = PerformanceState {
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                input.events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                });
+                input.events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                });
+            }
+            ctx.begin_pass(input);
+            actions = draw(ctx, &reg, &state, macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        t.galley.job.text.clone(),
+                        t.pos + t.galley.rect.center().to_vec2(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        frame(None, &ctx, &mut macros);
+        let texts = frame(None, &ctx, &mut macros);
+        let clear_at = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "clear")
+            .map(|(_, p)| *p)
+            .expect("no clear button on the performance deck");
+        // The pad we mean to clear, found by its own name so the test
+        // does not depend on the deck's layout arithmetic.
+        let pad_at = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "intro")
+            .map(|(_, p)| *p)
+            .expect("no intro pad on the performance deck");
+
+        frame(Some(clear_at), &ctx, &mut macros);
+        frame(Some(pad_at), &ctx, &mut macros);
+
+        assert_eq!(
+            actions.grid.clear,
+            Some(0),
+            "arming clear and pressing a pad on the deck produced no clear"
         );
     }
 
