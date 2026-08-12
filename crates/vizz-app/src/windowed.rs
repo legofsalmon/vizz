@@ -1900,7 +1900,7 @@ fn gravity_grid_view(
     midi: &MidiView,
     library: &vizz_mod::preset::Library,
 ) -> vizz_ui::grid_view::GridView {
-    grid_view(
+    let mut view = grid_view(
         grid,
         beats,
         midi,
@@ -1908,7 +1908,13 @@ fn gravity_grid_view(
         vizz_mod::preset::Kind::Gravity,
         GRAVITY_FIRE,
         "gravity",
-    )
+    );
+    // Gravity pads are violet; scene pads keep the default blue-grey.
+    // The two grids are otherwise the same widget sixteen times over,
+    // stacked one above the other, and firing the wrong one is not
+    // recoverable — there is no undo on a canvas mutation.
+    view.accent = Some(vizz_ui::grid_view::GRAVITY_ACCENT);
+    view
 }
 
 /// The addresses a pad press writes. Named here because the grid view, the
@@ -1938,6 +1944,7 @@ fn grid_view(
 ) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
+        accent: None,
         // Which pads a controller can fire, and which one is waiting for a
         // button. Per pad rather than per parameter: sixteen pads share
         // one fire address, so a single binding shown beside it would say

@@ -417,6 +417,9 @@ fn gravity_grid() -> vizz_ui::grid_view::GridView {
     }
     vizz_ui::grid_view::GridView {
         names,
+        // The review shot has to show what the app shows, or it is a
+        // picture of a layout nobody runs.
+        accent: Some(vizz_ui::grid_view::GRAVITY_ACCENT),
         current: Some(1),
         curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
             .iter()

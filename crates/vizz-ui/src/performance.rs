@@ -133,6 +133,76 @@ pub struct PerformanceActions {
     pub clear_slot_binding: Option<(String, f32)>,
 }
 
+
+/// The pane's hairline. Dim on purpose: it marks where the picture is,
+/// and a bright rule would be a bright rectangle in a dark room.
+const PANE_EDGE: egui::Color32 = egui::Color32::from_rgb(0x2C, 0x33, 0x42);
+
+/// Below this window width the desk closes and the layout is one column.
+/// A picture too small to judge beside a grid too tight to hit is worse
+/// than either done properly.
+const DESK_MIN_W: f32 = 1180.0;
+/// The narrowest the control column may be squeezed: sixteen pads plus
+/// their gaps at a size a hand can still hit.
+const COL_MIN_W: f32 = 560.0;
+/// The smallest picture worth calling a preview.
+const PANE_MIN_W: f32 = 420.0;
+
+/// Paint the scrim around `pane`, or over everything when there is none.
+///
+/// Four rects rather than one with a hole, because the point is that
+/// every label keeps an opaque ground while the picture keeps none: a
+/// single translucent sheet would dim the output and still leave text
+/// sitting on whatever a strobe does next.
+fn paint_scrim(
+    ui: &egui::Ui,
+    slots: &[egui::layers::ShapeIdx],
+    full: Vec2,
+    pane: Option<egui::Rect>,
+) {
+    let all = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), full);
+    let ink = egui::Color32::from_rgba_unmultiplied(PANEL_BG.r(), PANEL_BG.g(), PANEL_BG.b(), 242);
+    let fill = |rect: egui::Rect| egui::Shape::rect_filled(rect, 0.0, ink);
+    let none = egui::Shape::Noop;
+    match pane {
+        None => {
+            ui.painter().set(slots[0], fill(all));
+            for slot in &slots[1..] {
+                ui.painter().set(*slot, none.clone());
+            }
+        }
+        Some(pane) => {
+            let pane = pane.intersect(all);
+            // Above, below, left, right.
+            ui.painter().set(
+                slots[0],
+                fill(egui::Rect::from_min_max(all.left_top(), egui::pos2(all.right(), pane.top()))),
+            );
+            ui.painter().set(
+                slots[1],
+                fill(egui::Rect::from_min_max(
+                    egui::pos2(all.left(), pane.bottom()),
+                    all.right_bottom(),
+                )),
+            );
+            ui.painter().set(
+                slots[2],
+                fill(egui::Rect::from_min_max(
+                    egui::pos2(all.left(), pane.top()),
+                    egui::pos2(pane.left(), pane.bottom()),
+                )),
+            );
+            ui.painter().set(
+                slots[3],
+                fill(egui::Rect::from_min_max(
+                    egui::pos2(pane.right(), pane.top()),
+                    egui::pos2(all.right(), pane.bottom()),
+                )),
+            );
+        }
+    }
+}
+
 /// Where the peek toggle's state lives between frames.
 fn peek_id() -> egui::Id {
     egui::Id::new("performance-peek")
@@ -181,30 +251,47 @@ pub fn draw(
             // is a thing you do while deciding what to do next.
             let peeking = ui.ctx().data_mut(|d| *d.get_temp_mut_or(peek_id(), false));
             actions.peeking = peeking;
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), full),
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(
-                    PANEL_BG.r(),
-                    PANEL_BG.g(),
-                    PANEL_BG.b(),
-                    // Not zero while peeking: the strip and the faders are
-                    // still readable over a strobe, which is the whole
-                    // reason the scrim exists. Enough goes that the
-                    // picture reads as the picture.
-                    if peeking { 34 } else { 242 },
-                ),
-            );
+            // The scrim is painted *around* the output pane, not over it,
+            // so the picture comes through at full strength while every
+            // label keeps its opaque ground. Four rects — above, below,
+            // left, right — rather than one.
+            //
+            // Reserved now and filled in at the end: the pane's rect is
+            // not known until the fader block has been measured, and a
+            // shape added later would paint over the widgets.
+            let scrim: Vec<egui::layers::ShapeIdx> = (0..4)
+                .map(|_| ui.painter().add(egui::Shape::Noop))
+                .collect();
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
 
             let inner_w = full.x - PAD * 2.0;
             ui.add_space(PAD * 0.5);
+            // How wide the control column is, and so how much is left for
+            // the picture.
+            //
+            // A share rather than a fixed width: the sections have to
+            // stay usable, and sixteen pads at their minimum readable
+            // size is what sets the floor. Below the width where both
+            // can hold, the column takes everything and the pane closes
+            // — a two-inch preview beside a cramped grid helps nobody, so
+            // a small window goes back to being the single column it was.
+            let desk = full.x >= DESK_MIN_W && !peeking;
+            let col_w = if desk {
+                (inner_w * 0.52).clamp(COL_MIN_W, inner_w - PANE_MIN_W - PAD)
+            } else {
+                inner_w
+            };
             ui.horizontal(|ui| {
                 ui.add_space(PAD);
                 ui.vertical(|ui| {
                     ui.set_width(inner_w);
                     status_strip(ui, registry, state, &mut actions, inner_w);
                     ui.add_space(10.0);
+                    // Where the picture starts, measured rather than
+                    // assumed: the strip wraps at narrow widths.
+                    let pane_top = ui.cursor().top();
+                    ui.scope(|ui| {
+                    ui.set_width(col_w);
 
                     // Everything between the status strip and the faders
                     // stands down while peeking. Dimming it instead was
@@ -274,6 +361,13 @@ pub fn draw(
                             .color(INK_4),
                         );
                     }
+                    });
+                    // The faders span the full width under both columns.
+                    // They are the one row played continuously, so they
+                    // get the whole edge rather than sharing it with the
+                    // picture — and a fader you have to aim at is a fader
+                    // you miss.
+                    ui.set_width(inner_w);
                     // Whatever vertical space is left goes to the faders,
                     // which are the thing you actually play. Measured from
                     // the cursor rather than guessed, so adding a row above
@@ -285,6 +379,19 @@ pub fn draw(
                     // reserving for, which is exactly the bottom row of
                     // text it pushed off the window.
                     let mut left = (full.y - used - PAD).max(FADER_ABS_MIN + FADER_CHROME + 6.0);
+                    if desk {
+                        // Same reasoning as peeking, for the same reason:
+                        // faders that swell to fill whatever the sections
+                        // did not use would eat the picture from below,
+                        // and how tall they are would depend on how many
+                        // scenes happen to be stored. Fixed share, pinned
+                        // to the bottom edge.
+                        left = left.min(full.y * 0.30);
+                        let gap = full.y - PAD - used - left;
+                        if gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                    }
                     if peeking {
                         // The point of standing the other rows down is to
                         // see the output, and faders that grow to fill the
@@ -306,6 +413,40 @@ pub fn draw(
                         }
                     }
                     faders(ui, registry, macros, state, &mut actions, inner_w, left);
+
+                    // The hole the picture comes through.
+                    //
+                    // In desk mode it is the right column between the
+                    // status strip and the faders; while peeking it is
+                    // the whole band the stood-down sections vacated.
+                    // Otherwise there is no hole and the scrim is one
+                    // sheet, exactly as before.
+                    let pane = if desk {
+                        Some(egui::Rect::from_min_max(
+                            egui::pos2(PAD + col_w + PAD, pane_top),
+                            egui::pos2(full.x - PAD, full.y - PAD - left - 6.0),
+                        ))
+                    } else if peeking {
+                        Some(egui::Rect::from_min_max(
+                            egui::pos2(PAD, pane_top),
+                            egui::pos2(full.x - PAD, full.y - PAD - left - 6.0),
+                        ))
+                    } else {
+                        None
+                    };
+                    paint_scrim(ui, &scrim, full, pane);
+                    if let Some(pane) = pane {
+                        // A hairline, so the pane reads as the output
+                        // rather than as space nobody got round to
+                        // filling. Faint enough that a dark frame does
+                        // not draw a bright box around itself.
+                        ui.painter().rect_stroke(
+                            pane,
+                            2.0,
+                            egui::Stroke::new(1.0, PANE_EDGE),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 });
             });
         });
@@ -1664,6 +1805,33 @@ mod tests {
         /// Set by [`render_peeking`] so the harness can put the context
         /// into the peeking state before the layout reads it.
         static RENDER_PEEK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+
+    /// The desk: output beside the controls, not behind them.
+    ///
+    /// Peeking answers "let me see the output" but not "let me see it
+    /// while I fire a scene" — the grid is exactly what stands down to
+    /// make the room. At a width that can carry both, the sections take
+    /// a column and the picture takes the rest.
+    #[test]
+    fn a_wide_window_puts_the_output_beside_the_controls() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        macros.set(0, Some("/particles/size".to_string()));
+
+        // Wide: everything is still there, because nothing had to stand
+        // down to make room for the picture.
+        let text = render_at(&mut macros, &reg, &MidiView::default(), None, None, 1440.0);
+        for want in ["SCENES", "PUNCH", "CONTROLS", "size"] {
+            assert!(text.contains(want), "{want} went missing on a wide window: {text}");
+        }
+
+        // Narrow: the desk closes rather than serving a preview too
+        // small to judge beside a grid too tight to hit.
+        let text = render_at(&mut macros, &reg, &MidiView::default(), None, None, 900.0);
+        assert!(text.contains("SCENES"), "the narrow layout lost the grid: {text}");
+        assert!(text.contains("size"), "the narrow layout lost the faders: {text}");
     }
 
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {

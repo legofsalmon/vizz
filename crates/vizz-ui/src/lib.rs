@@ -24,6 +24,10 @@ use winit::window::Window;
 
 pub use graph_view::GraphView;
 pub use performance::{PerformanceActions, PerformanceState};
+/// Re-exported so callers can name a colour without depending on
+/// egui directly — the app already speaks to the UI through this crate.
+pub use egui::Color32;
+
 pub use panel::{
     AudioEdits, AudioView, LiveCloudStatus, MidiView, OutputSetup, OutputStatus, PanelActions,
     PanelState, PresetEntry, RecordSetup, RecordingView, VideoSources, VideoStatus,

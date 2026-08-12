@@ -28,15 +28,45 @@ pub const SLOTS: usize = 16;
 /// goes with it. So the row divides up what it is given instead, with a
 /// floor below which the pads stop being hittable and the row is better
 /// off overflowing visibly than shrinking to nothing.
-fn pad_size(available: f32) -> egui::Vec2 {
-    let cols = SLOTS as f32;
+/// Pad width for a given number of columns.
+fn pad_size_for(cols: usize, available: f32) -> egui::Vec2 {
+    let cols = cols as f32;
     let each = (available - (cols - 1.0) * GAP) / cols;
     vec2(each.clamp(34.0, 96.0), 46.0)
+}
+
+/// Below this, a pad shows its number and elides its name to nothing
+/// useful — "intro" becomes "intr", "build" becomes "buil", and a grid
+/// you have to read twice is a grid you fire the wrong pad from.
+const NAME_LEGIBLE: f32 = 58.0;
+
+/// Sixteen across, or eight across twice.
+///
+/// A single row is better when it fits: sixteen pads in one line is one
+/// saccade, and the slot numbers run left to right the way they do on a
+/// controller. It stops being better the moment the names stop fitting,
+/// which is what happens as soon as the grid shares its width with
+/// anything — the two-column layout put it in half a window and every
+/// name lost its second half.
+fn columns(available: f32) -> usize {
+    if pad_size_for(SLOTS, available).x >= NAME_LEGIBLE {
+        SLOTS
+    } else {
+        SLOTS / 2
+    }
 }
 
 const GAP: f32 = 4.0;
 
 const FILLED: Color32 = vizz_design::surface::SLOT;
+
+/// The gravity grid's fill.
+///
+/// Violet rather than a second blue: it has to separate from the scene
+/// pads at a glance in a dark room, which two neighbouring blues would
+/// not. Defined here rather than at the call site so the app and the
+/// review harness cannot drift apart about what gravity looks like.
+pub const GRAVITY_ACCENT: Color32 = Color32::from_rgb(0x46, 0x3A, 0x6B);
 const EMPTY: Color32 = vizz_design::surface::SLOT_EMPTY;
 const CURRENT: Color32 = crate::theme::CURRENT;
 const ARRIVING: Color32 = vizz_design::accent::ARRIVING;
@@ -90,6 +120,14 @@ pub struct GridView {
     /// pads share one parameter — the useful question is "which of these
     /// is mapped", and a single row in the panel cannot answer it.
     pub midi: Vec<Option<String>>,
+    /// The colour a stored pad is filled with.
+    ///
+    /// Scenes and gravity are the same widget sixteen times over, one
+    /// above the other, distinguished only by an 11px caption — and
+    /// firing a gravity pad when you meant a scene is not recoverable,
+    /// because there is no undo. Colour is the only difference that
+    /// survives a glance in a dark room.
+    pub accent: Option<Color32>,
     /// The slot whose MIDI binding is being learned, waiting for a
     /// control to arrive.
     pub learning: Option<usize>,
@@ -120,6 +158,7 @@ impl Default for GridView {
             auto_phase: None,
             upcoming: None,
             midi: vec![None; SLOTS],
+            accent: None,
             learning: None,
             midi_available: false,
             noun: "scene",
@@ -225,9 +264,10 @@ pub fn draw_with(ui: &mut egui::Ui, view: &GridView, state: &mut GridState) -> G
 }
 
 fn pads(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mut GridActions) {
-    let cols = SLOTS;
     // Measured once, before the first row narrows it.
-    let size = pad_size(ui.available_width());
+    let avail = ui.available_width();
+    let cols = columns(avail);
+    let size = pad_size_for(cols, avail);
     for row in 0..SLOTS.div_ceil(cols) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
@@ -253,7 +293,11 @@ fn pad(
     let name = view.names.get(slot).and_then(|n| n.as_deref());
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter();
-    let base = if name.is_some() { FILLED } else { EMPTY };
+    let base = if name.is_some() {
+        view.accent.unwrap_or(FILLED)
+    } else {
+        EMPTY
+    };
     p.rect_filled(rect, 3.0, base);
 
     // The blend, filling left to right. Drawn under the label so a long
@@ -750,6 +794,27 @@ fn rename_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grid that has to share its width wraps rather than eliding.
+    ///
+    /// Sixteen across is one saccade and the right shape when it fits.
+    /// It stopped fitting the moment the layout put the grid in half a
+    /// window: every name lost its second half, so "intro" and "invert"
+    /// both read as "inv…", and the pads you fire are told apart by the
+    /// name rather than the number.
+    #[test]
+    fn a_narrow_grid_wraps_instead_of_eliding_its_names() {
+        // Full width: one row of sixteen.
+        assert_eq!(columns(1400.0), SLOTS, "a wide grid should stay one row");
+        // Half a 1440 window, which is what the two-column layout gives
+        // it: two rows of eight, so the names survive.
+        assert_eq!(columns(700.0), SLOTS / 2, "a narrow grid should wrap");
+        // And wrapping actually buys legible width, or it bought nothing.
+        assert!(
+            pad_size_for(columns(700.0), 700.0).x >= NAME_LEGIBLE,
+            "wrapped pads are still too narrow to name"
+        );
+    }
 
     fn view() -> GridView {
         let mut names = vec![None; SLOTS];
