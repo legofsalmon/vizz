@@ -100,6 +100,16 @@ pub mod surface {
     pub const BASE: Color32 = Color32::from_rgb(23, 25, 30);
     /// Set into the base: palette frames, inset lists.
     pub const WELL: Color32 = Color32::from_rgb(30, 33, 38);
+    /// A slot milled into the deck — the one control on this screen that
+    /// is a hole rather than a surface.
+    ///
+    /// Below `BASE` on purpose. It is the only well value that becomes
+    /// *more* distinct when a white output frame lifts the ground
+    /// through the performance scrim: nine points below the ground at
+    /// rest, twenty-one below it under a strobe, where a raised block
+    /// goes the other way and all but vanishes. It also lowers the
+    /// deck's total emitted light in a dark room, which is the point.
+    pub const GROOVE: Color32 = Color32::from_rgb(14, 16, 21);
     /// Touchable: button fills, fader tracks, node bodies.
     pub const RAISED: Color32 = Color32::from_rgb(38, 41, 48);
 
@@ -153,6 +163,9 @@ pub mod accent {
 
     /// The master fader is red so a hand finds it without reading.
     pub const MASTER: Color32 = Color32::from_rgb(178, 78, 78);
+    /// The master, under a hand.
+    pub const MASTER_BRIGHT: Color32 = Color32::from_rgb(212, 104, 104);
+
     pub const MASTER_INK: Color32 = Color32::from_rgb(226, 150, 150);
 
     /// A transition in flight — the pad being blended to.
@@ -275,6 +288,18 @@ pub mod motion {
     /// mean it, short enough that a stray first click cannot ambush a
     /// press half a song later.
     pub const ARM_WINDOW: f64 = 3.0;
+
+    /// A value that arrived from somewhere other than the performer's
+    /// own hand, travelling to where it now is.
+    ///
+    /// Long enough to read as travel, short enough that a controller
+    /// sweep still feels attached to the hand on it. A hand on the
+    /// fader itself gets none of this — under your own hand a fader
+    /// must be exactly where you put it, with no lag to fight.
+    pub const SETTLE: f32 = 0.14;
+
+    /// A state settling: a rim colour under a pointer.
+    pub const TOUCH: f32 = 0.07;
 
     /// Inline status fades: stale feedback next to a changed surface
     /// reads as a fresh result, so it goes. Failures hold longer —
