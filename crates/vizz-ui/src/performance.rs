@@ -142,9 +142,10 @@ const PANE_EDGE: egui::Color32 = egui::Color32::from_rgb(0x2C, 0x33, 0x42);
 /// A picture too small to judge beside a grid too tight to hit is worse
 /// than either done properly.
 const DESK_MIN_W: f32 = 1180.0;
-/// The narrowest the control column may be squeezed: sixteen pads plus
-/// their gaps at a size a hand can still hit.
-const COL_MIN_W: f32 = 560.0;
+/// The narrowest the control column may be squeezed: eight gravity pads
+/// plus their gaps at a size a hand can still hit. Sixteen used to set
+/// this, before the scene grid moved to the deck.
+const COL_MIN_W: f32 = 470.0;
 /// The smallest picture worth calling a preview.
 const PANE_MIN_W: f32 = 420.0;
 
@@ -201,6 +202,15 @@ fn paint_scrim(
             );
         }
     }
+}
+
+/// The CONTROLS caption and its hint line, which sit between the pads
+/// and the faders and so belong to the deck's height.
+const CAPTION_H: f32 = 34.0;
+
+/// Where last frame's measured scene-block height lives.
+fn scene_h_id() -> egui::Id {
+    egui::Id::new("performance-scene-h")
 }
 
 /// Where the peek toggle's state lives between frames.
@@ -277,7 +287,11 @@ pub fn draw(
             // a small window goes back to being the single column it was.
             let desk = full.x >= DESK_MIN_W && !peeking;
             let col_w = if desk {
-                (inner_w * 0.52).clamp(COL_MIN_W, inner_w - PANE_MIN_W - PAD)
+                // Narrower now that the scene grid has gone to the deck.
+                // What is left has to carry the gravity grid at eight
+                // pads wide, which is what sets the floor; everything
+                // else in the column is a single row.
+                (inner_w * 0.42).clamp(COL_MIN_W, inner_w - PANE_MIN_W - PAD)
             } else {
                 inner_w
             };
@@ -290,8 +304,20 @@ pub fn draw(
                     // Where the picture starts, measured rather than
                     // assumed: the strip wraps at narrow widths.
                     let pane_top = ui.cursor().top();
-                    ui.scope(|ui| {
-                    ui.set_width(col_w);
+                    // An explicitly allocated region, not a scope with a
+                    // width set on it.
+                    //
+                    // `set_width` is a minimum and `set_max_width` did
+                    // not hold either: the layer strip and the gravity
+                    // grid both size themselves from `available_width`,
+                    // kept reading the parent's, and drew straight across
+                    // the output pane. Allocating the rect is the only
+                    // form that actually bounds what the children can
+                    // see. Zero height means "as tall as the content".
+                    ui.allocate_ui_with_layout(
+                    egui::vec2(col_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
 
                     // Everything between the status strip and the faders
                     // stands down while peeking. Dimming it instead was
@@ -305,13 +331,7 @@ pub fn draw(
                         ui.add_space(10.0);
                     }
 
-                    if !peeking && layer_strip(ui, registry) {
-                        ui.add_space(10.0);
-                    }
-
-                    if !peeking {
-                        section(ui, "SCENES");
-                        actions.grid = crate::grid_view::draw(ui, state.grid);
+                    if !peeking && layer_strip(ui, registry, col_w) {
                         ui.add_space(10.0);
                     }
 
@@ -328,8 +348,10 @@ pub fn draw(
                         if gravity.names.iter().all(|n| n.is_none()) {
                             gravity_ghost(ui, &mut actions);
                         } else {
+                            let mut bounded = gravity.clone();
+                            bounded.width = Some(col_w);
                             actions.gravity =
-                                crate::grid_view::draw_with_id(ui, gravity, "gravity-grid");
+                                crate::grid_view::draw_with_id(ui, &bounded, "gravity-grid");
                         }
                         ui.add_space(10.0);
                     }
@@ -340,33 +362,21 @@ pub fn draw(
                         ui.add_space(10.0);
                     }
 
-                    if !peeking {
-                        section(ui, "CONTROLS");
-                        // The faders are user-chosen, and the gesture that
-                        // chooses them is clicking text that does not look
-                        // clickable. One line naming it is the cheapest fix;
-                        // the hovers on the label and the "assign" placeholder
-                        // say the same thing up close.
-                        //
-                        // Both stand down while peeking. A caption pinned to
-                        // the top of the screen naming a block at the bottom
-                        // of it labels nothing, and a line teaching
-                        // reassignment is the wrong thing to spend the
-                        // output's screen on.
-                        ui.label(
-                            egui::RichText::new(
-                                "click a fader's name to reassign it · right-click a fader to reset it",
-                            )
-                            .size(11.0)
-                            .color(INK_4),
-                        );
-                    }
                     });
-                    // The faders span the full width under both columns.
-                    // They are the one row played continuously, so they
-                    // get the whole edge rather than sharing it with the
-                    // picture — and a fader you have to aim at is a fader
-                    // you miss.
+                    // The bottom deck: the pads and the faders, both
+                    // full width, under both columns.
+                    //
+                    // These are the two things played rather than set,
+                    // and they belong together — a controller puts its
+                    // pads above its faders for the same reason. In a
+                    // column the grid also had to wrap to two rows of
+                    // eight to keep its names; across the full width
+                    // sixteen pads are 80 points each and every name
+                    // fits on one line.
+                    //
+                    // It separates the two grids as well, which colour
+                    // alone was only papering over: scenes are on the
+                    // deck you play, gravity is in the column you edit.
                     ui.set_width(inner_w);
                     // Whatever vertical space is left goes to the faders,
                     // which are the thing you actually play. Measured from
@@ -386,11 +396,45 @@ pub fn draw(
                         // and how tall they are would depend on how many
                         // scenes happen to be stored. Fixed share, pinned
                         // to the bottom edge.
-                        left = left.min(full.y * 0.30);
-                        let gap = full.y - PAD - used - left;
+                        // How tall the scene block was last frame.
+                        //
+                        // Its height depends on what is in it — whether
+                        // autopilot is armed, whether a pad is waiting —
+                        // so it cannot be computed before drawing it, and
+                        // the deck has to be positioned before. Last
+                        // frame's measurement is right in every frame but
+                        // the one where it changes, and wrong by a row
+                        // for a sixtieth of a second in that one.
+                        let scene_h = ui
+                            .ctx()
+                            .data_mut(|d| *d.get_temp_mut_or(scene_h_id(), 150.0f32));
+                        // What is left once the pads have taken theirs.
+                        // Sizing the faders before subtracting the pads
+                        // ran them off the bottom edge by exactly the
+                        // height of the block that had been added above
+                        // them.
+                        left = (full.y - PAD - used - scene_h)
+                            .max(FADER_ABS_MIN + FADER_CHROME + 6.0)
+                            .min(full.y * 0.26);
+                        let gap = full.y - PAD - used - left - scene_h;
                         if gap > 0.0 {
                             ui.add_space(gap);
                         }
+                    }
+                    // The pads, at the top of the deck.
+                    let deck_top = ui.cursor().top();
+                    if !peeking {
+                        let top = deck_top;
+                        section(ui, "SCENES");
+                        let mut deck = state.grid.clone();
+                        deck.width = Some(inner_w);
+                        actions.grid = crate::grid_view::draw(ui, &deck);
+                        ui.add_space(10.0);
+                        // Measured to include the caption below, which is
+                        // part of the block the gap has to account for.
+                        let measured = ui.cursor().top() - top + CAPTION_H;
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(scene_h_id(), measured));
                     }
                     if peeking {
                         // The point of standing the other rows down is to
@@ -412,6 +456,25 @@ pub fn draw(
                             ui.add_space(gap);
                         }
                     }
+                    if !peeking {
+                        section(ui, "CONTROLS");
+                        // The faders are user-chosen, and the gesture that
+                        // chooses them is clicking text that does not look
+                        // clickable. One line naming it is the cheapest fix;
+                        // the hovers on the label and the "assign"
+                        // placeholder say the same thing up close.
+                        //
+                        // Stands down while peeking, along with the pads:
+                        // a line teaching reassignment is the wrong thing
+                        // to spend the output's screen on.
+                        ui.label(
+                            egui::RichText::new(
+                                "click a fader's name to reassign it · right-click a fader to reset it",
+                            )
+                            .size(11.0)
+                            .color(INK_4),
+                        );
+                    }
                     faders(ui, registry, macros, state, &mut actions, inner_w, left);
 
                     // The hole the picture comes through.
@@ -424,7 +487,7 @@ pub fn draw(
                     let pane = if desk {
                         Some(egui::Rect::from_min_max(
                             egui::pos2(PAD + col_w + PAD, pane_top),
-                            egui::pos2(full.x - PAD, full.y - PAD - left - 6.0),
+                            egui::pos2(full.x - PAD, deck_top - 6.0),
                         ))
                     } else if peeking {
                         Some(egui::Rect::from_min_max(
@@ -653,7 +716,7 @@ fn punch_row(
 /// budget. All controls write the registry directly, the way faders do;
 /// the labels come from the parameter definitions, so the strip cannot
 /// drift from what the shader actually has.
-fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry) -> bool {
+fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool {
     let layer_ids: Vec<_> = (1..=8)
         .map_while(|i| {
             Some((
@@ -676,8 +739,22 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry) -> bool {
     }
 
     section(ui, "LAYERS");
+    // How many layers fit on a line at this width.
+    //
+    // A layer is a swatch, a kind, a blend mode and two numbers — about
+    // 250 points — so four of them need a thousand, which is more than
+    // the control column has. Left as one row it ran past the column and
+    // drew over the output pane beside it; `horizontal_wrapped` does not
+    // help, because these widgets size themselves from the width the Ui
+    // reports and inside a bounded column that is still the parent's.
+    let per_row = ((width / LAYER_W).floor() as usize).max(1);
+    for (row, chunk) in layer_ids.chunks(per_row).enumerate() {
     ui.horizontal(|ui| {
-        for (i, (kind, blend, opacity, freq, color)) in layer_ids.iter().enumerate() {
+        for (col, (kind, blend, opacity, freq, color)) in chunk.iter().enumerate() {
+            // Index within the whole strip, not within this row: the
+            // number is the layer's identity and wrapping must not
+            // renumber it.
+            let i = row * per_row + col;
             let kind_def = &registry.defs()[kind.index()];
             let cur = registry.target(*kind).round();
             let on = cur >= 0.5;
@@ -768,8 +845,13 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry) -> bool {
             ui.add_space(10.0);
         }
     });
+    }
     true
 }
+
+/// Roughly what one layer's controls need on a line: swatch, kind,
+/// blend mode and two numbers.
+const LAYER_W: f32 = 250.0;
 
 #[allow(clippy::too_many_arguments)]
 fn punch_button(

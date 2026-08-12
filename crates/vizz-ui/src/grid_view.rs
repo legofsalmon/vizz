@@ -88,6 +88,7 @@ const LABEL: Color32 = vizz_design::ink::SECONDARY;
 
 /// What the grid row needs to draw itself. Names rather than the `Grid`
 /// itself so this crate does not depend on the scene module's internals.
+#[derive(Clone)]
 pub struct GridView {
     /// Cell names in slot order; `None` for an empty pad.
     pub names: Vec<Option<String>>,
@@ -120,6 +121,8 @@ pub struct GridView {
     /// pads share one parameter — the useful question is "which of these
     /// is mapped", and a single row in the panel cannot answer it.
     pub midi: Vec<Option<String>>,
+    /// Lay out in this width rather than whatever the Ui reports.
+    pub width: Option<f32>,
     /// The colour a stored pad is filled with.
     ///
     /// Scenes and gravity are the same widget sixteen times over, one
@@ -158,6 +161,7 @@ impl Default for GridView {
             auto_phase: None,
             upcoming: None,
             midi: vec![None; SLOTS],
+            width: None,
             accent: None,
             learning: None,
             midi_available: false,
@@ -264,8 +268,15 @@ pub fn draw_with(ui: &mut egui::Ui, view: &GridView, state: &mut GridState) -> G
 }
 
 fn pads(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mut GridActions) {
-    // Measured once, before the first row narrows it.
-    let avail = ui.available_width();
+    // The width to lay out in, from the caller when it has bounded a
+    // column and from the Ui otherwise.
+    //
+    // `available_width` alone was not enough: inside a column built with
+    // `allocate_ui_with_layout` it still reported the parent's width, so
+    // the grid laid out eight pads across a span wider than the column
+    // and drew the last one over the output pane beside it. A number the
+    // caller already knows beats a number the layout is guessing at.
+    let avail = view.width.unwrap_or_else(|| ui.available_width());
     let cols = columns(avail);
     let size = pad_size_for(cols, avail);
     for row in 0..SLOTS.div_ceil(cols) {

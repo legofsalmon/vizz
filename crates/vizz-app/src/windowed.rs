@@ -1945,6 +1945,9 @@ fn grid_view(
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
         accent: None,
+        // Set by the performance layout, which is the only thing that
+        // knows how wide the column it lands in is.
+        width: None,
         // Which pads a controller can fire, and which one is waiting for a
         // button. Per pad rather than per parameter: sixteen pads share
         // one fire address, so a single binding shown beside it would say
