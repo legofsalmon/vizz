@@ -1080,6 +1080,11 @@ impl App {
                 .registry
                 .set(self.params.punch_flash, if pressed { 1.0 } else { 0.0 });
         }
+        // What the UI costs, measured rather than argued about. It is
+        // CPU work on the render thread and it scales with what is on
+        // screen, so when a frame goes over budget this is the number
+        // that says whether to look here or at the render passes.
+        let ui_start = Instant::now();
         let actions = if let Some(preview) = &preview
             && state.gui.will_draw()
         {
@@ -1253,6 +1258,10 @@ impl App {
         } else {
             Ok(vizz_ui::PanelActions::default())
         };
+        // Zero when the UI did not draw, which is the honest answer:
+        // `--no-gui` and a hidden panel really do cost nothing here, and
+        // that is exactly what makes this number worth reading.
+        let ui_time = ui_start.elapsed();
         let mut pending_output = None;
         let mut pending_device = None;
         let mut pending_text_cloud = None;
@@ -1612,6 +1621,7 @@ impl App {
 
         let elapsed = frame_start.elapsed();
         state.gui.push_frame_time(elapsed.as_secs_f32() * 1e3);
+        self.engine.end_ui(ui_time);
         if let Some(snap) = self.engine.end_frame(elapsed) {
             log::info!("{}", snap.log_line());
         }
@@ -1939,7 +1949,13 @@ fn preset_entries(library: &vizz_mod::preset::Library) -> Vec<vizz_ui::PresetEnt
                 .user(preset::Kind::Look)
                 .iter()
                 .map(|name| vizz_ui::PresetEntry {
-                    source: preset::by_name(name).and_then(|p| p.source),
+                    // From the library's cache, not the disk. Reading it
+                    // with `by_name` meant a file read and a full JSON
+                    // parse per saved look, per frame, to recover one
+                    // optional string — the exact cost the library was
+                    // built to remove, walked back in through the door
+                    // the source grouping opened.
+                    source: library.source_of(name).map(str::to_owned),
                     name: name.clone(),
                     builtin: false,
                     about: None,

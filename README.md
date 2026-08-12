@@ -133,6 +133,34 @@ optionally the final frame as a PNG. This is the regression benchmark:
 run it before and after a change and diff the reports. It exercises the
 exact frame path of a live set minus the swapchain.
 
+### Finding out where a frame goes
+
+Every two seconds vizz logs a health line:
+
+```
+fps 118.4 | frame avg  8.42ms p95  9.10ms p99 11.30ms worst 14.02ms | over-budget 0.2% (total 12) | rss 412 MiB | cpu 91% | ui  1.83ms
+```
+
+`ui` is the part of the frame spent building and drawing the interface —
+CPU work on the render thread, which scales with what is on screen rather
+than with the output size. The rest is the render passes and the wait for
+vsync. When a frame goes over budget that split is what says which half to
+look at, and it is the number to quote in a bug report.
+
+Two readings worth knowing:
+
+- **`avg` high and `p99` close to it** is uniform work — every frame costs
+  more. **`avg` high while `p95` is low and `worst` is in the hundreds of
+  milliseconds** is a periodic stall dragging the mean, which is a
+  completely different problem with completely different causes.
+- **Run once with `--no-gui`** to get the frame cost with the whole
+  interface out of the picture. The health line still prints, so this is a
+  one-command A/B for "is it the visuals or the panel".
+
+Note that `over-budget` is measured against 60 fps. On a 120 Hz display
+the real deadline is 8.33 ms, so read `frame avg` rather than the
+percentage there.
+
 ### NDI output (all platforms)
 
 ```sh

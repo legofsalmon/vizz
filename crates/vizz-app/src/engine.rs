@@ -588,6 +588,15 @@ impl FrameEngine {
 
     /// Record the finished frame; returns a snapshot when the periodic
     /// health log is due (every 2s) so callers can print/display it.
+    /// Record how long the frame spent in the UI, before `end_frame`.
+    ///
+    /// Separate from `end_frame` because headless has no UI at all and
+    /// must not report a zero that reads as "the UI is free" — it
+    /// reports nothing, and the health line omits the field.
+    pub fn end_ui(&mut self, ui_time: Duration) {
+        self.health.on_ui(ui_time);
+    }
+
     pub fn end_frame(&mut self, frame_time: Duration) -> Option<HealthSnapshot> {
         self.health.on_frame(frame_time);
         if self.last_log.elapsed() >= Duration::from_secs(2) {

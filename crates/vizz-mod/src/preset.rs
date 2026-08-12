@@ -268,6 +268,19 @@ pub fn list_kind(kind: Kind) -> Vec<String> {
 /// need this at all; anything the app does refreshes the cache itself.
 const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Read the `source` field of each named look, once per rescan.
+///
+/// The whole preset is parsed and thrown away, which is what `by_name`
+/// did per frame; doing it here means it happens on the library's own
+/// two-second cadence instead, and only when the listing actually
+/// changed underneath us.
+fn read_sources(names: &[String]) -> std::collections::HashMap<String, Option<String>> {
+    names
+        .iter()
+        .map(|name| (name.clone(), by_name(name).and_then(|p| p.source)))
+        .collect()
+}
+
 /// A cached listing of the preset library.
 ///
 /// The panel and both grids ask the same two questions every frame: what
@@ -287,6 +300,15 @@ const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
 pub struct Library {
     looks: Vec<String>,
     gravity: Vec<String>,
+    /// What each user look was built on, cached alongside its name.
+    ///
+    /// The panel groups its list by source, and reading that field meant
+    /// `by_name` per look per frame — the same file-read-and-parse this
+    /// cache exists to prevent, reintroduced through a different door
+    /// once the grouping was added. Source is a property of the file, so
+    /// it belongs on the same refresh as the name; a look whose source
+    /// changed is a look that was rewritten, which refreshes this anyway.
+    look_sources: std::collections::HashMap<String, Option<String>>,
     scanned: std::time::Instant,
 }
 
@@ -298,8 +320,10 @@ impl Default for Library {
 
 impl Library {
     pub fn new() -> Self {
+        let looks = list_kind(Kind::Look);
         Self {
-            looks: list_kind(Kind::Look),
+            look_sources: read_sources(&looks),
+            looks,
             gravity: list_kind(Kind::Gravity),
             scanned: std::time::Instant::now(),
         }
@@ -319,8 +343,16 @@ impl Library {
     /// whenever the interval next comes round.
     pub fn refresh(&mut self) {
         self.looks = list_kind(Kind::Look);
+        self.look_sources = read_sources(&self.looks);
         self.gravity = list_kind(Kind::Gravity);
         self.scanned = std::time::Instant::now();
+    }
+
+    /// What a user look was built on, from the cache rather than the
+    /// disk. `None` for a built-in, an unknown name, or a look saved
+    /// before presets recorded a source.
+    pub fn source_of(&self, name: &str) -> Option<&str> {
+        self.look_sources.get(name)?.as_deref()
     }
 
     /// User preset names for one layer, alphabetical.
@@ -990,6 +1022,57 @@ mod tests {
         lib.refresh();
         assert!(lib.has(Kind::Look, "later"));
         assert!(lib.all(Kind::Look).iter().any(|n| n == "later"));
+    }
+
+    /// The library knows what each look was built on without going to
+    /// the disk for it.
+    ///
+    /// The panel groups its preset list by source, and read that field
+    /// with `by_name` — a file read and a full JSON parse per saved
+    /// look, on the render thread, once per rendered frame. The library
+    /// exists precisely to stop that, and the grouping walked it back in
+    /// through a different door. So the source is cached beside the
+    /// name, and this test says both halves out loud: the value is
+    /// right, and it tracks a rewrite.
+    #[test]
+    fn the_library_caches_what_each_look_was_built_on() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-sources");
+        save_kind(
+            Kind::Look,
+            "a sphere look",
+            &Preset { values: Default::default(), source: Some("sphere".into()) },
+        )
+        .unwrap();
+        save_kind(
+            Kind::Look,
+            "an old look",
+            &Preset { values: Default::default(), source: None },
+        )
+        .unwrap();
+
+        let mut lib = Library::new();
+        assert_eq!(lib.source_of("a sphere look"), Some("sphere"));
+        // A look saved before sources existed has nothing to say, which
+        // is different from a look this library has never heard of —
+        // both read as None here, and both group under "other".
+        assert_eq!(lib.source_of("an old look"), None);
+        assert_eq!(lib.source_of("not a look at all"), None);
+
+        // Saving over it and refreshing moves the cached source with it.
+        // Without this the panel would group a look under whatever it
+        // used to be built on until the app was restarted.
+        save_kind(
+            Kind::Look,
+            "a sphere look",
+            &Preset { values: Default::default(), source: Some("text".into()) },
+        )
+        .unwrap();
+        lib.refresh();
+        assert_eq!(
+            lib.source_of("a sphere look"),
+            Some("text"),
+            "the cached source did not follow the file"
+        );
     }
 
     /// The two layers are separate libraries, and a cache that merged them

@@ -103,14 +103,87 @@ impl Format {
     }
 }
 
+/// How long a free-space reading is reused before the volumes are asked
+/// again.
+///
+/// Free space moves slowly even while writing hard, and every caller
+/// here is either a once-a-second safety check or a number printed in a
+/// panel. A second is far fresher than either needs.
+const SPACE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The retained volume list, and when it was last refreshed.
+///
+/// Retained on purpose, not rebuilt per call. `Disks::new_with_refreshed_list`
+/// constructs a fresh list with `DiskRefreshKind::everything()`, and on
+/// macOS a *fresh* `Disk` always has `kind == Unknown(-1)`, which defeats
+/// sysinfo's own "already known" short-circuit — so every call paid two
+/// IOKit registry traversals per volume on top of the CoreFoundation
+/// capacity query. Keeping the list alive and asking only for `storage`
+/// is what makes the refresh cheap; the cache on top is what makes it
+/// rare.
+static VOLUMES: Mutex<Option<(Instant, sysinfo::Disks)>> = Mutex::new(None);
+
+/// How many times the volumes have actually been asked.
+///
+/// Not diagnostics for their own sake: "is this cached" is otherwise
+/// only testable by timing, and a timing assertion on a syscall is a
+/// flaky test that gets deleted the first time CI is busy. Counting the
+/// refreshes states the property directly. An atomic increment on a
+/// path that already takes a mutex costs nothing.
+pub static SPACE_REFRESHES: AtomicU64 = AtomicU64::new(0);
+
 /// Free space on the volume `path` lives on.
 ///
 /// `None` when it cannot be determined — a network volume, a platform
 /// sysinfo does not enumerate. Callers treat that as "cannot check"
 /// rather than "no space", because refusing to record on a machine we
 /// simply could not measure would be the worse failure.
+///
+/// Cached for [`SPACE_TTL`]. The cache lives *here*, in the function
+/// that costs something, rather than in each caller: this was already
+/// throttled at one call site ([`Recorder::disk_low`]) and not at
+/// another — the panel asked it once per rendered frame, which on macOS
+/// is a `getfsstat` over every mount, a CoreFoundation volume-capacity
+/// query per mount, and a pair of IOKit registry walks per volume, all
+/// on the render thread, to fill one number that changes on the scale of
+/// minutes. A trap that has been walked into twice belongs closed at the
+/// bottom, where the next caller cannot re-open it.
 pub fn free_space(path: &Path) -> Option<u64> {
-    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let Ok(mut held) = VOLUMES.lock() else {
+        // A poisoned lock means a panic elsewhere. "Cannot measure" is
+        // the honest answer and the safe one — see above.
+        return None;
+    };
+    let now = Instant::now();
+    match held.as_mut() {
+        Some((at, disks)) if now.duration_since(*at) < SPACE_TTL => {
+            return pick(disks, path);
+        }
+        Some((at, disks)) => {
+            // `false`: keep volumes that have gone away rather than
+            // dropping them, so an unmounted disk reads as its last
+            // known state for a second instead of vanishing mid-answer.
+            disks.refresh_specifics(false, storage_only());
+            SPACE_REFRESHES.fetch_add(1, Ordering::Relaxed);
+            *at = now;
+        }
+        None => {
+            let mut disks = sysinfo::Disks::new();
+            disks.refresh_specifics(false, storage_only());
+            SPACE_REFRESHES.fetch_add(1, Ordering::Relaxed);
+            *held = Some((now, disks));
+        }
+    }
+    held.as_ref().and_then(|(_, disks)| pick(disks, path))
+}
+
+fn storage_only() -> sysinfo::DiskRefreshKind {
+    // Not `everything()`: `kind` and `io_usage` are the two fields that
+    // cost an IOKit lookup each, and neither is ever read here.
+    sysinfo::DiskRefreshKind::nothing().with_storage()
+}
+
+fn pick(disks: &sysinfo::Disks, path: &Path) -> Option<u64> {
     disks
         .list()
         .iter()
@@ -418,6 +491,75 @@ fn write_frame(dir: &Path, index: u64, frame: &MappedFrame, format: Format) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Asking for free space repeatedly asks the *volumes* once.
+    ///
+    /// This is a frame-path property, not a tidiness one. The panel
+    /// calls `free_space` while assembling its state, which happens once
+    /// per rendered frame, and the uncached version enumerated every
+    /// mount each time — on macOS a `getfsstat` over the whole mount
+    /// table, a CoreFoundation volume-capacity query per mount (the
+    /// "important usage" key, which makes APFS recompute purgeable
+    /// accounting), and two IOKit registry traversals per volume. On the
+    /// render thread. To fill one number that changes on the scale of
+    /// minutes.
+    ///
+    /// Counted rather than timed: a timing assertion on a syscall is a
+    /// flaky test that gets deleted the first time CI is busy, and it
+    /// would prove nothing on Linux, where the underlying call is cheap
+    /// and the regression would still be there on the machine that
+    /// matters.
+    ///
+    /// The delta is allowed a little slack because the counter is
+    /// process-wide and other tests in this binary call `free_space`
+    /// too. Slack of a handful against three hundred calls still fails
+    /// loudly if the cache is gone.
+    #[test]
+    fn repeated_free_space_calls_do_not_re_enumerate_the_volumes() {
+        let dir = std::env::temp_dir();
+        // Prime, so the count below cannot include first-time setup.
+        free_space(&dir);
+        let before = SPACE_REFRESHES.load(Ordering::Relaxed);
+        for _ in 0..300 {
+            free_space(&dir);
+        }
+        let asked = SPACE_REFRESHES.load(Ordering::Relaxed) - before;
+        assert!(
+            asked <= 4,
+            "300 calls re-enumerated the volumes {asked} times — the cache is not working"
+        );
+
+        // And it is a cache, not a freeze: past the window it asks again.
+        std::thread::sleep(SPACE_TTL + std::time::Duration::from_millis(50));
+        free_space(&dir);
+        assert!(
+            SPACE_REFRESHES.load(Ordering::Relaxed) > before + asked,
+            "the reading was never refreshed after the window elapsed"
+        );
+    }
+
+    /// The answer itself must survive being cached.
+    ///
+    /// A cache that returns `None` — or somebody else's volume — would
+    /// silently disable the recorder's disk floor, which is the one
+    /// thing standing between a take and a full disk.
+    #[test]
+    fn a_cached_reading_still_names_the_right_volume() {
+        let dir = std::env::temp_dir();
+        let Some(first) = free_space(&dir) else {
+            // Unmeasurable here (a container with an odd mount table) —
+            // the property under test does not exist to be broken.
+            return;
+        };
+        assert!(first > 0, "free space reported as zero on a working volume");
+        for _ in 0..10 {
+            assert_eq!(
+                free_space(&dir),
+                Some(first),
+                "a cached reading changed without the volumes being asked"
+            );
+        }
+    }
 
     /// The rate estimate is what the panel warns with, so it has to be
     /// the right order of magnitude and it has to be pessimistic.
