@@ -40,10 +40,11 @@ const INK_4: Color32 = vizz_design::ink::FAINT;
 const PANEL_BG: Color32 = vizz_design::surface::BASE;
 const TRACK: Color32 = vizz_design::surface::RAISED;
 const FILL: Color32 = vizz_design::accent::FILL;
-const FILL_TOP: Color32 = vizz_design::accent::FILL_BRIGHT;
+const FILL_BRIGHT: Color32 = vizz_design::accent::FILL_BRIGHT;
 const HANDLE: Color32 = vizz_design::surface::HANDLE;
 const MOD: Color32 = vizz_design::accent::MOD;
 const MASTER_FILL: Color32 = vizz_design::accent::MASTER;
+const MASTER_BRIGHT: Color32 = vizz_design::accent::MASTER_BRIGHT;
 const LIVE: Color32 = crate::theme::LIVE;
 /// An output that is not sending: off, in the ink ramp's word for it.
 const DEAD: Color32 = vizz_design::ink::FAINT;
@@ -52,6 +53,8 @@ const LEARN: Color32 = crate::theme::LEARN;
 
 /// Faders per row. Sixteen slots as two rows of eight keeps each one wide
 /// enough to hit and mirrors the grid's sixteen above it.
+const COL_GAP: f32 = 6.0;
+
 const PER_ROW: usize = 8;
 const FADER_MIN_W: f32 = 62.0;
 // Wide enough that a fullscreen 1080p rig gets thumb-sized targets —
@@ -1344,11 +1347,24 @@ fn faders(
     // The set's own count, not a constant: how many faders there are is
     // a saved preference now.
     let count = macros.count();
-    let rows = if height >= two_rows {
-        count.div_ceil(PER_ROW)
-    } else {
-        1
-    };
+    // How many columns the width can actually carry at the minimum
+    // readable fader width — the master's column included, since it is
+    // laid out as one of them.
+    //
+    // Rows used to be decided by height alone. That was survivable while
+    // the count was fixed at sixteen and quietly broken the moment it
+    // could be raised: at twenty-four on a 1280-point window the height
+    // check said one row, twenty-five columns at the 62-point floor
+    // needed 1694 points of a 1252-point lane, and six faders were laid
+    // out past the right edge of the window. They existed, they answered
+    // MIDI, and nobody could see them.
+    let fits_across = (((width + COL_GAP) / (FADER_MIN_W + COL_GAP)).floor() as usize).max(2);
+    let by_width = count.div_ceil(fits_across.saturating_sub(1).max(1));
+    let by_height = if height >= two_rows { count.div_ceil(PER_ROW) } else { 1 };
+    // Width is a hard constraint and height is a preference: a row that
+    // does not fit is off the screen, a row that is short is merely
+    // short. So take whichever asks for more rows.
+    let rows = by_width.max(by_height).max(1);
     let per_row = count.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
@@ -1449,7 +1465,9 @@ fn fader(
             let live = state.values.and_then(|v| v.get(param.index()).copied());
             let modulated = live.filter(|l| (l - value).abs() > (def.max - def.min) * 0.01);
 
-            if let Some(v) = vertical_fader(ui, value, modulated, def, w, h) {
+            if let Some(v) = vertical_fader(
+                ui, value, modulated, def, w, h, slot, FILL, FILL_BRIGHT, state.midi,
+            ) {
                 registry.set(param, v);
             }
             let value = registry.target(param);
@@ -1461,12 +1479,6 @@ fn fader(
                 .label_for(value)
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("{value:.2}"));
-            ui.label(
-                egui::RichText::new(shown)
-                    .size(13.0)
-                    .monospace()
-                    .color(if modulated.is_some() { MOD } else { INK }),
-            );
             // The short name identifies the fader; the full address is only
             // needed when reassigning, so it lives in the tooltip — unless
             // another fader ends in the same word. The shipped layout has
@@ -1494,9 +1506,17 @@ fn fader(
             // one stop down is legible; a label ending in an ellipsis is
             // a label the room has to guess at.
             let (shown_name, size) = fit_label(ui, &shown_name, w);
+            // The name leads, and is the brightest thing in the column.
+            //
+            // It used to sit second and dimmer, under the number. But the
+            // bar has already answered "how much" — that is the entire
+            // job of the column of light above it — so the line touching
+            // the bar should answer "of what". Identity is the one thing
+            // about a fader you cannot read off the picture, and it was
+            // the one thing set in the quietest type.
             if ui
                 .add(
-                    egui::Label::new(egui::RichText::new(shown_name).size(size).color(INK_2))
+                    egui::Label::new(egui::RichText::new(shown_name).size(size).color(INK))
                         .sense(Sense::click())
                         .truncate(),
                 )
@@ -1505,6 +1525,15 @@ fn fader(
             {
                 open_assign(ui, slot);
             }
+            // Then the number, which is the confirmation rather than the
+            // headline — except when something else is moving it, where
+            // amber makes it the thing that catches the eye.
+            ui.label(
+                egui::RichText::new(shown)
+                    .size(11.0)
+                    .monospace()
+                    .color(if modulated.is_some() { MOD } else { INK_2 }),
+            );
             midi_chip(ui, state, actions, addr);
         }
         _ => {
@@ -1725,6 +1754,7 @@ fn is_assign_open(ui: &egui::Ui, slot: usize) -> bool {
 ///
 /// `modulated` is where the value has actually been pushed to, when that
 /// differs from where the fader is set. Returns the new value when moved.
+#[allow(clippy::too_many_arguments)]
 fn vertical_fader(
     ui: &mut egui::Ui,
     value: f32,
@@ -1732,96 +1762,290 @@ fn vertical_fader(
     def: &vizz_params::ParamDef,
     w: f32,
     h: f32,
+    // Which fader this is, so per-fader memory is keyed by identity
+    // rather than by where it happens to sit — a reflow between one and
+    // two rows must not make two faders swap animations.
+    slot: usize,
+    // The colour of the light, and the colour of it under a hand. Passed
+    // so the master is the same widget in a different colour rather than
+    // a second implementation that can drift.
+    fill_colour: egui::Color32,
+    fill_bright: egui::Color32,
+    // Read for the learn state and the MIDI rail.
+    midi: &MidiView,
 ) -> Option<f32> {
     let (min, max) = (def.min, def.max);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click_and_drag());
     // Right-click restores the default, honouring the overlay's promise
     // that this works on any slider — these faders were the exception.
+    let grab_id = egui::Id::new(("fader-grab", slot));
     if response.secondary_clicked() {
+        ui.ctx().data_mut(|d| d.remove::<Grab>(grab_id));
         return Some(def.default);
     }
     let span = (max - min).max(f32::EPSILON);
     let t = ((value - min) / span).clamp(0.0, 1.0);
 
-    let p = ui.painter();
+    // The well is a hole milled into the deck, not a block raised out of
+    // it. That is the whole idea, and it is also the only version that
+    // survives the room: when the output behind the scrim flashes white
+    // the ground lifts, so a raised block closes on it and all but
+    // vanishes, while a hole opens away from it and reads *better*.
     let track = rect.shrink2(vec2(rect.width() * 0.12, 0.0));
-    p.rect_filled(track, 5.0, TRACK);
+    // One inner rect, computed independently of the rim's width, so a
+    // state change can thicken the rim without moving any geometry. A
+    // control that shifts when you approach it is a control you cannot
+    // find in the dark.
+    let inner = track.shrink(1.0);
+    // Paint and input are exact inverses of one another. The old widget
+    // had two sources of truth — the fill grew from an unclamped height
+    // while the handle was clamped six points from each end — so at off
+    // and at full, the two positions that matter most, the indicator sat
+    // still and lied while the value kept moving.
+    let y_of = |t: f32| inner.bottom() - inner.height() * t;
+    let t_of = |y: f32| ((inner.bottom() - y) / inner.height().max(1.0)).clamp(0.0, 1.0);
 
-    // Fill from the bottom: a fader reads as "how much", and a bar growing
-    // upward says that without needing the number.
-    let fill_h = track.height() * t;
-    let fill_rect = egui::Rect::from_min_size(
-        egui::pos2(track.left(), track.bottom() - fill_h),
-        vec2(track.width(), fill_h),
-    );
-    p.rect_filled(fill_rect, 5.0, FILL);
-    // A brighter cap on the fill. The eye finds an edge far faster than it
-    // judges the height of a flat block, which is the whole task here.
-    if fill_h > 3.0 {
+    // Motorised recall: a value that arrived from somewhere other than
+    // this hand travels to where it now is, rather than teleporting.
+    // Under your own hand there is no easing at all — a fader that lags
+    // the hand holding it is a fader you fight.
+    let now = ui.input(|i| i.time);
+    let addr_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        def.addr.hash(&mut h);
+        h.finish()
+    };
+    let held = response.is_pointer_button_down_on();
+    let t_shown = glide(ui, slot, t, addr_hash, now, held);
+
+    let p = ui.painter();
+    p.rect_filled(track, vizz_design::radius::CHIP, vizz_design::surface::GROOVE);
+
+    // The column of light.
+    let edge_y = y_of(t_shown);
+    if inner.bottom() - edge_y >= 0.5 {
+        let lit = if held { fill_bright } else { fill_colour };
         p.rect_filled(
-            egui::Rect::from_min_size(fill_rect.left_top(), vec2(track.width(), 2.5)),
-            2.0,
-            FILL_TOP,
+            egui::Rect::from_min_max(
+                egui::pos2(inner.left(), edge_y.max(inner.top())),
+                inner.right_bottom(),
+            ),
+            // Square at the top because it is a cut edge; the bottom
+            // follows the milled corner, one point tighter than the well
+            // so no paint escapes the rim.
+            egui::CornerRadius { nw: 0, ne: 0, sw: 1, se: 1 },
+            lit,
         );
     }
 
-    // Quarter ticks, so a position can be read as a fraction rather than
-    // estimated. Drawn over the fill, subtle enough not to compete.
-    for q in 1..4 {
-        let y = track.bottom() - track.height() * (q as f32 / 4.0);
-        p.line_segment(
-            [
-                egui::pos2(track.left() + 2.0, y),
-                egui::pos2(track.left() + 7.0, y),
-            ],
-            egui::Stroke::new(1.0, vizz_design::surface::TICK),
+    // Two-tone engraving: a mark inside the well takes the well's colour
+    // where it crosses light and the tick colour where it crosses dark,
+    // so it is legible against either. The old quarter ticks were drawn
+    // in TICK over FILL — four points of luminance apart, which is why
+    // nobody has ever seen them.
+    let engrave = |over_fill: bool| {
+        if over_fill {
+            vizz_design::surface::GROOVE
+        } else {
+            vizz_design::surface::TICK
+        }
+    };
+
+    // The default, as two stubs flush to the walls. Positioned with the
+    // same function as the value, so when the parameter is at its default
+    // the notch and the waterline coincide exactly rather than nearly.
+    let t_default = ((def.default - min) / span).clamp(0.0, 1.0);
+    let dy = y_of(t_default);
+    let over = dy >= edge_y;
+    for (x0, x1) in [
+        (inner.left(), inner.left() + 5.0),
+        (inner.right() - 5.0, inner.right()),
+    ] {
+        p.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x0, dy - 0.75), egui::pos2(x1, dy + 0.75)),
+            0.0,
+            engrave(over),
         );
     }
 
-    // Where modulation has actually taken it. A separate mark rather than
-    // moving the handle: the handle is the promise the user made, and this
-    // is what the renderer is doing with it.
+    // Where modulation has actually taken it, amber, and inside the well.
+    // Amber's three meanings on this screen are within thirty RGB points
+    // of one another and no palette discipline separates them at a
+    // distance — so they are separated by *where* they are allowed to
+    // appear instead. Amber inside the well is modulation; amber on the
+    // rim is an armed learn. Location survives peripheral vision.
     if let Some(m) = modulated {
-        let mt = ((m - min) / span).clamp(0.0, 1.0);
-        let my = track.bottom() - track.height() * mt;
-        p.line_segment(
-            [egui::pos2(track.left(), my), egui::pos2(track.right(), my)],
-            egui::Stroke::new(2.0, MOD),
+        let my = y_of(((m - min) / span).clamp(0.0, 1.0));
+        p.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(inner.left(), my - 1.0),
+                egui::pos2(inner.right(), my + 1.0),
+            ),
+            0.0,
+            MOD,
         );
     }
 
-    // Chunky handle, full width so it reads as grabbable and stays visible
-    // against the fill.
-    let hy = track.bottom() - fill_h;
-    let handle = egui::Rect::from_center_size(
-        egui::pos2(
-            rect.center().x,
-            hy.clamp(rect.top() + 6.0, rect.bottom() - 6.0),
+    // The waterline: the surface of the light, and the one object nothing
+    // is ever drawn on top of. Full track width, one point proud of the
+    // fill on each side, so the value is a line you read rather than a
+    // block whose height you estimate.
+    let mark_top = (edge_y - 1.0).clamp(inner.top(), inner.bottom() - 2.0);
+    p.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(track.left(), mark_top),
+            egui::pos2(track.right(), mark_top + 2.0),
         ),
-        vec2(rect.width(), 11.0),
+        1.0,
+        HANDLE,
     );
-    p.rect_filled(handle, 3.0, HANDLE);
-    // Hover feedback: without it there is no way to tell a live fader from
-    // a picture of one until you have already moved it.
-    if response.hovered() {
-        p.rect_stroke(
-            rect,
-            5.0,
-            egui::Stroke::new(1.5, vizz_design::surface::FOCUS),
-            egui::StrokeKind::Inside,
+
+    // One rim carries every chrome state, by strict priority, so an
+    // outline can never mean two things at once.
+    //
+    // The resting rim is 1.5 rather than a hairline. It was 1.0, which
+    // renders as exactly one pixel of a 48-point luminance step — real
+    // in the code, invisible in the room, which a pixel scan of the
+    // rendered frame settled rather than an argument about it. The well
+    // then had no drawn boundary at all: only GROOVE against the deck,
+    // nine points apart.
+    let (rim_w, rim) = if midi.learning(&def.addr) {
+        // Breathing rather than blinking: insistent, never a strobe.
+        let phase = ((now / 1.6).fract() * std::f64::consts::TAU).sin() as f32;
+        let a = (198.0 + 57.0 * phase).clamp(140.0, 255.0) as u8;
+        (2.0, crate::theme::LEARN.gamma_multiply(a as f32 / 255.0))
+    } else if held {
+        (2.0, HANDLE)
+    } else if response.hovered() {
+        (1.5, vizz_design::surface::FOCUS)
+    } else {
+        (1.5, vizz_design::surface::EDGE)
+    };
+    p.rect_stroke(
+        track,
+        vizz_design::radius::CHIP,
+        egui::Stroke::new(rim_w, rim),
+        egui::StrokeKind::Inside,
+    );
+
+    // A control your hardware owns, said as a rail in the margin rather
+    // than only as small print below. A word has to be read; a rail at a
+    // constant x does not, so a mapped deck and an unmapped deck are
+    // different pictures from across a room.
+    //
+    // Flush against the well rather than floating beside it. With a gap
+    // it read as a divider between two columns instead of a property of
+    // one — the same mark, three pixels away, meaning something else
+    // entirely.
+    if midi.map.source_for(&def.addr).is_some() {
+        p.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(track.left() - 2.5, track.top()),
+                egui::pos2(track.left(), track.bottom()),
+            ),
+            0.0,
+            vizz_design::accent::BINDING,
         );
     }
 
-    // Absolute positioning rather than relative dragging: grabbing anywhere
-    // in the column jumps to that value, which is what you want when
-    // reaching quickly.
-    let pos = if response.dragged() || response.clicked() {
-        response.interact_pointer_pos()
+    // The press rule, in one sentence: a press far from the value in the
+    // body of the well jumps to your hand; a press near the value, or
+    // with Shift held, moves it from where it already is.
+    //
+    // Gated on `is_pointer_button_down_on` rather than `dragged()`:
+    // egui cannot decide a drag until the pointer has travelled six
+    // points, so a `dragged()` gate throws away the press frame and then
+    // delivers those six points as one jump.
+    if !held {
+        ui.ctx().data_mut(|d| d.remove::<Grab>(grab_id));
+        return None;
+    }
+    let fine = ui.input(|i| i.modifiers.shift);
+    let here = response.interact_pointer_pos()?;
+    let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(here);
+    let existing = ui.ctx().data(|d| d.get_temp::<Grab>(grab_id));
+    let g = match existing {
+        Some(g) => g,
+        None => {
+            // A catch band around the current value, sized off the track
+            // so it is the same *promise* on a tall fader and a short one.
+            let band = (inner.height() * 0.10).clamp(8.0, 16.0);
+            let near = (press.y - y_of(t)).abs() <= band;
+            let g = Grab { origin_y: press.y, base_t: t, relative: near || fine };
+            ui.ctx().data_mut(|d| d.insert_temp(grab_id, g));
+            g
+        }
+    };
+    // Re-anchored every frame against the modifier, so pressing or
+    // releasing Shift mid-gesture changes the gain without teleporting
+    // the value.
+    let gain = if fine { 0.25 } else { 1.0 };
+    let nt = if g.relative || fine {
+        let travelled = (g.origin_y - here.y) / inner.height().max(1.0);
+        (g.base_t + travelled * gain).clamp(0.0, 1.0)
     } else {
-        None
-    }?;
-    let nt = (1.0 - (pos.y - track.top()) / track.height()).clamp(0.0, 1.0);
+        t_of(here.y)
+    };
     Some(min + nt * span)
+}
+
+/// A press in progress on one fader.
+#[derive(Clone, Copy)]
+struct Grab {
+    /// Where the press landed, for relative moves.
+    origin_y: f32,
+    /// The value at the moment of the press.
+    base_t: f32,
+    /// Move from where it is, rather than jumping to the pointer.
+    relative: bool,
+}
+
+/// What a fader is *showing*, which is the value except just after it
+/// changed under someone else's hand.
+///
+/// Keyed by slot rather than by position, so a reflow between one and two
+/// rows cannot make two faders swap animations, and carries a hash of the
+/// assigned address so reassigning a slot re-seeds instead of gliding
+/// between two unrelated parameters.
+fn glide(
+    ui: &egui::Ui,
+    slot: usize,
+    t: f32,
+    addr: u64,
+    now: f64,
+    held: bool,
+) -> f32 {
+    #[derive(Clone, Copy)]
+    struct Glide {
+        from: f32,
+        to: f32,
+        t0: f64,
+        addr: u64,
+    }
+    let id = egui::Id::new(("fader-glide", slot));
+    let settle = vizz_design::motion::SETTLE;
+    let eased = |g: &Glide, now: f64| {
+        let x = (((now - g.t0) as f32) / settle).clamp(0.0, 1.0);
+        // Smoothstep: no overshoot, which a fader must never do — it
+        // would be showing a value the engine never held.
+        g.from + (g.to - g.from) * (x * x * (3.0 - 2.0 * x))
+    };
+    let settled = Glide { from: t, to: t, t0: now - settle as f64, addr };
+    let mut g = ui
+        .ctx()
+        .data(|d| d.get_temp::<Glide>(id))
+        .filter(|g| g.addr == addr)
+        .unwrap_or(settled);
+    if held {
+        // Under your own hand, exactly where you put it.
+        g = settled;
+    } else if (t - g.to).abs() > 0.0005 {
+        g = Glide { from: eased(&g, now), to: t, t0: now, addr };
+    }
+    let shown = eased(&g, now);
+    ui.ctx().data_mut(|d| d.insert_temp(id, g));
+    shown
 }
 
 /// The master, as one more column in the fader row.
@@ -1843,52 +2067,45 @@ fn master(
     let def = &registry.defs()[id.index()];
     let value = registry.target(id);
 
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click_and_drag());
-    let span = (def.max - def.min).max(f32::EPSILON);
-    let t = ((value - def.min) / span).clamp(0.0, 1.0);
-    let p = ui.painter();
-    let track = rect.shrink2(vec2(rect.width() * 0.12, 0.0));
-    p.rect_filled(track, 5.0, TRACK);
-    let fill_h = track.height() * t;
-    p.rect_filled(
-        egui::Rect::from_min_size(
-            egui::pos2(track.left(), track.bottom() - fill_h),
-            vec2(track.width(), fill_h),
-        ),
-        5.0,
+    // The same widget as every other fader, in a different colour.
+    //
+    // It used to be a second hand-rolled copy of the drawing and the
+    // input, which is how the two came to disagree: the macros got a
+    // catch band, exact paint/input inverses and a waterline, and the
+    // master kept the clamped handle that freezes across the top and
+    // bottom of its travel — on the one fader whose bottom of travel is
+    // a black output.
+    //
+    // The slot key is `usize::MAX` so the master's per-fader memory can
+    // never collide with a macro's, whatever the count is grown to.
+    if let Some(v) = vertical_fader(
+        ui,
+        value,
+        None,
+        def,
+        w,
+        h,
+        usize::MAX,
         MASTER_FILL,
-    );
-    let hy = track.bottom() - fill_h;
-    p.rect_filled(
-        egui::Rect::from_center_size(
-            egui::pos2(
-                rect.center().x,
-                hy.clamp(rect.top() + 6.0, rect.bottom() - 6.0),
-            ),
-            vec2(rect.width(), 11.0),
-        ),
-        3.0,
-        HANDLE,
-    );
+        MASTER_BRIGHT,
+        state.midi,
+    ) {
+        registry.set(id, v);
+    }
+    let t = ((registry.target(id) - def.min) / (def.max - def.min).max(f32::EPSILON))
+        .clamp(0.0, 1.0);
     // Dimmed-out is a state worth shouting about: a black output with
     // everything else apparently fine is the classic mid-set panic.
+    // Drawn over the widget rather than inside it, because it is the one
+    // rim state that belongs to the master alone.
     if t < 0.02 {
-        p.rect_stroke(
-            rect,
-            5.0,
-            egui::Stroke::new(2.0, WARN),
+        let rect = ui.min_rect();
+        ui.painter().rect_stroke(
+            egui::Rect::from_min_size(rect.left_top(), vec2(w, h)),
+            vizz_design::radius::CHIP,
+            egui::Stroke::new(1.5, WARN),
             egui::StrokeKind::Inside,
         );
-    }
-    // The same right-click reset as every other slider — a dimmed master
-    // is exactly the mess the gesture exists to get out of.
-    if response.secondary_clicked() {
-        registry.set(id, def.default);
-    } else if (response.dragged() || response.clicked())
-        && let Some(pos) = response.interact_pointer_pos()
-    {
-        let nt = (1.0 - (pos.y - track.top()) / track.height()).clamp(0.0, 1.0);
-        registry.set(id, def.min + nt * span);
     }
     let _ = state;
 
@@ -2068,9 +2285,22 @@ mod tests {
     #[test]
     fn every_fader_in_the_set_is_drawn() {
         let reg = registry();
+        // Every slot cleared first, so the only thing that can put the
+        // name on screen is the fader under test.
+        //
+        // Without this the test passes on a coincidence: the default set
+        // already assigns /fx/glow to slot 6, so asserting "glow" after
+        // assigning it to slot 23 proves nothing about slot 23 at all.
+        // It was written that way and it was vacuous.
+        let cleared = |m: &mut Macros| {
+            for i in 0..m.count() {
+                m.set(i, None);
+            }
+        };
+
         let mut macros = Macros::default();
-        // Shrink to the floor and assign the last one.
         while macros.shrink() {}
+        cleared(&mut macros);
         let last = macros.count() - 1;
         macros.set(last, Some("/fx/glow".to_string()));
         let text = render(&mut macros, &reg);
@@ -2079,6 +2309,7 @@ mod tests {
         // Grow past the original sixteen and assign the new end.
         let mut big = Macros::default();
         while big.grow() {}
+        cleared(&mut big);
         let last = big.count() - 1;
         big.set(last, Some("/fx/glow".to_string()));
         let text = render(&mut big, &reg);
@@ -2086,6 +2317,96 @@ mod tests {
             text.contains("glow"),
             "a fader beyond the old fixed count was never drawn: {text}"
         );
+    }
+
+
+    /// A full set fits inside the window it is drawn in.
+    ///
+    /// Rows used to be chosen by height alone, which was survivable
+    /// while the count was fixed at sixteen and broke the moment it
+    /// could be raised: twenty-four faders on a 1280-point window laid
+    /// out twenty-five columns needing 1694 points of a 1252-point lane,
+    /// and six of them were placed past the right edge. They existed,
+    /// they answered MIDI, and nobody could see them.
+    ///
+    /// Asserted on where things were actually painted, not on the row
+    /// arithmetic — the arithmetic is what was wrong.
+    #[test]
+    fn a_full_set_of_faders_stays_inside_the_window() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        while macros.grow() {}
+        assert_eq!(macros.count(), vizz_mod::perform::MACRO_MAX);
+        // Distinct names, so a fader drawn off-screen is identifiable
+        // rather than hidden behind a duplicate.
+        for i in 0..macros.count() {
+            macros.set(i, Some("/particles/size".to_string()));
+        }
+
+        for (w, h) in [(1280.0, 800.0), (1440.0, 900.0), (1100.0, 720.0)] {
+            let size = vec2(w, h);
+            let right = painted_right_edge(&mut macros, &reg, size);
+            assert!(
+                right <= w + 1.0,
+                "at {w}x{h} a {} fader set painted out to {right}, past the window",
+                macros.count()
+            );
+        }
+    }
+
+    /// The rightmost x any shape reaches, which is where the layout
+    /// actually put things rather than where it meant to.
+    fn painted_right_edge(macros: &mut Macros, reg: &ParamRegistry, size: Vec2) -> f32 {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let state = PerformanceState {
+            recording: None,
+            preset_current: None,
+            outputs: &[],
+            audio: &audio,
+            fps: 60.0,
+            over_budget: false,
+            bpm: 128.0,
+            bar_phase: 0.1,
+            presets: &names,
+            grid: &grid,
+            gravity: None,
+            midi: &midi,
+            values: None,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
+        };
+        let mut right = 0.0f32;
+        for i in 0..4 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(i as f64 * 0.05),
+                ..Default::default()
+            });
+            draw(&ctx, reg, &state, macros);
+            let out = ctx.end_pass();
+            fn walk(shape: &egui::Shape, right: &mut f32) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, right)),
+                    other => {
+                        let r = other.visual_bounding_rect();
+                        // Infinite rects are egui's "unbounded" marker on
+                        // things like clip shapes, not painted extent.
+                        if r.is_finite() {
+                            *right = right.max(r.right());
+                        }
+                    }
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut right);
+            }
+        }
+        right
     }
 
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {
@@ -2792,16 +3113,22 @@ mod tests {
             "a modulated readout must be warm, or nothing says the number              is not where the parameter is"
         );
 
-        // Unmodulated, the same readout is plain ink — otherwise "warm"
+        // Unmodulated, the same readout is *not* warm — otherwise "warm"
         // means nothing, because everything is warm.
+        //
+        // Asserted as "not MOD" rather than as one exact ink. The claim
+        // here is about the amber, and pinning the readout's exact
+        // colour also pinned its rank in the label stack — which is a
+        // separate decision, and one that has since changed: the name
+        // leads now and the number is the quieter confirmation under it.
         let plain = render_coloured(&mut macros, &reg, None);
         let plain_readout = plain
             .iter()
             .find(|(t, _)| t.trim() == "0.25")
             .unwrap_or_else(|| panic!("no 0.25 readout among {plain:?}"));
-        assert_eq!(
-            plain_readout.1, INK,
-            "an unmodulated readout must be plain ink"
+        assert_ne!(
+            plain_readout.1, MOD,
+            "an unmodulated readout wears the colour that is supposed to mean modulated"
         );
     }
 }
