@@ -335,27 +335,6 @@ pub fn draw(
                         ui.add_space(10.0);
                     }
 
-                    if let Some(gravity) = state.gravity.filter(|_| !peeking) {
-                        section(ui, "GRAVITY");
-                        // Sixteen empty pads for a layer nobody has touched
-                        // is a lot of screen spent saying nothing — but
-                        // hiding the row entirely hid its *store* button
-                        // too, which was the only way to fill it. That is
-                        // not a hidden feature, it is a locked door with
-                        // the key inside. Empty draws one teaching row
-                        // whose button captures the first pad; the full
-                        // grid takes over from there.
-                        if gravity.names.iter().all(|n| n.is_none()) {
-                            gravity_ghost(ui, &mut actions);
-                        } else {
-                            let mut bounded = gravity.clone();
-                            bounded.width = Some(col_w);
-                            actions.gravity =
-                                crate::grid_view::draw_with_id(ui, &bounded, "gravity-grid");
-                        }
-                        ui.add_space(10.0);
-                    }
-
                     if !state.presets.is_empty() && !peeking {
                         section(ui, "PRESETS");
                         preset_row(ui, state, &mut actions);
@@ -425,6 +404,29 @@ pub fn draw(
                     let deck_top = ui.cursor().top();
                     if !peeking {
                         let top = deck_top;
+                    if let Some(gravity) = state.gravity.filter(|_| !peeking) {
+                        section(ui, "GRAVITY");
+                        // Sixteen empty pads for a layer nobody has touched
+                        // is a lot of screen spent saying nothing — but
+                        // hiding the row entirely hid its *store* button
+                        // too, which was the only way to fill it. That is
+                        // not a hidden feature, it is a locked door with
+                        // the key inside. Empty draws one teaching row
+                        // whose button captures the first pad; the full
+                        // grid takes over from there.
+                        if gravity.names.iter().all(|n| n.is_none()) {
+                            gravity_ghost(ui, &mut actions);
+                        } else {
+                            let mut bounded = gravity.clone();
+                            bounded.width = Some(inner_w);
+                            actions.gravity =
+                                crate::grid_view::draw_with_id(ui, &bounded, "gravity-grid");
+                        }
+                        ui.add_space(10.0);
+                    }
+
+
+
                         section(ui, "SCENES");
                         let mut deck = state.grid.clone();
                         deck.width = Some(inner_w);
