@@ -102,6 +102,10 @@ pub struct PerformanceState<'a> {
     /// with nothing to report, in which case faders draw only what the
     /// user set.
     pub values: Option<&'a [f32]>,
+    /// The master output, when the app has handed it over.
+    pub output_texture: Option<egui::TextureId>,
+    /// Its aspect, so the picture is letterboxed rather than stretched.
+    pub output_aspect: f32,
 }
 
 #[derive(Debug, Default)]
@@ -148,6 +152,25 @@ const DESK_MIN_W: f32 = 1180.0;
 const COL_MIN_W: f32 = 470.0;
 /// The smallest picture worth calling a preview.
 const PANE_MIN_W: f32 = 420.0;
+
+
+/// The largest rect of `aspect` that fits inside `outer`, centred.
+///
+/// A picture stretched to its container is a picture you cannot judge:
+/// the whole point of looking is to see the framing you are about to
+/// send, and a 16:9 master squeezed into a tall pane is a different
+/// composition from the one going out.
+fn letterbox(outer: egui::Rect, aspect: f32) -> egui::Rect {
+    if aspect <= 0.0 || outer.width() <= 0.0 || outer.height() <= 0.0 {
+        return outer;
+    }
+    let (w, h) = if outer.width() / outer.height() > aspect {
+        (outer.height() * aspect, outer.height())
+    } else {
+        (outer.width(), outer.width() / aspect)
+    };
+    egui::Rect::from_center_size(outer.center(), vec2(w, h))
+}
 
 /// Paint the scrim around `pane`, or over everything when there is none.
 ///
@@ -499,8 +522,41 @@ pub fn draw(
                     } else {
                         None
                     };
-                    paint_scrim(ui, &scrim, full, pane);
-                    if let Some(pane) = pane {
+                    // The picture, drawn into the pane.
+                    //
+                    // Not a hole in the scrim: a hole shows whatever part
+                    // of the full-window render happens to fall behind
+                    // it, which is a crop of the output rather than a
+                    // view of it. Barely noticeable when the opening is
+                    // most of the window — which is why peek got away
+                    // with it — and plainly wrong the moment the picture
+                    // shares the screen, where it showed the right-hand
+                    // half of the frame and nothing else.
+                    //
+                    // With a texture the pane is scrimmed like everything
+                    // else and the image is painted on top, letterboxed
+                    // to the output's aspect so a 16:9 master in a wide
+                    // pane is a 16:9 picture rather than a stretched one.
+                    let drawn = match (pane, state.output_texture) {
+                        (Some(pane), Some(id)) => {
+                            let fitted = letterbox(pane, state.output_aspect);
+                            ui.painter().image(
+                                id,
+                                fitted,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                            Some(fitted)
+                        }
+                        _ => None,
+                    };
+                    // With an image there is nothing to see through, so
+                    // the scrim covers everything as it always did.
+                    paint_scrim(ui, &scrim, full, pane.filter(|_| drawn.is_none()));
+                    if let Some(pane) = drawn.or(pane) {
                         // A hairline, so the pane reads as the output
                         // rather than as space nobody got round to
                         // filling. Faint enough that a dark frame does
@@ -2028,6 +2084,8 @@ mod tests {
             gravity: None,
             midi,
             values,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
         };
         let mut text = String::new();
         for i in 0..8 {
@@ -2087,6 +2145,8 @@ mod tests {
             gravity: None,
             midi: &midi,
             values,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
         };
         let mut runs = Vec::new();
         for i in 0..8 {
@@ -2154,6 +2214,8 @@ mod tests {
             gravity: None,
             midi: &midi,
             values: None,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
         };
         let mut macros = Macros::default();
         let mut count = 0;
@@ -2207,6 +2269,8 @@ mod tests {
             gravity: Some(gravity),
             midi: &midi,
             values: None,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
         };
         let mut macros = Macros::default();
         let size = vec2(1280.0, 900.0);

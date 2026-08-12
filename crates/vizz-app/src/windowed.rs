@@ -443,6 +443,10 @@ impl App {
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
+        // The performance layout draws the master output rather than
+        // leaving a hole in its scrim to see it through, so hand it the
+        // texture up front. Re-pointed on every resize.
+        gui.set_output_texture(&ctx.device, &output.view, ow, oh);
         gui.visible = self.opts.show_gui;
         // The canvas comes back where it was left — pan, zoom, patch
         // name — instead of at the origin with the name field blank.
@@ -503,6 +507,10 @@ impl App {
         state.post = PostChain::new(&state.ctx, rw, rh, format);
         state.vector_print = vizz_render::vector::VectorScene::new(&state.ctx, format);
         state.blit_bind = state.blit.bind(&state.ctx.device, &state.output.view);
+        // The performance layout draws the master rather than leaving a
+        // hole to see it through, so it needs re-pointing whenever the
+        // texture behind that view is replaced.
+        state.gui.set_output_texture(&state.ctx.device, &state.output.view, ow, oh);
         let (publish, publish_blit) = if state.output.publishable() {
             (None, None)
         } else {

@@ -158,6 +158,8 @@ fn main() {
         gravity: gravity.as_ref(),
         midi: &midi,
         values: Some(&modulated),
+        output_texture: None,
+        output_aspect: 16.0 / 9.0,
     };
 
     let (device, queue) = gpu();
