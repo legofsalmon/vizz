@@ -111,6 +111,10 @@ pub struct PerformanceState<'a> {
     pub output_texture: Option<egui::TextureId>,
     /// Its aspect, so the picture is letterboxed rather than stretched.
     pub output_aspect: f32,
+    /// The modulation graph, read-only, so a fader can say what is
+    /// driving it and offer to change it. `None` in contexts with no
+    /// modulation at all, where the faders simply omit the control.
+    pub graph: Option<&'a vizz_mod::graph::NodeGraph>,
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +148,9 @@ pub struct PerformanceActions {
     /// bindings, and clearing the parameter would unmap every preset to
     /// unmap one.
     pub clear_slot_binding: Option<(String, f32)>,
+    /// Put a ready-made modulator on this parameter, or take it off with
+    /// `None`. Indexes [`vizz_mod::shapes::SHAPES`].
+    pub set_mod_shape: Option<(String, Option<usize>)>,
 }
 
 
@@ -556,7 +563,7 @@ pub fn draw(
                         // to spend the output's screen on.
                         ui.label(
                             egui::RichText::new(
-                                "click a fader's name to reassign it · right-click a fader to reset it",
+                                "click a fader's name to reassign it · click its value for a modulator · right-click a fader to reset it",
                             )
                             .size(11.0)
                             .color(INK_4),
@@ -1551,13 +1558,56 @@ fn fader(
             // Then the number, which is the confirmation rather than the
             // headline — except when something else is moving it, where
             // amber makes it the thing that catches the eye.
-            ui.label(
-                egui::RichText::new(shown)
-                    .size(11.0)
-                    .monospace()
-                    .color(if modulated.is_some() { MOD } else { INK_2 }),
-            );
+            //
+            // And it is also the way in to *what* is moving it. The
+            // number is the right handle for that: it is the line that
+            // already goes amber when the parameter is being driven,
+            // so "click the amber number to change what is driving it"
+            // needs no new chrome on a column that is 36 points wide at
+            // its narrowest. The track cannot take it — right-click
+            // there already restores the default — and a fourth label
+            // line would come off the fader's own height.
+            let shape = state.graph.and_then(|g| vizz_mod::shapes::attached(g, addr));
+            let driven = state
+                .graph
+                .map(|g| vizz_mod::shapes::driven(g, addr))
+                .unwrap_or(false);
+            // Amber whenever something is attached, not only while it
+            // happens to be off zero. An envelope between hits outputs
+            // nothing, and a fader that only admits to being modulated
+            // on the frames it is moving cannot be read at all.
+            let number = egui::RichText::new(shown)
+                .size(11.0)
+                .monospace()
+                .color(if modulated.is_some() || driven { MOD } else { INK_2 });
+            if state.graph.is_some() {
+                let hint = match (shape, driven) {
+                    (Some(i), _) => format!(
+                        "{} — {}\nclick to change it",
+                        vizz_mod::shapes::SHAPES[i].name,
+                        vizz_mod::shapes::SHAPES[i].about
+                    ),
+                    // Driven by something this menu did not build: the
+                    // canvas can wire anything, and calling that "none"
+                    // would be the fader denying what it is visibly doing.
+                    (None, true) => {
+                        "modulated from the canvas\nclick to replace it with a ready-made one"
+                            .to_string()
+                    }
+                    (None, false) => "no modulator — click to add one".to_string(),
+                };
+                if ui
+                    .add(egui::Label::new(number).sense(Sense::click()))
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    open_mod(ui, slot);
+                }
+            } else {
+                ui.label(number);
+            }
             midi_chip(ui, state, actions, addr);
+            mod_popup(ui, addr, slot, shape, actions);
         }
         _ => {
             // Unassigned, or pointing at a parameter this build no longer
@@ -1750,6 +1800,92 @@ fn assign_popup(
     if close {
         close_assign(ui, slot);
     }
+}
+
+/// The ready-made modulators, on the fader they would drive.
+///
+/// A list rather than a submenu tree: there are fourteen, they are read
+/// in a dark room, and every one of them is one line. The current pick
+/// is selected, so the popup doubles as the answer to "what is on this
+/// fader" — which is the question you ask before you change it.
+fn mod_popup(
+    ui: &mut egui::Ui,
+    addr: &str,
+    slot: usize,
+    current: Option<usize>,
+    actions: &mut PerformanceActions,
+) {
+    if !is_mod_open(ui, slot) {
+        return;
+    }
+    let popup_id = egui::Id::new(("mod", slot));
+    let mut chosen: Option<Option<usize>> = None;
+    let mut close = false;
+    egui::Area::new(popup_id.with("area"))
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_height(360.0);
+                ui.set_min_width(230.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(addr.rsplit('/').next().unwrap_or(addr)).color(INK),
+                    );
+                    if ui.small_button("close").clicked() {
+                        close = true;
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt(popup_id)
+                    .show(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "— none —").clicked() {
+                            chosen = Some(None);
+                        }
+                        for (i, s) in vizz_mod::shapes::SHAPES.iter().enumerate() {
+                            // The swing is worth saying out loud: a
+                            // bipolar shape moves the fader either side
+                            // of where it is set, a unipolar one only
+                            // pushes up from it. That is the difference
+                            // between a fader you can still park at the
+                            // top and one you cannot, and it is not
+                            // recoverable from the name.
+                            let label = format!(
+                                "{}   {}",
+                                s.name,
+                                if s.bipolar { "±" } else { "+" }
+                            );
+                            if ui
+                                .selectable_label(current == Some(i), label)
+                                .on_hover_text(s.about)
+                                .clicked()
+                            {
+                                chosen = Some(Some(i));
+                            }
+                        }
+                    });
+            });
+        });
+    if let Some(pick) = chosen {
+        actions.set_mod_shape = Some((addr.to_string(), pick));
+        close = true;
+    }
+    if close {
+        close_mod(ui, slot);
+    }
+}
+
+fn mod_key(slot: usize) -> egui::Id {
+    egui::Id::new(("mod-open", slot))
+}
+fn open_mod(ui: &egui::Ui, slot: usize) {
+    ui.memory_mut(|m| m.data.insert_temp(mod_key(slot), true));
+}
+fn close_mod(ui: &egui::Ui, slot: usize) {
+    ui.memory_mut(|m| m.data.insert_temp(mod_key(slot), false));
+}
+fn is_mod_open(ui: &egui::Ui, slot: usize) -> bool {
+    ui.memory(|m| m.data.get_temp::<bool>(mod_key(slot)).unwrap_or(false))
 }
 
 // egui 0.35 made the popup helpers private, so the open slot is tracked in
@@ -2442,6 +2578,7 @@ mod tests {
             values: None,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut right = 0.0f32;
         for i in 0..4 {
@@ -2503,6 +2640,170 @@ mod tests {
     }
 
 
+    /// A modulator can be put on a fader without leaving the layout.
+    ///
+    /// Driven through real clicks on the deck rather than by calling the
+    /// popup directly, because the thing worth proving is that the
+    /// control is *reachable*: the value line has to take a click, the
+    /// popup has to open over a layout that redraws every frame, and the
+    /// pick has to survive as an action. Any of those failing leaves a
+    /// feature that exists and cannot be used.
+    #[test]
+    fn a_modulator_can_be_put_on_a_fader_from_the_deck() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let size = vec2(1440.0, 900.0);
+        // A live graph, as the app passes: empty to start with.
+        let mut graph = vizz_mod::graph::NodeGraph::default();
+        // The clock has to advance, or the faders never finish their
+        // settle animation and every label keeps moving under the
+        // pointer — which is exactly how the first version of this test
+        // clicked half a point below the readout and saw nothing.
+        let mut clock = 0.0_f64;
+
+        // Returns the actions with the painted text, rather than writing
+        // them to a captured binding: the test has to read what one
+        // frame asked for before driving the next.
+        let mut frame = |click: Option<egui::Pos2>,
+                         graph: &vizz_mod::graph::NodeGraph,
+                         macros: &mut Macros|
+         -> (PerformanceActions, Vec<(String, egui::Rect)>) {
+            let state = PerformanceState {
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: Some(graph),
+            };
+            clock += 0.1;
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(clock),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            ctx.begin_pass(input);
+            let actions = draw(&ctx, &reg, &state, macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => {
+                        out.push((t.galley.job.text.clone(), t.galley.rect.translate(t.pos.to_vec2())))
+                    }
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            (actions, found)
+        };
+
+        /// Where the readout under a named fader is, measured on the
+        /// frame it will be clicked on rather than remembered from an
+        /// earlier one — the deck animates, and a stale position is how
+        /// this test first "passed" a click that landed on nothing.
+        fn readout_under(texts: &[(String, egui::Rect)], name: &str) -> egui::Pos2 {
+            let label = texts
+                .iter()
+                .find(|(t, _)| t.trim() == name)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("no fader labelled '{name}' on the deck"));
+            texts
+                .iter()
+                .filter(|(_, r)| {
+                    (r.center().x - label.center().x).abs() < 12.0 && r.top() > label.top()
+                })
+                .min_by(|a, b| a.1.top().total_cmp(&b.1.top()))
+                .map(|(_, r)| r.center())
+                .expect("the fader has no readout under its name")
+        }
+
+        // Settle, then click the readout under the first fader.
+        for _ in 0..6 {
+            frame(None, &graph, &mut macros);
+        }
+        let (_, texts) = frame(None, &graph, &mut macros);
+        frame(Some(readout_under(&texts, "size")), &graph, &mut macros);
+        // The popup is an Area, so it lands on the frame after the click
+        // that opens it — which is also what the eye sees.
+        let (_, opened) = frame(None, &graph, &mut macros);
+        assert!(
+            opened.iter().any(|(t, _)| t.contains("Slow sweep")),
+            "clicking the readout did not open the modulator list: {:?}",
+            opened.iter().map(|(t, _)| t).collect::<Vec<_>>()
+        );
+
+        let kick = opened
+            .iter()
+            .find(|(t, _)| t.starts_with("Kick"))
+            .map(|(_, r)| r.center())
+            .expect("the list has no Kick");
+        let (actions, _) = frame(Some(kick), &graph, &mut macros);
+        let (addr, shape) = actions
+            .set_mod_shape
+            .expect("picking a modulator produced no action");
+        assert_eq!(addr, "/particles/size");
+        let shape = shape.expect("picking a modulator asked to remove one");
+        assert_eq!(vizz_mod::shapes::SHAPES[shape].name, "Kick");
+
+        // Apply it the way the app does, and the fader now reports it.
+        vizz_mod::shapes::attach(&mut graph, shape, &addr);
+        assert_eq!(vizz_mod::shapes::attached(&graph, &addr), Some(shape));
+
+        // With one attached, the same click offers to take it off.
+        let (_, texts) = frame(None, &graph, &mut macros);
+        frame(Some(readout_under(&texts, "size")), &graph, &mut macros);
+        let (_, reopened) = frame(None, &graph, &mut macros);
+        let none_at = reopened
+            .iter()
+            .find(|(t, _)| t.contains("none"))
+            .map(|(_, r)| r.center())
+            .unwrap_or_else(|| {
+                panic!(
+                    "reopening the list offered no way back to none: {:?}",
+                    reopened.iter().map(|(t, _)| t).collect::<Vec<_>>()
+                )
+            });
+        let (actions, _) = frame(Some(none_at), &graph, &mut macros);
+        assert_eq!(
+            actions.set_mod_shape,
+            Some(("/particles/size".to_string(), None)),
+            "choosing none did not ask for the modulator to come off"
+        );
+        vizz_mod::shapes::detach(&mut graph, &addr);
+        assert!(!vizz_mod::shapes::driven(&graph, &addr));
+    }
+
     /// Clear works from the performance deck, not only from the widget.
     ///
     /// The grid widget clears correctly when driven on its own — that is
@@ -2544,6 +2845,7 @@ mod tests {
                 values: None,
                 output_texture: None,
                 output_aspect: 16.0 / 9.0,
+                graph: None,
             };
             let mut input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
@@ -2721,6 +3023,7 @@ mod tests {
             values,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut text = String::new();
         for i in 0..8 {
@@ -2782,6 +3085,7 @@ mod tests {
             values,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut runs = Vec::new();
         for i in 0..8 {
@@ -2851,6 +3155,7 @@ mod tests {
             values: None,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut macros = Macros::default();
         let mut count = 0;
@@ -2906,6 +3211,7 @@ mod tests {
             values: None,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut macros = Macros::default();
         let size = vec2(1280.0, 900.0);

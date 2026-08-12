@@ -487,7 +487,8 @@ impl Gui {
         }
         self.notices.draw(&self.ctx);
         if self.performance {
-            return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
+            return self
+                .render_performance(window, device, queue, encoder, target, registry, state, modulation, size_px);
         }
         let mut actions = if self.visible {
             panel::draw(&self.ctx, registry, &state, modulation, &mut self.ranges)
@@ -554,6 +555,7 @@ impl Gui {
         target: &wgpu::TextureView,
         registry: &ParamRegistry,
         state: PanelState,
+        modulation: &mut vizz_mod::ModEngine,
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
         let health = state.health.as_ref();
@@ -575,6 +577,7 @@ impl Gui {
             values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
             output_texture: self.output_texture,
             output_aspect: self.output_aspect,
+            graph: Some(&modulation.graph),
         };
         let mut perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         // The armed-learn banner rides both screens; see the panel path.
@@ -598,6 +601,25 @@ impl Gui {
                     self.notices.info(format!("removed the fader holding {addr}"));
                 }
                 perf.macros_changed = true;
+            }
+        }
+        // Ready-made modulators, applied straight to the graph like the
+        // panel's route toggle rather than round-tripped through the
+        // app. They *are* graph edits — the shortcut builds the same
+        // nodes a hand would — so the canvas is the one place they live.
+        if let Some((addr, shape)) = perf.set_mod_shape.take() {
+            match shape {
+                Some(i) => {
+                    vizz_mod::shapes::attach(&mut modulation.graph, i, &addr);
+                    self.notices.info(format!(
+                        "{} on {addr}",
+                        vizz_mod::shapes::SHAPES[i].name
+                    ));
+                }
+                None => {
+                    vizz_mod::shapes::detach(&mut modulation.graph, &addr);
+                    self.notices.info(format!("modulator off {addr}"));
+                }
             }
         }
         if perf.macros_changed && let Err(e) = self.macros.save() {
