@@ -28,6 +28,25 @@ use serde::{Deserialize, Serialize};
 /// short lists with empty slots on load.
 pub const MACRO_COUNT: usize = 16;
 
+/// Fewest faders a set can be reduced to.
+///
+/// Not zero and not one. A performance screen with no faders is a
+/// screen with nothing to play, and the deck below the pads would
+/// collapse to a caption — which is a worse thing to have shipped than
+/// four faders somebody is not using.
+pub const MACRO_MIN: usize = 4;
+
+/// Most faders a set can grow to.
+///
+/// Twenty-four is where the arithmetic stops working rather than an
+/// arbitrary round number. They wrap at eight to a row, so 24 is three
+/// full rows; at a 1400-point deck that is about 170 points a column,
+/// which still carries a name, a value and a MIDI chip on three lines.
+/// A fourth row would take the height back off the output pane, which
+/// is the thing the whole layout exists to protect — and faders you
+/// cannot see the picture past are not more control, they are less.
+pub const MACRO_MAX: usize = 24;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Macros {
     /// OSC-style parameter address per slot; `None` is an empty fader.
@@ -91,7 +110,11 @@ impl Macros {
             Ok(mut m) => {
                 // Tolerate a file written by a build with a different slot
                 // count rather than panicking on index.
-                m.slots.resize(MACRO_COUNT, None);
+                // Clamped rather than forced to sixteen: the count is a
+                // saved preference now, so a file asking for twenty is
+                // honoured and a file asking for two hundred is not.
+                let want = m.slots.len().clamp(MACRO_MIN, MACRO_MAX);
+                m.slots.resize(want, None);
                 m
             }
             // Was fully silent: a corrupt file became defaults with no
@@ -121,9 +144,46 @@ impl Macros {
         self.slots.get(i).and_then(|s| s.as_deref())
     }
 
+    /// How many faders this set has.
+    pub fn count(&self) -> usize {
+        self.slots.len().clamp(MACRO_MIN, MACRO_MAX)
+    }
+
+    /// Add a fader, up to [`MACRO_MAX`]. The new one starts empty.
+    ///
+    /// Returns whether anything changed, so the caller knows whether to
+    /// persist and whether to say something.
+    pub fn grow(&mut self) -> bool {
+        if self.count() >= MACRO_MAX {
+            return false;
+        }
+        self.slots.resize(self.count() + 1, None);
+        true
+    }
+
+    /// Remove the last fader, down to [`MACRO_MIN`].
+    ///
+    /// Takes the last one rather than the last *empty* one: which fader
+    /// goes has to be predictable from looking at the row, and "the one
+    /// on the end" is the only rule that is. Its assignment is dropped
+    /// with it, which is why the caller warns when it was not empty.
+    pub fn shrink(&mut self) -> bool {
+        if self.count() <= MACRO_MIN {
+            return false;
+        }
+        self.slots.truncate(self.count() - 1);
+        true
+    }
+
+    /// What the last fader holds, for a caller deciding whether removing
+    /// it is worth a warning.
+    pub fn last_assigned(&self) -> Option<&str> {
+        self.slots.last().and_then(|s| s.as_deref())
+    }
+
     pub fn set(&mut self, i: usize, addr: Option<String>) {
-        if self.slots.len() < MACRO_COUNT {
-            self.slots.resize(MACRO_COUNT, None);
+        if self.slots.len() < MACRO_MIN {
+            self.slots.resize(MACRO_MIN, None);
         }
         if let Some(slot) = self.slots.get_mut(i) {
             *slot = addr;
@@ -134,6 +194,54 @@ impl Macros {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fader count is a preference, within limits that keep the
+    /// screen usable.
+    #[test]
+    fn the_count_grows_and_shrinks_between_its_limits() {
+        let mut m = Macros::default();
+        assert_eq!(m.count(), MACRO_COUNT, "the default set is not the default count");
+
+        while m.grow() {}
+        assert_eq!(m.count(), MACRO_MAX, "growing did not stop at the maximum");
+        assert!(!m.grow(), "growing past the maximum reported success");
+
+        while m.shrink() {}
+        assert_eq!(m.count(), MACRO_MIN, "shrinking did not stop at the minimum");
+        assert!(!m.shrink(), "shrinking past the minimum reported success");
+    }
+
+    /// A file asking for an absurd count is clamped, not obeyed.
+    ///
+    /// The count is saved now, so it is untrusted input like any other
+    /// file: a hand-edited or corrupt macros.json must not be able to
+    /// ask for two hundred faders and get a screen that cannot draw.
+    #[test]
+    fn a_saved_count_is_clamped_on_the_way_in() {
+        let mut m = Macros { slots: vec![None; 500] };
+        assert_eq!(m.count(), MACRO_MAX, "an absurd count was taken at face value");
+        // And it can still be edited without panicking.
+        m.set(0, Some("/particles/size".into()));
+        assert_eq!(m.get(0), Some("/particles/size"));
+
+        let tiny = Macros { slots: vec![None; 1] };
+        assert_eq!(tiny.count(), MACRO_MIN, "a too-small count was taken at face value");
+    }
+
+    /// Shrinking takes the fader on the end, and says what it held.
+    ///
+    /// Which one goes has to be predictable from looking at the row.
+    #[test]
+    fn shrinking_takes_the_last_fader_and_reports_what_it_held() {
+        let mut m = Macros::default();
+        let last = m.count() - 1;
+        m.set(last, Some("/fx/glow".into()));
+        assert_eq!(m.last_assigned(), Some("/fx/glow"));
+        assert!(m.shrink());
+        assert_eq!(m.count(), MACRO_COUNT - 1);
+        // The one before it is untouched.
+        assert_eq!(m.get(last), None, "shrinking left the removed slot readable");
+    }
 
     #[test]
     fn defaults_fill_every_slot() {
@@ -160,10 +268,22 @@ mod tests {
     #[test]
     fn setting_past_the_end_is_ignored_not_a_panic() {
         let mut m = Macros { slots: vec![None] };
+        // A short set is brought up to the minimum, so the early slots
+        // are addressable.
         m.set(3, Some("/fx/glow".into()));
         assert_eq!(m.get(3), Some("/fx/glow"));
+        // Far past the end is ignored rather than growing to fit. This
+        // used to assert the length was exactly MACRO_COUNT, because
+        // `set` forced every set to sixteen slots — which is no longer
+        // true or wanted: the count is a saved preference now, and a
+        // stray write must not be able to change it.
         m.set(999, Some("/nope".into()));
-        assert_eq!(m.slots.len(), MACRO_COUNT);
+        assert_eq!(m.get(999), None, "an out-of-range write landed somewhere");
+        assert!(
+            (MACRO_MIN..=MACRO_MAX).contains(&m.count()),
+            "a stray write moved the count to {}",
+            m.count()
+        );
     }
 
     #[test]

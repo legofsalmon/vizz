@@ -586,6 +586,20 @@ impl Gui {
         if perf.exit {
             self.performance = false;
         }
+        // Growing or shrinking the fader set, saved like any other
+        // assignment change. Warned about when it costs something: the
+        // fader on the end takes its parameter with it, and a set is not
+        // a thing to silently edit mid-show.
+        if let Some(grew) = perf.fader_count_changed {
+            let losing = (!grew).then(|| self.macros.last_assigned().map(str::to_owned)).flatten();
+            let changed = if grew { self.macros.grow() } else { self.macros.shrink() };
+            if changed {
+                if let Some(addr) = losing {
+                    self.notices.info(format!("removed the fader holding {addr}"));
+                }
+                perf.macros_changed = true;
+            }
+        }
         if perf.macros_changed && let Err(e) = self.macros.save() {
             self.notices.error(format!("could not save the fader assignments: {e}"));
             log::warn!("could not save macro assignments: {e}");

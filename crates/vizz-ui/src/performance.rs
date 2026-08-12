@@ -24,7 +24,7 @@
 //! real screen rect, not from what the widgets happened to need.
 
 use egui::{Color32, Sense, Vec2, vec2};
-use vizz_mod::perform::{MACRO_COUNT, Macros};
+use vizz_mod::perform::Macros;
 use vizz_params::ParamRegistry;
 
 use crate::panel::{AudioView, MidiView, OutputStatus};
@@ -114,6 +114,10 @@ pub struct PerformanceActions {
     pub tapped: bool,
     /// Macro assignments changed and should be persisted.
     pub macros_changed: bool,
+    /// The fader count changed this frame: `true` grew, `false` shrank.
+    /// Carried separately from `macros_changed` so the app can say what
+    /// happened — removing a fader that held something is worth a word.
+    pub fader_count_changed: Option<bool>,
     /// Leave the performance layout.
     pub exit: bool,
     /// The controls are standing aside so the output can be seen. Read
@@ -482,7 +486,50 @@ pub fn draw(
                         }
                     }
                     if !peeking {
-                        section(ui, "CONTROLS");
+                        // The caption carries the count controls, because
+                        // that is where you are already looking when you
+                        // decide there are too few or too many.
+                        ui.horizontal(|ui| {
+                            section(ui, "CONTROLS");
+                            ui.add_space(6.0);
+                            let count = macros.count();
+                            let minus = ui
+                                .add_enabled(
+                                    count > vizz_mod::perform::MACRO_MIN,
+                                    egui::Button::new(
+                                        egui::RichText::new("−").size(12.0).color(INK_3),
+                                    )
+                                    .small(),
+                                )
+                                .on_hover_text("one fewer fader — the one on the end goes");
+                            if minus.clicked() {
+                                actions.fader_count_changed = Some(false);
+                            }
+                            // The number, so pressing the buttons is not
+                            // the only way to know where you are between
+                            // the limits.
+                            ui.label(
+                                egui::RichText::new(format!("{count}"))
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(INK_3),
+                            );
+                            let plus = ui
+                                .add_enabled(
+                                    count < vizz_mod::perform::MACRO_MAX,
+                                    egui::Button::new(
+                                        egui::RichText::new("+").size(12.0).color(INK_3),
+                                    )
+                                    .small(),
+                                )
+                                .on_hover_text(format!(
+                                    "one more fader — up to {}",
+                                    vizz_mod::perform::MACRO_MAX
+                                ));
+                            if plus.clicked() {
+                                actions.fader_count_changed = Some(true);
+                            }
+                        });
                         // The faders are user-chosen, and the gesture that
                         // chooses them is clicking text that does not look
                         // clickable. One line naming it is the cheapest fix;
@@ -1294,12 +1341,15 @@ fn faders(
     // windows. The single row is the last resort for genuinely short
     // windows, not the response to a busy screen.
     let two_rows = 2.0 * (FADER_ABS_MIN + FADER_CHROME + 6.0) + 8.0;
+    // The set's own count, not a constant: how many faders there are is
+    // a saved preference now.
+    let count = macros.count();
     let rows = if height >= two_rows {
-        MACRO_COUNT.div_ceil(PER_ROW)
+        count.div_ceil(PER_ROW)
     } else {
         1
     };
-    let per_row = MACRO_COUNT.div_ceil(rows);
+    let per_row = count.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
     let cols = per_row + 1;
@@ -1347,7 +1397,7 @@ fn faders(
         lane.set_clip_rect(lane.clip_rect().intersect(macros_rect));
         for col in 0..per_row {
             let slot = row * per_row + col;
-            if slot >= MACRO_COUNT {
+            if slot >= count {
                 break;
             }
             lane.allocate_ui_with_layout(
@@ -1974,6 +2024,70 @@ mod tests {
         assert!(text.contains("size"), "the narrow layout lost the faders: {text}");
     }
 
+
+    /// The fader count is adjustable, within limits.
+    ///
+    /// A set is personal: some people play four things and some play
+    /// twenty. What matters is that the limits are real — the screen
+    /// still has to show the picture, and faders you cannot see past
+    /// are not more control.
+    #[test]
+    fn the_fader_count_can_be_changed_from_the_deck() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        macros.set(0, Some("/particles/size".to_string()));
+
+        let text = render(&mut macros, &reg);
+        assert!(
+            text.contains("CONTROLS"),
+            "the deck lost its caption: {text}"
+        );
+        // The count is shown, not only implied by counting faders.
+        assert!(
+            text.contains(&format!("{}", vizz_mod::perform::MACRO_COUNT)),
+            "the fader count is not shown: {text}"
+        );
+
+        // At the ceiling the grow control is disabled rather than absent
+        // — a control that vanishes teaches nothing about why.
+        let mut full = Macros::default();
+        while full.grow() {}
+        assert_eq!(full.count(), vizz_mod::perform::MACRO_MAX);
+        let text = render(&mut full, &reg);
+        assert!(
+            text.contains(&format!("{}", vizz_mod::perform::MACRO_MAX)),
+            "a full set does not show its count: {text}"
+        );
+    }
+
+    /// Every fader in the set is drawn, whatever the count.
+    ///
+    /// The layout used to iterate a constant. If it kept doing that, a
+    /// grown set would have faders that exist in the file, respond to
+    /// MIDI, and are invisible.
+    #[test]
+    fn every_fader_in_the_set_is_drawn() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        // Shrink to the floor and assign the last one.
+        while macros.shrink() {}
+        let last = macros.count() - 1;
+        macros.set(last, Some("/fx/glow".to_string()));
+        let text = render(&mut macros, &reg);
+        assert!(text.contains("glow"), "the last fader of a small set is missing: {text}");
+
+        // Grow past the original sixteen and assign the new end.
+        let mut big = Macros::default();
+        while big.grow() {}
+        let last = big.count() - 1;
+        big.set(last, Some("/fx/glow".to_string()));
+        let text = render(&mut big, &reg);
+        assert!(
+            text.contains("glow"),
+            "a fader beyond the old fixed count was never drawn: {text}"
+        );
+    }
+
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {
         render_with(macros, reg, &MidiView::default(), None)
     }
@@ -2502,7 +2616,7 @@ mod tests {
     fn draws_assigned_slots_and_survives_stale_ones() {
         let reg = registry();
         let mut macros = Macros {
-            slots: vec![None; MACRO_COUNT],
+            slots: vec![None; vizz_mod::perform::MACRO_COUNT],
         };
         macros.set(0, Some("/particles/size".into()));
         macros.set(1, Some("/fx/glow".into()));
@@ -2537,7 +2651,7 @@ mod tests {
     fn empty_macros_still_draw_the_master() {
         let reg = registry();
         let mut macros = Macros {
-            slots: vec![None; MACRO_COUNT],
+            slots: vec![None; vizz_mod::perform::MACRO_COUNT],
         };
         let text = render(&mut macros, &reg);
         assert!(text.contains("MASTER"), "got: {text}");
@@ -2569,7 +2683,7 @@ mod tests {
     fn faders_offer_midi_learn_and_show_their_bindings() {
         let reg = registry();
         let mut macros = Macros {
-            slots: vec![None; MACRO_COUNT],
+            slots: vec![None; vizz_mod::perform::MACRO_COUNT],
         };
         macros.set(0, Some("/particles/size".into()));
         macros.set(1, Some("/fx/glow".into()));
@@ -2639,7 +2753,7 @@ mod tests {
     fn the_readout_stays_stable_while_modulation_moves_the_parameter() {
         let reg = registry();
         let mut macros = Macros {
-            slots: vec![None; MACRO_COUNT],
+            slots: vec![None; vizz_mod::perform::MACRO_COUNT],
         };
         macros.set(0, Some("/fx/glow".into()));
         let glow = reg.id("/fx/glow").unwrap();
