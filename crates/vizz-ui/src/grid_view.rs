@@ -197,6 +197,14 @@ pub struct GridActions {
     pub fire: Option<usize>,
     /// Capture the live parameters into this slot, as a new preset.
     pub store: Option<usize>,
+    /// Store a blank into this slot: every preset-scoped parameter at
+    /// the bottom of its range.
+    ///
+    /// Separate from `store` because it captures nothing — the point is
+    /// a pad that takes the picture *away*, which you cannot make by
+    /// capturing, since to capture an empty picture you would first have
+    /// to make one and lose whatever is on screen.
+    pub store_blank: Option<usize>,
     /// Put an existing preset on this pad.
     pub assign: Option<(usize, String)>,
     pub clear: Option<usize>,
@@ -496,6 +504,20 @@ fn pad(
                 state.clear_armed = Some(slot);
                 ui.close();
             }
+        }
+        // A pad that takes the picture away.
+        //
+        // Storing one by capturing is impossible by definition: you
+        // would have to make the blank on screen first, losing whatever
+        // is there — which is the thing you wanted the pad for. So it is
+        // written rather than captured.
+        if ui
+            .button("store blank")
+            .on_hover_text("a scene that takes everything to zero — an ending, or a hole to punch")
+            .clicked()
+        {
+            actions.store_blank = Some(slot);
+            ui.close();
         }
         if view.midi_available {
             ui.separator();
@@ -935,6 +957,7 @@ mod tests {
             row as f32 * (size.y + GAP) + size.y * 0.5,
         )
     }
+
 
     fn view() -> GridView {
         let mut names = vec![None; SLOTS];

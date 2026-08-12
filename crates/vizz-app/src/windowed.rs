@@ -2091,6 +2091,7 @@ impl GridBinding {
     }
 }
 
+
 fn apply_grid_actions(
     actions: &vizz_ui::grid_view::GridActions,
     params: &crate::params::AppParams,
@@ -2137,6 +2138,19 @@ fn apply_grid_actions(
     if let Some((slot, name)) = &actions.assign {
         grid.assign(*slot, name.clone());
         dirty = true;
+    }
+    if let Some(slot) = actions.store_blank {
+        let blank = vizz_mod::preset::Preset::blank_kind(reg, b.kind);
+        let wanted = format!("blank {}", slot + 1);
+        let name = vizz_mod::preset::capture_name(b.kind, &wanted);
+        match vizz_mod::preset::save_kind(b.kind, &name, &blank) {
+            Ok(saved) => {
+                grid.assign(slot, saved.clone());
+                notes.push((false, format!("stored a blank as '{saved}'")));
+                dirty = true;
+            }
+            Err(e) => notes.push((true, format!("could not store the blank: {e}"))),
+        }
     }
     if let Some(slot) = actions.store {
         // Capture still exists, because during a set the useful gesture is

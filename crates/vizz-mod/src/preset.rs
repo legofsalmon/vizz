@@ -175,6 +175,27 @@ impl Preset {
         Self { values, source: None }
     }
 
+    /// A look with every parameter it owns at the bottom of its range.
+    ///
+    /// Written rather than captured, because to capture a blank you would
+    /// first have to put one on screen — losing the picture you wanted the
+    /// pad in order to come back from.
+    ///
+    /// The bottom of the range, not the default: a default is "a
+    /// reasonable place to start", and this is a pad for going to nothing
+    /// — an ending, or a hole to punch back out of.
+    pub fn blank_kind(reg: &ParamRegistry, kind: Kind) -> Self {
+        let values = reg
+            .iter()
+            .filter(|(_, def)| kind.owns_def(def))
+            .map(|(_, def)| (def.addr.clone(), def.min))
+            .collect();
+        Self {
+            values,
+            source: Some("blank".to_string()),
+        }
+    }
+
     /// Note what this look was built on. See [`Preset::source`].
     pub fn with_source(mut self, source: Option<String>) -> Self {
         self.source = source;
@@ -986,6 +1007,56 @@ mod tests {
         assert!(!lib.has(Kind::Gravity, "a look"));
         // Gravity has no built-ins, so its list is exactly what is on disk.
         assert_eq!(lib.all(Kind::Gravity), vec!["a well".to_string()]);
+    }
+
+    /// A blank goes to the bottom of every range it owns — not to the
+    /// defaults, and not to whatever happens to be on screen.
+    ///
+    /// The distinction is the whole point of the pad. A parameter whose
+    /// default sits mid-range (`/particles/size` below) would give a
+    /// blank built by capturing-then-clearing a picture rather than
+    /// nothing, and one whose range starts below zero (`strength`) shows
+    /// that "blank" means the bottom of the range rather than 0.0.
+    #[test]
+    fn a_blank_sends_every_parameter_it_owns_to_the_bottom_of_its_range() {
+        let mut b = ParamRegistry::builder();
+        b.add(vizz_params::ParamDef::new("/particles/size", 0.0, 1.0, 0.3));
+        b.add(vizz_params::ParamDef::new("/fx/glow", 0.0, 2.0, 1.0));
+        b.add(vizz_params::ParamDef::new("/gravity/0/strength", -2.0, 2.0, 1.5));
+        b.add(vizz_params::ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
+        let reg = b.build();
+        // Nothing about the live picture may reach the pad: these are set
+        // away from both the defaults and the floor before capturing.
+        reg.set_by_addr("/particles/size", 0.9);
+        reg.set_by_addr("/gravity/0/strength", 1.8);
+
+        let blank = Preset::blank_kind(&reg, Kind::Look);
+        assert_eq!(blank.values.get("/particles/size"), Some(&0.0));
+        assert_eq!(blank.values.get("/fx/glow"), Some(&0.0));
+        assert_eq!(
+            blank.source.as_deref(),
+            Some("blank"),
+            "a blank must say what it is, so the pads group it"
+        );
+        // Still scoped to its layer: a blank look must not zero the wells.
+        assert!(
+            !blank.values.keys().any(|k| k.starts_with("/gravity/")),
+            "a blank look reached into gravity: {:?}",
+            blank.values.keys().collect::<Vec<_>>()
+        );
+
+        // And the bottom of a range that starts below zero is that
+        // bottom, not zero.
+        let wells = Preset::blank_kind(&reg, Kind::Gravity);
+        assert_eq!(
+            wells.values.get("/gravity/0/strength"),
+            Some(&-2.0),
+            "a blank clamped to zero instead of the floor of the range"
+        );
+
+        // Applying it lands: this is what the pad actually does.
+        blank.apply(&reg);
+        assert_eq!(reg.id("/particles/size").map(|id| reg.target(id)), Some(0.0));
     }
 
     /// The two layers must not be able to disturb each other.

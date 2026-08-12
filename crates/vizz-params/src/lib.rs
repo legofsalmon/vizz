@@ -302,6 +302,23 @@ impl ParamSnapshot {
         }
     }
 
+    /// Land every parameter on its target immediately, skipping the
+    /// slew.
+    ///
+    /// The per-parameter smoothing exists to take the staircase out of a
+    /// 7-bit MIDI knob, and it is right to have it on all the time — for
+    /// knobs. It is wrong when something has deliberately asked for an
+    /// instant change: a scene set to a zero-second blend still crossed
+    /// over the parameters' own time constants, so "cut" faded. The
+    /// control said one thing and the picture did another, which is
+    /// worse than not having the control.
+    pub fn snap(&mut self, reg: &ParamRegistry) {
+        for (i, def) in reg.defs().iter().enumerate() {
+            self.base[i] = reg.target(ParamId(i));
+            self.current[i] = self.base[i].clamp(def.min, def.max);
+        }
+    }
+
     pub fn get(&self, id: ParamId) -> f32 {
         self.current[id.0]
     }
@@ -315,6 +332,46 @@ impl ParamSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cut cuts.
+    ///
+    /// Per-parameter smoothing exists to take the staircase out of a
+    /// 7-bit MIDI knob, and it is right to have on all the time — for
+    /// knobs. It was also applied to a scene change set to a zero-second
+    /// blend, so "cut" faded: the one control whose whole job is to be
+    /// instant was the one that could not be.
+    #[test]
+    fn snapping_lands_a_value_the_slew_would_have_faded() {
+        let mut b = ParamRegistry::builder();
+        // A generous time constant, so a single advance covers only a
+        // little of the distance and the difference is unmistakable.
+        let id = b.add(ParamDef::new("/a", 0.0, 1.0, 0.0).smooth(1.0));
+        let reg = b.build();
+        let mut values = ParamSnapshot::new(&reg);
+
+        // Smoothed: one 16ms frame gets nowhere near the target.
+        reg.set(id, 1.0);
+        values.advance(&reg, 0.016);
+        let eased = values.get(id);
+        assert!(
+            eased < 0.1,
+            "the premise is wrong — smoothing did not hold the value back ({eased})"
+        );
+
+        // Snapped: it is simply there.
+        values.snap(&reg);
+        assert_eq!(values.get(id), 1.0, "a snap did not land the target");
+
+        // And smoothing still works afterwards, rather than being
+        // permanently disabled by one cut.
+        reg.set(id, 0.0);
+        values.advance(&reg, 0.016);
+        let after = values.get(id);
+        assert!(
+            after > 0.9,
+            "smoothing stopped working after a snap ({after})"
+        );
+    }
     use std::sync::Arc;
 
     fn reg_one(smooth: f32) -> (ParamRegistry, ParamId) {
