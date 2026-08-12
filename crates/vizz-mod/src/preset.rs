@@ -848,18 +848,34 @@ mod tests {
     /// held typed words, a dropped scan or a live stream is runtime
     /// state nobody wrote down. Two looks built on completely different
     /// material are otherwise byte-identical.
+    ///
+    /// Asserted through serialisation rather than through the library
+    /// on disk. The first version of this saved a file and read it back
+    /// by name, which passed here and failed in CI: the user library is
+    /// shared mutable state in a fixed directory, and preset tests run
+    /// in parallel against it. What is actually claimed is that the
+    /// field survives the write and the read, and that is exactly what
+    /// this checks — the disk path has its own tests.
     #[test]
-    fn a_source_survives_a_save_and_a_load() {
-        let name = capture_name(Kind::Look, "source-round-trip");
+    fn a_source_survives_a_round_trip() {
         let mut values = BTreeMap::new();
         values.insert("/particles/count".to_string(), 0.5);
-        let saved = save(
-            &name,
-            &Preset { values, source: Some("torso-scan.ply".into()) },
-        )
-        .unwrap();
-        let back = by_name(&saved).expect("saved preset");
+        let saved = Preset { values, source: Some("torso-scan.ply".into()) };
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: Preset = serde_json::from_str(&json).unwrap();
         assert_eq!(back.source.as_deref(), Some("torso-scan.ply"));
+        assert_eq!(back.values.get("/particles/count"), Some(&0.5));
+    }
+
+    /// A look with no source writes no source, rather than a null.
+    ///
+    /// Presets are compared and diffed as files, so a look saved by a
+    /// build that has nothing to say about its source should produce
+    /// the same bytes it always did.
+    #[test]
+    fn no_source_writes_no_key() {
+        let json = serde_json::to_string(&Preset::default()).unwrap();
+        assert!(!json.contains("source"), "an absent source still wrote a key: {json}");
     }
 
     /// A preset written before sources existed still loads.
