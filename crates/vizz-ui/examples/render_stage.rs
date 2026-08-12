@@ -216,6 +216,9 @@ fn main() {
             time: Some(i as f64 * 0.05),
             ..Default::default()
         });
+        if std::env::args().any(|a| a == "--peek") {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("performance-peek"), true));
+        }
         let _ = performance::draw(&ctx, &registry, &state, &mut macros);
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);

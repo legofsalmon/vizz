@@ -112,6 +112,10 @@ pub struct PerformanceActions {
     pub macros_changed: bool,
     /// Leave the performance layout.
     pub exit: bool,
+    /// The controls are standing aside so the output can be seen. Read
+    /// by the app so the toggle's state is inspectable rather than
+    /// buried in egui memory.
+    pub peeking: bool,
     /// Fire this preset slot (1-based, matching `/preset/recall`).
     pub preset_slot: Option<u32>,
     /// What the scene grid asks for this frame.
@@ -127,6 +131,11 @@ pub struct PerformanceActions {
     /// bindings, and clearing the parameter would unmap every preset to
     /// unmap one.
     pub clear_slot_binding: Option<(String, f32)>,
+}
+
+/// Where the peek toggle's state lives between frames.
+fn peek_id() -> egui::Id {
+    egui::Id::new("performance-peek")
 }
 
 pub fn draw(
@@ -157,10 +166,34 @@ pub fn draw(
             // values and the binding chips with it. A few percent still
             // bleeds through, deliberately: the show stays ambiently
             // present without ever competing with the text.
+            // Peek: stand the controls aside and let the show through.
+            //
+            // The output is already rendered underneath this layout — the
+            // scrim is the only thing hiding it — so showing it costs
+            // nothing but restraint. Which matters, because the one thing
+            // a performance screen cannot show you is the performance:
+            // every section is full-width and stacked, so the picture you
+            // are mixing is behind an opaque sheet of its own controls.
+            //
+            // Held state rather than momentary. Momentary reads better in
+            // a demo and fails in a room: checking your output is not a
+            // thing you do for half a second with a finger held down, it
+            // is a thing you do while deciding what to do next.
+            let peeking = ui.ctx().data_mut(|d| *d.get_temp_mut_or(peek_id(), false));
+            actions.peeking = peeking;
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::pos2(0.0, 0.0), full),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(PANEL_BG.r(), PANEL_BG.g(), PANEL_BG.b(), 242),
+                egui::Color32::from_rgba_unmultiplied(
+                    PANEL_BG.r(),
+                    PANEL_BG.g(),
+                    PANEL_BG.b(),
+                    // Not zero while peeking: the strip and the faders are
+                    // still readable over a strobe, which is the whole
+                    // reason the scrim exists. Enough goes that the
+                    // picture reads as the picture.
+                    if peeking { 34 } else { 242 },
+                ),
             );
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
 
@@ -173,19 +206,29 @@ pub fn draw(
                     status_strip(ui, registry, state, &mut actions, inner_w);
                     ui.add_space(10.0);
 
-                    section(ui, "PUNCH");
-                    punch_row(ui, registry, state, &mut actions);
-                    ui.add_space(10.0);
-
-                    if layer_strip(ui, registry) {
+                    // Everything between the status strip and the faders
+                    // stands down while peeking. Dimming it instead was
+                    // the first attempt and it does not work: a dim
+                    // sixteen-pad grid is still a sixteen-pad grid over
+                    // the picture. The two rows that stay are the two a
+                    // hand is already on.
+                    if !peeking {
+                        section(ui, "PUNCH");
+                        punch_row(ui, registry, state, &mut actions);
                         ui.add_space(10.0);
                     }
 
-                    section(ui, "SCENES");
-                    actions.grid = crate::grid_view::draw(ui, state.grid);
-                    ui.add_space(10.0);
+                    if !peeking && layer_strip(ui, registry) {
+                        ui.add_space(10.0);
+                    }
 
-                    if let Some(gravity) = state.gravity {
+                    if !peeking {
+                        section(ui, "SCENES");
+                        actions.grid = crate::grid_view::draw(ui, state.grid);
+                        ui.add_space(10.0);
+                    }
+
+                    if let Some(gravity) = state.gravity.filter(|_| !peeking) {
                         section(ui, "GRAVITY");
                         // Sixteen empty pads for a layer nobody has touched
                         // is a lot of screen spent saying nothing — but
@@ -204,25 +247,33 @@ pub fn draw(
                         ui.add_space(10.0);
                     }
 
-                    if !state.presets.is_empty() {
+                    if !state.presets.is_empty() && !peeking {
                         section(ui, "PRESETS");
                         preset_row(ui, state, &mut actions);
                         ui.add_space(10.0);
                     }
 
-                    section(ui, "CONTROLS");
-                    // The faders are user-chosen, and the gesture that
-                    // chooses them is clicking text that does not look
-                    // clickable. One line naming it is the cheapest fix;
-                    // the hovers on the label and the "assign" placeholder
-                    // say the same thing up close.
-                    ui.label(
-                        egui::RichText::new(
-                            "click a fader's name to reassign it · right-click a fader to reset it",
-                        )
-                        .size(11.0)
-                        .color(INK_4),
-                    );
+                    if !peeking {
+                        section(ui, "CONTROLS");
+                        // The faders are user-chosen, and the gesture that
+                        // chooses them is clicking text that does not look
+                        // clickable. One line naming it is the cheapest fix;
+                        // the hovers on the label and the "assign" placeholder
+                        // say the same thing up close.
+                        //
+                        // Both stand down while peeking. A caption pinned to
+                        // the top of the screen naming a block at the bottom
+                        // of it labels nothing, and a line teaching
+                        // reassignment is the wrong thing to spend the
+                        // output's screen on.
+                        ui.label(
+                            egui::RichText::new(
+                                "click a fader's name to reassign it · right-click a fader to reset it",
+                            )
+                            .size(11.0)
+                            .color(INK_4),
+                        );
+                    }
                     // Whatever vertical space is left goes to the faders,
                     // which are the thing you actually play. Measured from
                     // the cursor rather than guessed, so adding a row above
@@ -233,7 +284,27 @@ pub fn draw(
                     // allowance was 11 short of the labels it was
                     // reserving for, which is exactly the bottom row of
                     // text it pushed off the window.
-                    let left = (full.y - used - PAD).max(FADER_ABS_MIN + FADER_CHROME + 6.0);
+                    let mut left = (full.y - used - PAD).max(FADER_ABS_MIN + FADER_CHROME + 6.0);
+                    if peeking {
+                        // The point of standing the other rows down is to
+                        // see the output, and faders that grow to fill the
+                        // gap put the controls straight back over it. So
+                        // they keep roughly the height they had, and the
+                        // space that was freed stays free.
+                        //
+                        // A third of the window: enough for two rows of
+                        // eight at a readable size, which is what the
+                        // full layout gives them anyway.
+                        left = left.min(full.y * 0.34);
+                        // Held at the bottom, so the freed space is one
+                        // block in the middle of the screen rather than a
+                        // gap under the status strip with the faders
+                        // floating in the centre.
+                        let gap = full.y - PAD - used - left;
+                        if gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                    }
                     faders(ui, registry, macros, state, &mut actions, inner_w, left);
                 });
             });
@@ -716,6 +787,28 @@ fn status_strip(
                 .clicked()
             {
                 actions.exit = true;
+            }
+            ui.add_space(12.0);
+
+            // The way back to the picture. Next to "edit" because they
+            // are the same kind of decision — which of the three things
+            // this window can show am I looking at — and a toggle whose
+            // state you cannot see is a toggle you press twice.
+            let peeking = ui.ctx().data_mut(|d| *d.get_temp_mut_or(peek_id(), false));
+            let peek = ui.add(egui::Button::new(
+                egui::RichText::new("view")
+                    .size(13.0)
+                    .color(if peeking { LIVE } else { INK_2 }),
+            ));
+            if peek
+                .on_hover_text(
+                    "stand the controls aside and watch the output  (V)\n\
+                     the punch, scene and preset rows come back when you switch it off",
+                )
+                .clicked()
+                || ui.ctx().input(|i| i.key_pressed(egui::Key::V))
+            {
+                ui.ctx().data_mut(|d| d.insert_temp(peek_id(), !peeking));
             }
             ui.add_space(12.0);
 
@@ -1516,6 +1609,63 @@ mod tests {
         b.build()
     }
 
+
+    /// The performance screen can get out of the way of the performance.
+    ///
+    /// Every section is full-width and stacked, so the one thing this
+    /// screen cannot show you is the thing it is for: the output sits
+    /// behind an opaque sheet of its own controls. Peeking stands the
+    /// stacked rows down and leaves the picture visible.
+    ///
+    /// Asserted on what is drawn rather than on the scrim's alpha: the
+    /// complaint is "I cannot see the output", and a transparent scrim
+    /// with a sixteen-pad grid still over it fixes nothing.
+    #[test]
+    fn peeking_gets_the_controls_out_of_the_way() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        for (slot, addr) in ["/particles/size", "/particles/speed"].iter().enumerate() {
+            macros.set(slot, Some((*addr).to_string()));
+        }
+
+        // Normally the stacked rows are there, and so is the way in.
+        let text = render(&mut macros, &reg);
+        assert!(text.contains("SCENES"), "the scene grid is missing: {text}");
+        assert!(text.contains("PUNCH"), "the punch row is missing: {text}");
+        assert!(
+            text.contains("view"),
+            "no way to see the output from the performance screen: {text}"
+        );
+
+        // Peeking: the rows that cover the picture stand down, and the
+        // two a hand is on stay.
+        let text = render_peeking(&mut macros, &reg);
+        assert!(!text.contains("SCENES"), "the scene grid still covers the output: {text}");
+        assert!(!text.contains("PUNCH"), "the punch row still covers the output: {text}");
+        assert!(!text.contains("PRESETS"), "the preset row still covers the output: {text}");
+        // The faders stay — checking the output is something you do
+        // while playing, not instead of it.
+        assert!(text.contains("size"), "the faders went with everything else: {text}");
+        // And the status strip stays, because whether you are recording
+        // and whether the output is alive do not stop mattering.
+        assert!(text.contains("bpm"), "the status strip went: {text}");
+        // The way back is still visible.
+        assert!(text.contains("view"), "no way back out of peek: {text}");
+    }
+
+    fn render_peeking(macros: &mut Macros, reg: &ParamRegistry) -> String {
+        RENDER_PEEK.with(|f| f.set(true));
+        let out = render(macros, reg);
+        RENDER_PEEK.with(|f| f.set(false));
+        out
+    }
+
+    thread_local! {
+        /// Set by [`render_peeking`] so the harness can put the context
+        /// into the peeking state before the layout reads it.
+        static RENDER_PEEK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {
         render_with(macros, reg, &MidiView::default(), None)
     }
@@ -1603,6 +1753,9 @@ mod tests {
     ) -> String {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
+        if RENDER_PEEK.with(|f| f.get()) {
+            ctx.data_mut(|d| d.insert_temp(peek_id(), true));
+        }
         let audio = AudioView::default();
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let grid = crate::grid_view::GridView::default();
