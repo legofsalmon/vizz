@@ -258,9 +258,19 @@ pub fn draw_with_id(ui: &mut egui::Ui, view: &GridView, salt: &str) -> GridActio
 pub fn draw_with(ui: &mut egui::Ui, view: &GridView, state: &mut GridState) -> GridActions {
     let mut actions = GridActions::default();
     pads(ui, view, state, &mut actions);
-    modes(ui, view, state, &mut actions);
     ui.add_space(4.0);
-    controls(ui, view, &mut actions);
+    // The two control groups on one line, separated rather than stacked.
+    //
+    // They are two thoughts — "put something in a pad" and "how does a
+    // change happen" — and each was already internally coherent; what
+    // they were not was worth two rows of a screen whose scarcest
+    // resource is height. Side by side with a rule between them, the
+    // grouping survives and the picture above gets the difference.
+    ui.horizontal(|ui| {
+        modes(ui, view, state, &mut actions);
+        ui.separator();
+        controls(ui, view, &mut actions);
+    });
     if let Some((slot, text)) = state.editing.clone() {
         rename_row(ui, slot, text, state, &mut actions);
     }
