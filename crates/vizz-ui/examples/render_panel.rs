@@ -330,9 +330,9 @@ fn main() {
         gravity_grid: None,
         expand_sections: expand,
         presets: vec![
-            PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
-            PresetEntry { name: "Butterfly".into(), builtin: true, about: None },
-            PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
+            PresetEntry { name: "Slow bloom".into(), builtin: true, about: None , source: None},
+            PresetEntry { name: "Butterfly".into(), builtin: true, about: None , source: None},
+            PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
         ],
         bar_phase: 0.05,
     };

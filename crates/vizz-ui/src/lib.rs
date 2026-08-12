@@ -724,8 +724,8 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
         presets: vec![
-                PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) },
-                PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
+                PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) , source: None},
+                PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
             ],
             bar_phase: 0.0,
         };
@@ -1154,8 +1154,8 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: vec![
-                PresetEntry { name: "Slow bloom".into(), builtin: true, about: None },
-                PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None },
+                PresetEntry { name: "Slow bloom".into(), builtin: true, about: None , source: None},
+                PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
             ],
             bar_phase: 0.0,
         };
@@ -1397,4 +1397,87 @@ mod tests {
         assert!(text.contains("40000 pts"), "no point count: {text}");
         assert!(text.contains("stop"), "no way to stop the stream: {text}");
     }
+
+    /// Looks are grouped by what they were built on.
+    ///
+    /// A list of looks is searched by material — "the ones I made on the
+    /// stream", "the text ones" — and flat alphabetical order makes you
+    /// read every name to find the three that belong together.
+    ///
+    /// The group has to be recorded at save time, which is the point of
+    /// the field: a preset keeps `/cloud/a = 2`, a slot index, and what
+    /// that slot held is runtime state. Two looks built on entirely
+    /// different material are byte-identical if they point at the same
+    /// slot.
+    #[test]
+    fn presets_are_grouped_by_what_they_were_built_on() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let entry = |name: &str, source: Option<&str>| PresetEntry {
+            name: name.into(),
+            builtin: false,
+            about: None,
+            source: source.map(|s| s.to_string()),
+        };
+        let mut state = base_state();
+        // Three, not four: the list is a fixed-height scroll area, and
+        // group captions are rows too — a fourth look scrolls below the
+        // fold, where it is reachable in the app and invisible to a
+        // test that reads what was drawn.
+        state.presets = vec![
+            entry("Warehouse", Some("torso-scan.ply")),
+            entry("Warehouse 2", Some("torso-scan.ply")),
+            // Saved before presets carried a source.
+            entry("Old one", None),
+        ];
+        let text = run_panel(&ctx, &reg, &state);
+        // Each source names its group once, not once per look.
+        assert_eq!(
+            text.matches("torso-scan.ply").count(),
+            1,
+            "the group caption is repeated per look: {text}"
+        );
+
+        // A look with nothing to say about itself still appears, under a
+        // group that says so rather than being hidden.
+        assert!(text.contains("Old one"), "a sourceless look vanished: {text}");
+        assert!(text.contains("other"), "no group for sourceless looks: {text}");
+        // And every look is still listed.
+        for name in ["Warehouse", "Warehouse 2"] {
+            assert!(text.contains(name), "{name} went missing: {text}");
+        }
+    }
+
+    /// A believable panel, for tests that only vary one thing.
+    fn base_state() -> PanelState {
+        PanelState {
+            recording: None,
+            preset_current: None,
+            update_available: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            live_cloud: None,
+            video_sources: Default::default(),
+            record: Default::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            presets: Vec::new(),
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: true,
+            bar_phase: 0.0,
+        }
+    }
+
 }

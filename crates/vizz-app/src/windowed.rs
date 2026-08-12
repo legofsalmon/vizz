@@ -1360,6 +1360,7 @@ impl App {
                     &self.params.registry,
                     &mut self.library,
                     &mut notes,
+                    &self.clouds,
                 );
                 apply_grid_actions(
                     &actions.grid,
@@ -1887,18 +1888,48 @@ fn preset_entries(library: &vizz_mod::preset::Library) -> Vec<vizz_ui::PresetEnt
             name: b.name.to_string(),
             builtin: true,
             about: Some(b.about.to_string()),
+            source: b.preset().source,
         })
         .chain(
             library
                 .user(preset::Kind::Look)
                 .iter()
                 .map(|name| vizz_ui::PresetEntry {
+                    source: preset::by_name(name).and_then(|p| p.source),
                     name: name.clone(),
                     builtin: false,
                     about: None,
                 }),
         )
-        .collect()
+        // Sorted so each source's looks are contiguous, which is what
+        // makes a group a group. A stable sort, so within a source the
+        // order is the one the library returned — built-ins first, then
+        // user looks alphabetically, exactly as before.
+        .collect::<Vec<_>>()
+        .tap_sorted_by_source()
+}
+
+
+/// Group a preset listing by source without disturbing order within a
+/// group.
+trait SortedBySource {
+    fn tap_sorted_by_source(self) -> Vec<vizz_ui::PresetEntry>;
+}
+
+impl SortedBySource for Vec<vizz_ui::PresetEntry> {
+    fn tap_sorted_by_source(mut self) -> Vec<vizz_ui::PresetEntry> {
+        // "other" last: looks saved before presets recorded a source
+        // have nothing useful to say about themselves, and putting the
+        // unknowns at the top would bury the groups that do.
+        self.sort_by(|a, b| {
+            let key = |e: &vizz_ui::PresetEntry| match e.source.as_deref() {
+                None => (1, String::new()),
+                Some(s) => (0, s.to_string()),
+            };
+            key(a).cmp(&key(b))
+        });
+        self
+    }
 }
 
 /// The gravity grid, resolved against the gravity preset library.
@@ -2209,11 +2240,46 @@ fn apply_grid_actions(
 /// is mutably borrowed elsewhere while these run.
 type Notes = Vec<(bool, String)>;
 
+
+/// What the look on screen is built on, as a name a person would use.
+///
+/// Read at save time because it cannot be read back afterwards: a
+/// preset keeps `/cloud/a = 2`, and what slot 2 held is runtime state.
+/// So this is the one moment the answer exists.
+///
+/// The slot's own name is used when the shape is a cloud, because it is
+/// what the person called it — a dropped file's filename, the words
+/// they typed, "live" for a stream. That is a better grouping key than
+/// any category this could invent, and it is already what the clouds
+/// list shows.
+fn source_now(registry: &vizz_params::ParamRegistry, clouds: &[String]) -> Option<String> {
+    let value = |addr: &str| registry.id(addr).map(|id| registry.target(id));
+    let mode = value("/shape/mode")?.round().max(0.0) as usize;
+    let def = registry.id("/shape/mode").map(|id| &registry.defs()[id.index()])?;
+    let name = def.labels.and_then(|l| l.get(mode)).copied()?;
+    // A cloud shape is named by what is in the slot; every other shape
+    // is its own source.
+    if !name.contains("cloud") {
+        return Some(name.to_string());
+    }
+    let slot = value("/cloud/a")?.round().max(0.0) as usize;
+    Some(
+        clouds
+            .get(slot)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| name.to_string()),
+    )
+}
+
 fn apply_preset_actions(
     actions: &vizz_ui::PanelActions,
     registry: &vizz_params::ParamRegistry,
     library: &mut vizz_mod::preset::Library,
     notes: &mut Notes,
+    // What each cloud slot currently holds, so a saved look can record
+    // what it was built on.
+    clouds: &[String],
 ) {
     use vizz_mod::preset;
     if let Some(name) = &actions.preset_load {
@@ -2229,7 +2295,7 @@ fn apply_preset_actions(
     // refreshed rather than left to the interval — a preset you just saved
     // has to be on the assign menu now, not in up to two seconds.
     if let Some(name) = &actions.preset_save {
-        let snapshot = preset::Preset::capture(registry);
+        let snapshot = preset::Preset::capture(registry).with_source(source_now(registry, clouds));
         match preset::save(name, &snapshot) {
             Ok(saved) => {
                 log::info!("saved preset {saved} ({} parameters)", snapshot.values.len());

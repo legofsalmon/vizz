@@ -124,6 +124,9 @@ pub struct PresetEntry {
     pub builtin: bool,
     /// One-line description, built-ins only.
     pub about: Option<String>,
+    /// What the look was built on, recorded when it was saved. `None`
+    /// for anything saved before presets carried this.
+    pub source: Option<String>,
 }
 
 /// Everything the panel displays that it cannot read from the registry.
@@ -1698,7 +1701,32 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         .max_height(PRESET_LIST_H)
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            // Grouped by what each look was built on.
+            //
+            // A list of looks is searched by material — "the ones I made
+            // on the stream", "the text ones" — and a flat alphabetical
+            // list makes you read every name to find the three that go
+            // together. The group is the slot's own name, which is what
+            // you called the thing when you loaded it, so it is already
+            // the words you would think in.
+            //
+            // Order is preserved within and across groups so the slot
+            // numbers stay in sequence: they are what /preset/recall and
+            // a MIDI button address, and reordering them to make the
+            // grouping tidy would silently remap every binding.
+            let mut last_group: Option<&str> = None;
             for (i, p) in state.presets.iter().enumerate() {
+                let group = p.source.as_deref().unwrap_or("other");
+                if last_group != Some(group) {
+                    last_group = Some(group);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(group)
+                            .size(10.0)
+                            .color(vizz_design::ink::TERTIARY)
+                            .monospace(),
+                    );
+                }
                 ui.horizontal(|ui| {
                     // The slot number, because it is what `/preset/recall`
                     // and therefore a MIDI button addresses. Showing it
@@ -2611,11 +2639,12 @@ mod save_name_tests {
                 name: "Butterfly".into(),
                 builtin: true,
                 about: Some("a built-in".into()),
+                source: None,
             },
-            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None },
+            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None, source: None },
             // As it appears on disk having been saved from "night/shift":
             // the separator was rewritten on the way to a filename.
-            PresetEntry { name: "night_shift".into(), builtin: false, about: None },
+            PresetEntry { name: "night_shift".into(), builtin: false, about: None , source: None},
         ]
     }
 
