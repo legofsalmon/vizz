@@ -1026,6 +1026,30 @@ Mappings are saved as JSON to `~/.config/vizz/midi.json` (override with
 mapping you just set up. MIDI failing to start is a degraded mode, not a
 failure: the visuals and OSC keep running.
 
+### Controllers vizz knows
+
+Some controllers arrive already mapped. Plug one in and its grid is the
+app's grid, its faders are the performance layout's first row, and its
+pads light up to show what is loaded, what is playing, and where the
+autopilot is going next.
+
+| Device | Layout |
+|--------|--------|
+| **Akai APC40 mkII** | Clip grid rows 1–2 → the 16 gravity pads · rows 4–5 → the 16 scene pads (row 3 left clear, as a landmark for the hand) · the 8 track faders → size, speed, count, mode, morph, trail, glow, mirror · the master fader → master dim |
+
+Nothing is ever overwritten. A default only fills a slot that has no
+binding at all, so a controller plugged in halfway through an evening
+cannot undo the mapping you spent it building — and every one of these
+bindings is ordinary, so learn replaces any of them and clicking a
+binding label clears it.
+
+**The lights** need no setup: if the device is recognised, vizz opens its
+output port too. A pad with a preset on it glows dim, the one playing
+goes green, and the one the autopilot will fire next goes amber. Only
+changes are sent, at about 30 ms, so the feedback cannot crowd the clock
+sharing the same cable. vizz never sends to an output port it does not
+recognise, and hands every device back dark on the way out.
+
 ### MIDI clock sync
 
 vizz follows MIDI clock when asked: tick **midi clock** in the panel's

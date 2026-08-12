@@ -1090,6 +1090,13 @@ impl App {
             // both UIs carefully draw unreachable code.
             let outputs_status: Vec<OutputStatus> = state.outputs.status();
             refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+            if self.midi.is_some() {
+                publish_midi_surface(
+                    &self.midi_shared,
+                    &self.engine.grid,
+                    &self.engine.gravity_grid,
+                );
+            }
             // A learn finishing is worth saying: it completes on the MIDI
             // thread when a control moves, so no click marks the moment —
             // the old behaviour was a chip quietly changing somewhere
@@ -1823,6 +1830,43 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     // Accumulated rather than overwritten: a Start between two frames
     // must not vanish because a later refresh missed the try_lock.
     view.clock_started |= state.clock.take_started();
+}
+
+/// Tell a lit controller what the grids are doing.
+///
+/// Shares the frame's existing `try_lock` discipline: a missed frame is
+/// a light thirty milliseconds late, and the output thread only sends
+/// what changed, so a stale surface costs nothing at all.
+fn publish_midi_surface(
+    shared: &SharedMidi,
+    scenes: &vizz_mod::scene::Grid,
+    gravity: &vizz_mod::scene::Grid,
+) {
+    fn bank(grid: &vizz_mod::scene::Grid) -> vizz_midi::feedback::BankState {
+        let mut bank = vizz_midi::feedback::BankState {
+            playing: grid.current().map(|s| s as u8),
+            // Only while the autopilot is actually walking. `upcoming`
+            // answers "which pad is next" whether or not anything is
+            // going to fire, and a permanently lit "next" pad on a
+            // stopped sequencer is the display inventing movement.
+            next: grid
+                .autopilot
+                .enabled
+                .then(|| grid.upcoming())
+                .flatten()
+                .map(|s| s as u8),
+            ..Default::default()
+        };
+        for (slot, cell) in grid.cells().iter().enumerate() {
+            bank.set_loaded(slot, cell.is_some());
+        }
+        bank
+    }
+    let Ok(mut state) = shared.try_lock() else { return };
+    state.surface = vizz_midi::feedback::Surface {
+        scenes: bank(scenes),
+        gravity: bank(gravity),
+    };
 }
 
 /// Push panel edits through to the analysis thread. A free function taking

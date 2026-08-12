@@ -807,7 +807,23 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
         ui.small("no devices — plug one in, it connects automatically");
     } else {
         for name in &state.midi.connected {
-            ui.small(format!("· {name}"));
+            // Say when a device came with a layout. Otherwise a grid
+            // that suddenly fires scenes reads as something the app did
+            // by accident, and there is nothing on screen to tell you
+            // it can be changed like any other binding.
+            match vizz_midi::profile::for_port(name) {
+                Some(p) => {
+                    ui.small(format!("· {name}"))
+                        .on_hover_text(format!(
+                            "{} — the pads and faders were mapped for you; \
+                             learn overrides any of it",
+                            p.name
+                        ));
+                }
+                None => {
+                    ui.small(format!("· {name}"));
+                }
+            }
         }
     }
     // While learning, echo whatever is arriving: the usual failure is a
