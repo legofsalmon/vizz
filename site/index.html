@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.15.3/vizz-0.15.3.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.16.0/vizz-0.16.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,35 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.16.0">0.16.0</a></div>
+      <ul>
+        <li><strong>The performance view shows the performance.</strong>
+          It used to be six sections stacked full-width over an opaque
+          scrim, so the one thing the screen could not show you was the
+          picture you were mixing. Now the controls take a column, the
+          output takes the rest, and the pads and faders share a full-width
+          deck along the bottom. Press <code>V</code> to stand the controls
+          aside entirely and watch the output.</li>
+        <li><strong>The preview is the real frame.</strong> The output is
+          drawn into its pane and letterboxed to the master's aspect,
+          rather than being glimpsed through a hole in the interface —
+          which showed whichever part of the render happened to sit
+          behind the gap.</li>
+        <li><strong>Presets group by what they were built on</strong> —
+          your scan, your typed words, the live stream — recorded when
+          the look is saved. Existing presets keep working and group
+          under “other” until re-saved.</li>
+        <li><strong>A panel you can scan.</strong> Ten sections became
+          three clusters; parameter names lead their rows in a proper
+          column; and the narrow, route and learn buttons appear on
+          hover instead of sitting on all 157 rows at once.</li>
+        <li>Scene and gravity pads are told apart by colour, each grid's
+          controls fit one grouped row, and a loaded cloud can be put on
+          screen by clicking it.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.15.3">0.15.3</a></div>

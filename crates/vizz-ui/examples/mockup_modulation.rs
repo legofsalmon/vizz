@@ -458,6 +458,8 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         gravity: None,
         midi: &midi,
         values: None,
+        output_texture: None,
+        output_aspect: 16.0 / 9.0,
         outputs: &[
             vizz_ui::OutputStatus { name: "syphon:vizz".into(), live: true },
             vizz_ui::OutputStatus { name: "ndi:vizz".into(), live: true },

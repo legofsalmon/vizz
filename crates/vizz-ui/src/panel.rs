@@ -124,6 +124,9 @@ pub struct PresetEntry {
     pub builtin: bool,
     /// One-line description, built-ins only.
     pub about: Option<String>,
+    /// What the look was built on, recorded when it was saved. `None`
+    /// for anything saved before presets carried this.
+    pub source: Option<String>,
 }
 
 /// Everything the panel displays that it cannot read from the registry.
@@ -323,10 +326,18 @@ pub fn draw(
             // and left the parameter list three rows tall.
             status_strip(ui, state, &mut actions);
             ui.separator();
-            egui::CollapsingHeader::new("health")
-                .id_salt("health")
-                .default_open(state.expand_sections)
-                .show(ui, |ui| health_section(ui, state));
+            // Three clusters, not ten items.
+            //
+            // Ten collapsed sections in a flat list are ten labels to
+            // read every time you want one of them, and the order they
+            // were added in is not an order anyone can predict. They are
+            // really three kinds of thing, and naming the kinds means
+            // you read one word to find the right third of the list.
+            //
+            // The clusters are captions rather than a second layer of
+            // collapsing: another thing to open to reach the thing you
+            // wanted to open is not navigation, it is a corridor.
+            cluster(ui, "SIGNAL");
             egui::CollapsingHeader::new("outputs")
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
@@ -335,6 +346,24 @@ pub fn draw(
                     ui.separator();
                     output_setup_section(ui, state, &mut actions);
                 });
+            egui::CollapsingHeader::new("recording")
+                .id_salt("recording")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| recording_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("video in")
+                .id_salt("video-in")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| video_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("audio")
+                .id_salt("audio")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| audio_section(ui, state, &mut actions));
+            egui::CollapsingHeader::new("midi")
+                .id_salt("midi")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| midi_section(ui, state));
+
+            cluster(ui, "CONTENT");
             egui::CollapsingHeader::new("clouds")
                 .id_salt("clouds")
                 .default_open(state.expand_sections)
@@ -350,26 +379,16 @@ pub fn draw(
                 .id_salt("background")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| background_section(ui, registry));
-            egui::CollapsingHeader::new("midi")
-                .id_salt("midi")
-                .default_open(state.expand_sections)
-                .show(ui, |ui| midi_section(ui, state));
-            egui::CollapsingHeader::new("audio")
-                .id_salt("audio")
-                .default_open(state.expand_sections)
-                .show(ui, |ui| audio_section(ui, state, &mut actions));
-            egui::CollapsingHeader::new("recording")
-                .id_salt("recording")
-                .default_open(state.expand_sections)
-                .show(ui, |ui| recording_section(ui, state, &mut actions));
-            egui::CollapsingHeader::new("video in")
-                .id_salt("video-in")
-                .default_open(state.expand_sections)
-                .show(ui, |ui| video_section(ui, state, &mut actions));
+
+            cluster(ui, "ADVANCED");
             egui::CollapsingHeader::new("modulation")
                 .id_salt("modulation")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| modulation_section(ui, registry, modulation, &mut actions));
+            egui::CollapsingHeader::new("health")
+                .id_salt("health")
+                .default_open(state.expand_sections)
+                .show(ui, |ui| health_section(ui, state));
             ui.separator();
             // No scene grid here any more.
             //
@@ -533,6 +552,28 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
 /// or tablet on the same wifi, not another app on this machine:
 /// loopback would refuse the one connection people actually make.
 pub const DEFAULT_LIVE_CLOUD: &str = "listen://0.0.0.0:9848";
+
+
+/// A cluster caption over a run of sections.
+///
+/// Quiet on purpose. It is a signpost read once on the way to a
+/// section, not a control, and a heavy heading would out-shout the
+/// section names that are the actual targets.
+///
+/// One word, no explanatory line under it. The first version carried a
+/// hint each — "what goes out, and what comes in" — which read well and
+/// cost ninety points of height on a panel whose problem is that it is
+/// already too long to scan. The section names below each caption
+/// already say what the cluster holds.
+fn cluster(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(7.0);
+    ui.label(
+        egui::RichText::new(title)
+            .size(10.0)
+            .color(vizz_design::ink::TERTIARY)
+            .monospace(),
+    );
+}
 
 /// A status dot — the design system's, under the short local name.
 fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
@@ -1660,7 +1701,32 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         .max_height(PRESET_LIST_H)
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            // Grouped by what each look was built on.
+            //
+            // A list of looks is searched by material — "the ones I made
+            // on the stream", "the text ones" — and a flat alphabetical
+            // list makes you read every name to find the three that go
+            // together. The group is the slot's own name, which is what
+            // you called the thing when you loaded it, so it is already
+            // the words you would think in.
+            //
+            // Order is preserved within and across groups so the slot
+            // numbers stay in sequence: they are what /preset/recall and
+            // a MIDI button address, and reordering them to make the
+            // grouping tidy would silently remap every binding.
+            let mut last_group: Option<&str> = None;
             for (i, p) in state.presets.iter().enumerate() {
+                let group = p.source.as_deref().unwrap_or("other");
+                if last_group != Some(group) {
+                    last_group = Some(group);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(group)
+                            .size(10.0)
+                            .color(vizz_design::ink::TERTIARY)
+                            .monospace(),
+                    );
+                }
                 ui.horizontal(|ui| {
                     // The slot number, because it is what `/preset/recall`
                     // and therefore a MIDI button addresses. Showing it
@@ -2351,21 +2417,37 @@ fn param_row(
         // room, not to the picture — but entirely invisible until now.
         // "Why didn't my preset restore the master" is a bug report about
         // a feature working as designed, and this line is the answer.
-        if vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()) {
-            ui.colored_label(GLOBAL_COLOR, "g").on_hover_text(
-                "global — presets and scenes leave this alone, so it stays where you put it",
-            );
-        }
-
+        // Both markers live in one reserved gutter, whether or not this
+        // row has either.
+        //
+        // Drawn inline they pushed the name and the slider right by
+        // their own width, so exactly the rows carrying a marker were
+        // the rows that broke the column the markers sit in front of —
+        // and a modulated parameter is the one you most want to find by
+        // scanning.
         let driven = modulation.drives(&def.addr);
-        if driven {
-            // A slider that will not stay where you put it is otherwise
-            // indistinguishable from a broken one. The value is still
-            // yours — modulation rides on top as an offset.
-            let offset = modulation.offset_for(registry, &def.addr);
-            ui.colored_label(MOD_COLOR, "~").on_hover_text(format!(
-                "modulated, currently {offset:+.2} of range"
-            ));
+        let global = vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str());
+        let (mark_rect, mark_resp) = ui.allocate_exact_size(
+            egui::vec2(MARK_COL_W, ui.spacing().interact_size.y),
+            egui::Sense::hover(),
+        );
+        if global || driven {
+            let (glyph, colour) = if global { ("g", GLOBAL_COLOR) } else { ("~", MOD_COLOR) };
+            ui.painter().text(
+                mark_rect.right_center(),
+                egui::Align2::RIGHT_CENTER,
+                glyph,
+                egui::FontId::proportional(12.5),
+                colour,
+            );
+            let hint = if global {
+                "global — presets and scenes leave this alone, so it stays where you put it"
+                    .to_string()
+            } else {
+                let offset = modulation.offset_for(registry, &def.addr);
+                format!("modulated, currently {offset:+.2} of range")
+            };
+            mark_resp.on_hover_text(hint);
         }
 
         // The slider covers the *working* range, which may be narrower
@@ -2376,9 +2458,35 @@ fn param_row(
         // A stepped parameter shows its position's name rather than a
         // number: `mode 5.000` says nothing, `mode Lorenz` says what is
         // on screen.
-        let mut slider = egui::Slider::new(&mut value, lo..=hi)
-            .text(short)
-            .clamping(egui::SliderClamping::Always);
+        // The name leads the row.
+        //
+        // egui's slider draws [track][value][text], so the name landed
+        // after a number of varying width and started at a different x
+        // on every row — and a parameter list is scanned by name, never
+        // by value. A fixed column in front puts every name at the same
+        // x, which is what makes a list of 157 skimmable rather than
+        // read.
+        // An exact column, painted into.
+        //
+        // `add_sized` holds the width but centres the text, and an
+        // `allocate_ui_with_layout` grows to its content — both put the
+        // names back at a different x per row, which is the thing being
+        // fixed. Reserving the rect and painting at its left edge is the
+        // only one of the three that actually yields a column.
+        let (name_rect, name_resp) = ui.allocate_exact_size(
+            egui::vec2(NAME_COL_W, ui.spacing().interact_size.y),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            name_rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            short,
+            egui::FontId::proportional(12.5),
+            ui.visuals().text_color(),
+        );
+        name_resp.on_hover_text(&def.addr);
+        let mut slider =
+            egui::Slider::new(&mut value, lo..=hi).clamping(egui::SliderClamping::Always);
         if def.labels.is_some() {
             let labels = def.labels;
             slider = slider.custom_formatter(move |v, _| {
@@ -2398,10 +2506,31 @@ fn param_row(
             registry.set(id, def.default);
         }
 
+        // The three setup controls — narrow, route, learn — appear on
+        // hover rather than sitting on every row.
+        //
+        // They are set once during setup and then never touched again,
+        // and there are 157 parameters: as permanent chrome that is
+        // roughly 470 buttons competing with the sliders that are the
+        // actual instrument. Hover is the right home for a thing you go
+        // looking for deliberately.
+        //
+        // A row that already carries state keeps showing it. A narrowed
+        // range, a routed LFO and a bound CC are all things that are
+        // *currently true* about the parameter, and hiding them would
+        // turn "this fader does not reach the top any more" into a
+        // mystery instead of an answer.
+        let narrowed_now = ranges.is_narrowed(&def.addr);
+        let routed_now = modulation.has_route(vizz_mod::Source::Lfo(0), &def.addr);
+        let bound_now = state.midi.map.source_for(&def.addr).is_some()
+            || state.midi.learning(&def.addr);
+        let hovered = ui.ui_contains_pointer();
+        let show_setup = hovered || narrowed_now || routed_now || bound_now;
+
         // Zoom the slider around where it is now, or restore the full
         // range. Stepped parameters are left alone: their whole range is
         // a handful of positions and there is nothing to zoom into.
-        if def.labels.is_none() {
+        if show_setup && def.labels.is_none() {
             let narrowed = ranges.is_narrowed(&def.addr);
             let (label, hint) = if narrowed {
                 ("<>", "restore the full range")
@@ -2440,7 +2569,8 @@ fn param_row(
     // the ~ marker: a parameter driven by an audio band showed ~ while
     // the button sat unlit, which read as the panel disagreeing with
     // itself about whether the row was modulated.
-    if !is_transport(def)
+    if show_setup
+        && !is_transport(def)
         && ui
             .add(egui::Button::new("LFO 1").small().selected(routed))
             .on_hover_text(hint)
@@ -2449,7 +2579,7 @@ fn param_row(
         modulation.toggle_route(lfo1, &def.addr, 0.25);
     }
 
-        if !state.midi.available {
+        if !state.midi.available || !show_setup {
             return;
         }
         let learning = state.midi.learning(&def.addr);
@@ -2480,6 +2610,15 @@ fn param_row(
 
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
 /// as "something else is touching this" at a glance.
+/// The name column's width. Wide enough for the longest short name the
+/// registry actually holds, narrow enough to leave a slider worth
+/// dragging in a panel that is often docked at 460 points.
+const NAME_COL_W: f32 = 108.0;
+
+/// The marker gutter in front of the name: one glyph plus its breathing
+/// room, reserved on every row so a marker never moves a column.
+const MARK_COL_W: f32 = 14.0;
+
 const MOD_COLOR: egui::Color32 = vizz_design::accent::MOD;
 /// The "this row is what you are seeing" marker in the slot legends.
 const LIVE_MARK: egui::Color32 = crate::theme::CURRENT;
@@ -2500,11 +2639,12 @@ mod save_name_tests {
                 name: "Butterfly".into(),
                 builtin: true,
                 about: Some("a built-in".into()),
+                source: None,
             },
-            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None },
+            PresetEntry { name: "warehouse 2am".into(), builtin: false, about: None, source: None },
             // As it appears on disk having been saved from "night/shift":
             // the separator was rewritten on the way to a filename.
-            PresetEntry { name: "night_shift".into(), builtin: false, about: None },
+            PresetEntry { name: "night_shift".into(), builtin: false, about: None , source: None},
         ]
     }
 

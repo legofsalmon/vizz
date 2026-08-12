@@ -158,6 +158,8 @@ fn main() {
         gravity: gravity.as_ref(),
         midi: &midi,
         values: Some(&modulated),
+        output_texture: None,
+        output_aspect: 16.0 / 9.0,
     };
 
     let (device, queue) = gpu();
@@ -216,6 +218,9 @@ fn main() {
             time: Some(i as f64 * 0.05),
             ..Default::default()
         });
+        if std::env::args().any(|a| a == "--peek") {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("performance-peek"), true));
+        }
         let _ = performance::draw(&ctx, &registry, &state, &mut macros);
         let out = ctx.end_pass();
         renderer.update_textures(&device, &queue, &out.textures_delta);
@@ -414,6 +419,9 @@ fn gravity_grid() -> vizz_ui::grid_view::GridView {
     }
     vizz_ui::grid_view::GridView {
         names,
+        // The review shot has to show what the app shows, or it is a
+        // picture of a layout nobody runs.
+        accent: Some(vizz_ui::grid_view::GRAVITY_ACCENT),
         current: Some(1),
         curve_names: ["linear", "smooth", "ease in", "ease out", "cut"]
             .iter()

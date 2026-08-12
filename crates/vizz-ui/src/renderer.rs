@@ -21,6 +21,14 @@ pub struct EguiRenderer {
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     textures: HashMap<egui::TextureId, (wgpu::Texture, wgpu::BindGroup)>,
+    /// Textures egui draws but does not own: the master output, so the
+    /// performance layout can show the picture at the size it chooses
+    /// rather than through a hole in its own scrim.
+    ///
+    /// Separate from `textures` because those are egui's own, uploaded
+    /// from its deltas and owned here; these are borrowed views whose
+    /// lifetime belongs to the renderer that made them.
+    external: HashMap<egui::TextureId, wgpu::BindGroup>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     vertex_capacity: u64,
@@ -167,6 +175,7 @@ impl EguiRenderer {
             texture_layout,
             sampler,
             textures: HashMap::new(),
+            external: HashMap::new(),
             vertices: alloc(device, "egui-vertices", vertex_capacity, wgpu::BufferUsages::VERTEX),
             indices: alloc(device, "egui-indices", index_capacity, wgpu::BufferUsages::INDEX),
             vertex_capacity,
@@ -176,6 +185,31 @@ impl EguiRenderer {
     }
 
     /// Apply egui's texture deltas. Must run before `render` for the frame.
+    /// Point `id` at a texture this renderer does not own.
+    ///
+    /// Called when the master texture is created or resized, not per
+    /// frame: a bind group per frame is a bind group per frame's worth
+    /// of allocation for a view that almost never changes.
+    pub fn set_external(
+        &mut self,
+        device: &wgpu::Device,
+        id: egui::TextureId,
+        view: &wgpu::TextureView,
+    ) {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("egui-external"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.external.insert(id, bind_group);
+    }
+
     pub fn update_textures(
         &mut self,
         device: &wgpu::Device,
@@ -333,7 +367,13 @@ impl EguiRenderer {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
 
         for (texture_id, clip, index_start, index_count, base_vertex) in draws {
-            let Some((_, bind_group)) = self.textures.get(&texture_id) else { continue };
+            let bind_group = match self.textures.get(&texture_id) {
+                Some((_, bind_group)) => bind_group,
+                None => match self.external.get(&texture_id) {
+                    Some(bind_group) => bind_group,
+                    None => continue,
+                },
+            };
             // Clip rect is in points; scissor is in pixels and must stay
             // inside the target or the pass is invalid.
             let x = (clip.min.x * pixels_per_point).round().max(0.0) as u32;

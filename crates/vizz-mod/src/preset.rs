@@ -80,6 +80,21 @@ pub struct Preset {
     /// Address → value. `BTreeMap` so the JSON is ordered and two saves of
     /// the same look produce identical files.
     pub values: BTreeMap<String, f32>,
+    /// What the look was built on, recorded when it was saved.
+    ///
+    /// Not derivable from `values`, which is why it is stored. A look
+    /// keeps `/cloud/a = 2` — a slot index — and whether slot 2 held
+    /// typed text, a dropped .ply, an image or a live stream is runtime
+    /// state that was never written down. Two presets built on entirely
+    /// different material are byte-identical if they point at the same
+    /// slot, so a list can only be grouped by what a preset *is* if the
+    /// preset says.
+    ///
+    /// Optional, and defaulted, so every preset written before this
+    /// existed still loads — it simply has nothing to say about its
+    /// source and groups under "other" until it is saved again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Which layer a preset belongs to.
@@ -157,7 +172,13 @@ impl Preset {
             .filter(|(_, def)| kind.owns_def(def))
             .map(|(id, def)| (def.addr.clone(), reg.target(id)))
             .collect();
-        Self { values }
+        Self { values, source: None }
+    }
+
+    /// Note what this look was built on. See [`Preset::source`].
+    pub fn with_source(mut self, source: Option<String>) -> Self {
+        self.source = source;
+        self
     }
 
     /// Write the preset into the registry.
@@ -406,6 +427,9 @@ impl Builtin {
                 .iter()
                 .map(|(a, v)| ((*a).to_string(), *v))
                 .collect(),
+            // The built-ins ship with the app and are built on its own
+            // shapes, not on anything you loaded.
+            source: Some("built in".to_string()),
         }
     }
 }
@@ -817,6 +841,56 @@ pub fn by_index(i: usize) -> Option<(String, Preset)> {
 mod tests {
     use super::*;
 
+    /// A look remembers what it was built on.
+    ///
+    /// It has to be recorded, because it cannot be worked out later: a
+    /// preset keeps `/cloud/a = 2`, a slot index, and whether that slot
+    /// held typed words, a dropped scan or a live stream is runtime
+    /// state nobody wrote down. Two looks built on completely different
+    /// material are otherwise byte-identical.
+    ///
+    /// Asserted through serialisation rather than through the library
+    /// on disk. The first version of this saved a file and read it back
+    /// by name, which passed here and failed in CI: the user library is
+    /// shared mutable state in a fixed directory, and preset tests run
+    /// in parallel against it. What is actually claimed is that the
+    /// field survives the write and the read, and that is exactly what
+    /// this checks — the disk path has its own tests.
+    #[test]
+    fn a_source_survives_a_round_trip() {
+        let mut values = BTreeMap::new();
+        values.insert("/particles/count".to_string(), 0.5);
+        let saved = Preset { values, source: Some("torso-scan.ply".into()) };
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: Preset = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.source.as_deref(), Some("torso-scan.ply"));
+        assert_eq!(back.values.get("/particles/count"), Some(&0.5));
+    }
+
+    /// A look with no source writes no source, rather than a null.
+    ///
+    /// Presets are compared and diffed as files, so a look saved by a
+    /// build that has nothing to say about its source should produce
+    /// the same bytes it always did.
+    #[test]
+    fn no_source_writes_no_key() {
+        let json = serde_json::to_string(&Preset::default()).unwrap();
+        assert!(!json.contains("source"), "an absent source still wrote a key: {json}");
+    }
+
+    /// A preset written before sources existed still loads.
+    ///
+    /// The field is optional and defaulted precisely so an upgrade does
+    /// not orphan a library — a look with nothing to say about itself
+    /// groups under "other" rather than failing to parse.
+    #[test]
+    fn a_preset_without_a_source_still_loads() {
+        let json = r#"{"values":{"/particles/count":0.25}}"#;
+        let p: Preset = serde_json::from_str(json).expect("older presets must still load");
+        assert_eq!(p.source, None);
+        assert_eq!(p.values.get("/particles/count"), Some(&0.25));
+    }
+
     /// Capturing onto a pad that names a built-in used to write a file
     /// that could never be recalled: the save succeeded, but `by_name`
     /// prefers built-ins, so firing the pad played the built-in while the
@@ -839,7 +913,7 @@ mod tests {
         // And the stepped-aside name really resolves to the capture.
         let mut values = BTreeMap::new();
         values.insert("/fx/glow".to_string(), 0.123);
-        save(&name, &Preset { values: values.clone() }).unwrap();
+        save(&name, &Preset { values: values.clone(), source: None }).unwrap();
         assert_eq!(
             by_name(&name).expect("saved capture must resolve").values,
             values,
@@ -856,7 +930,7 @@ mod tests {
     fn a_preset_whose_name_needed_sanitising_is_still_found() {
         let (_guard, _tmp) = crate::test_env::scoped("library-sanitise");
         let name = "Warehouse: 2am";
-        let saved = save(name, &Preset { values: Default::default() }).unwrap();
+        let saved = save(name, &Preset { values: Default::default(), source: None }).unwrap();
         assert_ne!(saved, name, "this test needs a name that gets rewritten");
 
         let lib = Library::new();
@@ -889,7 +963,7 @@ mod tests {
         let mut lib = Library::new();
         assert!(!lib.has(Kind::Look, "later"));
 
-        save("later", &Preset { values: Default::default() }).unwrap();
+        save("later", &Preset { values: Default::default(), source: None }).unwrap();
         // Deliberately stale until told: this is what makes it a cache.
         assert!(!lib.has(Kind::Look, "later"));
         lib.refresh();
@@ -902,8 +976,8 @@ mod tests {
     #[test]
     fn the_cache_keeps_the_two_layers_apart() {
         let (_guard, _tmp) = crate::test_env::scoped("library-layers");
-        save_kind(Kind::Look, "a look", &Preset { values: Default::default() }).unwrap();
-        save_kind(Kind::Gravity, "a well", &Preset { values: Default::default() }).unwrap();
+        save_kind(Kind::Look, "a look", &Preset { values: Default::default(), source: None }).unwrap();
+        save_kind(Kind::Gravity, "a well", &Preset { values: Default::default(), source: None }).unwrap();
         let lib = Library::new();
 
         assert!(lib.has(Kind::Look, "a look"));
