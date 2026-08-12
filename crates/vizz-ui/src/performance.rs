@@ -56,7 +56,10 @@ const LEARN: Color32 = crate::theme::LEARN;
 const COL_GAP: f32 = 6.0;
 
 const PER_ROW: usize = 8;
-const FADER_MIN_W: f32 = 62.0;
+// Narrow enough that a full set of twenty-four plus the master fits on
+// one axis at any window worth performing on. It was 62, which forced
+// two banks at sixteen.
+const FADER_MIN_W: f32 = 36.0;
 // Wide enough that a fullscreen 1080p rig gets thumb-sized targets —
 // at 104 the block spanned barely half of a 1920 window, left-anchored,
 // against the module's own "fill the window" rule. The track only paints
@@ -1358,13 +1361,26 @@ fn faders(
     // needed 1694 points of a 1252-point lane, and six faders were laid
     // out past the right edge of the window. They existed, they answered
     // MIDI, and nobody could see them.
-    let fits_across = (((width + COL_GAP) / (FADER_MIN_W + COL_GAP)).floor() as usize).max(2);
-    let by_width = count.div_ceil(fits_across.saturating_sub(1).max(1));
-    let by_height = if height >= two_rows { count.div_ceil(PER_ROW) } else { 1 };
-    // Width is a hard constraint and height is a preference: a row that
-    // does not fit is off the screen, a row that is short is merely
-    // short. So take whichever asks for more rows.
-    let rows = by_width.max(by_height).max(1);
+    let fits_across = columns_that_fit(width);
+    // One row, always, whenever the width can carry it.
+    //
+    // Two banks split the one gesture this screen exists for: your eye
+    // has to find which bank a fader is in before it can find the fader,
+    // and the answer changes as the count does. A single axis is worth
+    // more than the width each column gives up for it — which is why
+    // FADER_MIN_W is 36 and not 62. Twenty-four faders plus the master
+    // is twenty-five columns, so one row needs a lane of 25 × 36 + 24 ×
+    // 6 = 1044 points, about a 1076-point window. Narrower than that and
+    // it wraps rather than running off the screen, because a fader you
+    // cannot see is worse than a fader in the wrong bank.
+    // Width says one row; height still gets a veto.
+    //
+    // One row is the goal and it is not worth a row that does not fit
+    // vertically: at a short window a single tall row overran the bottom
+    // edge and every fader clipped away entirely, which a test caught
+    // before it shipped.
+    let rows = fader_rows_for(count, width).max(if height >= two_rows { 1 } else { 2 });
+    let _ = fits_across;
     let per_row = count.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
@@ -1743,6 +1759,24 @@ fn close_assign(ui: &egui::Ui, slot: usize) {
 }
 fn is_assign_open(ui: &egui::Ui, slot: usize) -> bool {
     ui.memory(|m| m.data.get_temp::<bool>(assign_key(slot)).unwrap_or(false))
+}
+
+
+/// How many fader columns a lane of `width` can carry, the master's
+/// column included.
+fn columns_that_fit(width: f32) -> usize {
+    (((width + COL_GAP) / (FADER_MIN_W + COL_GAP)).floor() as usize).max(2)
+}
+
+/// How many rows `count` faders need in a lane of `width`.
+///
+/// One, whenever the width can carry it — two banks split the one
+/// gesture this screen exists for. Pure, and tested as such: inferring
+/// the answer from what was painted is inferring it from the thing
+/// under test.
+fn fader_rows_for(count: usize, width: f32) -> usize {
+    let across = columns_that_fit(width).saturating_sub(1).max(1);
+    count.div_ceil(across).max(1)
 }
 
 /// A fader drawn by hand rather than with `egui::Slider`.
@@ -2407,6 +2441,36 @@ mod tests {
             }
         }
         right
+    }
+
+
+    /// A full set stays on one axis, which is the point of the width.
+    ///
+    /// Two banks split the one gesture this screen exists for: the eye
+    /// has to find which bank a fader is in before it can find the
+    /// fader, and the answer moves as the count does.
+    #[test]
+    fn a_full_set_stays_on_one_row_at_a_normal_window() {
+        let max = vizz_mod::perform::MACRO_MAX;
+        // Twenty-five columns at the minimum width need a lane of about
+        // 1044 points. These are the windows that clear it, measured as
+        // the lane the layout actually gets rather than the window.
+        for lane in [1408.0, 1248.0, 1068.0] {
+            assert_eq!(
+                fader_rows_for(max, lane),
+                1,
+                "a full set of {max} took more than one row in a {lane}pt lane"
+            );
+        }
+        // Sixteen, the default, has room to spare.
+        assert_eq!(fader_rows_for(16, 1068.0), 1);
+        // And below the width where one row fits, it wraps rather than
+        // running off the screen — a fader you cannot see is worse than
+        // a fader in the wrong bank.
+        assert!(
+            fader_rows_for(max, 700.0) > 1,
+            "a narrow lane kept everything on one unreachable row"
+        );
     }
 
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {

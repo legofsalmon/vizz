@@ -2524,7 +2524,21 @@ fn param_row(
         let routed_now = modulation.has_route(vizz_mod::Source::Lfo(0), &def.addr);
         let bound_now = state.midi.map.source_for(&def.addr).is_some()
             || state.midi.learning(&def.addr);
-        let hovered = ui.ui_contains_pointer();
+        // Hover measured against the WHOLE row, not the part of it built
+        // so far.
+        //
+        // `ui_contains_pointer` asks about the Ui as it currently
+        // stands, and inside a horizontal layout that is only what has
+        // been added up to this line — the slider and the value. The
+        // controls appear to the right of that, so moving the pointer
+        // towards them left the measured region, which hid the very
+        // buttons you were reaching for. They could be seen and never
+        // clicked.
+        let row_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        );
+        let hovered = ui.rect_contains_pointer(row_rect);
         let show_setup = hovered || narrowed_now || routed_now || bound_now;
 
         // Zoom the slider around where it is now, or restore the full
