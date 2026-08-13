@@ -26,6 +26,9 @@ pub struct VectorLayer {
     pub kind: ParamId,
     pub freq: ParamId,
     pub phase: ParamId,
+    /// How fast the pattern walks on its own, in phase turns per second
+    /// of visual time. See the definition for why it exists.
+    pub drift: ParamId,
     pub duty: ParamId,
     pub sides: ParamId,
     pub inset: ParamId,
@@ -309,6 +312,23 @@ impl AppParams {
                     // a phase that glides is a pattern that drifts when
                     // it was told to jump.
                     phase: b.add(ParamDef::new(a("phase"), 0.0, 1.0, 0.0)),
+                    // The pattern's own movement, which used to be a
+                    // hardcoded 0.1 added to the phase inside the
+                    // engine — after the parameter was read, so nothing
+                    // in the app could show it or stop it.
+                    //
+                    // That is the worst shape a behaviour can have: a
+                    // picture that moves with no visible cause, no
+                    // modulation to point at, and no control to turn
+                    // off. It was also silently coupled to
+                    // `/particles/speed`, since it rides visual time —
+                    // so the only way to still it was to stop
+                    // everything else too.
+                    //
+                    // Bipolar so it can run backwards, and zero really
+                    // is still. Default 0.1 keeps every existing look
+                    // exactly as it was.
+                    drift: b.add(ParamDef::new(a("drift"), -2.0, 2.0, 0.1)),
                     duty: b.add(ParamDef::new(a("duty"), 0.05, 0.95, 0.5).smooth(0.1)),
                     sides: b.add(ParamDef::new(a("sides"), 2.0, 16.0, 4.0).smooth(0.2)),
                     inset: b.add(ParamDef::new(a("inset"), 0.0, 1.0, 0.5).smooth(0.15)),

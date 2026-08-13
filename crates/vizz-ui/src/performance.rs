@@ -1714,16 +1714,23 @@ fn fader(
             // the bar should answer "of what". Identity is the one thing
             // about a fader you cannot read off the picture, and it was
             // the one thing set in the quietest type.
-            if ui
-                .add(
-                    egui::Label::new(egui::RichText::new(shown_name).size(size).color(INK))
-                        .sense(Sense::click())
-                        .truncate(),
-                )
+            // A button rather than a bare label. It has always been
+            // clickable and never looked it: the one line teaching
+            // reassignment lives under the whole block, so on a screen
+            // you are meant to read at a glance the gesture was
+            // discoverable only by being told. A frame costs nothing
+            // and says "press me" without a word.
+            let name_btn = ui.add(
+                egui::Button::new(egui::RichText::new(shown_name).size(size).color(INK))
+                    .frame(true)
+                    .min_size(vec2(w, 0.0)),
+            );
+            let at = name_btn.rect.left_bottom();
+            if name_btn
                 .on_hover_text(format!("{addr}  —  click to reassign"))
                 .clicked()
             {
-                open_assign(ui, slot);
+                open_assign(ui, slot, at);
             }
             // Then the number, which is the confirmation rather than the
             // headline — except when something else is moving it, where
@@ -1798,14 +1805,17 @@ fn fader(
                 egui::StrokeKind::Inside,
             );
             ui.label(egui::RichText::new("—").size(13.0).color(INK_4));
-            if ui
-                .add(
-                    egui::Label::new(egui::RichText::new("assign").size(13.0).color(INK_3))
-                        .sense(Sense::click()),
-                )
+            let assign_btn = ui.add(
+                egui::Button::new(egui::RichText::new("assign").size(13.0).color(INK_3))
+                    .frame(true)
+                    .min_size(vec2(w, 0.0)),
+            );
+            let at = assign_btn.rect.left_bottom();
+            if assign_btn
+                .on_hover_text("choose what this fader controls")
                 .clicked()
             {
-                open_assign(ui, slot);
+                open_assign(ui, slot, at);
             }
             ui.label(egui::RichText::new(" ").size(11.0));
         }
@@ -1922,56 +1932,6 @@ fn midi_chip(
     }
 }
 
-fn assign_popup(
-    ui: &mut egui::Ui,
-    registry: &ParamRegistry,
-    macros: &mut Macros,
-    slot: usize,
-    actions: &mut PerformanceActions,
-) {
-    let popup_id = egui::Id::new(("assign", slot));
-    if !is_assign_open(ui, slot) {
-        return;
-    }
-    let mut chosen: Option<Option<String>> = None;
-    let mut close = false;
-    egui::Area::new(popup_id.with("area"))
-        .order(egui::Order::Foreground)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_max_height(320.0);
-                ui.set_min_width(200.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("fader {}", slot + 1)).color(INK));
-                    if ui.small_button("close").clicked() {
-                        close = true;
-                    }
-                });
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt(popup_id)
-                    .show(ui, |ui| {
-                        if ui.selectable_label(false, "— none —").clicked() {
-                            chosen = Some(None);
-                        }
-                        for (_, def) in registry.iter() {
-                            if ui.selectable_label(false, &def.addr).clicked() {
-                                chosen = Some(Some(def.addr.clone()));
-                            }
-                        }
-                    });
-            });
-        });
-    if let Some(pick) = chosen {
-        macros.set(slot, pick);
-        actions.macros_changed = true;
-        close = true;
-    }
-    if close {
-        close_assign(ui, slot);
-    }
-}
-
 /// The ready-made modulators, on the fader they would drive.
 ///
 /// A list rather than a submenu tree: there are fourteen, they are read
@@ -2058,14 +2018,142 @@ fn is_mod_open(ui: &egui::Ui, slot: usize) -> bool {
     ui.memory(|m| m.data.get_temp::<bool>(mod_key(slot)).unwrap_or(false))
 }
 
+fn assign_popup(
+    ui: &mut egui::Ui,
+    registry: &ParamRegistry,
+    macros: &mut Macros,
+    slot: usize,
+    actions: &mut PerformanceActions,
+) {
+    let popup_id = egui::Id::new(("assign", slot));
+    if !is_assign_open(ui, slot) {
+        return;
+    }
+    let mut chosen: Option<Option<String>> = None;
+    let mut close = false;
+    let filter_id = popup_id.with("filter");
+    let mut filter: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(filter_id))
+        .unwrap_or_default();
+    // Anchored under the fader that opened it, rather than wherever egui
+    // would park a free Area. A picker for *this* fader that appears
+    // somewhere else makes you check which one you are editing, and the
+    // whole point of the layout is not having to look twice.
+    let anchor = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<egui::Pos2>(popup_id.with("at")))
+        .unwrap_or_else(|| ui.cursor().min);
+    let mut area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground);
+    // Kept on screen: a fader near the right edge would otherwise open
+    // its picker half off the window, and the faders at the edges are
+    // the ones a wide set puts there.
+    // Same source the layout itself measures from, a few hundred lines
+    // up: `raw.screen_rect` rather than a derived one, so the picker and
+    // the deck cannot disagree about where the window ends.
+    let screen = ui
+        .ctx()
+        .input(|i| i.raw.screen_rect)
+        .unwrap_or_else(|| ui.ctx().globally_used_rect());
+    let at = egui::pos2(
+        anchor.x.min(screen.right() - POPUP_W - PAD),
+        anchor.y.min(screen.bottom() - POPUP_H - PAD),
+    );
+    area = area.fixed_pos(at);
+    area.show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_max_height(POPUP_H);
+            ui.set_min_width(POPUP_W);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("fader {}", slot + 1)).color(INK));
+                if ui.small_button("close").clicked() {
+                    close = true;
+                }
+            });
+            // Typing beats scrolling once the list is longer than a
+            // screen, and this one is every parameter in the app. The
+            // field takes focus on the frame the popup opens, so the
+            // gesture is click-then-type rather than click, aim, click.
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut filter)
+                    .hint_text("type to narrow")
+                    .desired_width(f32::INFINITY),
+            );
+            if ui.ctx().data_mut(|d| {
+                let first: bool = !*d.get_temp_mut_or(popup_id.with("focused"), false);
+                d.insert_temp(popup_id.with("focused"), true);
+                first
+            }) {
+                field.request_focus();
+            }
+            // Enter takes the only remaining match, so a unique prefix
+            // is a complete gesture without the pointer coming back.
+            let go = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.separator();
+            let needle = filter.trim().to_ascii_lowercase();
+            let matches = |addr: &str| {
+                needle.is_empty() || addr.to_ascii_lowercase().contains(&needle)
+            };
+            let hits: Vec<&str> = registry
+                .iter()
+                .map(|(_, def)| def.addr.as_str())
+                .filter(|a| matches(a))
+                .collect();
+            if go && hits.len() == 1 {
+                chosen = Some(Some(hits[0].to_string()));
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(popup_id)
+                .show(ui, |ui| {
+                    if needle.is_empty() && ui.selectable_label(false, "— none —").clicked() {
+                        chosen = Some(None);
+                    }
+                    for addr in &hits {
+                        if ui.selectable_label(false, *addr).clicked() {
+                            chosen = Some(Some((*addr).to_string()));
+                        }
+                    }
+                    if hits.is_empty() {
+                        ui.label(
+                            egui::RichText::new("nothing matches")
+                                .color(vizz_design::ink::FAINT),
+                        );
+                    }
+                });
+        });
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter));
+    if let Some(pick) = chosen {
+        macros.set(slot, pick);
+        actions.macros_changed = true;
+        close = true;
+    }
+    if close {
+        close_assign(ui, slot);
+    }
+}
+
+/// The picker's footprint, used to keep it on screen.
+const POPUP_W: f32 = 240.0;
+const POPUP_H: f32 = 320.0;
+
 // egui 0.35 made the popup helpers private, so the open slot is tracked in
 // the public temp-data store instead. Keyed per slot so two faders cannot
 // both think they own the picker.
 fn assign_key(slot: usize) -> egui::Id {
     egui::Id::new(("assign-open", slot))
 }
-fn open_assign(ui: &egui::Ui, slot: usize) {
-    ui.memory_mut(|m| m.data.insert_temp(assign_key(slot), true));
+fn open_assign(ui: &egui::Ui, slot: usize, at: egui::Pos2) {
+    let id = egui::Id::new(("assign", slot));
+    ui.memory_mut(|m| {
+        m.data.insert_temp(assign_key(slot), true);
+        // Where to draw it, and a fresh start for the filter and the
+        // focus latch — reopening a picker that still holds the last
+        // search is a picker that looks broken.
+        m.data.insert_temp(id.with("at"), at);
+        m.data.insert_temp(id.with("filter"), String::new());
+        m.data.insert_temp(id.with("focused"), false);
+    });
 }
 fn close_assign(ui: &egui::Ui, slot: usize) {
     ui.memory_mut(|m| m.data.insert_temp(assign_key(slot), false));

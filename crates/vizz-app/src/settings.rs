@@ -23,6 +23,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
+    /// Keep the gravity sequencer on the scene sequencer's rate and
+    /// curve. A property of how you play rather than of any patch, so it
+    /// lives here with the other preferences.
+    #[serde(default)]
+    pub autopilot_lock: bool,
     /// Input device name, or `None` for the system default.
     pub audio_device: Option<String>,
     /// Point clouds loaded into the loadable slots, in slot order.
@@ -298,6 +303,13 @@ fn civil_from_unix(secs: u64) -> (i64, u64, u64) {
 pub fn save_fullscreen(fullscreen: bool) -> Result<()> {
     let mut s = load();
     s.fullscreen = fullscreen;
+    save(&s)
+}
+
+/// Remember whether the two sequencers are locked together.
+pub fn save_autopilot_lock(locked: bool) -> Result<()> {
+    let mut s = load();
+    s.autopilot_lock = locked;
     save(&s)
 }
 

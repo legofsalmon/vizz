@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.19.0/vizz-0.19.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.20.0/vizz-0.20.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,42 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.20.0">0.20.0</a></div>
+      <ul>
+        <li><strong>A pattern's own movement is now a control.</strong>
+          Vector layers drifted on their own, from a constant buried in
+          the renderer — real, deliberate, and invisible to everything:
+          no parameter held it, nothing could show it, and the only way
+          to still a layer was to stop the whole particle field. It is
+          <code>/lN/drift</code> now, so it takes a fader, learns a MIDI
+          control, can be modulated, runs backwards, and zero is
+          genuinely still. Existing looks are unchanged.</li>
+        <li><strong>The panel's <code>~</code> means "this is moving".</strong>
+          It used to mean "has a modulation route", which is a different
+          question from the one you ask: a scene blend in flight or a
+          preset still arriving moved the picture and lit nothing. When
+          something moves with nothing routed to it, the hover says so.</li>
+        <li><strong>Assigning a fader looks like a gesture.</strong> The
+          name and the "assign" placeholder are buttons now; the picker
+          opens under the fader that opened it, and has a filter box
+          focused on arrival — type a few letters and press Enter.</li>
+        <li><strong>Resync and lock for the two sequencers.</strong> Put
+          the scene and gravity grids back on their first pad on the same
+          step, and optionally keep them on the same rate and curve so
+          they cannot drift apart again.</li>
+        <li><strong>Loaded pads on a controller are brighter.</strong>
+          They were lit one step above off, which on real hardware reads
+          as dim orange rather than the neutral grey the palette table
+          claims. The three colours can also be set at launch with
+          <code>VIZZ_PAD_COLOURS</code>.</li>
+        <li><strong>Update checking stopped costing frames.</strong> With
+          an update available, vizz was running a signature check sixty
+          times a second on the render thread to re-answer a question
+          whose answer cannot change.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.19.0">0.19.0</a></div>

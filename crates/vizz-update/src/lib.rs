@@ -292,6 +292,33 @@ mod tests {
         assert_eq!(size, 41_234_567, "took a neighbouring asset's size");
     }
 
+
+    /// The parser must work on what GitHub actually sends.
+    ///
+    /// The synthetic payload above was written from the same head as the
+    /// parser, so it shares the parser's assumptions and cannot
+    /// contradict them. This one is a real release response with the
+    /// fields in the real order and the real nesting — in particular the
+    /// asset object contains an `uploader` object, and the key order is
+    /// not the tidy one a hand-written fixture uses.
+    #[test]
+    fn the_parser_survives_a_real_release_response() {
+        let json = r#"{"tag_name":"v0.19.0","assets":[{"id":512895051,
+            "url":"https://api.github.com/repos/legofsalmon/vizz/releases/assets/512895051",
+            "name":"vizz-0.19.0.app.zip","label":"","state":"uploaded",
+            "content_type":"application/zip","size":9164983,"download_count":0,
+            "created_at":"2026-08-13T11:20:38Z","updated_at":"2026-08-13T11:20:39Z",
+            "browser_download_url":"https://github.com/legofsalmon/vizz/releases/download/v0.19.0/vizz-0.19.0.app.zip",
+            "uploader":{"login":"github-actions[bot]","id":41898282,"type":"Bot"}}]}"#;
+        let (url, name, size) = extract_asset(json).expect("no asset found in a real response");
+        assert_eq!(
+            url,
+            "https://github.com/legofsalmon/vizz/releases/download/v0.19.0/vizz-0.19.0.app.zip"
+        );
+        assert_eq!(name, "vizz-0.19.0.app.zip", "the asset name was not read");
+        assert_eq!(size, 9_164_983, "the asset size was not read");
+    }
+
     /// A release with no macOS bundle is still a release.
     ///
     /// It has to degrade to "there is an update, here is the link"

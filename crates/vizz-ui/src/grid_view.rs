@@ -109,6 +109,11 @@ pub struct GridView {
     pub curve_names: Vec<String>,
     pub autopilot: bool,
     pub bars: f32,
+    /// Whether to draw the cross-grid sequencer controls (resync, lock)
+    /// and the current lock state. `Some` on one grid only — they act on
+    /// *both*, and a pair of buttons on each would read as two
+    /// independent settings when there is one.
+    pub sequencers: Option<bool>,
     /// How far through the current autopilot step the clock is, 0..1.
     /// `None` when the autopilot is off.
     pub auto_phase: Option<f32>,
@@ -158,6 +163,7 @@ impl Default for GridView {
             curve_names: Vec::new(),
             autopilot: false,
             bars: 4.0,
+            sequencers: None,
             auto_phase: None,
             upcoming: None,
             midi: vec![None; SLOTS],
@@ -207,6 +213,11 @@ pub struct GridActions {
     pub store_blank: Option<usize>,
     /// Put an existing preset on this pad.
     pub assign: Option<(usize, String)>,
+    /// Put both sequencers back on their first pad together. Only read
+    /// from the grid that draws the control; see [`GridView::sequencers`].
+    pub resync: bool,
+    /// Turn the lock between the two sequencers on or off.
+    pub set_lock: Option<bool>,
     pub clear: Option<usize>,
     pub rename: Option<(usize, String)>,
     /// Wait for a MIDI control and bind it to firing this slot. `None`
@@ -735,6 +746,31 @@ fn controls(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
             .changed()
         {
             actions.set_bars = Some(bars);
+        }
+        // The two sequencers, together. Drawn on one grid only: they act
+        // on both, and a pair of these on each grid would read as two
+        // independent settings when there is one.
+        if let Some(locked) = view.sequencers {
+            ui.add_space(14.0);
+            if ui
+                .button("resync")
+                .on_hover_text(
+                    "put both sequencers back on their first pad, on the same step",
+                )
+                .clicked()
+            {
+                actions.resync = true;
+            }
+            if ui
+                .selectable_label(locked, "lock")
+                .on_hover_text(
+                    "keep the gravity sequencer on the scene sequencer's rate and \
+                     curve, so they cannot drift apart again",
+                )
+                .clicked()
+            {
+                actions.set_lock = Some(!locked);
+            }
         }
     });
 }

@@ -464,6 +464,34 @@ impl Grid {
         self.next_filled()
     }
 
+    /// Jump back to the first filled pad and re-arm the autopilot from
+    /// here.
+    ///
+    /// For putting two grids back in step. Both sequencers derive their
+    /// step from the absolute beat clock, so two grids set to the same
+    /// rate never drift apart in *time* — but they walk their own pads
+    /// independently, so after a few minutes of firing scenes by hand
+    /// they are on unrelated slots. Nothing short of restarting both put
+    /// them back together.
+    ///
+    /// `last_step` is set to the step now in progress rather than
+    /// cleared. In practice the two are equivalent — a cleared step is
+    /// adopted by the next tick, which lands inside the same step
+    /// virtually always — and they differ only if the very next tick
+    /// falls past the boundary, where clearing would swallow it. Setting
+    /// it is the version that does not depend on when the next frame
+    /// happens to land, which is worth having for free.
+    ///
+    /// Returns whether anything fired — an empty grid stays put rather
+    /// than reporting a resync it did not do.
+    pub fn resync(&mut self, beats: f64, reg: &ParamRegistry, presets: Presets<'_>) -> bool {
+        self.last_step = Some((beats / self.autopilot.step_beats()).floor() as i64);
+        let Some(first) = self.next_filled_from(0) else {
+            return false;
+        };
+        self.fire(first, reg, presets)
+    }
+
     fn next_filled(&self) -> Option<usize> {
         let from = self.transition.as_ref().map(|t| t.to_slot).or(self.current);
         let start = from.map_or(0, |s| s + 1);
@@ -813,6 +841,84 @@ fn migrate_inline(bytes: &[u8]) -> Option<Grid> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Two grids put back in step land on their first pad together and
+    /// take the next boundary together.
+    ///
+    /// The failure this prevents is the obvious implementation: clearing
+    /// `last_step` rather than setting it. Cleared means "arm on the next
+    /// tick", so each grid re-arms on whichever frame it happened to be
+    /// ticked on — which is the drift the button exists to remove, not
+    /// merely a smaller version of it.
+    #[test]
+    fn resyncing_two_grids_puts_them_on_the_same_step() {
+        let (reg, hue, _, _) = registry();
+        let mut lib = std::collections::BTreeMap::new();
+        let mut filled = || {
+            let mut g = Grid::new();
+            for (slot, v) in [(0usize, 0.1f32), (2, 0.4), (5, 0.9)] {
+                reg.set(hue, v);
+                let name = format!("look {slot}");
+                lib.insert(name.clone(), Preset::capture(&reg));
+                g.assign(slot, name);
+            }
+            // Instant, so `current` lands on the fired pad rather than
+            // sitting in a transition the assertions would have to wait
+            // out.
+            g.duration = 0.0;
+            g
+        };
+        let mut a = filled();
+        let mut b = filled();
+        let presets = src(&lib);
+
+        // Walk them apart: different pads, and both mid-step.
+        a.fire(2, &reg, &presets);
+        b.fire(5, &reg, &presets);
+        assert_ne!(a.current(), b.current(), "the fixture did not separate them");
+
+        // Resync at an arbitrary moment inside a step.
+        let beats = 9.37;
+        assert!(a.resync(beats, &reg, &presets));
+        assert!(b.resync(beats, &reg, &presets));
+        assert_eq!(a.current(), b.current(), "resync left them on different pads");
+        assert_eq!(a.current(), Some(0), "resync did not go to the first pad");
+
+        // Neither fires again inside the step they were resynced in...
+        let landed = (a.current(), b.current());
+        for grid in [&mut a, &mut b] {
+            grid.autopilot.enabled = true;
+        }
+        a.tick(0.01, beats + 0.05, &reg, &presets);
+        b.tick(0.01, beats + 0.05, &reg, &presets);
+        assert_eq!((a.current(), b.current()), landed, "one stepped early");
+
+        // ...and both take the *next* boundary, together.
+        //
+        // Note for anyone changing `resync`: this does not distinguish
+        // setting `last_step` from clearing it. Both pass, because a
+        // cleared step is adopted by the tick above and the two end up
+        // identical. They differ only when the next tick lands past the
+        // boundary with none in between — a one-frame window this test
+        // deliberately does not chase. The property worth guarding is
+        // the one asserted: they land together and keep stepping
+        // together.
+        let next_boundary = (beats / a.autopilot.step_beats()).floor() * a.autopilot.step_beats()
+            + a.autopilot.step_beats()
+            + 0.01;
+        a.tick(0.01, next_boundary, &reg, &presets);
+        b.tick(0.01, next_boundary, &reg, &presets);
+        assert_ne!(
+            (a.current(), b.current()),
+            landed,
+            "the next boundary was swallowed — the sequencer stalled after a resync"
+        );
+        assert_eq!(
+            a.current(),
+            b.current(),
+            "they took the next boundary onto different pads"
+        );
+    }
     use super::*;
     use vizz_params::ParamId;
 

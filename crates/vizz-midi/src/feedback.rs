@@ -13,6 +13,62 @@
 
 use crate::profile::{Lights, Profile};
 
+/// The colours actually used, after any override.
+///
+/// Velocities index a palette in the device's firmware, and the tables
+/// are published inconsistently and rendered differently by different
+/// units — the first guess here had "loaded" so dark that the pad's red
+/// element dominated and the whole grid read orange. Nobody debugging
+/// that from a laptop can see the answer, and a release cycle per shade
+/// is an absurd way to find it.
+///
+/// So the three can be set at launch:
+///
+/// ```text
+/// VIZZ_PAD_COLOURS=loaded,playing,next   # e.g. 3,21,9
+/// ```
+///
+/// Read once. Anything unparseable leaves the profile's own value, so a
+/// typo costs that colour and not the feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Palette {
+    loaded: u8,
+    playing: u8,
+    next: u8,
+    off: u8,
+}
+
+impl Palette {
+    fn of(lights: &Lights) -> Self {
+        static TUNED: std::sync::OnceLock<Vec<Option<u8>>> = std::sync::OnceLock::new();
+        let tuned = TUNED.get_or_init(|| {
+            std::env::var("VIZZ_PAD_COLOURS")
+                .map(|s| parse_tuning(&s))
+                .unwrap_or_default()
+        });
+        let pick = |i: usize, fallback: u8| tuned.get(i).copied().flatten().unwrap_or(fallback);
+        Self {
+            loaded: pick(0, lights.loaded),
+            playing: pick(1, lights.playing),
+            next: pick(2, lights.next),
+            off: lights.off,
+        }
+    }
+}
+
+/// Split `"3,21,9"` into overrides, one per colour.
+///
+/// A separate function so it is testable without touching the process
+/// environment: the values are read through a `OnceLock`, so a test that
+/// set the variable would fix the palette for every other test in the
+/// binary and depend on which ran first.
+///
+/// A blank or unparseable field means "leave this one alone", so
+/// `,,45` sets only the third.
+fn parse_tuning(spec: &str) -> Vec<Option<u8>> {
+    spec.split(',').map(|p| p.trim().parse().ok()).collect()
+}
+
 /// The pads on one bank, as the app wants them lit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BankState {
@@ -55,15 +111,15 @@ impl BankState {
     /// Playing beats next beats loaded. An empty pad is dark: a grid
     /// where everything glows tells you nothing, and the thing worth
     /// seeing across a stage is which few pads have something on them.
-    fn velocity(&self, slot: usize, lights: &Lights) -> u8 {
+    fn velocity(&self, slot: usize, palette: &Palette) -> u8 {
         if self.playing == Some(slot as u8) {
-            lights.playing
+            palette.playing
         } else if self.next == Some(slot as u8) {
-            lights.next
+            palette.next
         } else if self.is_loaded(slot) {
-            lights.loaded
+            palette.loaded
         } else {
-            lights.off
+            palette.off
         }
     }
 }
@@ -76,10 +132,11 @@ impl BankState {
 /// feedback feature degrading the thing it is reporting on.
 pub fn diff(from: &Surface, to: &Surface, profile: &Profile) -> Vec<[u8; 3]> {
     let Some(lights) = &profile.lights else { return Vec::new() };
+    let palette = Palette::of(lights);
     let mut out = Vec::new();
     let mut bank = |old: &BankState, new: &BankState, note_of: fn(usize) -> Option<u8>| {
         for slot in 0..16 {
-            let (was, now) = (old.velocity(slot, lights), new.velocity(slot, lights));
+            let (was, now) = (old.velocity(slot, &palette), new.velocity(slot, &palette));
             if was == now {
                 continue;
             }
@@ -121,6 +178,48 @@ mod tests {
 
     fn apc() -> &'static Profile {
         profile::for_port("APC40 mkII").expect("no APC profile")
+    }
+
+
+    /// The palette can be dialled in without a release.
+    ///
+    /// The velocities index a table in the device's firmware, and the
+    /// first guess put "loaded" at 1 — dark enough that the pad's red
+    /// element dominated and the whole grid read dim orange. That is not
+    /// something anybody can see from the machine the code is written
+    /// on, and one release per shade is an absurd way to find out.
+    #[test]
+    fn the_pad_colours_can_be_overridden_field_by_field() {
+        assert_eq!(parse_tuning("3,21,9"), vec![Some(3), Some(21), Some(9)]);
+        // A blank field leaves that colour alone, so one can be changed
+        // without having to restate the other two correctly.
+        assert_eq!(parse_tuning(",,45"), vec![None, None, Some(45)]);
+        // Nonsense costs that colour and not the feature.
+        assert_eq!(parse_tuning("x,21"), vec![None, Some(21)]);
+        assert_eq!(parse_tuning(""), vec![None]);
+        // Out of range is not a colour: velocities are 7-bit.
+        assert_eq!(parse_tuning("300"), vec![None]);
+    }
+
+    /// A pad with something on it is plainly lit, not almost off.
+    ///
+    /// The whole point of lighting the grid is seeing which few pads
+    /// hold anything from across a stage. "Loaded" being the darkest
+    /// step above off defeated that on the hardware.
+    #[test]
+    fn a_loaded_pad_is_brighter_than_nearly_off() {
+        let lights = apc().lights.as_ref().unwrap();
+        assert!(
+            lights.loaded > 2,
+            "a loaded pad is lit at {}, which is in the range where an \
+             RGB pad reads as dim orange rather than a colour",
+            lights.loaded
+        );
+        // And the three states stay distinguishable from each other.
+        assert_ne!(lights.loaded, lights.playing);
+        assert_ne!(lights.loaded, lights.next);
+        assert_ne!(lights.playing, lights.next);
+        assert_eq!(lights.off, 0);
     }
 
     /// A surface that has not changed sends nothing.

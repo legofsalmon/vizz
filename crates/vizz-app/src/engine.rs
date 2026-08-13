@@ -63,6 +63,9 @@ pub struct FrameEngine {
     /// A zero-second scene change landed this frame and the smoothing
     /// has to be skipped once, or "cut" fades like everything else.
     cut_pending: bool,
+    /// Keep the gravity sequencer on the scene sequencer's settings.
+    /// Set by the app from the saved preference and the deck's toggle.
+    pub autopilot_lock: bool,
     /// The gravity layer's own grid, sequencing gravity presets on its own
     /// clock. A second instance of the same machine rather than a special
     /// case: the grid already takes its preset lookup as a parameter, so
@@ -118,6 +121,7 @@ impl FrameEngine {
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
             cut_pending: false,
+            autopilot_lock: false,
             gravity_grid: vizz_mod::scene::Grid::for_kind(vizz_mod::preset::Kind::Gravity),
             last_gravity: None,
         }
@@ -224,6 +228,20 @@ impl FrameEngine {
         // whole reason the two are separate grids rather than one.
         let gravity_presets =
             |name: &str| vizz_mod::preset::load_kind(vizz_mod::preset::Kind::Gravity, name).ok();
+        // Locked: the gravity sequencer takes the scene sequencer's rate
+        // and the shape of its changes, written through the parameters
+        // so the panel, OSC and MIDI all see the same values rather than
+        // showing stale ones beside a grid quietly doing something else.
+        //
+        // Rate and shape only. *Which pads each grid holds* is the whole
+        // reason there are two, so the lock never touches that — it stops
+        // them drifting apart in time, not in content.
+        if self.autopilot_lock {
+            reg.set(p.gravity_time, reg.target(p.scene_time));
+            reg.set(p.gravity_curve, reg.target(p.scene_curve));
+            reg.set(p.gravity_auto, reg.target(p.scene_auto));
+            reg.set(p.gravity_bars, reg.target(p.scene_bars));
+        }
         if self.gravity_grid.in_flight().is_none() {
             self.gravity_grid.duration = reg.target(p.gravity_time);
         }
@@ -465,11 +483,13 @@ impl FrameEngine {
                 ],
                 // Phase advances with visual time so the whole stack
                 // drifts at /particles/speed's rate like everything
-                // else; the parameter is the offset on top.
+                // else; the parameter is the offset on top, and the
+                // rate is `drift` rather than a constant hidden here.
                 pat: [
                     kind,
                     self.snapshot.get(l.freq),
-                    self.snapshot.get(l.phase) + self.vis_time as f32 * 0.1,
+                    self.snapshot.get(l.phase)
+                        + self.vis_time as f32 * self.snapshot.get(l.drift),
                     self.snapshot.get(l.duty),
                 ],
                 shape: [
@@ -611,6 +631,52 @@ impl FrameEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pattern's drift is a parameter, and zero really is still.
+    ///
+    /// Reported from use: picking the rings generator produced a slowly
+    /// moving picture with nothing to point at — no LFO, no modulation
+    /// route, no control. The movement was a constant `0.1` added to the
+    /// phase *inside this function*, after the parameter had been read,
+    /// so nothing in the app could show it and nothing could stop it.
+    ///
+    /// A picture that moves with no visible cause is the worst shape a
+    /// behaviour can have in an instrument. This asserts the two halves
+    /// that fix it: the rate is read from a parameter, and setting that
+    /// parameter to zero holds the pattern still.
+    ///
+    /// Computed the way the frame computes it rather than through a GPU
+    /// frame, which needs a device — the arithmetic is the whole claim.
+    #[test]
+    fn a_layer_holds_still_when_its_drift_is_zero() {
+        let params = crate::params::AppParams::build();
+        let reg = &params.registry;
+        let layer = params.vector_layers[0];
+        let phase_at = |vis_time: f32| reg.target(layer.phase) + vis_time * reg.target(layer.drift);
+
+        // Shipped default: the look everyone already has keeps moving.
+        assert!(
+            (reg.target(layer.drift) - 0.1).abs() < 1e-6,
+            "the default drift changed, which changes every saved look"
+        );
+        assert_ne!(
+            phase_at(0.0),
+            phase_at(4.0),
+            "the default no longer moves at all"
+        );
+
+        // Turned off, it is genuinely still — not merely slower.
+        reg.set(layer.drift, 0.0);
+        assert_eq!(
+            phase_at(0.0),
+            phase_at(10_000.0),
+            "a layer with no drift still walked"
+        );
+
+        // And it runs backwards, which a hardcoded constant could not.
+        reg.set(layer.drift, -0.5);
+        assert!(phase_at(4.0) < phase_at(0.0), "negative drift did not reverse");
+    }
 
     /// Visual time is a running sum of a small increment, which is the
     /// shape that goes wrong quietly. In `f32` the additions start being

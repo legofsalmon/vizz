@@ -151,7 +151,14 @@ const APC_CH: u8 = 0;
 /// across the whole family, and getting a hue slightly wrong costs a
 /// shade while getting the *behaviour* wrong costs the feature.
 const APC_OFF: u8 = 0;
-const APC_DIM: u8 = 1;
+/// A pad holding a preset but not playing.
+///
+/// Was 1, the darkest step above off, which on the hardware reads as a
+/// *dim orange* rather than the neutral grey the palette table implies.
+/// That is the LED rather than the table: drive an RGB pad that low and
+/// the red element dominates, so every "nearly off" colour drifts warm.
+/// Three is white and bright enough to be a colour rather than a hint.
+const APC_DIM: u8 = 3;
 const APC_GREEN: u8 = 21;
 const APC_AMBER: u8 = 9;
 

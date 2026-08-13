@@ -158,6 +158,11 @@ struct App {
     palettes: Vec<String>,
     /// When Escape was first pressed, if it is waiting for a second.
     quit_armed: Option<Instant>,
+    /// Keep the gravity sequencer on the scene sequencer's settings, so
+    /// two grids put in step cannot drift apart again. Only the rate and
+    /// the shape of a change are mirrored — which pads each grid holds
+    /// is the whole reason to have two.
+    autopilot_lock: bool,
     /// An installer is waiting for this process to exit. Set from the
     /// frame that started it; acted on in `about_to_wait`, so the frame
     /// finishes and the ordinary shutdown — settings, MIDI map, patch —
@@ -1224,15 +1229,21 @@ impl App {
                     .collect(),
                 presets: preset_entries(&self.library),
             preset_current: self.engine.current_preset(),
-                grid: grid_view(
-                    &self.engine.grid,
-                    self.engine.modulation.clock.beats,
-                    &self.midi_view,
-                    &self.library,
-                    vizz_mod::preset::Kind::Look,
-                    SCENE_FIRE,
-                    "scene",
-                ),
+                grid: {
+                    let mut v = grid_view(
+                        &self.engine.grid,
+                        self.engine.modulation.clock.beats,
+                        &self.midi_view,
+                        &self.library,
+                        vizz_mod::preset::Kind::Look,
+                        SCENE_FIRE,
+                        "scene",
+                    );
+                    // The scenes lead, so the pair of sequencer controls
+                    // lives on their row.
+                    v.sequencers = Some(self.autopilot_lock);
+                    v
+                },
                 // Always built. The performance layout decides how much of
                 // it to draw — one teaching row while every pad is empty,
                 // the full sixteen once one is filled. Deciding *here* by
@@ -1378,6 +1389,44 @@ impl App {
                     }
                 }
                 let mut notes: Notes = Vec::new();
+                // The two sequencers, together. Read from the scene
+                // grid's actions only — the controls are drawn there
+                // because they act on both, so the gravity grid's copy
+                // of these fields is never populated.
+                if let Some(lock) = actions.grid.set_lock {
+                    self.autopilot_lock = lock;
+                    self.engine.autopilot_lock = lock;
+                    if let Err(e) = crate::settings::save_autopilot_lock(lock) {
+                        log::warn!("could not remember the sequencer lock: {e:#}");
+                    }
+                    notes.push((
+                        false,
+                        if lock {
+                            "sequencers locked together".into()
+                        } else {
+                            "sequencers unlocked".to_string()
+                        },
+                    ));
+                }
+                if actions.grid.resync {
+                    let beats = self.engine.modulation.clock.beats;
+                    let reg = &self.params.registry;
+                    let lib = &self.library;
+                    let look = |n: &str| vizz_mod::preset::by_name(n).filter(|_| lib.has(vizz_mod::preset::Kind::Look, n));
+                    let well = |n: &str| vizz_mod::preset::by_name(n).filter(|_| lib.has(vizz_mod::preset::Kind::Gravity, n));
+                    let a = self.engine.grid.resync(beats, reg, &look);
+                    let b = self.engine.gravity_grid.resync(beats, reg, &well);
+                    notes.push(match (a, b) {
+                        (false, false) => (true, "nothing on either sequencer to resync".into()),
+                        // Said rather than silently half-done: a grid
+                        // with no filled pads cannot go anywhere, and
+                        // "resynced" with one of them unmoved would be
+                        // a claim the screen contradicts.
+                        (true, false) => (false, "scenes resynced — no gravity pads to move".into()),
+                        (false, true) => (false, "gravity resynced — no scene pads to move".into()),
+                        (true, true) => (false, "both sequencers back on their first pad".into()),
+                    });
+                }
                 apply_update_actions(
                     &actions,
                     &self.update,
@@ -2158,6 +2207,10 @@ fn grid_view(
 ) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
     vizz_ui::grid_view::GridView {
+        // Off by default; the scene grid's call site turns it on. The
+        // controls act on both sequencers, so exactly one grid draws
+        // them.
+        sequencers: None,
         accent: None,
         // Set by the performance layout, which is the only thing that
         // knows how wide the column it lands in is.
@@ -2657,6 +2710,10 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         Arc::clone(&params),
         vizz_audio::AudioEngine::start(opts.audio_device.as_deref()),
     );
+    // The saved lock reaches the engine before the first frame, so a
+    // locked pair is locked from launch rather than from the first time
+    // the toggle is touched.
+    engine.autopilot_lock = crate::settings::load().autopilot_lock;
     // Taken before the engine moves into the app: the autosave compares
     // against what was restored, so a launch that changes nothing leaves
     // the file alone.
@@ -2693,6 +2750,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         palettes: palette_paths,
         quit_armed: None,
         quit_for_update: false,
+        autopilot_lock: crate::settings::load().autopilot_lock,
         // Seeded from what was just restored, so a launch that changes
         // nothing does not rewrite the file.
         saved_modulation: restored_modulation,
