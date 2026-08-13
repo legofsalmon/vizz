@@ -931,8 +931,54 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
     let any_on = layer_ids
         .iter()
         .any(|(kind, ..)| registry.target(*kind).round() >= 0.5);
+
+    // With nothing on, one line rather than nothing at all.
+    //
+    // The strip used to return early here, so the vector layers were
+    // invisible on this screen until one was already running — and the
+    // only way to start one was the parameter list on the *other*
+    // screen. A feature you cannot reach from the layout you play on,
+    // and cannot find out exists from it either.
+    //
+    // A single line is the whole cost: the layers are worth knowing
+    // about and are not worth a full strip of eight off ones. The
+    // button starts layer 1 on the first real generator rather than
+    // opening something, because one press producing a picture is what
+    // teaches that the row means anything.
     if !any_on {
-        return false;
+        let (kind, ..) = layer_ids[0];
+        let def = &registry.defs()[kind.index()];
+        // The first position past "off", whatever it happens to be
+        // called — read from the definition rather than hardcoded, so
+        // adding a generator at the front cannot silently repoint this.
+        let first = def.min + 1.0;
+        if first > def.max {
+            return false;
+        }
+        section(ui, "LAYERS");
+        ui.horizontal(|ui| {
+            let name = def.label_for(first).unwrap_or("a layer");
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(format!("+ {name}")).size(12.0).color(INK_2),
+                    )
+                    .min_size(vec2(96.0, 22.0)),
+                )
+                .on_hover_text(
+                    "vector layers draw over the field — start one,                      then right-click its name to choose the generator",
+                )
+                .clicked()
+            {
+                registry.set(kind, first);
+            }
+            ui.label(
+                egui::RichText::new("flat shapes over the point field")
+                    .size(11.0)
+                    .color(INK_4),
+            );
+        });
+        return true;
     }
 
     section(ui, "LAYERS");
@@ -987,13 +1033,19 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
             let steps = kind_def.max - kind_def.min + 1.0;
             if resp.clicked() {
                 registry.set(*kind, (cur + 1.0) % steps);
-            } else if resp.secondary_clicked() {
-                registry.set(*kind, (cur - 1.0).rem_euclid(steps));
             }
-            resp.on_hover_text(format!(
-                "layer {} generator — click to cycle, right-click back",
+            // Right-click lists the generators rather than cycling
+            // backwards. Backwards was the cheaper thing to build and
+            // the worse thing to have: it is still a wheel, so it still
+            // never says what is on the wheel, and a menu subsumes it —
+            // anything one click back is one click away here too.
+            let resp = resp.on_hover_text(format!(
+                "layer {} generator — click to cycle, right-click to choose",
                 i + 1
             ));
+            resp.context_menu(|ui| {
+                stepped_menu(ui, registry, *kind, &format!("layer {}", i + 1))
+            });
 
             if on {
                 // Blend, same wheel.
@@ -1010,10 +1062,10 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
                 let bsteps = blend_def.max - blend_def.min + 1.0;
                 if bresp.clicked() {
                     registry.set(*blend, (bcur + 1.0) % bsteps);
-                } else if bresp.secondary_clicked() {
-                    registry.set(*blend, (bcur - 1.0).rem_euclid(bsteps));
                 }
-                bresp.on_hover_text("blend mode — click to cycle, right-click back");
+                let bresp =
+                    bresp.on_hover_text("blend mode — click to cycle, right-click to choose");
+                bresp.context_menu(|ui| stepped_menu(ui, registry, *blend, "blend mode"));
 
                 // Opacity and frequency as drags: the two you ride.
                 let mut op = registry.target(*opacity);
@@ -1044,6 +1096,33 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
     });
     }
     true
+}
+
+/// Every position of a stepped parameter, as a menu.
+///
+/// The wheel these sit on is fast once you know it and teaches nothing:
+/// the label says where you are and never that there is anywhere else to
+/// be, and reaching a given generator can take seven clicks through
+/// eight positions. The menu is the discoverable half — it names every
+/// position at once and marks the current one — and the click-to-cycle
+/// stays for the case where you know exactly what you want next.
+fn stepped_menu(ui: &mut egui::Ui, registry: &ParamRegistry, id: vizz_params::ParamId, title: &str) {
+    let def = &registry.defs()[id.index()];
+    let cur = registry.target(id).round();
+    ui.label(egui::RichText::new(title).color(INK_3).size(11.0));
+    ui.separator();
+    let steps = (def.max - def.min).round().max(0.0) as i32;
+    for step in 0..=steps {
+        let value = def.min + step as f32;
+        let Some(label) = def.label_for(value) else { continue };
+        if ui
+            .selectable_label((cur - value).abs() < 0.5, label)
+            .clicked()
+        {
+            registry.set(id, value);
+            ui.close();
+        }
+    }
 }
 
 /// Roughly what one layer's controls need on a line: swatch, kind,
@@ -3098,6 +3177,154 @@ mod tests {
     }
 
 
+
+    /// A layer can be started from the screen you play on.
+    ///
+    /// The strip used to return early when every layer was off, so the
+    /// vector layers were invisible here until one was already running
+    /// — and the only way to start one was the parameter list on the
+    /// other screen. A feature unreachable from the layout you play on,
+    /// and undiscoverable from it too.
+    ///
+    /// Driven through a real click, because "the button is painted" and
+    /// "the button starts a layer" are different claims and only the
+    /// second one matters.
+    #[test]
+    fn a_layer_can_be_started_from_the_performance_screen() {
+        let reg = registry();
+        let kind = reg.id("/l1/kind").expect("no layer in the test registry");
+        assert_eq!(reg.target(kind), 0.0, "the fixture starts with a layer on");
+
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut macros = Macros::default();
+        let size = vec2(1440.0, 900.0);
+
+        let mut frame = |click: Option<egui::Pos2>| -> Vec<(String, egui::Rect)> {
+            let audio = AudioView::default();
+            let names = ["Slow bloom".to_string()];
+            let grid = crate::grid_view::GridView::default();
+            let midi = MidiView::default();
+            let state = PerformanceState {
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            ctx.begin_pass(input);
+            draw(&ctx, &reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let mut items = Vec::new();
+            for p in &out.shapes {
+                collect_text(&p.shape, &mut items);
+            }
+            items.into_iter().map(|p| (p.text, p.rect)).collect()
+        };
+
+        frame(None);
+        let painted = frame(None);
+        let joined: Vec<&str> = painted.iter().map(|(t, _)| t.trim()).collect();
+        assert!(
+            joined.contains(&"LAYERS"),
+            "the layers section is invisible with nothing on: {joined:?}"
+        );
+        let start = painted
+            .iter()
+            .find(|(t, _)| t.starts_with("+ "))
+            .map(|(_, r)| r.center())
+            .unwrap_or_else(|| panic!("no way to start a layer: {joined:?}"));
+
+        frame(Some(start));
+        assert!(
+            reg.target(kind) >= 0.5,
+            "clicking the start button left every layer off"
+        );
+        // And it landed on a real generator, not merely off-by-one into
+        // something unnamed.
+        let def = &reg.defs()[kind.index()];
+        assert!(
+            def.label_for(reg.target(kind)).is_some_and(|l| l != "off"),
+            "the layer started on {:?}",
+            def.label_for(reg.target(kind))
+        );
+    }
+
+    /// The generator menu names every position and marks the current one.
+    ///
+    /// The wheel alone says where you are and never that there is
+    /// anywhere else to be; eight positions also means seven clicks to
+    /// cross. This asserts against the parameter's own labels rather
+    /// than a copy of them, so adding a generator cannot leave the menu
+    /// quietly one short.
+    #[test]
+    fn the_generator_menu_offers_every_kind() {
+        let reg = registry();
+        let kind = reg.id("/l1/kind").unwrap();
+        reg.set(kind, 2.0);
+        let def = &reg.defs()[kind.index()];
+
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        // Two passes: an Area is placed on the first and painted on the
+        // second, so reading the first gives an empty sheet and says
+        // nothing about the menu.
+        let mut items = Vec::new();
+        for _ in 0..2 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(400.0, 400.0),
+                )),
+                ..Default::default()
+            });
+            egui::Area::new(egui::Id::new("menu-probe")).show(&ctx, |ui| {
+                stepped_menu(ui, &reg, kind, "layer 1");
+            });
+            let out = ctx.end_pass();
+            items.clear();
+            for p in &out.shapes {
+                collect_text(&p.shape, &mut items);
+            }
+        }
+        let painted: Vec<String> = items.iter().map(|p| p.text.trim().to_string()).collect();
+
+        let steps = (def.max - def.min).round() as i32;
+        for step in 0..=steps {
+            let want = def.label_for(def.min + step as f32).unwrap();
+            assert!(
+                painted.iter().any(|t| t == want),
+                "the menu is missing {want:?}: {painted:?}"
+            );
+        }
+    }
+
     /// The faders are on screen at every window size worth playing on.
     ///
     /// Presence, not position — and that distinction is the whole point
@@ -3614,19 +3841,34 @@ mod tests {
         }
     }
 
-    /// The layer strip follows the gravity grid's rule: absent until a
-    /// layer is on, so the default layout spends nothing on it — and
-    /// present the moment one is, or the print side of the app has no
-    /// home on the screen you play from. Checked both ways, because a
-    /// strip that always draws would pass any single-state test.
+    /// The layer strip earns its space in both states, differently.
+    ///
+    /// It used to follow the gravity grid's rule — absent until a layer
+    /// is on — and this test asserted exactly that. The rule was wrong
+    /// here and right there: an empty gravity grid is a grid you know
+    /// about and are not using, while an absent layer strip was the
+    /// only sign the vector layers exist, on the one screen you play
+    /// from. Nothing on it could start a layer because nothing was on
+    /// it, and the only way in was the parameter list on the other
+    /// screen.
+    ///
+    /// So: one teaching line when nothing is on, the full per-layer
+    /// controls when something is. Checked both ways, because a strip
+    /// that always drew the same thing would pass either half alone.
     #[test]
-    fn the_layer_strip_appears_only_when_a_layer_is_on() {
+    fn the_layer_strip_teaches_when_idle_and_controls_when_live() {
         let reg = registry();
         let mut macros = Macros::default();
         let idle = render(&mut macros, &reg);
         assert!(
-            !idle.contains("LAYERS"),
-            "the strip drew with every layer off: {idle}"
+            idle.contains("LAYERS"),
+            "the strip is invisible with every layer off: {idle}"
+        );
+        // The teaching state, not the control state: no blend mode, no
+        // per-layer numbers, one line.
+        assert!(
+            !idle.contains("normal"),
+            "the idle strip drew the full controls: {idle}"
         );
 
         reg.set_by_addr("/l1/kind", 1.0);
