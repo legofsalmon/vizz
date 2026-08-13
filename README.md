@@ -1171,6 +1171,7 @@ control input can never crash the renderer.
 | `/lN/kind` (N = 1–4) | 0 – 7 | 0 | layer generator: off · rings · stripes · checker · polygon · star · rays · dots |
 | `/lN/freq` (N = 1–4) | 0.5 – 64 | 8 | pattern frequency |
 | `/lN/phase` (N = 1–4) | 0 – 1 | 0 | pattern phase offset; unsmoothed, so steps snap |
+| `/lN/drift` (N = 1–4) | -2 – 2 | 0.1 | how fast the pattern walks on its own, turns/sec of visual time; 0 is still, negative reverses |
 | `/lN/duty` (N = 1–4) | 0.05 – 0.95 | 0.5 | ink/paper ratio within a period |
 | `/lN/sides` (N = 1–4) | 2 – 16 | 4 | polygon/star sides; a sweep, fractional counts morph |
 | `/lN/inset` (N = 1–4) | 0 – 1 | 0.5 | star valley depth |

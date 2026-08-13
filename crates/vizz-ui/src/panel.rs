@@ -2523,12 +2523,32 @@ fn param_row(
         // and a modulated parameter is the one you most want to find by
         // scanning.
         let driven = modulation.drives(&def.addr);
+        // Whether the value is *actually moving*, whatever is moving it.
+        //
+        // The marker used to mean "has a modulation route", which is a
+        // different question from the one anyone asks. A scene
+        // transition in flight, a parameter still gliding to where a
+        // preset put it, an OSC sender nudging it from another machine —
+        // all move the picture and none of them lit this up. So it now
+        // reads the live value against the set one, and a route that is
+        // bypassed or sitting at zero no longer claims movement it is
+        // not producing.
+        //
+        // A hundredth of the range is the threshold: below that the
+        // difference is smoothing settling, and a marker that flickers
+        // on every recall is a marker people stop reading.
+        let live = state
+            .modulated
+            .get(id.index())
+            .copied()
+            .filter(|v| (v - value).abs() > (def.max - def.min) * 0.01);
+        let moving = live.is_some();
         let global = vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str());
         let (mark_rect, mark_resp) = ui.allocate_exact_size(
             egui::vec2(MARK_COL_W, ui.spacing().interact_size.y),
             egui::Sense::hover(),
         );
-        if global || driven {
+        if global || driven || moving {
             let (glyph, colour) = if global { ("g", GLOBAL_COLOR) } else { ("~", MOD_COLOR) };
             ui.painter().text(
                 mark_rect.right_center(),
@@ -2540,9 +2560,20 @@ fn param_row(
             let hint = if global {
                 "global — presets and scenes leave this alone, so it stays where you put it"
                     .to_string()
-            } else {
+            } else if driven {
                 let offset = modulation.offset_for(registry, &def.addr);
                 format!("modulated, currently {offset:+.2} of range")
+            } else {
+                // Moving with nothing routed to it. Worth saying so
+                // explicitly rather than showing the same words as a
+                // modulated row: the useful next question is "by what",
+                // and "not by the modulation graph" is half the answer.
+                let at = live.unwrap_or(value);
+                format!(
+                    "moving — set to {value:.2}, currently {at:.2}. \
+                     Nothing in the modulation graph is driving it: a scene \
+                     blend, a preset still arriving, or OSC from elsewhere"
+                )
             };
             mark_resp.on_hover_text(hint);
         }
