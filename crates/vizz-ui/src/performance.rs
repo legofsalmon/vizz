@@ -252,6 +252,21 @@ fn scene_h_id() -> egui::Id {
     egui::Id::new("performance-scene-h")
 }
 
+/// Below this window height the sections between the status strip and
+/// the deck stay stood down once they have been stood down.
+///
+/// Hysteresis, not a second opinion. Standing the sections down frees
+/// exactly the room that would say they can come back, so a single
+/// measurement makes the flag oscillate every frame — a screen that
+/// flickers between two layouts. This is the "and it is still a short
+/// window" half of the test.
+const CRAMPED_UNDER: f32 = 780.0;
+
+/// Where the cramped flag lives between frames. See the layout body.
+fn cramped_id() -> egui::Id {
+    egui::Id::new("performance-cramped")
+}
+
 /// Where the peek toggle's state lives between frames.
 fn peek_id() -> egui::Id {
     egui::Id::new("performance-peek")
@@ -300,6 +315,25 @@ pub fn draw(
             // is a thing you do while deciding what to do next.
             let peeking = ui.ctx().data_mut(|d| *d.get_temp_mut_or(peek_id(), false));
             actions.peeking = peeking;
+            // Whether the window is too short to carry the optional
+            // sections *and* the faders.
+            //
+            // The faders used to take whatever was left over, which made
+            // them the first thing to go — and they are the last thing
+            // that should. At 1024x640 and 900x700 the entire block
+            // including the master fader was laid out below the window
+            // and culled: the CONTROLS caption drew with nothing under
+            // it, and the dim fader that recovers a black output was
+            // simply absent.
+            //
+            // So the block is reserved and the sections above stand
+            // down instead, exactly as they already do while peeking.
+            // Measured on the previous frame rather than predicted:
+            // predicting it means duplicating the height arithmetic of
+            // every section here, which is the kind of second copy that
+            // drifts. One frame late is invisible on a resize and the
+            // layout settles immediately.
+            let cramped = ui.ctx().data_mut(|d| *d.get_temp_mut_or(cramped_id(), false));
             // The scrim is painted *around* the output pane, not over it,
             // so the picture comes through at full strength while every
             // label keeps its opaque ground. Four rects — above, below,
@@ -364,17 +398,17 @@ pub fn draw(
                     // sixteen-pad grid is still a sixteen-pad grid over
                     // the picture. The two rows that stay are the two a
                     // hand is already on.
-                    if !peeking {
+                    if !peeking && !cramped {
                         section(ui, "PUNCH");
                         punch_row(ui, registry, state, &mut actions);
                         ui.add_space(10.0);
                     }
 
-                    if !peeking && layer_strip(ui, registry, col_w) {
+                    if !peeking && !cramped && layer_strip(ui, registry, col_w) {
                         ui.add_space(10.0);
                     }
 
-                    if !state.presets.is_empty() && !peeking {
+                    if !state.presets.is_empty() && !peeking && !cramped {
                         section(ui, "PRESETS");
                         preset_row(ui, state, &mut actions);
                         ui.add_space(10.0);
@@ -569,7 +603,43 @@ pub fn draw(
                             .color(INK_4),
                         );
                     }
-                    faders(ui, registry, macros, state, &mut actions, inner_w, left);
+                    // The budget, measured where the faders actually
+                    // begin rather than predicted from further up.
+                    //
+                    // Every prediction has been wrong by whatever was
+                    // added below the measurement afterwards: first the
+                    // CONTROLS caption, then the line teaching
+                    // reassignment, and then — only in the single-column
+                    // layout, because the desk branch subtracts it and
+                    // this one did not — the entire scene deck. At
+                    // 1024x640 that handed the block 369 points starting
+                    // at y=393 of a 640-point window, so all sixteen
+                    // faders and the master were laid out under the
+                    // window and culled: the caption drew over nothing,
+                    // and the dim fader that recovers a black output was
+                    // simply absent.
+                    //
+                    // `left` above still positions the deck in desk
+                    // mode, where the gap is sized so the two agree.
+                    // This is the number the faders are actually given.
+                    let fader_top = ui.cursor().top();
+                    let floor = FADER_ABS_MIN + FADER_CHROME + 6.0;
+                    let room = full.y - fader_top - PAD;
+                    // Next frame's `cramped`: the sections above stand
+                    // down when the room left cannot hold the block.
+                    // Hysteresis on the way back, because standing them
+                    // down frees exactly the room that would say they
+                    // can return — a single test makes it oscillate.
+                    ui.ctx().data_mut(|d| {
+                        let was: bool = *d.get_temp_mut_or(cramped_id(), false);
+                        let starved = room < floor;
+                        d.insert_temp(cramped_id(), if was {
+                            starved || full.y < CRAMPED_UNDER
+                        } else {
+                            starved
+                        });
+                    });
+                    faders(ui, registry, macros, state, &mut actions, inner_w, room.max(floor));
 
                     // The hole the picture comes through.
                     //
@@ -861,8 +931,54 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
     let any_on = layer_ids
         .iter()
         .any(|(kind, ..)| registry.target(*kind).round() >= 0.5);
+
+    // With nothing on, one line rather than nothing at all.
+    //
+    // The strip used to return early here, so the vector layers were
+    // invisible on this screen until one was already running — and the
+    // only way to start one was the parameter list on the *other*
+    // screen. A feature you cannot reach from the layout you play on,
+    // and cannot find out exists from it either.
+    //
+    // A single line is the whole cost: the layers are worth knowing
+    // about and are not worth a full strip of eight off ones. The
+    // button starts layer 1 on the first real generator rather than
+    // opening something, because one press producing a picture is what
+    // teaches that the row means anything.
     if !any_on {
-        return false;
+        let (kind, ..) = layer_ids[0];
+        let def = &registry.defs()[kind.index()];
+        // The first position past "off", whatever it happens to be
+        // called — read from the definition rather than hardcoded, so
+        // adding a generator at the front cannot silently repoint this.
+        let first = def.min + 1.0;
+        if first > def.max {
+            return false;
+        }
+        section(ui, "LAYERS");
+        ui.horizontal(|ui| {
+            let name = def.label_for(first).unwrap_or("a layer");
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(format!("+ {name}")).size(12.0).color(INK_2),
+                    )
+                    .min_size(vec2(96.0, 22.0)),
+                )
+                .on_hover_text(
+                    "vector layers draw over the field — start one,                      then right-click its name to choose the generator",
+                )
+                .clicked()
+            {
+                registry.set(kind, first);
+            }
+            ui.label(
+                egui::RichText::new("flat shapes over the point field")
+                    .size(11.0)
+                    .color(INK_4),
+            );
+        });
+        return true;
     }
 
     section(ui, "LAYERS");
@@ -917,13 +1033,19 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
             let steps = kind_def.max - kind_def.min + 1.0;
             if resp.clicked() {
                 registry.set(*kind, (cur + 1.0) % steps);
-            } else if resp.secondary_clicked() {
-                registry.set(*kind, (cur - 1.0).rem_euclid(steps));
             }
-            resp.on_hover_text(format!(
-                "layer {} generator — click to cycle, right-click back",
+            // Right-click lists the generators rather than cycling
+            // backwards. Backwards was the cheaper thing to build and
+            // the worse thing to have: it is still a wheel, so it still
+            // never says what is on the wheel, and a menu subsumes it —
+            // anything one click back is one click away here too.
+            let resp = resp.on_hover_text(format!(
+                "layer {} generator — click to cycle, right-click to choose",
                 i + 1
             ));
+            resp.context_menu(|ui| {
+                stepped_menu(ui, registry, *kind, &format!("layer {}", i + 1))
+            });
 
             if on {
                 // Blend, same wheel.
@@ -940,10 +1062,10 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
                 let bsteps = blend_def.max - blend_def.min + 1.0;
                 if bresp.clicked() {
                     registry.set(*blend, (bcur + 1.0) % bsteps);
-                } else if bresp.secondary_clicked() {
-                    registry.set(*blend, (bcur - 1.0).rem_euclid(bsteps));
                 }
-                bresp.on_hover_text("blend mode — click to cycle, right-click back");
+                let bresp =
+                    bresp.on_hover_text("blend mode — click to cycle, right-click to choose");
+                bresp.context_menu(|ui| stepped_menu(ui, registry, *blend, "blend mode"));
 
                 // Opacity and frequency as drags: the two you ride.
                 let mut op = registry.target(*opacity);
@@ -974,6 +1096,33 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
     });
     }
     true
+}
+
+/// Every position of a stepped parameter, as a menu.
+///
+/// The wheel these sit on is fast once you know it and teaches nothing:
+/// the label says where you are and never that there is anywhere else to
+/// be, and reaching a given generator can take seven clicks through
+/// eight positions. The menu is the discoverable half — it names every
+/// position at once and marks the current one — and the click-to-cycle
+/// stays for the case where you know exactly what you want next.
+fn stepped_menu(ui: &mut egui::Ui, registry: &ParamRegistry, id: vizz_params::ParamId, title: &str) {
+    let def = &registry.defs()[id.index()];
+    let cur = registry.target(id).round();
+    ui.label(egui::RichText::new(title).color(INK_3).size(11.0));
+    ui.separator();
+    let steps = (def.max - def.min).round().max(0.0) as i32;
+    for step in 0..=steps {
+        let value = def.min + step as f32;
+        let Some(label) = def.label_for(value) else { continue };
+        if ui
+            .selectable_label((cur - value).abs() < 0.5, label)
+            .clicked()
+        {
+            registry.set(id, value);
+            ui.close();
+        }
+    }
 }
 
 /// Roughly what one layer's controls need on a line: swatch, kind,
@@ -1456,8 +1605,20 @@ fn faders(
         // its neighbours, distinct only by colour and label. It is found
         // by position, which is what actually works in the dark.
         if row == 0 {
+            // Inset by the same gap that separates every other column,
+            // rather than pinned flush to the block's right edge.
+            //
+            // The master's labels are laid out from the column's centre
+            // line rightwards rather than centred on it — an egui
+            // layout quirk this code has not managed to talk it out of —
+            // so the caption reaches about half a column past where it
+            // looks like it should. Flush against the edge that put
+            // "MASTER" four points outside a 1024-point window, where it
+            // was clipped away entirely and left the master looking like
+            // a nameless fader on the end of the row. The gutter is
+            // where the overhang goes.
             let master_rect = egui::Rect::from_min_size(
-                egui::pos2(origin.x + width - w, origin.y),
+                egui::pos2(origin.x + width - w - COL_GAP, origin.y),
                 vec2(w, h + chrome),
             );
             let mut col = ui.new_child(
@@ -1466,6 +1627,15 @@ fn faders(
                     .layout(egui::Layout::top_down(egui::Align::Center)),
             );
             col.spacing_mut().item_spacing = vec2(6.0, LABEL_GAP);
+            // The column needs a width for `Align::Center` to centre
+            // anything within. Built from `max_rect` alone it had none,
+            // so every label in the master column was laid out with its
+            // *left edge* on the column's centre line and grew right —
+            // half of each one hanging outside its own column at every
+            // window size. Nothing showed it until the window was narrow
+            // enough that the overhang crossed the screen edge, where
+            // egui clipped the caption away and left the master looking
+            // like a nameless fader on the end of the row.
             master(&mut col, registry, state, w, h);
         }
         ui.add_space(4.0);
@@ -2292,9 +2462,27 @@ fn master(
             .monospace()
             .color(if t < 0.02 { WARN } else { INK }),
     );
+    // Shrunk to the column like every other fader name, rather than
+    // drawn at a fixed size and allowed to overhang. At a 1024-point
+    // window the master's column is 55 points wide and this caption
+    // wanted 45 starting at x=983 — four points past the right edge of
+    // the window, where egui clipped it. The value above it stayed, so
+    // the master read as a nameless fader at the end of the row: the
+    // one control whose whole job is to be found without looking.
+    // Fitted to the column and *bounded* by it. Every macro fader's name
+    // is added with `.truncate()`, which keeps it inside its column; this
+    // caption was a plain `ui.label`, which is free to overhang. At a
+    // 1024-point window it ran from x=983 to x=1028 — four points past
+    // the right edge of the window, where egui clipped it away entirely.
+    // The value above it stayed, so the master read as a nameless fader
+    // at the end of the row: the one control whose whole job is to be
+    // found without looking.
+    //
+    // Capped at the size it always was, so this only ever shrinks.
+    let (master_label, master_size) = fit_label(ui, "MASTER", w);
     ui.label(
-        egui::RichText::new("MASTER")
-            .size(12.0)
+        egui::RichText::new(master_label)
+            .size(master_size.min(11.0))
             .strong()
             .color(vizz_design::accent::MASTER_INK),
     );
@@ -2988,6 +3176,280 @@ mod tests {
         render_sized(macros, reg, midi, values, recording, vec2(width, 800.0))
     }
 
+
+
+    /// A layer can be started from the screen you play on.
+    ///
+    /// The strip used to return early when every layer was off, so the
+    /// vector layers were invisible here until one was already running
+    /// — and the only way to start one was the parameter list on the
+    /// other screen. A feature unreachable from the layout you play on,
+    /// and undiscoverable from it too.
+    ///
+    /// Driven through a real click, because "the button is painted" and
+    /// "the button starts a layer" are different claims and only the
+    /// second one matters.
+    #[test]
+    fn a_layer_can_be_started_from_the_performance_screen() {
+        let reg = registry();
+        let kind = reg.id("/l1/kind").expect("no layer in the test registry");
+        assert_eq!(reg.target(kind), 0.0, "the fixture starts with a layer on");
+
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut macros = Macros::default();
+        let size = vec2(1440.0, 900.0);
+
+        let mut frame = |click: Option<egui::Pos2>| -> Vec<(String, egui::Rect)> {
+            let audio = AudioView::default();
+            let names = ["Slow bloom".to_string()];
+            let grid = crate::grid_view::GridView::default();
+            let midi = MidiView::default();
+            let state = PerformanceState {
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            ctx.begin_pass(input);
+            draw(&ctx, &reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let mut items = Vec::new();
+            for p in &out.shapes {
+                collect_text(&p.shape, &mut items);
+            }
+            items.into_iter().map(|p| (p.text, p.rect)).collect()
+        };
+
+        frame(None);
+        let painted = frame(None);
+        let joined: Vec<&str> = painted.iter().map(|(t, _)| t.trim()).collect();
+        assert!(
+            joined.contains(&"LAYERS"),
+            "the layers section is invisible with nothing on: {joined:?}"
+        );
+        let start = painted
+            .iter()
+            .find(|(t, _)| t.starts_with("+ "))
+            .map(|(_, r)| r.center())
+            .unwrap_or_else(|| panic!("no way to start a layer: {joined:?}"));
+
+        frame(Some(start));
+        assert!(
+            reg.target(kind) >= 0.5,
+            "clicking the start button left every layer off"
+        );
+        // And it landed on a real generator, not merely off-by-one into
+        // something unnamed.
+        let def = &reg.defs()[kind.index()];
+        assert!(
+            def.label_for(reg.target(kind)).is_some_and(|l| l != "off"),
+            "the layer started on {:?}",
+            def.label_for(reg.target(kind))
+        );
+    }
+
+    /// The generator menu names every position and marks the current one.
+    ///
+    /// The wheel alone says where you are and never that there is
+    /// anywhere else to be; eight positions also means seven clicks to
+    /// cross. This asserts against the parameter's own labels rather
+    /// than a copy of them, so adding a generator cannot leave the menu
+    /// quietly one short.
+    #[test]
+    fn the_generator_menu_offers_every_kind() {
+        let reg = registry();
+        let kind = reg.id("/l1/kind").unwrap();
+        reg.set(kind, 2.0);
+        let def = &reg.defs()[kind.index()];
+
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        // Two passes: an Area is placed on the first and painted on the
+        // second, so reading the first gives an empty sheet and says
+        // nothing about the menu.
+        let mut items = Vec::new();
+        for _ in 0..2 {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(400.0, 400.0),
+                )),
+                ..Default::default()
+            });
+            egui::Area::new(egui::Id::new("menu-probe")).show(&ctx, |ui| {
+                stepped_menu(ui, &reg, kind, "layer 1");
+            });
+            let out = ctx.end_pass();
+            items.clear();
+            for p in &out.shapes {
+                collect_text(&p.shape, &mut items);
+            }
+        }
+        let painted: Vec<String> = items.iter().map(|p| p.text.trim().to_string()).collect();
+
+        let steps = (def.max - def.min).round() as i32;
+        for step in 0..=steps {
+            let want = def.label_for(def.min + step as f32).unwrap();
+            assert!(
+                painted.iter().any(|t| t == want),
+                "the menu is missing {want:?}: {painted:?}"
+            );
+        }
+    }
+
+    /// The faders are on screen at every window size worth playing on.
+    ///
+    /// Presence, not position — and that distinction is the whole point
+    /// of this test. egui culls shapes outside the clip rect, so a label
+    /// laid out below the window bottom does not arrive as an
+    /// off-screen shape: it does not arrive at all. Checking for
+    /// stragglers past the edge therefore cannot catch this, and the
+    /// first version of this test did exactly that and passed against a
+    /// build with no faders in it.
+    ///
+    /// What it caught once the assertion was turned round: at 1024x640
+    /// and 900x700 the entire block — every fader and the master with
+    /// it — was laid out under the window and culled. The CONTROLS
+    /// caption drew over nothing, and the dim fader that recovers a
+    /// black output was gone.
+    ///
+    /// The master matters most and is asserted separately. Everything
+    /// else on this screen is a thing you reach for; that one is the
+    /// thing you reach for when the output is already black.
+    #[test]
+    fn the_faders_survive_every_window_worth_playing_on() {
+        let reg = registry();
+        for size in [
+            vec2(1280.0, 720.0),
+            vec2(1280.0, 680.0),
+            vec2(1024.0, 640.0),
+            vec2(1440.0, 900.0),
+            vec2(1920.0, 1080.0),
+            vec2(900.0, 700.0),
+            vec2(1100.0, 620.0),
+        ] {
+            let mut macros = Macros::default();
+            let sheet = sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, size);
+            let text = sheet.text();
+            assert!(
+                text.contains("MASTER"),
+                "at {}x{} the master fader is not on screen: {text}",
+                size.x,
+                size.y
+            );
+            // And a named macro fader, so "the master survived alone"
+            // cannot pass for the block being there.
+            assert!(
+                text.contains("size"),
+                "at {}x{} the macro faders are not on screen: {text}",
+                size.x,
+                size.y
+            );
+            // Nothing legible may sit outside the window either. This
+            // cannot catch a culled label, but it does catch one that
+            // hangs over an edge rather than being dropped past it.
+            let off = sheet.offscreen();
+            assert!(
+                off.is_empty(),
+                "at {}x{}, {:?} was painted outside the window",
+                size.x,
+                size.y,
+                off.iter().map(|p| p.text.trim()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// One run of text as it was actually painted, and where it landed.
+    #[derive(Clone, Debug)]
+    struct Painted {
+        text: String,
+        rect: egui::Rect,
+    }
+
+    /// Everything the layout painted at one size, with positions.
+    ///
+    /// The tests in this module could previously see *that* a string was
+    /// drawn and nothing else. That is enough to catch a missing label
+    /// and blind to every way a label can be present and useless: off
+    /// the bottom of the window, under another label, or clipped to
+    /// nothing. Several layout bugs this module exists to prevent were
+    /// found by looking at a screenshot instead, which does not scale
+    /// and does not run in CI.
+    struct Sheet {
+        items: Vec<Painted>,
+        screen: egui::Rect,
+    }
+
+    impl Sheet {
+        /// The on-screen text, joined — what the string-based tests read.
+        fn text(&self) -> String {
+            self.items
+                .iter()
+                .filter(|p| self.screen.contains_rect(p.rect))
+                .map(|p| p.text.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        /// Runs that were painted outside the window.
+        ///
+        /// Blank runs are ignored: the layout paints a space to hold a
+        /// row's height where a chip would go, and a space nobody can
+        /// see falling off the edge is not a bug.
+        fn offscreen(&self) -> Vec<&Painted> {
+            self.items
+                .iter()
+                .filter(|p| !p.text.trim().is_empty())
+                .filter(|p| !self.screen.contains_rect(p.rect))
+                .collect()
+        }
+    }
+
+    /// Collect every text run, including those nested inside groups.
+    ///
+    /// Recursive on purpose. The flat version missed anything egui
+    /// emitted inside a `Shape::Vec` — which is most of what a widget
+    /// draws — so "this text is not painted" was a claim the harness
+    /// could not actually make.
+    fn collect_text(shape: &egui::Shape, out: &mut Vec<Painted>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_text(s, out)),
+            egui::Shape::Text(t) => out.push(Painted {
+                text: painted(&t.galley),
+                rect: egui::Rect::from_min_size(t.pos, t.galley.rect.size()),
+            }),
+            _ => {}
+        }
+    }
+
     fn render_sized(
         macros: &mut Macros,
         reg: &ParamRegistry,
@@ -2996,6 +3458,17 @@ mod tests {
         recording: Option<crate::RecordingView>,
         size: Vec2,
     ) -> String {
+        sheet_sized(macros, reg, midi, values, recording, size).text()
+    }
+
+    fn sheet_sized(
+        macros: &mut Macros,
+        reg: &ParamRegistry,
+        midi: &MidiView,
+        values: Option<&[f32]>,
+        recording: Option<crate::RecordingView>,
+        size: Vec2,
+    ) -> Sheet {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         if RENDER_PEEK.with(|f| f.get()) {
@@ -3025,30 +3498,25 @@ mod tests {
             output_aspect: 16.0 / 9.0,
             graph: None,
         };
-        let mut text = String::new();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let mut items = Vec::new();
+        // Eight passes so the layout's own animations settle; only the
+        // last is read, for the same reason a photograph of a fader
+        // mid-glide tells you nothing about where it came to rest.
         for i in 0..8 {
             ctx.begin_pass(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    size,
-                )),
+                screen_rect: Some(screen),
                 time: Some(i as f64 * 0.05),
                 ..Default::default()
             });
             draw(&ctx, reg, &state, macros);
             let out = ctx.end_pass();
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            text = out
-                .shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) if on_screen(t, screen) => Some(painted(&t.galley)),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+            items.clear();
+            for p in &out.shapes {
+                collect_text(&p.shape, &mut items);
+            }
         }
-        text
+        Sheet { items, screen }
     }
 
     /// Every painted run with the colour it was painted in.
@@ -3373,19 +3841,34 @@ mod tests {
         }
     }
 
-    /// The layer strip follows the gravity grid's rule: absent until a
-    /// layer is on, so the default layout spends nothing on it — and
-    /// present the moment one is, or the print side of the app has no
-    /// home on the screen you play from. Checked both ways, because a
-    /// strip that always draws would pass any single-state test.
+    /// The layer strip earns its space in both states, differently.
+    ///
+    /// It used to follow the gravity grid's rule — absent until a layer
+    /// is on — and this test asserted exactly that. The rule was wrong
+    /// here and right there: an empty gravity grid is a grid you know
+    /// about and are not using, while an absent layer strip was the
+    /// only sign the vector layers exist, on the one screen you play
+    /// from. Nothing on it could start a layer because nothing was on
+    /// it, and the only way in was the parameter list on the other
+    /// screen.
+    ///
+    /// So: one teaching line when nothing is on, the full per-layer
+    /// controls when something is. Checked both ways, because a strip
+    /// that always drew the same thing would pass either half alone.
     #[test]
-    fn the_layer_strip_appears_only_when_a_layer_is_on() {
+    fn the_layer_strip_teaches_when_idle_and_controls_when_live() {
         let reg = registry();
         let mut macros = Macros::default();
         let idle = render(&mut macros, &reg);
         assert!(
-            !idle.contains("LAYERS"),
-            "the strip drew with every layer off: {idle}"
+            idle.contains("LAYERS"),
+            "the strip is invisible with every layer off: {idle}"
+        );
+        // The teaching state, not the control state: no blend mode, no
+        // per-layer numbers, one line.
+        assert!(
+            !idle.contains("normal"),
+            "the idle strip drew the full controls: {idle}"
         );
 
         reg.set_by_addr("/l1/kind", 1.0);

@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.18.0/vizz-0.18.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.19.0/vizz-0.19.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,37 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.19.0">0.19.0</a></div>
+      <ul>
+        <li><strong>The faders no longer disappear on a short window.</strong>
+          At some window sizes the whole fader block — all sixteen and the
+          master with them — was laid out below the bottom edge and thrown
+          away, so the CONTROLS heading sat over nothing and the dim fader
+          that recovers a black output was simply gone. When there is
+          genuinely no room the sections above stand down instead: the
+          faders are what you play, and they should be the last thing to
+          give way rather than the first.</li>
+        <li><strong>The master fader keeps its name.</strong> Its caption
+          overhung its column at every size, invisibly, until the window
+          was narrow enough to push it off the screen entirely — leaving
+          the master looking like a nameless fader on the end of the
+          row.</li>
+        <li><strong>The vector layers can be found and started from the
+          performance screen.</strong> The strip used to be invisible
+          until a layer was already running, and nothing on that screen
+          could start one — the only way in was the parameter list on the
+          other screen. Now there is one line when nothing is on, and
+          right-clicking a layer's generator or blend mode lists every
+          choice instead of cycling backwards through them.</li>
+        <li><strong>A stuck pointer is caught and corrected.</strong> If
+          the interface ever missed a mouse release it went on believing
+          the button was held, and the next move carried on dragging.
+          Releases are now synthesised where they provably cannot arrive,
+          and a genuinely stuck pointer says so in the log.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.18.0">0.18.0</a></div>
