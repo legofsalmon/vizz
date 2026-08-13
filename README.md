@@ -1095,11 +1095,25 @@ bindings is ordinary, so learn replaces any of them and clicking a
 binding label clears it.
 
 **The lights** need no setup: if the device is recognised, vizz opens its
-output port too. A pad with a preset on it glows dim, the one playing
+output port too. A pad with a preset on it glows white, the one playing
 goes green, and the one the autopilot will fire next goes amber. Only
 changes are sent, at about 30 ms, so the feedback cannot crowd the clock
 sharing the same cable. vizz never sends to an output port it does not
 recognise, and hands every device back dark on the way out.
+
+Those velocities index a colour table in the device's own firmware, and
+the tables are published inconsistently and rendered differently by
+different units — driven very low, an RGB pad's red element dominates and
+every "nearly off" shade drifts warm. If a colour looks wrong on yours,
+set it at launch rather than waiting for a release:
+
+```sh
+VIZZ_PAD_COLOURS=3,21,9 vizz     # loaded, playing, next
+VIZZ_PAD_COLOURS=,,45 vizz       # leave two alone, change only "next"
+```
+
+An empty or unparseable field keeps the shipped value, so a typo costs
+that one colour and nothing else.
 
 ### MIDI clock sync
 
