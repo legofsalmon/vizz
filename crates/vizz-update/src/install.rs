@@ -299,6 +299,12 @@ fn bundle_version(bundle: &Path) -> Option<crate::Version> {
 /// the helper puts the original back rather than leaving a machine with
 /// no app on it an hour before doors.
 pub fn install_and_restart(staged: &Path) -> Result<()> {
+    // Belt and braces with `blocker`, which the panel consults before
+    // showing the button: nothing should be able to reach the swap on a
+    // platform whose bundle layout this does not understand.
+    if !cfg!(target_os = "macos") {
+        bail!("in-app updates are macOS only");
+    }
     let target = running_bundle().context("not running from an app bundle")?;
     let script = script_path();
     let body = format!(
@@ -344,9 +350,18 @@ rm -f "$0"
         staging = shell_quote(&staging_dir()),
     );
     std::fs::write(&script, body).with_context(|| format!("could not write {}", script.display()))?;
-    let mut perms = std::fs::metadata(&script)?.permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&script, perms)?;
+    // The script has to be executable, and `PermissionsExt` does not
+    // exist off Unix. This module compiles on every platform on purpose
+    // — `blocker` is then the single place that says "macOS only",
+    // rather than every call site carrying its own cfg — so the one
+    // genuinely Unix-only call is the one thing gated.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&script)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms)?;
+    }
 
     // Detached, and explicitly not a child that dies with us: `setsid`
     // via `nohup`-style redirection is not enough on macOS, so the
