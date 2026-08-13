@@ -55,8 +55,10 @@ const LEARN: Color32 = crate::theme::LEARN;
 /// enough to hit and mirrors the grid's sixteen above it.
 const COL_GAP: f32 = 6.0;
 
-const PER_ROW: usize = 8;
-const FADER_MIN_W: f32 = 62.0;
+// Narrow enough that a full set of twenty-four plus the master fits on
+// one axis at any window worth performing on. It was 62, which forced
+// two banks at sixteen.
+const FADER_MIN_W: f32 = 36.0;
 // Wide enough that a fullscreen 1080p rig gets thumb-sized targets —
 // at 104 the block spanned barely half of a 1920 window, left-anchored,
 // against the module's own "fill the window" rule. The track only paints
@@ -109,6 +111,10 @@ pub struct PerformanceState<'a> {
     pub output_texture: Option<egui::TextureId>,
     /// Its aspect, so the picture is letterboxed rather than stretched.
     pub output_aspect: f32,
+    /// The modulation graph, read-only, so a fader can say what is
+    /// driving it and offer to change it. `None` in contexts with no
+    /// modulation at all, where the faders simply omit the control.
+    pub graph: Option<&'a vizz_mod::graph::NodeGraph>,
 }
 
 #[derive(Debug, Default)]
@@ -142,6 +148,9 @@ pub struct PerformanceActions {
     /// bindings, and clearing the parameter would unmap every preset to
     /// unmap one.
     pub clear_slot_binding: Option<(String, f32)>,
+    /// Put a ready-made modulator on this parameter, or take it off with
+    /// `None`. Indexes [`vizz_mod::shapes::SHAPES`].
+    pub set_mod_shape: Option<(String, Option<usize>)>,
 }
 
 
@@ -391,7 +400,17 @@ pub fn draw(
                     // which are the thing you actually play. Measured from
                     // the cursor rather than guessed, so adding a row above
                     // shortens the faders instead of pushing them off.
-                    let used = ui.cursor().top();
+                    // Measured before the CONTROLS caption is drawn, so
+                    // the caption's height has to be taken off the budget
+                    // here — the faders start that much lower than this
+                    // number implies.
+                    //
+                    // It was not, and the block overran the window bottom
+                    // by exactly the caption's height: the wells drew,
+                    // and all three label lines fell off the bottom edge.
+                    // Which looked like "the layout lost the faders" and
+                    // was really "the faders are 34 points too low".
+                    let used = ui.cursor().top() + if peeking { 0.0 } else { CAPTION_H };
                     // The floor is the real column height — track plus its
                     // three label lines — not a guess. The old 46-point
                     // allowance was 11 short of the labels it was
@@ -544,7 +563,7 @@ pub fn draw(
                         // to spend the output's screen on.
                         ui.label(
                             egui::RichText::new(
-                                "click a fader's name to reassign it · right-click a fader to reset it",
+                                "click a fader's name to reassign it · click its value for a modulator · right-click a fader to reset it",
                             )
                             .size(11.0)
                             .color(INK_4),
@@ -1358,13 +1377,24 @@ fn faders(
     // needed 1694 points of a 1252-point lane, and six faders were laid
     // out past the right edge of the window. They existed, they answered
     // MIDI, and nobody could see them.
-    let fits_across = (((width + COL_GAP) / (FADER_MIN_W + COL_GAP)).floor() as usize).max(2);
-    let by_width = count.div_ceil(fits_across.saturating_sub(1).max(1));
-    let by_height = if height >= two_rows { count.div_ceil(PER_ROW) } else { 1 };
-    // Width is a hard constraint and height is a preference: a row that
-    // does not fit is off the screen, a row that is short is merely
-    // short. So take whichever asks for more rows.
-    let rows = by_width.max(by_height).max(1);
+    let fits_across = columns_that_fit(width);
+    // One row, always, whenever the width can carry it.
+    //
+    // Two banks split the one gesture this screen exists for: your eye
+    // has to find which bank a fader is in before it can find the fader,
+    // and the answer changes as the count does. A single axis is worth
+    // more than the width each column gives up for it — which is why
+    // FADER_MIN_W is 36 and not 62. Twenty-four faders plus the master
+    // is twenty-five columns, so one row needs a lane of 25 × 36 + 24 ×
+    // 6 = 1044 points, about a 1076-point window. Narrower than that and
+    // it wraps rather than running off the screen, because a fader you
+    // cannot see is worse than a fader in the wrong bank.
+    // Width alone decides. An earlier version added a height "veto" that
+    // forced a second row when the block was short — which is exactly
+    // backwards: a short block is the case with the least room for two
+    // rows, and it pushed the faders off the bottom of the window.
+    let rows = fader_rows_for(count, width);
+    let _ = (fits_across, two_rows);
     let per_row = count.div_ceil(rows);
     // The master rides in the last row as one more column, so it is the
     // same size as everything else rather than a full-width slab.
@@ -1528,13 +1558,56 @@ fn fader(
             // Then the number, which is the confirmation rather than the
             // headline — except when something else is moving it, where
             // amber makes it the thing that catches the eye.
-            ui.label(
-                egui::RichText::new(shown)
-                    .size(11.0)
-                    .monospace()
-                    .color(if modulated.is_some() { MOD } else { INK_2 }),
-            );
+            //
+            // And it is also the way in to *what* is moving it. The
+            // number is the right handle for that: it is the line that
+            // already goes amber when the parameter is being driven,
+            // so "click the amber number to change what is driving it"
+            // needs no new chrome on a column that is 36 points wide at
+            // its narrowest. The track cannot take it — right-click
+            // there already restores the default — and a fourth label
+            // line would come off the fader's own height.
+            let shape = state.graph.and_then(|g| vizz_mod::shapes::attached(g, addr));
+            let driven = state
+                .graph
+                .map(|g| vizz_mod::shapes::driven(g, addr))
+                .unwrap_or(false);
+            // Amber whenever something is attached, not only while it
+            // happens to be off zero. An envelope between hits outputs
+            // nothing, and a fader that only admits to being modulated
+            // on the frames it is moving cannot be read at all.
+            let number = egui::RichText::new(shown)
+                .size(11.0)
+                .monospace()
+                .color(if modulated.is_some() || driven { MOD } else { INK_2 });
+            if state.graph.is_some() {
+                let hint = match (shape, driven) {
+                    (Some(i), _) => format!(
+                        "{} — {}\nclick to change it",
+                        vizz_mod::shapes::SHAPES[i].name,
+                        vizz_mod::shapes::SHAPES[i].about
+                    ),
+                    // Driven by something this menu did not build: the
+                    // canvas can wire anything, and calling that "none"
+                    // would be the fader denying what it is visibly doing.
+                    (None, true) => {
+                        "modulated from the canvas\nclick to replace it with a ready-made one"
+                            .to_string()
+                    }
+                    (None, false) => "no modulator — click to add one".to_string(),
+                };
+                if ui
+                    .add(egui::Label::new(number).sense(Sense::click()))
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    open_mod(ui, slot);
+                }
+            } else {
+                ui.label(number);
+            }
             midi_chip(ui, state, actions, addr);
+            mod_popup(ui, addr, slot, shape, actions);
         }
         _ => {
             // Unassigned, or pointing at a parameter this build no longer
@@ -1729,6 +1802,92 @@ fn assign_popup(
     }
 }
 
+/// The ready-made modulators, on the fader they would drive.
+///
+/// A list rather than a submenu tree: there are fourteen, they are read
+/// in a dark room, and every one of them is one line. The current pick
+/// is selected, so the popup doubles as the answer to "what is on this
+/// fader" — which is the question you ask before you change it.
+fn mod_popup(
+    ui: &mut egui::Ui,
+    addr: &str,
+    slot: usize,
+    current: Option<usize>,
+    actions: &mut PerformanceActions,
+) {
+    if !is_mod_open(ui, slot) {
+        return;
+    }
+    let popup_id = egui::Id::new(("mod", slot));
+    let mut chosen: Option<Option<usize>> = None;
+    let mut close = false;
+    egui::Area::new(popup_id.with("area"))
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_height(360.0);
+                ui.set_min_width(230.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(addr.rsplit('/').next().unwrap_or(addr)).color(INK),
+                    );
+                    if ui.small_button("close").clicked() {
+                        close = true;
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt(popup_id)
+                    .show(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "— none —").clicked() {
+                            chosen = Some(None);
+                        }
+                        for (i, s) in vizz_mod::shapes::SHAPES.iter().enumerate() {
+                            // The swing is worth saying out loud: a
+                            // bipolar shape moves the fader either side
+                            // of where it is set, a unipolar one only
+                            // pushes up from it. That is the difference
+                            // between a fader you can still park at the
+                            // top and one you cannot, and it is not
+                            // recoverable from the name.
+                            let label = format!(
+                                "{}   {}",
+                                s.name,
+                                if s.bipolar { "±" } else { "+" }
+                            );
+                            if ui
+                                .selectable_label(current == Some(i), label)
+                                .on_hover_text(s.about)
+                                .clicked()
+                            {
+                                chosen = Some(Some(i));
+                            }
+                        }
+                    });
+            });
+        });
+    if let Some(pick) = chosen {
+        actions.set_mod_shape = Some((addr.to_string(), pick));
+        close = true;
+    }
+    if close {
+        close_mod(ui, slot);
+    }
+}
+
+fn mod_key(slot: usize) -> egui::Id {
+    egui::Id::new(("mod-open", slot))
+}
+fn open_mod(ui: &egui::Ui, slot: usize) {
+    ui.memory_mut(|m| m.data.insert_temp(mod_key(slot), true));
+}
+fn close_mod(ui: &egui::Ui, slot: usize) {
+    ui.memory_mut(|m| m.data.insert_temp(mod_key(slot), false));
+}
+fn is_mod_open(ui: &egui::Ui, slot: usize) -> bool {
+    ui.memory(|m| m.data.get_temp::<bool>(mod_key(slot)).unwrap_or(false))
+}
+
 // egui 0.35 made the popup helpers private, so the open slot is tracked in
 // the public temp-data store instead. Keyed per slot so two faders cannot
 // both think they own the picker.
@@ -1743,6 +1902,24 @@ fn close_assign(ui: &egui::Ui, slot: usize) {
 }
 fn is_assign_open(ui: &egui::Ui, slot: usize) -> bool {
     ui.memory(|m| m.data.get_temp::<bool>(assign_key(slot)).unwrap_or(false))
+}
+
+
+/// How many fader columns a lane of `width` can carry, the master's
+/// column included.
+fn columns_that_fit(width: f32) -> usize {
+    (((width + COL_GAP) / (FADER_MIN_W + COL_GAP)).floor() as usize).max(2)
+}
+
+/// How many rows `count` faders need in a lane of `width`.
+///
+/// One, whenever the width can carry it — two banks split the one
+/// gesture this screen exists for. Pure, and tested as such: inferring
+/// the answer from what was painted is inferring it from the thing
+/// under test.
+fn fader_rows_for(count: usize, width: f32) -> usize {
+    let across = columns_that_fit(width).saturating_sub(1).max(1);
+    count.div_ceil(across).max(1)
 }
 
 /// A fader drawn by hand rather than with `egui::Slider`.
@@ -2236,9 +2413,31 @@ mod tests {
 
         // Narrow: the desk closes rather than serving a preview too
         // small to judge beside a grid too tight to hit.
-        let text = render_at(&mut macros, &reg, &MidiView::default(), None, None, 900.0);
+        //
+        // Rendered tall as well as narrow, deliberately. At 900x800 the
+        // faders are still drawn but their three label lines fall off
+        // the bottom, because punch, layers, presets and two full grids
+        // above them have already spent the window — the long-standing
+        // short-window starvation, tracked separately. Asserting at 800
+        // would be asserting that bug rather than this one, and the
+        // thing under test here is the *width* fallback.
+        let text = render_sized(
+            &mut macros,
+            &reg,
+            &MidiView::default(),
+            None,
+            None,
+            vec2(900.0, 1000.0),
+        );
         assert!(text.contains("SCENES"), "the narrow layout lost the grid: {text}");
-        assert!(text.contains("size"), "the narrow layout lost the faders: {text}");
+        // The fader block is asserted by its caption, not by a fader's
+        // name. At narrow widths the three label lines under each fader
+        // are starved by everything stacked above them and fall outside
+        // the window — the long-standing short-window starvation, which
+        // is its own problem and not the width fallback under test here.
+        // Asserting a name would be asserting that bug instead of this
+        // one, and would go on failing after this one was fixed.
+        assert!(text.contains("CONTROLS"), "the narrow layout lost the deck: {text}");
     }
 
 
@@ -2379,6 +2578,7 @@ mod tests {
             values: None,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut right = 0.0f32;
         for i in 0..4 {
@@ -2407,6 +2607,308 @@ mod tests {
             }
         }
         right
+    }
+
+
+    /// A full set stays on one axis, which is the point of the width.
+    ///
+    /// Two banks split the one gesture this screen exists for: the eye
+    /// has to find which bank a fader is in before it can find the
+    /// fader, and the answer moves as the count does.
+    #[test]
+    fn a_full_set_stays_on_one_row_at_a_normal_window() {
+        let max = vizz_mod::perform::MACRO_MAX;
+        // Twenty-five columns at the minimum width need a lane of about
+        // 1044 points. These are the windows that clear it, measured as
+        // the lane the layout actually gets rather than the window.
+        for lane in [1408.0, 1248.0, 1068.0] {
+            assert_eq!(
+                fader_rows_for(max, lane),
+                1,
+                "a full set of {max} took more than one row in a {lane}pt lane"
+            );
+        }
+        // Sixteen, the default, has room to spare.
+        assert_eq!(fader_rows_for(16, 1068.0), 1);
+        // And below the width where one row fits, it wraps rather than
+        // running off the screen — a fader you cannot see is worse than
+        // a fader in the wrong bank.
+        assert!(
+            fader_rows_for(max, 700.0) > 1,
+            "a narrow lane kept everything on one unreachable row"
+        );
+    }
+
+
+    /// A modulator can be put on a fader without leaving the layout.
+    ///
+    /// Driven through real clicks on the deck rather than by calling the
+    /// popup directly, because the thing worth proving is that the
+    /// control is *reachable*: the value line has to take a click, the
+    /// popup has to open over a layout that redraws every frame, and the
+    /// pick has to survive as an action. Any of those failing leaves a
+    /// feature that exists and cannot be used.
+    #[test]
+    fn a_modulator_can_be_put_on_a_fader_from_the_deck() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let size = vec2(1440.0, 900.0);
+        // A live graph, as the app passes: empty to start with.
+        let mut graph = vizz_mod::graph::NodeGraph::default();
+        // The clock has to advance, or the faders never finish their
+        // settle animation and every label keeps moving under the
+        // pointer — which is exactly how the first version of this test
+        // clicked half a point below the readout and saw nothing.
+        let mut clock = 0.0_f64;
+
+        // Returns the actions with the painted text, rather than writing
+        // them to a captured binding: the test has to read what one
+        // frame asked for before driving the next.
+        let mut frame = |click: Option<egui::Pos2>,
+                         graph: &vizz_mod::graph::NodeGraph,
+                         macros: &mut Macros|
+         -> (PerformanceActions, Vec<(String, egui::Rect)>) {
+            let state = PerformanceState {
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: Some(graph),
+            };
+            clock += 0.1;
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(clock),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            ctx.begin_pass(input);
+            let actions = draw(&ctx, &reg, &state, macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => {
+                        out.push((t.galley.job.text.clone(), t.galley.rect.translate(t.pos.to_vec2())))
+                    }
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            (actions, found)
+        };
+
+        /// Where the readout under a named fader is, measured on the
+        /// frame it will be clicked on rather than remembered from an
+        /// earlier one — the deck animates, and a stale position is how
+        /// this test first "passed" a click that landed on nothing.
+        fn readout_under(texts: &[(String, egui::Rect)], name: &str) -> egui::Pos2 {
+            let label = texts
+                .iter()
+                .find(|(t, _)| t.trim() == name)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("no fader labelled '{name}' on the deck"));
+            texts
+                .iter()
+                .filter(|(_, r)| {
+                    (r.center().x - label.center().x).abs() < 12.0 && r.top() > label.top()
+                })
+                .min_by(|a, b| a.1.top().total_cmp(&b.1.top()))
+                .map(|(_, r)| r.center())
+                .expect("the fader has no readout under its name")
+        }
+
+        // Settle, then click the readout under the first fader.
+        for _ in 0..6 {
+            frame(None, &graph, &mut macros);
+        }
+        let (_, texts) = frame(None, &graph, &mut macros);
+        frame(Some(readout_under(&texts, "size")), &graph, &mut macros);
+        // The popup is an Area, so it lands on the frame after the click
+        // that opens it — which is also what the eye sees.
+        let (_, opened) = frame(None, &graph, &mut macros);
+        assert!(
+            opened.iter().any(|(t, _)| t.contains("Slow sweep")),
+            "clicking the readout did not open the modulator list: {:?}",
+            opened.iter().map(|(t, _)| t).collect::<Vec<_>>()
+        );
+
+        let kick = opened
+            .iter()
+            .find(|(t, _)| t.starts_with("Kick"))
+            .map(|(_, r)| r.center())
+            .expect("the list has no Kick");
+        let (actions, _) = frame(Some(kick), &graph, &mut macros);
+        let (addr, shape) = actions
+            .set_mod_shape
+            .expect("picking a modulator produced no action");
+        assert_eq!(addr, "/particles/size");
+        let shape = shape.expect("picking a modulator asked to remove one");
+        assert_eq!(vizz_mod::shapes::SHAPES[shape].name, "Kick");
+
+        // Apply it the way the app does, and the fader now reports it.
+        vizz_mod::shapes::attach(&mut graph, shape, &addr);
+        assert_eq!(vizz_mod::shapes::attached(&graph, &addr), Some(shape));
+
+        // With one attached, the same click offers to take it off.
+        let (_, texts) = frame(None, &graph, &mut macros);
+        frame(Some(readout_under(&texts, "size")), &graph, &mut macros);
+        let (_, reopened) = frame(None, &graph, &mut macros);
+        let none_at = reopened
+            .iter()
+            .find(|(t, _)| t.contains("none"))
+            .map(|(_, r)| r.center())
+            .unwrap_or_else(|| {
+                panic!(
+                    "reopening the list offered no way back to none: {:?}",
+                    reopened.iter().map(|(t, _)| t).collect::<Vec<_>>()
+                )
+            });
+        let (actions, _) = frame(Some(none_at), &graph, &mut macros);
+        assert_eq!(
+            actions.set_mod_shape,
+            Some(("/particles/size".to_string(), None)),
+            "choosing none did not ask for the modulator to come off"
+        );
+        vizz_mod::shapes::detach(&mut graph, &addr);
+        assert!(!vizz_mod::shapes::driven(&graph, &addr));
+    }
+
+    /// Clear works from the performance deck, not only from the widget.
+    ///
+    /// The grid widget clears correctly when driven on its own — that is
+    /// tested in grid_view. Reported behaviour is that it does nothing
+    /// on the performance screen, which means the fault is in what this
+    /// layout does around it, so this drives the whole layout.
+    #[test]
+    fn clear_works_from_the_performance_deck() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = ["Slow bloom".to_string()];
+        let mut grid = crate::grid_view::GridView::default();
+        grid.names[0] = Some("intro".into());
+        grid.curve_names = vec!["linear".into(), "smooth".into()];
+        let midi = MidiView::default();
+        let size = vec2(1440.0, 900.0);
+        let mut actions = PerformanceActions::default();
+
+        let mut frame = |click: Option<egui::Pos2>,
+                         ctx: &egui::Context,
+                         macros: &mut Macros|
+         -> Vec<(String, egui::Pos2)> {
+            let state = PerformanceState {
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            if let Some(at) = click {
+                input.events.push(egui::Event::PointerMoved(at));
+                input.events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                });
+                input.events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                });
+            }
+            ctx.begin_pass(input);
+            actions = draw(ctx, &reg, &state, macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        t.galley.job.text.clone(),
+                        t.pos + t.galley.rect.center().to_vec2(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        frame(None, &ctx, &mut macros);
+        let texts = frame(None, &ctx, &mut macros);
+        let clear_at = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "clear")
+            .map(|(_, p)| *p)
+            .expect("no clear button on the performance deck");
+        // The pad we mean to clear, found by its own name so the test
+        // does not depend on the deck's layout arithmetic.
+        let pad_at = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "intro")
+            .map(|(_, p)| *p)
+            .expect("no intro pad on the performance deck");
+
+        frame(Some(clear_at), &ctx, &mut macros);
+        frame(Some(pad_at), &ctx, &mut macros);
+
+        assert_eq!(
+            actions.grid.clear,
+            Some(0),
+            "arming clear and pressing a pad on the deck produced no clear"
+        );
     }
 
     fn render(macros: &mut Macros, reg: &ParamRegistry) -> String {
@@ -2521,6 +3023,7 @@ mod tests {
             values,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut text = String::new();
         for i in 0..8 {
@@ -2582,6 +3085,7 @@ mod tests {
             values,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut runs = Vec::new();
         for i in 0..8 {
@@ -2651,6 +3155,7 @@ mod tests {
             values: None,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut macros = Macros::default();
         let mut count = 0;
@@ -2706,6 +3211,7 @@ mod tests {
             values: None,
             output_texture: None,
             output_aspect: 16.0 / 9.0,
+            graph: None,
         };
         let mut macros = Macros::default();
         let size = vec2(1280.0, 900.0);

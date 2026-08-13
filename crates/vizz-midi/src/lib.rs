@@ -10,8 +10,10 @@
 //! one mutex. The GUI reads it with `try_lock` and falls back to its last
 //! snapshot, so the render thread can never be blocked by MIDI traffic.
 
+pub mod feedback;
 pub mod mapping;
 pub mod message;
+pub mod profile;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,11 +22,19 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use midir::{MidiInput, MidiInputConnection};
+use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use vizz_params::ParamRegistry;
 
 pub use mapping::{Binding, Dispatcher, MidiMap, Source, Update};
 pub use message::MidiEvent;
+
+/// How often the lights are brought up to date.
+///
+/// Faster than a rescan and slower than a frame. The sender only writes
+/// what changed, so this is the *latency* of a pad lighting up rather
+/// than a rate the bus has to carry — 30ms is under the threshold where
+/// a button feels like it answered late, and well clear of the clock.
+const FEEDBACK_INTERVAL: Duration = Duration::from_millis(30);
 
 /// How often to rescan for newly plugged-in controllers.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
@@ -160,6 +170,13 @@ pub struct MidiState {
     pub revision: u64,
     /// Tempo heard on the wire, fed by the realtime stream.
     pub clock: ClockEstimator,
+    /// What the controller's pads should be showing. Written by the app
+    /// each frame and read by the output thread; see [`feedback`].
+    pub surface: feedback::Surface,
+    /// Devices whose shipped profile has already been offered, so
+    /// plugging one in twice does not re-add bindings the user has since
+    /// removed on purpose.
+    pub profiled: Vec<String>,
 }
 
 impl MidiState {
@@ -194,6 +211,7 @@ pub struct MidiEngine {
     shared: SharedMidi,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    out_thread: Option<JoinHandle<()>>,
 }
 
 impl MidiEngine {
@@ -210,7 +228,16 @@ impl MidiEngine {
             .name("vizz-midi".into())
             .spawn(move || run(registry, thread_shared, thread_stop))?;
 
-        Ok(Self { shared, stop, thread: Some(thread) })
+        // Output on its own thread: it ticks far faster than the input
+        // rescan, and a device that will not take a note must not be
+        // able to hold up the one that is delivering messages.
+        let out_stop = Arc::clone(&stop);
+        let out_shared = Arc::clone(&shared);
+        let out_thread = std::thread::Builder::new()
+            .name("vizz-midi-out".into())
+            .spawn(move || run_out(out_shared, out_stop))?;
+
+        Ok(Self { shared, stop, thread: Some(thread), out_thread: Some(out_thread) })
     }
 
     pub fn shared(&self) -> &SharedMidi {
@@ -222,6 +249,9 @@ impl Drop for MidiEngine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        if let Some(t) = self.out_thread.take() {
             let _ = t.join();
         }
     }
@@ -249,6 +279,116 @@ fn run(registry: Arc<ParamRegistry>, shared: SharedMidi, stop: Arc<AtomicBool>) 
         }
     }
     log::info!("MIDI input stopped");
+}
+
+/// Lay a recognised controller's default mapping over whatever is
+/// already bound, the first time it appears in a session.
+///
+/// Once per session, not once per connection: a cable knocked out and
+/// pushed back in mid-set must not re-add bindings somebody deliberately
+/// removed ten minutes earlier. Nothing is ever overwritten either way —
+/// see [`profile::apply`].
+fn offer_profile(port_name: &str, shared: &SharedMidi) {
+    let Some(profile) = profile::for_port(port_name) else { return };
+    let Ok(mut state) = shared.lock() else { return };
+    if state.profiled.iter().any(|p| p == port_name) {
+        return;
+    }
+    state.profiled.push(port_name.to_string());
+    let added = profile::apply(&mut state.map, profile);
+    if added > 0 {
+        state.revision += 1;
+        log::info!("{}: added {added} default bindings", profile.name);
+    }
+}
+
+/// Owns the output connections and keeps the lights honest.
+///
+/// Entirely best-effort. Every failure here — no output port, a device
+/// that refuses a note, a port that vanishes mid-send — costs lights and
+/// nothing else. Input keeps working, and so does the show.
+fn run_out(shared: SharedMidi, stop: Arc<AtomicBool>) {
+    // Port name, connection, the profile that names its pads, and what
+    // is currently lit on it.
+    let mut open: Vec<(String, MidiOutputConnection, &'static profile::Profile, feedback::Surface)> =
+        Vec::new();
+    let mut since_scan = RESCAN_INTERVAL;
+
+    while !stop.load(Ordering::Relaxed) {
+        if since_scan >= RESCAN_INTERVAL {
+            since_scan = Duration::ZERO;
+            if let Err(e) = scan_outputs(&mut open) {
+                log::debug!("MIDI output rescan failed: {e:#}");
+            }
+        }
+        // One lock, one copy, then out of the way: the render thread
+        // writes this every frame and must never wait on a port.
+        let wanted = match shared.lock() {
+            Ok(state) => state.surface,
+            Err(_) => return,
+        };
+        for (name, conn, profile, lit) in &mut open {
+            for msg in feedback::diff(lit, &wanted, profile) {
+                if let Err(e) = conn.send(&msg) {
+                    log::debug!("could not light {name}: {e}");
+                    // Do not update `lit` — the next tick retries what
+                    // this one failed to say, rather than believing a
+                    // message that never arrived.
+                    break;
+                }
+            }
+            *lit = wanted;
+        }
+        std::thread::sleep(FEEDBACK_INTERVAL);
+        since_scan += FEEDBACK_INTERVAL;
+    }
+
+    // Hand the devices back dark. Leaving a grid lit after quitting is
+    // leaving the room with the lights on: nothing else can clear it.
+    for (_, conn, profile, _) in &mut open {
+        for msg in feedback::blackout(profile) {
+            let _ = conn.send(&msg);
+        }
+    }
+    log::info!("MIDI output stopped");
+}
+
+fn scan_outputs(
+    open: &mut Vec<(String, MidiOutputConnection, &'static profile::Profile, feedback::Surface)>,
+) -> Result<()> {
+    let out = MidiOutput::new("vizz")?;
+    let ports = out.ports();
+    let names: Vec<String> = ports.iter().filter_map(|p| out.port_name(p).ok()).collect();
+    open.retain(|(name, ..)| names.contains(name));
+
+    for port in &ports {
+        let Ok(name) = out.port_name(port) else { continue };
+        if open.iter().any(|(n, ..)| n == &name) {
+            continue;
+        }
+        // Only devices vizz knows the pad layout of. Blasting notes at
+        // an unrecognised output is how you make somebody's synth play
+        // a chord every time they load a scene.
+        let Some(profile) = profile::for_port(&name) else { continue };
+        if profile.lights.is_none() {
+            continue;
+        }
+        let conn_out = MidiOutput::new("vizz")?;
+        match conn_out.connect(port, "vizz-out") {
+            Ok(mut conn) => {
+                log::info!("lighting {name} as {}", profile.name);
+                // Start from dark and from *knowing* it is dark, so the
+                // first diff paints the true state onto a known ground
+                // rather than onto whatever the last host left behind.
+                for msg in feedback::blackout(profile) {
+                    let _ = conn.send(&msg);
+                }
+                open.push((name, conn, profile, feedback::Surface::default()));
+            }
+            Err(e) => log::debug!("could not open MIDI output {name}: {e}"),
+        }
+    }
+    Ok(())
 }
 
 fn scan_and_connect(
@@ -289,6 +429,9 @@ fn scan_and_connect(
         if open.iter().any(|(n, _)| n == &name) {
             continue;
         }
+        // Before the connection is built, because building it moves the
+        // shared handle into the callback.
+        offer_profile(&name, shared);
         // Each connection consumes a MidiInput, so build a fresh one.
         let conn_input = MidiInput::new("vizz")?;
         let registry = Arc::clone(registry);

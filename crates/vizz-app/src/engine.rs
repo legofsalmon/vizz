@@ -60,6 +60,9 @@ pub struct FrameEngine {
     pub grid: vizz_mod::scene::Grid,
     /// Last `/scene/fire` slot acted on, edge-triggered like recall.
     last_scene: Option<usize>,
+    /// A zero-second scene change landed this frame and the smoothing
+    /// has to be skipped once, or "cut" fades like everything else.
+    cut_pending: bool,
     /// The gravity layer's own grid, sequencing gravity presets on its own
     /// clock. A second instance of the same machine rather than a special
     /// case: the grid already takes its preset lookup as a parameter, so
@@ -114,6 +117,7 @@ impl FrameEngine {
             last_preset: None,
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
+            cut_pending: false,
             gravity_grid: vizz_mod::scene::Grid::for_kind(vizz_mod::preset::Kind::Gravity),
             last_gravity: None,
         }
@@ -199,6 +203,16 @@ impl FrameEngine {
             self.last_scene = Some(slot);
             if let Some(index) = slot.checked_sub(1) {
                 self.grid.fire(index, reg, &presets);
+                // A zero-second blend is a cut, and has to reach the
+                // picture as one. The grid writes its targets instantly,
+                // but every parameter then crossed over its own
+                // smoothing constant — so "cut" faded, and the one
+                // control whose whole job is to be instant was the one
+                // that could not be. Marked here and honoured after the
+                // slew runs, which is the only place it can be undone.
+                if self.grid.duration <= f32::EPSILON {
+                    self.cut_pending = true;
+                }
             }
         }
         self.grid
@@ -342,6 +356,12 @@ impl FrameEngine {
         };
         let offsets = self.modulation.tick(dt_s, &p.registry, levels);
         self.snapshot.advance_modulated(&p.registry, dt_s, offsets);
+        // After the slew, not instead of it: modulation still rides on
+        // top, and a cut lands the *set* value rather than freezing
+        // whatever an LFO happened to be adding.
+        if std::mem::take(&mut self.cut_pending) {
+            self.snapshot.snap(&p.registry);
+        }
         // Freeze holds the picture: visual time stops advancing, and the
         // feedback pass is pinned to full trail below so the last frame
         // survives unchanged. Parameters keep moving underneath — a
@@ -568,6 +588,15 @@ impl FrameEngine {
 
     /// Record the finished frame; returns a snapshot when the periodic
     /// health log is due (every 2s) so callers can print/display it.
+    /// Record how long the frame spent in the UI, before `end_frame`.
+    ///
+    /// Separate from `end_frame` because headless has no UI at all and
+    /// must not report a zero that reads as "the UI is free" — it
+    /// reports nothing, and the health line omits the field.
+    pub fn end_ui(&mut self, ui_time: Duration) {
+        self.health.on_ui(ui_time);
+    }
+
     pub fn end_frame(&mut self, frame_time: Duration) -> Option<HealthSnapshot> {
         self.health.on_frame(frame_time);
         if self.last_log.elapsed() >= Duration::from_secs(2) {

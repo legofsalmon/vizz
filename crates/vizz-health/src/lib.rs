@@ -57,6 +57,18 @@ pub struct HealthSnapshot {
     pub rss_mib: Option<f64>,
     /// CPU usage of this process in percent of one core. `None` if unavailable.
     pub cpu_pct: Option<f32>,
+    /// Mean milliseconds a frame spent building and drawing the UI.
+    ///
+    /// Split out because "the frame takes 20ms" does not say *what* to
+    /// go and look at, and the two halves have completely different
+    /// causes: the render passes are GPU work that scales with the
+    /// output size, the UI is CPU work on the render thread that scales
+    /// with how much is on screen. Without this the only way to tell
+    /// them apart is to rebuild with the panel disabled, which is not
+    /// something you can ask of somebody mid-set.
+    ///
+    /// `None` in headless, which draws no UI at all.
+    pub ui_avg_ms: Option<f32>,
 }
 
 impl HealthSnapshot {
@@ -64,7 +76,7 @@ impl HealthSnapshot {
     /// the GUI HUD so both always agree.
     pub fn log_line(&self) -> String {
         format!(
-            "fps {:5.1} | frame avg {:5.2}ms p95 {:5.2}ms p99 {:5.2}ms worst {:5.2}ms | over-budget {:4.1}% (total {}) | rss {} | cpu {}",
+            "fps {:5.1} | frame avg {:5.2}ms p95 {:5.2}ms p99 {:5.2}ms worst {:5.2}ms | over-budget {:4.1}% (total {}) | rss {} | cpu {}{}",
             self.fps,
             self.frame_avg_ms,
             self.frame_p95_ms,
@@ -78,6 +90,9 @@ impl HealthSnapshot {
             self.cpu_pct
                 .map(|c| format!("{c:.0}%"))
                 .unwrap_or_else(|| "n/a".into()),
+            self.ui_avg_ms
+                .map(|ms| format!(" | ui {ms:5.2}ms"))
+                .unwrap_or_default(),
         )
     }
 }
@@ -93,6 +108,8 @@ pub struct HealthMonitor {
     last_sys_refresh: Option<Instant>,
     cached_rss_mib: Option<f64>,
     cached_cpu_pct: Option<f32>,
+    /// UI time per frame, same window as `frames_ms`. Empty in headless.
+    ui_ms: VecDeque<f32>,
 }
 
 impl HealthMonitor {
@@ -108,7 +125,16 @@ impl HealthMonitor {
             last_sys_refresh: None,
             cached_rss_mib: None,
             cached_cpu_pct: None,
+            ui_ms: VecDeque::new(),
         }
+    }
+
+    /// Record how long one frame spent in the UI. Windowed only.
+    pub fn on_ui(&mut self, ui_time: Duration) {
+        if self.ui_ms.len() == self.cfg.window {
+            self.ui_ms.pop_front();
+        }
+        self.ui_ms.push_back(ui_time.as_secs_f32() * 1e3);
     }
 
     pub fn config(&self) -> &HealthConfig {
@@ -166,6 +192,8 @@ impl HealthMonitor {
             over_budget_total: self.over_budget_total,
             rss_mib: self.cached_rss_mib,
             cpu_pct: self.cached_cpu_pct,
+            ui_avg_ms: (!self.ui_ms.is_empty())
+                .then(|| self.ui_ms.iter().sum::<f32>() / self.ui_ms.len() as f32),
         }
     }
 
@@ -205,6 +233,44 @@ mod tests {
 
     fn monitor() -> HealthMonitor {
         HealthMonitor::new(HealthConfig::default())
+    }
+
+    /// The frame time says how bad it is; the UI time says where to
+    /// look. Both have to reach the log line, and "no UI" has to be
+    /// distinguishable from "the UI was free".
+    #[test]
+    fn ui_time_is_reported_separately_and_absent_when_there_is_none() {
+        let mut m = monitor();
+        for _ in 0..10 {
+            m.on_frame(Duration::from_millis(20));
+        }
+        // Headless: frames but no UI. The field stays absent rather than
+        // reporting 0.00ms, which would read as "the UI costs nothing"
+        // on a build that has no UI to cost anything.
+        let bare = m.snapshot();
+        assert_eq!(bare.ui_avg_ms, None);
+        assert!(
+            !bare.log_line().contains("ui "),
+            "the headless log line claimed a UI time: {}",
+            bare.log_line()
+        );
+
+        // Windowed: two thirds of a 20ms frame spent in the UI, which is
+        // the shape this exists to make visible.
+        for _ in 0..10 {
+            m.on_ui(Duration::from_micros(13_000));
+        }
+        let snap = m.snapshot();
+        let ui = snap.ui_avg_ms.expect("ui time was recorded but not reported");
+        assert!((ui - 13.0).abs() < 0.1, "ui avg {ui}");
+        assert!(
+            snap.log_line().contains("ui 13.00ms"),
+            "the log line does not carry the ui time: {}",
+            snap.log_line()
+        );
+        // And the frame time is untouched by it — the UI is part of the
+        // frame, not an addition to it.
+        assert!((snap.frame_avg_ms - 20.0).abs() < 0.1, "{}", snap.frame_avg_ms);
     }
 
     #[test]

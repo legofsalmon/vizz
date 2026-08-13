@@ -29,6 +29,7 @@ pub use performance::{PerformanceActions, PerformanceState};
 pub use egui::Color32;
 
 pub use panel::{
+    UpdateView,
     AudioEdits, AudioView, LiveCloudStatus, MidiView, OutputSetup, OutputStatus, PanelActions,
     PanelState, PresetEntry, RecordSetup, RecordingView, VideoSources, VideoStatus,
 };
@@ -176,6 +177,97 @@ fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
 /// How many frame times the sparkline keeps.
 const HISTORY: usize = 240;
 
+/// How long a button must be held before it is worth remarking on.
+///
+/// Bounded by what a person actually does, not by what is possible: a
+/// fader held for thirty seconds is a real gesture and says nothing, one
+/// held for five minutes is not.
+const STUCK_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What egui has been told is held down, and for how long.
+///
+/// A lost release is the one input failure that does not announce
+/// itself. egui decides "is the button down" from the stream of window
+/// events; miss a release and it goes on believing the button is held,
+/// so the next pointer move keeps dragging — or keeps extending a text
+/// selection — with nothing on screen to say why, and nothing in the log
+/// either.
+///
+/// Kept as its own type rather than three fields on [`Gui`] because
+/// `Gui` needs a real window and a GPU device to exist, and this is the
+/// part with the logic in it. Here it can be driven by actual
+/// `WindowEvent`s in a test.
+#[derive(Default)]
+struct PointerWatch {
+    held: Vec<egui::PointerButton>,
+    /// When the oldest of them went down.
+    since: Option<std::time::Instant>,
+    /// Whether this hold has already been remarked on. Once, not once a
+    /// frame.
+    warned: bool,
+}
+
+impl PointerWatch {
+    /// Count a window event that *was forwarded to egui*.
+    ///
+    /// Only forwarded events, deliberately. A press the gate swallowed
+    /// never reached egui, so it cannot have left egui stuck, and
+    /// synthesising a release for it later would be inventing input
+    /// nobody made.
+    fn note(&mut self, event: &WindowEvent) {
+        let WindowEvent::MouseInput { state, button, .. } = event else {
+            return;
+        };
+        // Mirrors egui-winit's own mapping, which is private.
+        let button = match button {
+            winit::event::MouseButton::Left => egui::PointerButton::Primary,
+            winit::event::MouseButton::Right => egui::PointerButton::Secondary,
+            winit::event::MouseButton::Middle => egui::PointerButton::Middle,
+            winit::event::MouseButton::Back => egui::PointerButton::Extra1,
+            winit::event::MouseButton::Forward => egui::PointerButton::Extra2,
+            winit::event::MouseButton::Other(_) => return,
+        };
+        if state.is_pressed() {
+            if !self.held.contains(&button) {
+                self.held.push(button);
+            }
+            self.since.get_or_insert_with(std::time::Instant::now);
+        } else {
+            self.held.retain(|b| *b != button);
+            if self.held.is_empty() {
+                self.since = None;
+                self.warned = false;
+            }
+        }
+    }
+
+    fn any_held(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Everything believed held, cleared. Empty when nothing is.
+    fn take(&mut self) -> Vec<egui::PointerButton> {
+        self.since = None;
+        self.warned = false;
+        std::mem::take(&mut self.held)
+    }
+
+    /// How long the hold has lasted, once past `limit` — and only the
+    /// first time, so a genuinely stuck pointer says so once rather than
+    /// sixty times a second for the rest of the night.
+    fn stuck(&mut self, limit: std::time::Duration) -> Option<(std::time::Duration, Vec<egui::PointerButton>)> {
+        if self.warned || self.held.is_empty() {
+            return None;
+        }
+        let held_for = self.since?.elapsed();
+        if held_for < limit {
+            return None;
+        }
+        self.warned = true;
+        Some((held_for, self.held.clone()))
+    }
+}
+
 pub struct Gui {
     ctx: egui::Context,
     state: egui_winit::State,
@@ -212,6 +304,8 @@ pub struct Gui {
     /// typed into a text field must not end as a flash release.
     pub flash_key: Option<bool>,
     space_flashing: bool,
+    /// What egui has been told is held down. See [`PointerWatch`].
+    pointer: PointerWatch,
     graph_view: graph_view::GraphView,
     macros: vizz_mod::perform::Macros,
     /// Slider working ranges, loaded once and saved when they change.
@@ -249,6 +343,7 @@ impl Gui {
             preset_key: None,
             flash_key: None,
             space_flashing: false,
+            pointer: PointerWatch::default(),
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             ranges: vizz_mod::ranges::Ranges::load(),
@@ -414,15 +509,88 @@ impl Gui {
                 _ => {}
             }
         }
+        // Leaving the app ends any drag. The release will be delivered to
+        // whatever took focus, not to us, so egui has to be told or it
+        // keeps believing the button is held.
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.release_held("the window lost focus");
+        }
+        // A breadcrumb, deliberately not an action: dragging a fader past
+        // the bottom of the window is normal and must keep working, so
+        // the pointer leaving is not on its own a reason to end a drag.
+        // But if a stuck pointer is ever reported, this line in the log
+        // says whether it left first.
+        if matches!(event, WindowEvent::CursorLeft { .. }) && self.pointer.any_held() {
+            log::debug!("pointer left the window holding {:?}", self.pointer.held);
+        }
         // Events flow to egui whenever anything is on screen — not only
         // when the *panel* is. Gating this on `visible` alone meant Tab
         // silently killed all mouse input to the performance layout and
         // the modulation canvas while both kept drawing: every pad,
         // fader and node looked live and responded to nothing.
         if !self.will_draw() {
+            // The gate is shut, so the release is about to be dropped on
+            // the floor. Every toggle in `will_draw` can flip while a
+            // button is down — Tab, P, G and Escape are all one keystroke
+            // mid-drag, and a notice expiring on its timer needs no
+            // keystroke at all — and egui would resume, whenever
+            // something came back on screen, still holding the button.
+            self.release_held("the interface stopped taking events");
             return false;
         }
+        self.pointer.note(event);
         self.state.on_window_event(window, event).consumed
+    }
+
+    /// Tell egui every button it thinks is down has come up.
+    ///
+    /// Called only where the release provably cannot arrive — focus gone,
+    /// or the event gate shut. Not on the pointer merely leaving the
+    /// window: a drag that continues outside is an ordinary gesture, and
+    /// cancelling it there would break dragging a fader past the edge to
+    /// reach the bottom of its travel.
+    ///
+    /// The events are queued on the pending `RawInput`, so they are
+    /// delivered on the next pass even if that pass is some seconds away
+    /// — which is exactly the case when the gate shut.
+    fn release_held(&mut self, why: &str) {
+        let held = self.pointer.take();
+        if held.is_empty() {
+            return;
+        }
+        log::warn!(
+            "pointer release could not reach the interface ({why}) — \
+             reporting {held:?} as up so nothing is left dragging"
+        );
+        let pos = self.ctx.pointer_latest_pos().unwrap_or_default();
+        let modifiers = self.ctx.input(|i| i.modifiers);
+        let input = self.state.egui_input_mut();
+        for button in held {
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: false,
+                modifiers,
+            });
+        }
+        input.events.push(egui::Event::PointerGone);
+    }
+
+    /// Say something when a button has been held implausibly long.
+    ///
+    /// The point is to catch a stuck pointer *in the act*. Reconstructing
+    /// one afterwards means asking somebody what they were doing several
+    /// minutes ago, which is how this bug has stayed open: nobody can
+    /// remember whether the cursor left the window.
+    fn check_stuck_pointer(&mut self) {
+        if let Some((held_for, buttons)) = self.pointer.stuck(STUCK_AFTER) {
+            log::warn!(
+                "the interface has thought {buttons:?} was held down for {:.0}s — \
+                 if the pointer is stuck, this is why; please report it with \
+                 what you were doing",
+                held_for.as_secs_f32()
+            );
+        }
     }
 
     /// Take keyboard focus away from whatever text field holds it.
@@ -471,6 +639,7 @@ impl Gui {
         }
         state.frame_times_ms = self.history.clone();
         state.focus_filter = std::mem::take(&mut self.focus_filter);
+        self.check_stuck_pointer();
 
         let input = self.state.take_egui_input(window);
         // begin_pass/end_pass rather than run_ui: the panel builds its own
@@ -487,7 +656,8 @@ impl Gui {
         }
         self.notices.draw(&self.ctx);
         if self.performance {
-            return self.render_performance(window, device, queue, encoder, target, registry, state, size_px);
+            return self
+                .render_performance(window, device, queue, encoder, target, registry, state, modulation, size_px);
         }
         let mut actions = if self.visible {
             panel::draw(&self.ctx, registry, &state, modulation, &mut self.ranges)
@@ -554,6 +724,7 @@ impl Gui {
         target: &wgpu::TextureView,
         registry: &ParamRegistry,
         state: PanelState,
+        modulation: &mut vizz_mod::ModEngine,
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
         let health = state.health.as_ref();
@@ -575,6 +746,7 @@ impl Gui {
             values: (!state.modulated.is_empty()).then_some(&state.modulated[..]),
             output_texture: self.output_texture,
             output_aspect: self.output_aspect,
+            graph: Some(&modulation.graph),
         };
         let mut perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         // The armed-learn banner rides both screens; see the panel path.
@@ -598,6 +770,25 @@ impl Gui {
                     self.notices.info(format!("removed the fader holding {addr}"));
                 }
                 perf.macros_changed = true;
+            }
+        }
+        // Ready-made modulators, applied straight to the graph like the
+        // panel's route toggle rather than round-tripped through the
+        // app. They *are* graph edits — the shortcut builds the same
+        // nodes a hand would — so the canvas is the one place they live.
+        if let Some((addr, shape)) = perf.set_mod_shape.take() {
+            match shape {
+                Some(i) => {
+                    vizz_mod::shapes::attach(&mut modulation.graph, i, &addr);
+                    self.notices.info(format!(
+                        "{} on {addr}",
+                        vizz_mod::shapes::SHAPES[i].name
+                    ));
+                }
+                None => {
+                    vizz_mod::shapes::detach(&mut modulation.graph, &addr);
+                    self.notices.info(format!("modulator off {addr}"));
+                }
             }
         }
         if perf.macros_changed && let Err(e) = self.macros.save() {
@@ -648,6 +839,112 @@ mod tests {
     use super::*;
     use vizz_params::ParamDef;
 
+    /// A release that reaches egui leaves nothing behind.
+    ///
+    /// The baseline: if this failed, every drag would be reported stuck.
+    #[test]
+    fn an_ordinary_click_leaves_nothing_held() {
+        let mut w = PointerWatch::default();
+        w.note(&mouse(winit::event::MouseButton::Left, true));
+        assert!(w.any_held());
+        w.note(&mouse(winit::event::MouseButton::Left, false));
+        assert!(!w.any_held(), "a completed click stayed held");
+        assert!(w.take().is_empty());
+    }
+
+    /// A release that never arrives is caught and reported as up.
+    ///
+    /// This is the bug: `will_draw` can go false between the press and
+    /// the release — Tab, P, G and Escape are each one keystroke
+    /// mid-drag, and a notice expiring on its own timer needs no
+    /// keystroke at all — and the release is then dropped before egui
+    /// sees it. egui resumes, whenever something comes back on screen,
+    /// still holding the button, and the next pointer move carries on
+    /// dragging.
+    #[test]
+    fn a_release_that_never_arrives_is_reported_as_up() {
+        let mut w = PointerWatch::default();
+        w.note(&mouse(winit::event::MouseButton::Left, true));
+        // The gate shuts here. `take` is what the caller sends to egui.
+        assert_eq!(w.take(), vec![egui::PointerButton::Primary]);
+        assert!(!w.any_held(), "the button was reported up and still held");
+        // And the real release, if it ever does arrive, is not a second
+        // event — egui has already been told, and telling it twice would
+        // read as a click.
+        w.note(&mouse(winit::event::MouseButton::Left, false));
+        assert!(w.take().is_empty(), "the late release produced a phantom");
+    }
+
+    /// A release with no press behind it invents nothing.
+    ///
+    /// The press may have been swallowed by the gate before egui saw it.
+    /// Reporting a release for it would be manufacturing input.
+    #[test]
+    fn a_release_without_a_press_is_not_invented() {
+        let mut w = PointerWatch::default();
+        w.note(&mouse(winit::event::MouseButton::Left, false));
+        assert!(w.take().is_empty());
+    }
+
+    /// Two buttons at once are both accounted for, and independently.
+    #[test]
+    fn buttons_are_tracked_separately() {
+        let mut w = PointerWatch::default();
+        w.note(&mouse(winit::event::MouseButton::Left, true));
+        w.note(&mouse(winit::event::MouseButton::Right, true));
+        w.note(&mouse(winit::event::MouseButton::Left, false));
+        assert!(w.any_held(), "releasing one button cleared the other");
+        assert_eq!(w.take(), vec![egui::PointerButton::Secondary]);
+    }
+
+    /// A long hold is remarked on once, not once a frame.
+    ///
+    /// `stuck` runs every frame. Warning per frame would put sixty lines
+    /// a second in the log for the rest of the night, which is the same
+    /// as no log at all.
+    #[test]
+    fn a_stuck_pointer_is_reported_once() {
+        let mut w = PointerWatch::default();
+        w.note(&mouse(winit::event::MouseButton::Left, true));
+        let zero = std::time::Duration::ZERO;
+        let (_, buttons) = w.stuck(zero).expect("a held button was not noticed");
+        assert_eq!(buttons, vec![egui::PointerButton::Primary]);
+        assert!(w.stuck(zero).is_none(), "it was reported a second time");
+
+        // A fresh hold can be reported again.
+        w.note(&mouse(winit::event::MouseButton::Left, false));
+        w.note(&mouse(winit::event::MouseButton::Left, true));
+        assert!(w.stuck(zero).is_some(), "a new hold was never reported");
+    }
+
+    /// Nothing held is never stuck, and a hold inside the limit is not
+    /// either — otherwise every ordinary drag would warn.
+    #[test]
+    fn an_ordinary_drag_is_not_reported_as_stuck() {
+        let mut w = PointerWatch::default();
+        assert!(w.stuck(std::time::Duration::ZERO).is_none(), "nothing held reported stuck");
+        w.note(&mouse(winit::event::MouseButton::Left, true));
+        assert!(
+            w.stuck(STUCK_AFTER).is_none(),
+            "a drag was called stuck before the limit"
+        );
+    }
+
+    fn mouse(button: winit::event::MouseButton, pressed: bool) -> WindowEvent {
+        WindowEvent::MouseInput {
+            // A synthetic id: `note` never reads it, and constructing a
+            // real one needs a window.
+            device_id: winit::event::DeviceId::dummy(),
+            state: if pressed {
+                winit::event::ElementState::Pressed
+            } else {
+                winit::event::ElementState::Released
+            },
+            button,
+        }
+    }
+
+
     fn registry() -> ParamRegistry {
         let mut b = ParamRegistry::builder();
         b.add(ParamDef::new("/particles/count", 0.0, 100.0, 25.0));
@@ -672,6 +969,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -716,6 +1014,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -763,6 +1062,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
             frame_times_ms: vec![16.0, 17.0, 15.5],
@@ -812,6 +1112,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -853,6 +1154,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -948,6 +1250,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -998,6 +1301,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: update,
+            update: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1146,6 +1450,7 @@ mod tests {
             recording: None,
             preset_current: current,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1195,6 +1500,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1246,6 +1552,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1301,6 +1608,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1352,6 +1660,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1468,6 +1777,7 @@ mod tests {
             recording: None,
             preset_current: None,
             update_available: None,
+            update: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),

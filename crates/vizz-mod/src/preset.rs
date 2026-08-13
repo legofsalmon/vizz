@@ -175,6 +175,27 @@ impl Preset {
         Self { values, source: None }
     }
 
+    /// A look with every parameter it owns at the bottom of its range.
+    ///
+    /// Written rather than captured, because to capture a blank you would
+    /// first have to put one on screen — losing the picture you wanted the
+    /// pad in order to come back from.
+    ///
+    /// The bottom of the range, not the default: a default is "a
+    /// reasonable place to start", and this is a pad for going to nothing
+    /// — an ending, or a hole to punch back out of.
+    pub fn blank_kind(reg: &ParamRegistry, kind: Kind) -> Self {
+        let values = reg
+            .iter()
+            .filter(|(_, def)| kind.owns_def(def))
+            .map(|(_, def)| (def.addr.clone(), def.min))
+            .collect();
+        Self {
+            values,
+            source: Some("blank".to_string()),
+        }
+    }
+
     /// Note what this look was built on. See [`Preset::source`].
     pub fn with_source(mut self, source: Option<String>) -> Self {
         self.source = source;
@@ -247,6 +268,19 @@ pub fn list_kind(kind: Kind) -> Vec<String> {
 /// need this at all; anything the app does refreshes the cache itself.
 const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Read the `source` field of each named look, once per rescan.
+///
+/// The whole preset is parsed and thrown away, which is what `by_name`
+/// did per frame; doing it here means it happens on the library's own
+/// two-second cadence instead, and only when the listing actually
+/// changed underneath us.
+fn read_sources(names: &[String]) -> std::collections::HashMap<String, Option<String>> {
+    names
+        .iter()
+        .map(|name| (name.clone(), by_name(name).and_then(|p| p.source)))
+        .collect()
+}
+
 /// A cached listing of the preset library.
 ///
 /// The panel and both grids ask the same two questions every frame: what
@@ -266,6 +300,15 @@ const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
 pub struct Library {
     looks: Vec<String>,
     gravity: Vec<String>,
+    /// What each user look was built on, cached alongside its name.
+    ///
+    /// The panel groups its list by source, and reading that field meant
+    /// `by_name` per look per frame — the same file-read-and-parse this
+    /// cache exists to prevent, reintroduced through a different door
+    /// once the grouping was added. Source is a property of the file, so
+    /// it belongs on the same refresh as the name; a look whose source
+    /// changed is a look that was rewritten, which refreshes this anyway.
+    look_sources: std::collections::HashMap<String, Option<String>>,
     scanned: std::time::Instant,
 }
 
@@ -277,8 +320,10 @@ impl Default for Library {
 
 impl Library {
     pub fn new() -> Self {
+        let looks = list_kind(Kind::Look);
         Self {
-            looks: list_kind(Kind::Look),
+            look_sources: read_sources(&looks),
+            looks,
             gravity: list_kind(Kind::Gravity),
             scanned: std::time::Instant::now(),
         }
@@ -298,8 +343,16 @@ impl Library {
     /// whenever the interval next comes round.
     pub fn refresh(&mut self) {
         self.looks = list_kind(Kind::Look);
+        self.look_sources = read_sources(&self.looks);
         self.gravity = list_kind(Kind::Gravity);
         self.scanned = std::time::Instant::now();
+    }
+
+    /// What a user look was built on, from the cache rather than the
+    /// disk. `None` for a built-in, an unknown name, or a look saved
+    /// before presets recorded a source.
+    pub fn source_of(&self, name: &str) -> Option<&str> {
+        self.look_sources.get(name)?.as_deref()
     }
 
     /// User preset names for one layer, alphabetical.
@@ -971,6 +1024,57 @@ mod tests {
         assert!(lib.all(Kind::Look).iter().any(|n| n == "later"));
     }
 
+    /// The library knows what each look was built on without going to
+    /// the disk for it.
+    ///
+    /// The panel groups its preset list by source, and read that field
+    /// with `by_name` — a file read and a full JSON parse per saved
+    /// look, on the render thread, once per rendered frame. The library
+    /// exists precisely to stop that, and the grouping walked it back in
+    /// through a different door. So the source is cached beside the
+    /// name, and this test says both halves out loud: the value is
+    /// right, and it tracks a rewrite.
+    #[test]
+    fn the_library_caches_what_each_look_was_built_on() {
+        let (_guard, _tmp) = crate::test_env::scoped("library-sources");
+        save_kind(
+            Kind::Look,
+            "a sphere look",
+            &Preset { values: Default::default(), source: Some("sphere".into()) },
+        )
+        .unwrap();
+        save_kind(
+            Kind::Look,
+            "an old look",
+            &Preset { values: Default::default(), source: None },
+        )
+        .unwrap();
+
+        let mut lib = Library::new();
+        assert_eq!(lib.source_of("a sphere look"), Some("sphere"));
+        // A look saved before sources existed has nothing to say, which
+        // is different from a look this library has never heard of —
+        // both read as None here, and both group under "other".
+        assert_eq!(lib.source_of("an old look"), None);
+        assert_eq!(lib.source_of("not a look at all"), None);
+
+        // Saving over it and refreshing moves the cached source with it.
+        // Without this the panel would group a look under whatever it
+        // used to be built on until the app was restarted.
+        save_kind(
+            Kind::Look,
+            "a sphere look",
+            &Preset { values: Default::default(), source: Some("text".into()) },
+        )
+        .unwrap();
+        lib.refresh();
+        assert_eq!(
+            lib.source_of("a sphere look"),
+            Some("text"),
+            "the cached source did not follow the file"
+        );
+    }
+
     /// The two layers are separate libraries, and a cache that merged them
     /// would put looks on the gravity pads' assign menu.
     #[test]
@@ -986,6 +1090,56 @@ mod tests {
         assert!(!lib.has(Kind::Gravity, "a look"));
         // Gravity has no built-ins, so its list is exactly what is on disk.
         assert_eq!(lib.all(Kind::Gravity), vec!["a well".to_string()]);
+    }
+
+    /// A blank goes to the bottom of every range it owns — not to the
+    /// defaults, and not to whatever happens to be on screen.
+    ///
+    /// The distinction is the whole point of the pad. A parameter whose
+    /// default sits mid-range (`/particles/size` below) would give a
+    /// blank built by capturing-then-clearing a picture rather than
+    /// nothing, and one whose range starts below zero (`strength`) shows
+    /// that "blank" means the bottom of the range rather than 0.0.
+    #[test]
+    fn a_blank_sends_every_parameter_it_owns_to_the_bottom_of_its_range() {
+        let mut b = ParamRegistry::builder();
+        b.add(vizz_params::ParamDef::new("/particles/size", 0.0, 1.0, 0.3));
+        b.add(vizz_params::ParamDef::new("/fx/glow", 0.0, 2.0, 1.0));
+        b.add(vizz_params::ParamDef::new("/gravity/0/strength", -2.0, 2.0, 1.5));
+        b.add(vizz_params::ParamDef::new("/master/dim", 0.0, 1.0, 1.0));
+        let reg = b.build();
+        // Nothing about the live picture may reach the pad: these are set
+        // away from both the defaults and the floor before capturing.
+        reg.set_by_addr("/particles/size", 0.9);
+        reg.set_by_addr("/gravity/0/strength", 1.8);
+
+        let blank = Preset::blank_kind(&reg, Kind::Look);
+        assert_eq!(blank.values.get("/particles/size"), Some(&0.0));
+        assert_eq!(blank.values.get("/fx/glow"), Some(&0.0));
+        assert_eq!(
+            blank.source.as_deref(),
+            Some("blank"),
+            "a blank must say what it is, so the pads group it"
+        );
+        // Still scoped to its layer: a blank look must not zero the wells.
+        assert!(
+            !blank.values.keys().any(|k| k.starts_with("/gravity/")),
+            "a blank look reached into gravity: {:?}",
+            blank.values.keys().collect::<Vec<_>>()
+        );
+
+        // And the bottom of a range that starts below zero is that
+        // bottom, not zero.
+        let wells = Preset::blank_kind(&reg, Kind::Gravity);
+        assert_eq!(
+            wells.values.get("/gravity/0/strength"),
+            Some(&-2.0),
+            "a blank clamped to zero instead of the floor of the range"
+        );
+
+        // Applying it lands: this is what the pad actually does.
+        blank.apply(&reg);
+        assert_eq!(reg.id("/particles/size").map(|id| reg.target(id)), Some(0.0));
     }
 
     /// The two layers must not be able to disturb each other.

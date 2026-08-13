@@ -67,6 +67,12 @@ pub struct PanelActions {
     pub preset_load: Option<String>,
     /// Capture the current parameters under this name.
     pub preset_save: Option<String>,
+    /// Fetch the available update. Explicit, because it spends a
+    /// venue's bandwidth on tens of megabytes.
+    pub update_download: bool,
+    /// Put the downloaded update in and restart. Also explicit, and for
+    /// a bigger reason: it ends the session.
+    pub update_install: bool,
     /// Delete this user preset.
     pub preset_delete: Option<String>,
     /// Slider working ranges changed and should be persisted.
@@ -133,6 +139,9 @@ pub struct PresetEntry {
 pub struct PanelState {
     /// Newer version string, if the background check found one.
     pub update_available: Option<String>,
+    /// How far along an install is, and why it cannot start if it
+    /// cannot. `None` where there is no update machinery at all.
+    pub update: Option<UpdateView>,
     pub health: Option<HealthSnapshot>,
     pub outputs: Vec<OutputStatus>,
     /// Recent frame times in ms, oldest first, for the sparkline.
@@ -318,7 +327,7 @@ pub fn draw(
         .default_width(360.0)
         .resizable(true)
         .show(ctx, |ui| {
-            update_banner(ui, state);
+            update_banner(ui, state, &mut actions);
             // One line of everything you need to glance at mid-set: is it
             // keeping up, is it going out, is audio arriving, what tempo.
             // The detail behind each is setup, not performance, so it
@@ -583,16 +592,88 @@ fn dot(ui: &mut egui::Ui, live: bool, color: egui::Color32) -> egui::Response {
 const GOOD: egui::Color32 = crate::theme::LIVE;
 const WARN: egui::Color32 = crate::theme::WARN;
 
-/// Notify, never install: the link opens the release page and the user
-/// picks the moment. Nothing about a running show changes.
-fn update_banner(ui: &mut egui::Ui, state: &PanelState) {
+/// What the panel needs to draw the update flow.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UpdateView {
+    pub stage: vizz_update::Stage,
+    /// True when there is a bundle this build could actually install.
+    pub installable: bool,
+    /// Why not, when not — shown instead of a button that would fail.
+    pub blocker: Option<String>,
+    /// A recording is running. The install is refused rather than
+    /// queued: quitting mid-take loses the take, and an update is never
+    /// the more urgent of the two.
+    pub recording: bool,
+}
+
+/// Update, from noticing to restarting, without leaving the app.
+///
+/// Every step is pressed. The check happens on its own; nothing else
+/// does. That is the same rule the notify-only version enforced by
+/// having no other steps — an update must never land mid-set — and it
+/// is why there is no "install on quit", no countdown and no deferral:
+/// each of those is a way for the app to pick the moment instead of the
+/// person at the desk.
+fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let Some(version) = &state.update_available else { return };
-    ui.horizontal(|ui| {
-        ui.colored_label(
-            WARN,
-            format!("vizz {version} available"),
-        );
-        ui.hyperlink_to("download", vizz_update::RELEASES_URL);
+    let view = state.update.clone().unwrap_or_default();
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(WARN, format!("vizz {version} available"));
+        match &view.stage {
+            vizz_update::Stage::Downloading { done, total } => {
+                // A bar rather than a spinner: this is tens of megabytes
+                // on whatever the venue's wifi is, and "how much longer"
+                // is the only question being asked.
+                let fraction = if *total > 0 {
+                    *done as f32 / *total as f32
+                } else {
+                    0.0
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(140.0)
+                        .text(format!("{:.0} MB", *done as f64 / 1e6)),
+                );
+            }
+            vizz_update::Stage::Ready(_) => {
+                if ui
+                    .button("install and restart")
+                    .on_hover_text(
+                        "replaces this copy and reopens it —                          your patches, presets and mappings are untouched",
+                    )
+                    .clicked()
+                {
+                    actions.update_install = true;
+                }
+                if view.recording {
+                    ui.colored_label(WARN, "stop the recording first");
+                }
+            }
+            vizz_update::Stage::Installing => {
+                ui.colored_label(GOOD, "restarting…");
+            }
+            vizz_update::Stage::Failed(why) => {
+                ui.colored_label(vizz_design::state::ARMED, why.as_str());
+                ui.hyperlink_to("download it instead", vizz_update::RELEASES_URL);
+            }
+            vizz_update::Stage::Idle => {
+                if view.installable {
+                    if ui.button("download").clicked() {
+                        actions.update_download = true;
+                    }
+                } else if let Some(why) = &view.blocker {
+                    // Say why, and still give them the way out. A greyed
+                    // button with no explanation is the worst of both.
+                    ui.label(
+                        egui::RichText::new(why.as_str()).color(vizz_design::ink::TERTIARY),
+                    );
+                    ui.hyperlink_to("download", vizz_update::RELEASES_URL);
+                } else {
+                    ui.hyperlink_to("download", vizz_update::RELEASES_URL);
+                }
+            }
+        }
+        ui.hyperlink_to("what changed", vizz_update::RELEASES_URL);
     });
     ui.separator();
 }
@@ -807,7 +888,23 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
         ui.small("no devices — plug one in, it connects automatically");
     } else {
         for name in &state.midi.connected {
-            ui.small(format!("· {name}"));
+            // Say when a device came with a layout. Otherwise a grid
+            // that suddenly fires scenes reads as something the app did
+            // by accident, and there is nothing on screen to tell you
+            // it can be changed like any other binding.
+            match vizz_midi::profile::for_port(name) {
+                Some(p) => {
+                    ui.small(format!("· {name}"))
+                        .on_hover_text(format!(
+                            "{} — the pads and faders were mapped for you; \
+                             learn overrides any of it",
+                            p.name
+                        ));
+                }
+                None => {
+                    ui.small(format!("· {name}"));
+                }
+            }
         }
     }
     // While learning, echo whatever is arriving: the usual failure is a
@@ -2524,7 +2621,21 @@ fn param_row(
         let routed_now = modulation.has_route(vizz_mod::Source::Lfo(0), &def.addr);
         let bound_now = state.midi.map.source_for(&def.addr).is_some()
             || state.midi.learning(&def.addr);
-        let hovered = ui.ui_contains_pointer();
+        // Hover measured against the WHOLE row, not the part of it built
+        // so far.
+        //
+        // `ui_contains_pointer` asks about the Ui as it currently
+        // stands, and inside a horizontal layout that is only what has
+        // been added up to this line — the slider and the value. The
+        // controls appear to the right of that, so moving the pointer
+        // towards them left the measured region, which hid the very
+        // buttons you were reaching for. They could be seen and never
+        // clicked.
+        let row_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        );
+        let hovered = ui.rect_contains_pointer(row_rect);
         let show_setup = hovered || narrowed_now || routed_now || bound_now;
 
         // Zoom the slider around where it is now, or restore the full

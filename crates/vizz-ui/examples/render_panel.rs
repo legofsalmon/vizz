@@ -275,6 +275,15 @@ fn main() {
         recording: None,
         preset_current: Some(2),
         update_available: Some("0.2.0".into()),
+        // Shown installable, because that is what the banner looks like
+        // on the machine most people run: a signed bundle in
+        // /Applications with a release that carries one.
+        update: Some(vizz_ui::UpdateView {
+            stage: Default::default(),
+            installable: true,
+            blocker: None,
+            recording: false,
+        }),
         health: Some(health.snapshot()),
         outputs: vec![
             OutputStatus { name: "syphon:vizz".into(), live: true },

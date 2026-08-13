@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.17.0/vizz-0.17.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.18.0/vizz-0.18.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,48 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.18.0">0.18.0</a></div>
+      <ul>
+        <li><strong>vizz updates itself.</strong> Download and install from
+          the banner, without leaving the app — your patches, presets,
+          palettes and mappings all live outside the bundle and are
+          untouched. Every step is one you press: the check happens on its
+          own, nothing else does, and the install refuses while a recording
+          is running. Nothing is replaced while it is running either — the
+          swap waits for vizz to quit, and puts the old copy back if it
+          fails. A download has to be signed by the same Developer ID as
+          the copy you are running, or it is refused.</li>
+        <li><strong>Ready-made modulators, one click from a fader.</strong>
+          Fourteen of them — sweeps, beat and bar pulses, rise, fall,
+          steps, kick, snare, highs, loudness, wobble, random step,
+          flicker. Click a fader's value to pick one. Each brings its own
+          source, so two faders never fight over one oscillator, and what
+          it builds stays on the modulation canvas to read and edit.</li>
+        <li><strong>The APC40 mkII arrives mapped.</strong> Gravity on the
+          top two rows of the clip grid, scenes on the bottom two, the
+          middle row left clear as a landmark for the hand. The eight
+          track faders take the eight parameters on the performance
+          layout's first row; the master fader takes master dim. Nothing
+          you have already mapped is overwritten.</li>
+        <li><strong>And it lights up.</strong> vizz now sends MIDI out: a
+          pad holding a preset glows, the one playing goes green, and the
+          one the sequencer will fire next goes amber.</li>
+        <li><strong>A zero blend time is a cut.</strong> It used to still
+          animate — the grid finished instantly but each parameter's own
+          smoothing kept easing — which made the one setting you reach for
+          when you want a hard cut on a beat appear to do nothing.</li>
+        <li><strong>Blank scenes.</strong> Right-click any pad to store a
+          blank: every parameter that layer owns at the bottom of its
+          range. An ending, or a hole to punch back out of.</li>
+        <li><strong>Faster frames.</strong> Two per-frame system calls
+          removed from the panel — one enumerated every mounted volume,
+          the other re-read every saved preset from disk. The health log
+          now also splits out how long the interface took, so a slow frame
+          says which half to look at.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.17.0">0.17.0</a></div>

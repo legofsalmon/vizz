@@ -133,6 +133,34 @@ optionally the final frame as a PNG. This is the regression benchmark:
 run it before and after a change and diff the reports. It exercises the
 exact frame path of a live set minus the swapchain.
 
+### Finding out where a frame goes
+
+Every two seconds vizz logs a health line:
+
+```
+fps 118.4 | frame avg  8.42ms p95  9.10ms p99 11.30ms worst 14.02ms | over-budget 0.2% (total 12) | rss 412 MiB | cpu 91% | ui  1.83ms
+```
+
+`ui` is the part of the frame spent building and drawing the interface —
+CPU work on the render thread, which scales with what is on screen rather
+than with the output size. The rest is the render passes and the wait for
+vsync. When a frame goes over budget that split is what says which half to
+look at, and it is the number to quote in a bug report.
+
+Two readings worth knowing:
+
+- **`avg` high and `p99` close to it** is uniform work — every frame costs
+  more. **`avg` high while `p95` is low and `worst` is in the hundreds of
+  milliseconds** is a periodic stall dragging the mean, which is a
+  completely different problem with completely different causes.
+- **Run once with `--no-gui`** to get the frame cost with the whole
+  interface out of the picture. The health line still prints, so this is a
+  one-command A/B for "is it the visuals or the panel".
+
+Note that `over-budget` is measured against 60 fps. On a 120 Hz display
+the real deadline is 8.33 ms, so read `frame avg` rather than the
+percentage there.
+
 ### NDI output (all platforms)
 
 ```sh
@@ -312,16 +340,39 @@ load; the alternative is dropping NDI from signed builds.
 
 ## Updates
 
-On startup vizz asks GitHub once whether a newer release exists and, if
-so, shows a banner in the panel with a link. It **never downloads or
-replaces itself** — an update landing mid-set is precisely the failure
-live software cannot afford, so a human picks the moment. Updating is
-the same drag-and-drop as installing.
+vizz checks once at startup whether a newer release exists, and says so in
+a banner at the top of the panel. On macOS it can also install it:
 
-The check runs on a background thread with a short timeout and fails
-silently: no network, an offline venue, a rate-limited API or a changed
-response all end with vizz simply not mentioning it. `--no-update-check`
-disables the request entirely.
+**download → install and restart**, without leaving the app. Your patches,
+presets, palettes, MIDI mappings and settings live outside the bundle and
+are untouched.
+
+Every step is something you press. The check is automatic; **nothing else
+is** — no background download, no install on quit, no countdown, no
+deferral. Each of those is a way for the app to pick the moment instead of
+the person at the desk, and an update landing mid-set is the one failure a
+VJ cannot afford. For the same reason the install refuses outright while a
+recording is running, rather than queueing behind it.
+
+Nothing is replaced while it is running. vizz downloads the bundle,
+verifies it, and leaves a small script that waits for the process to exit
+before swapping and relaunching. If the swap fails the script puts the
+original back — a machine with no vizz on it an hour before doors is the
+outcome the whole arrangement exists to avoid.
+
+**The download must be signed by the same Developer ID team as the copy
+you are running.** That is the security boundary: TLS says the bytes came
+from GitHub, not that they are ours, and this is bytes off the network
+becoming an executable. Someone who could serve you a substitute still
+cannot sign it as us. A build with no team of its own — an ad-hoc CI build,
+or one you compiled — is refused rather than trusted, because it has
+nothing to compare against; the banner says so and links to the download.
+
+The banner also declines, with the reason, when vizz is running from
+outside an app bundle, from a read-only location, or from Downloads under
+App Translocation (move it to Applications and it can update itself).
+
+Turn the check off entirely with `--no-update-check`.
 
 ## Audio input
 
@@ -1025,6 +1076,30 @@ Mappings are saved as JSON to `~/.config/vizz/midi.json` (override with
 `--midi-map`) the moment they change, so a crash mid-set cannot cost the
 mapping you just set up. MIDI failing to start is a degraded mode, not a
 failure: the visuals and OSC keep running.
+
+### Controllers vizz knows
+
+Some controllers arrive already mapped. Plug one in and its grid is the
+app's grid, its faders are the performance layout's first row, and its
+pads light up to show what is loaded, what is playing, and where the
+autopilot is going next.
+
+| Device | Layout |
+|--------|--------|
+| **Akai APC40 mkII** | Clip grid rows 1–2 → the 16 gravity pads · rows 4–5 → the 16 scene pads (row 3 left clear, as a landmark for the hand) · the 8 track faders → size, speed, count, mode, morph, trail, glow, mirror · the master fader → master dim |
+
+Nothing is ever overwritten. A default only fills a slot that has no
+binding at all, so a controller plugged in halfway through an evening
+cannot undo the mapping you spent it building — and every one of these
+bindings is ordinary, so learn replaces any of them and clicking a
+binding label clears it.
+
+**The lights** need no setup: if the device is recognised, vizz opens its
+output port too. A pad with a preset on it glows dim, the one playing
+goes green, and the one the autopilot will fire next goes amber. Only
+changes are sent, at about 30 ms, so the feedback cannot crowd the clock
+sharing the same cable. vizz never sends to an output port it does not
+recognise, and hands every device back dark on the way out.
 
 ### MIDI clock sync
 
