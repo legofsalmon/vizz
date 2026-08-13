@@ -158,6 +158,11 @@ struct App {
     palettes: Vec<String>,
     /// When Escape was first pressed, if it is waiting for a second.
     quit_armed: Option<Instant>,
+    /// An installer is waiting for this process to exit. Set from the
+    /// frame that started it; acted on in `about_to_wait`, so the frame
+    /// finishes and the ordinary shutdown — settings, MIDI map, patch —
+    /// still runs.
+    quit_for_update: bool,
     /// The modulation state as last written, so the autosave can tell
     /// whether anything actually changed.
     saved_modulation: Vec<u8>,
@@ -1141,15 +1146,17 @@ impl App {
                 let (frames, dropped) = r.progress();
                 vizz_ui::RecordingView { secs: r.elapsed().as_secs(), frames, dropped }
             });
+            // One `try_lock` for both halves — the update thread holds
+            // this for microseconds, but the render thread still never
+            // waits on it, and taking it twice in one frame is two
+            // chances to miss.
+            let update_view = update_view(&self.update, recording.is_some());
             let panel_state = PanelState {
                 recording,
                 // try_lock: the update thread holds this for microseconds, but
                 // the render thread still never waits on it.
-                update_available: self
-                    .update
-                    .try_lock()
-                    .ok()
-                    .and_then(|u| u.available.map(|v| v.to_string())),
+                update_available: update_view.0,
+                update: update_view.1,
                 health: Some(self.engine.health.snapshot()),
                 outputs: outputs_status,
                 frame_times_ms: Vec::new(),
@@ -1371,6 +1378,13 @@ impl App {
                     }
                 }
                 let mut notes: Notes = Vec::new();
+                apply_update_actions(
+                    &actions,
+                    &self.update,
+                    self.recorder.is_some(),
+                    &mut self.quit_for_update,
+                    &mut notes,
+                );
                 apply_preset_actions(
                     &actions,
                     &self.params.registry,
@@ -1688,6 +1702,13 @@ impl ApplicationHandler for App {
     /// few seconds since the last autosave are not lost to whichever route
     /// out the user happened to take.
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // An update is staged and its installer is already waiting on
+        // this pid. Leaving through the normal door means `exiting` runs
+        // and the session is written out first.
+        if self.quit_for_update {
+            _event_loop.exit();
+            return;
+        }
         // While the window cannot present, redraw events may stop coming
         // at all — a miniaturised window gets none on some platforms — so
         // the loop drives itself here, paced by the sleep in `redraw`.
@@ -1877,6 +1898,100 @@ fn publish_midi_surface(
         scenes: bank(scenes),
         gravity: bank(gravity),
     };
+}
+
+fn update_view(
+update: &SharedUpdate,
+recording: bool,
+) -> (Option<String>, Option<vizz_ui::UpdateView>) {
+let Ok(status) = update.try_lock() else {
+        return (None, None);
+    };
+    let Some(version) = status.available else {
+        return (None, None);
+    };
+    // Installable means: there is a macOS bundle on the release, and
+    // nothing about *this* copy prevents replacing it. Both are
+    // decided before a download starts, so nobody spends a venue's
+    // bandwidth on 40 MB and is then told it cannot be used.
+    let blocker = vizz_update::install::blocker();
+    let has_asset = status
+        .release
+        .as_ref()
+        .is_some_and(|r| !r.asset_url.is_empty());
+    (
+        Some(version.to_string()),
+        Some(vizz_ui::UpdateView {
+            stage: status.stage.clone(),
+            installable: blocker.is_none() && has_asset,
+            blocker: blocker.or_else(|| {
+                (!has_asset).then(|| "no bundle on this release".to_string())
+            }),
+            recording,
+        }),
+    )
+}
+
+/// Start a download, or put a finished one in and quit.
+///
+/// Both are things somebody pressed; neither happens on its own. The
+/// install additionally refuses while a recording is running —
+/// quitting mid-take loses the take, and no update has ever been the
+/// more urgent of the two. It is a refusal rather than a queue: "it
+/// will install when you stop" is the app choosing the moment again,
+/// which is the whole thing this is supposed to avoid.
+fn apply_update_actions(
+actions: &vizz_ui::PanelActions,
+update: &SharedUpdate,
+recording: bool,
+quit_for_update: &mut bool,
+notes: &mut Notes,
+) {
+    if actions.update_download {
+        let release = update.try_lock().ok().and_then(|u| u.release.clone());
+        match release {
+            Some(release) if !release.asset_url.is_empty() => {
+                notes.push((false, format!("downloading vizz {}", release.version)));
+                vizz_update::install::spawn_fetch(Arc::clone(update), release);
+            }
+            _ => notes.push((true, "that release has no bundle to download".into())),
+        }
+    }
+    if !actions.update_install {
+        return;
+    }
+    if recording {
+        notes.push((true, "stop the recording before installing".into()));
+        return;
+    }
+    let staged = match update.try_lock().map(|u| u.stage.clone()) {
+        Ok(vizz_update::Stage::Ready(path)) => path,
+        _ => {
+            notes.push((true, "the update is not ready yet".into()));
+            return;
+        }
+    };
+    match vizz_update::install::install_and_restart(&staged) {
+        Ok(()) => {
+            if let Ok(mut u) = update.try_lock() {
+                u.stage = vizz_update::Stage::Installing;
+            }
+            // The helper is waiting on this process to go. Ask the
+            // event loop to stop rather than calling `exit` here, so
+            // the normal shutdown still runs — settings, the MIDI
+            // map and the patch are all written on the way out, and
+            // an update that ate them would be a worse bug than the
+            // one it fixed.
+            *quit_for_update = true;
+        }
+        Err(e) => {
+            log::error!("could not start the installer: {e:#}");
+            if let Ok(mut u) = update.try_lock() {
+                u.stage = vizz_update::Stage::Failed(format!("{e:#}"));
+            }
+            notes.push((true, format!("could not install: {e}")));
+        }
+    }
 }
 
 /// Push panel edits through to the analysis thread. A free function taking
@@ -2577,6 +2692,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         next_cloud: 0,
         palettes: palette_paths,
         quit_armed: None,
+        quit_for_update: false,
         // Seeded from what was just restored, so a launch that changes
         // nothing does not rewrite the file.
         saved_modulation: restored_modulation,

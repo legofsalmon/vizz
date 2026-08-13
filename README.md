@@ -340,16 +340,39 @@ load; the alternative is dropping NDI from signed builds.
 
 ## Updates
 
-On startup vizz asks GitHub once whether a newer release exists and, if
-so, shows a banner in the panel with a link. It **never downloads or
-replaces itself** — an update landing mid-set is precisely the failure
-live software cannot afford, so a human picks the moment. Updating is
-the same drag-and-drop as installing.
+vizz checks once at startup whether a newer release exists, and says so in
+a banner at the top of the panel. On macOS it can also install it:
 
-The check runs on a background thread with a short timeout and fails
-silently: no network, an offline venue, a rate-limited API or a changed
-response all end with vizz simply not mentioning it. `--no-update-check`
-disables the request entirely.
+**download → install and restart**, without leaving the app. Your patches,
+presets, palettes, MIDI mappings and settings live outside the bundle and
+are untouched.
+
+Every step is something you press. The check is automatic; **nothing else
+is** — no background download, no install on quit, no countdown, no
+deferral. Each of those is a way for the app to pick the moment instead of
+the person at the desk, and an update landing mid-set is the one failure a
+VJ cannot afford. For the same reason the install refuses outright while a
+recording is running, rather than queueing behind it.
+
+Nothing is replaced while it is running. vizz downloads the bundle,
+verifies it, and leaves a small script that waits for the process to exit
+before swapping and relaunching. If the swap fails the script puts the
+original back — a machine with no vizz on it an hour before doors is the
+outcome the whole arrangement exists to avoid.
+
+**The download must be signed by the same Developer ID team as the copy
+you are running.** That is the security boundary: TLS says the bytes came
+from GitHub, not that they are ours, and this is bytes off the network
+becoming an executable. Someone who could serve you a substitute still
+cannot sign it as us. A build with no team of its own — an ad-hoc CI build,
+or one you compiled — is refused rather than trusted, because it has
+nothing to compare against; the banner says so and links to the download.
+
+The banner also declines, with the reason, when vizz is running from
+outside an app bundle, from a read-only location, or from Downloads under
+App Translocation (move it to Applications and it can update itself).
+
+Turn the check off entirely with `--no-update-check`.
 
 ## Audio input
 
