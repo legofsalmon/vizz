@@ -1901,10 +1901,10 @@ fn publish_midi_surface(
 }
 
 fn update_view(
-update: &SharedUpdate,
-recording: bool,
+    update: &SharedUpdate,
+    recording: bool,
 ) -> (Option<String>, Option<vizz_ui::UpdateView>) {
-let Ok(status) = update.try_lock() else {
+    let Ok(status) = update.try_lock() else {
         return (None, None);
     };
     let Some(version) = status.available else {
@@ -1941,11 +1941,11 @@ let Ok(status) = update.try_lock() else {
 /// will install when you stop" is the app choosing the moment again,
 /// which is the whole thing this is supposed to avoid.
 fn apply_update_actions(
-actions: &vizz_ui::PanelActions,
-update: &SharedUpdate,
-recording: bool,
-quit_for_update: &mut bool,
-notes: &mut Notes,
+    actions: &vizz_ui::PanelActions,
+    update: &SharedUpdate,
+    recording: bool,
+    quit_for_update: &mut bool,
+    notes: &mut Notes,
 ) {
     if actions.update_download {
         let release = update.try_lock().ok().and_then(|u| u.release.clone());
