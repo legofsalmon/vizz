@@ -62,7 +62,40 @@ pub fn running_bundle() -> Option<PathBuf> {
 /// Checked before anything is downloaded. Spending a venue's bandwidth on
 /// 40 MB and *then* saying "actually this copy cannot be replaced" is the
 /// version of this feature nobody forgives.
+///
+/// **Answered once per run.** Every input is fixed for the lifetime of
+/// the process — where the bundle is, who signed it, whether that
+/// directory is writable — so there is nothing to re-ask. That matters
+/// more than it sounds: the panel consults this while assembling its
+/// state, which happens once per rendered frame, and the answer costs a
+/// `codesign` subprocess. Uncached, an available update meant a fork and
+/// exec sixty times a second on the render thread, for a question whose
+/// answer cannot change. The result is logged the first time, so a
+/// refusal is in the log as well as on the banner.
 pub fn blocker() -> Option<String> {
+    static WHY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    WHY.get_or_init(|| {
+        let why = decide_blocker();
+        match &why {
+            Some(reason) => log::info!("in-app update unavailable: {reason}"),
+            None => log::info!("in-app update available for this copy"),
+        }
+        why
+    })
+    .clone()
+}
+
+/// How many times the question has actually been worked out.
+///
+/// Counted rather than timed, for the same reason the disk cache counts
+/// refreshes: "is this cached" is otherwise only observable as a
+/// performance difference, and a timing assertion on a subprocess is a
+/// flaky test that gets deleted the first time CI is busy.
+pub static BLOCKER_DECISIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn decide_blocker() -> Option<String> {
+    BLOCKER_DECISIONS.fetch_add(1, Ordering::Relaxed);
     if !cfg!(target_os = "macos") {
         return Some("in-app updates are macOS only".into());
     }
@@ -417,6 +450,35 @@ mod tests {
                 "{nasty:?} quoted as {quoted} leaves a bare quote"
             );
         }
+    }
+
+
+    /// The question is worked out once, not once a frame.
+    ///
+    /// The panel asks this while assembling its state, which happens on
+    /// every rendered frame, and answering it costs a `codesign`
+    /// subprocess. Uncached, an available update meant a fork and exec
+    /// sixty times a second on the render thread — to re-answer a
+    /// question whose inputs (where the bundle is, who signed it,
+    /// whether that directory is writable) cannot change while the
+    /// process runs.
+    ///
+    /// Counted rather than timed: a timing assertion on a subprocess is
+    /// a flaky test, and on Linux this returns before spawning anything
+    /// so a timing test would prove nothing here anyway.
+    #[test]
+    fn the_blocker_is_worked_out_once_however_often_it_is_asked() {
+        // Prime, so the count below cannot include first-time setup.
+        let first = blocker();
+        let before = BLOCKER_DECISIONS.load(Ordering::Relaxed);
+        for _ in 0..500 {
+            assert_eq!(blocker(), first, "the answer changed between frames");
+        }
+        assert_eq!(
+            BLOCKER_DECISIONS.load(Ordering::Relaxed),
+            before,
+            "500 frames re-ran the check — the cache is not working"
+        );
     }
 
     /// A bare binary is not a thing that can replace itself.
