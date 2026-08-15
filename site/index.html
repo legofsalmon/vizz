@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.21.0/vizz-0.21.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.21.1/vizz-0.21.1.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,20 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.21.1">0.21.1</a></div>
+      <ul>
+        <li><strong>The built-in set could not actually be loaded.</strong>
+          On a machine that already has a show the set does not install
+          itself, so right-clicking the <strong>+</strong> beside the deck
+          chips was the only route to it — and that route did not work.
+          The confirm is an armed button, and clicking to arm it closed
+          the menu it lived in, taking the second click's target with it.
+          Deleting a page was broken the same way. Both now work, both
+          driven by real clicks in a test.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.21.0">0.21.0</a></div>

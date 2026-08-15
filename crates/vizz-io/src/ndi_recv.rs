@@ -577,7 +577,13 @@ mod tests {
     /// being somewhere unusual, and the list is the fix.
     #[test]
     fn missing_runtime_reports_every_path_tried() {
-        // SAFETY: single-threaded test process for this variable.
+        // The sender's loader test sets this same variable, in this same
+        // binary, which the runner runs in parallel — so "single-threaded
+        // test process", which this comment used to claim, was never true.
+        // Whichever test ran second cleared the variable under the first.
+        let _guard = crate::test_env::env_guard();
+        // SAFETY: the guard makes this the only thread touching the
+        // variable for as long as it is held.
         unsafe { std::env::set_var("VIZZ_NDI_RUNTIME", "/nonexistent/libndi.so") };
         let err = sources(1).map(|_| ()).unwrap_err().to_string();
         unsafe { std::env::remove_var("VIZZ_NDI_RUNTIME") };

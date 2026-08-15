@@ -417,6 +417,12 @@ mod tests {
     fn missing_runtime_reports_every_path_tried() {
         // Without the NDI runtime installed this must fail with a helpful
         // message rather than panicking or aborting the process.
+        //
+        // Guarded because the receiver's twin sets the same variable in
+        // this same binary; see `crate::test_env`.
+        let _guard = crate::test_env::env_guard();
+        // SAFETY: the guard makes this the only thread touching the
+        // variable for as long as it is held.
         unsafe { std::env::set_var("VIZZ_NDI_RUNTIME", "/nonexistent/libndi.dylib") };
         let msg = match load_library() {
             Ok(_) => panic!("should not have found a runtime at a nonexistent path"),
