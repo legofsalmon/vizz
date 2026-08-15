@@ -194,7 +194,15 @@ impl Autopilot {
 #[derive(Debug, Clone)]
 struct Transition {
     /// The cell being moved to, for the UI and for `current` when it ends.
-    to_slot: usize,
+    ///
+    /// `None` once the pads underneath have been swapped out — see
+    /// [`Grid::adopt_cells`]. The blend itself is a pair of value maps
+    /// captured at fire time and finishes correctly regardless, but the
+    /// slot number stops meaning anything the moment a different page of
+    /// pads is loaded: pad 3 of the new deck is a different look, and
+    /// landing on it would light the wrong pad and then record the grid as
+    /// sitting on a scene it never played.
+    to_slot: Option<usize>,
     /// Where every parameter was when the transition started. Captured
     /// from the live values rather than from the outgoing cell, so firing
     /// a scene mid-transition, or after moving things by hand, starts from
@@ -230,10 +238,14 @@ pub struct Grid {
     kind: crate::preset::Kind,
     /// Always [`SLOTS`] long. A `Vec` rather than an array so serde does
     /// not need const-generic help, with the length restored on load.
+    #[serde(default = "empty_cells")]
     cells: Vec<Option<Cell>>,
     /// Transition length in seconds.
+    #[serde(default = "default_duration")]
     pub duration: f32,
+    #[serde(default)]
     pub curve: Curve,
+    #[serde(default)]
     pub autopilot: Autopilot,
     /// The cell that finished arriving, if any.
     #[serde(skip)]
@@ -245,6 +257,26 @@ pub struct Grid {
     /// waits for the next boundary, which is what "in time" means.
     #[serde(skip)]
     last_step: Option<i64>,
+}
+
+/// Defaults for a grid file that does not carry every field.
+///
+/// Every one of them used to be required, so a file written by anything
+/// other than this exact build — a generator, a hand edit, an older
+/// release — failed to parse, was quarantined as corrupt, and left the
+/// user with an empty grid and a log line. That is the wrong end of the
+/// trade: a grid naming its pads and nothing else is a perfectly clear
+/// statement of intent, and the fields it omits have obvious answers.
+///
+/// The same tolerance the settings file has, for the same reason.
+fn empty_cells() -> Vec<Option<Cell>> {
+    vec![None; SLOTS]
+}
+
+/// Two seconds, matching [`Grid::default`]. Serde's own default for `f32`
+/// is zero, which would silently turn every unstated blend into a cut.
+fn default_duration() -> f32 {
+    2.0
 }
 
 impl Default for Grid {
@@ -299,7 +331,44 @@ impl Grid {
     /// The cell being moved to and how far along, for the UI to draw.
     pub fn in_flight(&self) -> Option<(usize, f32)> {
         let t = self.transition.as_ref()?;
-        Some((t.to_slot, t.progress()))
+        Some((t.to_slot?, t.progress()))
+    }
+
+    /// Put a different page of pads under the grid, leaving the picture
+    /// alone.
+    ///
+    /// This is what switching decks is. The cells are the *set list*; the
+    /// parameters on screen are the performance, and swapping one must not
+    /// disturb the other — a page turn during a show that snapped the
+    /// output would be unusable, and every deck switch happens during a
+    /// show.
+    ///
+    /// So a blend already running keeps running to its end: it holds
+    /// captured value maps rather than any reference to a cell, and
+    /// abandoning it would freeze the picture half way between two looks.
+    /// What it loses is its pad. `current` goes with it, because after a
+    /// swap no pad on screen produced what is showing, and a lit pad that
+    /// claims otherwise is worse than none.
+    pub fn adopt_cells(&mut self, cells: Vec<Option<Cell>>) {
+        let mut cells = cells;
+        // A file written by another build, or a deck saved when SLOTS was
+        // a different number, could be any length.
+        cells.resize(SLOTS, None);
+        cells.truncate(SLOTS);
+        // Adopting the page already loaded is not a page turn. Duplicating
+        // the live deck hands back exactly the cells under the grid, and
+        // treating that as a swap put out the pad that was lit and sent
+        // the autopilot back to the top of the page — in the middle of a
+        // song, for a gesture whose whole point is that it changes
+        // nothing you can see.
+        if cells == self.cells {
+            return;
+        }
+        self.cells = cells;
+        self.current = None;
+        if let Some(t) = self.transition.as_mut() {
+            t.to_slot = None;
+        }
     }
 
     /// Point a slot at a preset. The core gesture: preparing looks and
@@ -334,7 +403,7 @@ impl Grid {
             return;
         }
         self.cells[slot] = None;
-        if self.transition.as_ref().is_some_and(|t| t.to_slot == slot) {
+        if self.transition.as_ref().is_some_and(|t| t.to_slot == Some(slot)) {
             self.transition = None;
         }
         if self.current == Some(slot) {
@@ -378,7 +447,7 @@ impl Grid {
         let cloud = (effective_cloud(&from), effective_cloud(&to));
         let duration = self.duration.clamp(MIN_DURATION, MAX_DURATION);
         self.transition = Some(Transition {
-            to_slot: slot,
+            to_slot: Some(slot),
             from,
             to,
             cloud,
@@ -493,7 +562,7 @@ impl Grid {
     }
 
     fn next_filled(&self) -> Option<usize> {
-        let from = self.transition.as_ref().map(|t| t.to_slot).or(self.current);
+        let from = self.transition.as_ref().and_then(|t| t.to_slot).or(self.current);
         let start = from.map_or(0, |s| s + 1);
         self.next_filled_from(start)
     }
@@ -515,7 +584,7 @@ impl Grid {
         let shaped = t.curve.shape(t.progress());
         t.write(reg, shaped, done, kind);
         if done {
-            self.current = Some(t.to_slot);
+            self.current = t.to_slot;
             self.transition = None;
         }
     }
@@ -662,9 +731,20 @@ pub fn save_kind(kind: crate::preset::Kind, grid: &Grid) -> Result<()> {
 /// Load a grid for one layer. Same tolerance as [`load`]: a missing file
 /// is a first run, a corrupt one is logged and replaced.
 pub fn load_kind(kind: crate::preset::Kind) -> Grid {
+    read_kind(kind).unwrap_or_else(|| Grid::for_kind(kind))
+}
+
+/// As [`load_kind`], but saying whether a grid was actually read.
+///
+/// The distinction matters to exactly one caller. A missing or unreadable
+/// file yields sixteen empty pads, which is indistinguishable from a grid
+/// the user genuinely emptied — and the deck book adopts the live grids on
+/// load, so "empty" adopted over a page that has pads on it is the set
+/// list quietly deleting a song. `None` is what lets it decline.
+pub fn read_kind(kind: crate::preset::Kind) -> Option<Grid> {
     let path = path_for(kind);
     let Ok(bytes) = std::fs::read(&path) else {
-        return Grid::new();
+        return None;
     };
     match serde_json::from_slice::<Grid>(&bytes) {
         Ok(mut grid) => {
@@ -675,7 +755,7 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
             grid.cells.resize(SLOTS, None);
             grid.cells.truncate(SLOTS);
             grid.duration = grid.duration.clamp(MIN_DURATION, MAX_DURATION);
-            grid
+            Some(grid)
         }
         Err(e) => {
             log::error!(
@@ -683,7 +763,7 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
                 path.display()
             );
             crate::library::quarantine(&path);
-            Grid::for_kind(kind)
+            None
         }
     }
 }
@@ -841,6 +921,76 @@ fn migrate_inline(bytes: &[u8]) -> Option<Grid> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A grid file that names its pads and nothing else loads.
+    ///
+    /// Every field used to be required, so a file from a generator, a hand
+    /// edit or an older release failed to parse, was quarantined as
+    /// corrupt, and left an empty grid behind a log line. The sister
+    /// lighting app emits exactly this shape — cells, duration, curve, no
+    /// autopilot — and it was silently rejected.
+    #[test]
+    fn a_grid_file_missing_fields_loads_rather_than_being_quarantined() {
+        let partial = br#"{"cells":[{"preset":"Slow bloom"}],"duration":0.3,"curve":"easein"}"#;
+        let mut grid: Grid = serde_json::from_slice(partial).expect("a partial grid was rejected");
+        grid.cells.resize(SLOTS, None);
+        assert_eq!(grid.cell(0).map(|c| c.preset.as_str()), Some("Slow bloom"));
+        assert_eq!(grid.duration, 0.3);
+        assert_eq!(grid.curve, Curve::EaseIn);
+        assert_eq!(
+            grid.autopilot,
+            Autopilot::default(),
+            "the missing autopilot did not fall back to the default"
+        );
+
+        // Cells alone, which is the minimum a set list is.
+        let bare: Grid = serde_json::from_slice(br#"{"cells":[]}"#).expect("cells alone rejected");
+        assert_eq!(
+            bare.duration, 2.0,
+            "an unstated blend became a cut — serde's f32 default is zero"
+        );
+        assert_eq!(bare.curve, Curve::Smooth);
+
+        // And an empty object is still a grid rather than an error.
+        let nothing: Grid = serde_json::from_slice(b"{}").expect("an empty object was rejected");
+        assert_eq!(nothing.duration, 2.0);
+    }
+
+    /// Adopting the page already loaded is not a page turn.
+    ///
+    /// Duplicating the live deck takes the copy from the live grids and
+    /// then loads it straight back in, so nothing about the pads changes
+    /// — but the adoption cleared `current` anyway. On stage that is the
+    /// lit pad going dark and the autopilot jumping back to the top of
+    /// the song, for a gesture whose whole point is that nothing visible
+    /// happens.
+    #[test]
+    fn adopting_the_page_already_loaded_leaves_the_lit_pad_lit() {
+        let (reg, hue, _, _) = registry();
+        let mut lib = std::collections::BTreeMap::new();
+        reg.set(hue, 0.3);
+        lib.insert("playing".to_string(), Preset::capture(&reg));
+        let presets = src(&lib);
+
+        let mut grid = Grid::new();
+        grid.duration = 0.0;
+        grid.assign(1, "playing");
+        assert!(grid.fire(1, &reg, &presets));
+        assert_eq!(grid.current(), Some(1), "the fixture never lit a pad");
+
+        grid.adopt_cells(grid.cells().to_vec());
+        assert_eq!(
+            grid.current(),
+            Some(1),
+            "adopting the same pads put out the pad that was lit"
+        );
+
+        // A genuinely different page still turns.
+        let mut other = vec![None; SLOTS];
+        other[4] = Some(Cell { preset: "playing".into(), label: None });
+        grid.adopt_cells(other);
+        assert_eq!(grid.current(), None, "a real page turn kept claiming a pad");
+    }
 
     /// Two grids put back in step land on their first pad together and
     /// take the next boundary together.

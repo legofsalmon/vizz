@@ -239,8 +239,18 @@ fn main() -> Result<()> {
             args.osc_port
         );
     }
+    // Shared with the render side, which mirrors the follow toggle and the
+    // live deck's column origin into it. Made here rather than inside the
+    // engine because the listener has to have it before the window exists,
+    // and handed to the engine afterwards.
+    // Made here because the listener binds before the window exists, and
+    // handed to the engine afterwards. It starts inert: the engine turns
+    // following on once it knows which of Resolume's columns the live page
+    // covers, which it cannot until the deck book has been read.
+    let columns = Arc::new(vizz_osc::ColumnSync::default());
     let _osc = match vizz_osc::OscServer::spawn(
         Arc::clone(&params.registry),
+        Arc::clone(&columns),
         (args.osc_bind.as_str(), args.osc_port),
     ) {
         Ok(server) => Some(server),
@@ -324,6 +334,7 @@ fn main() -> Result<()> {
                 live_cloud: live_cloud.clone(),
                 video_source: args.video_source.clone(),
                 outputs: output_opts,
+                columns,
             },
         )
     }

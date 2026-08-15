@@ -135,7 +135,22 @@ fn main() {
         "Warehouse 2".to_string(),
         "Ribbon".to_string(),
     ];
+    // A believable set list. The docs describe a row of chips above the
+    // pads, so the picture the docs show has to have one — a screenshot
+    // that contradicts the page beside it is worse than no screenshot.
+    let decks: Vec<performance::DeckChip> = ["opener", "second song", "encore"]
+        .iter()
+        .map(|name| performance::DeckChip {
+            name: (*name).to_string(),
+            midi: None,
+            learning: false,
+            origin: 1,
+        })
+        .collect();
     let state = performance::PerformanceState {
+        decks: &decks,
+        active_deck: 1,
+        follow_columns: Some(true),
         recording: Some(vizz_ui::RecordingView { secs: 72, frames: 4310, dropped: 12 }),
         preset_current: Some(2),
         outputs: &[

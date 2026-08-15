@@ -191,6 +191,7 @@
   <h4>Playing</h4>
   <a href="#presets">Presets</a>
   <a href="#scenes">Scenes and transitions</a>
+  <a href="#decks">Decks and Resolume</a>
   <a href="#punch">Punch FX</a>
   <a href="#gravity">Gravity</a>
   <a href="#faders">Performance faders</a>
@@ -387,6 +388,100 @@ are never locked out until the last move finishes.</p>
 every <code>/scene/bars</code> bars. It fires on the bar boundary and never on
 the frame you switch it on. The performance layout shows it as a wide green
 bar naming the pad it is heading for.</p>
+
+<h2 id="decks">Decks and Resolume</h2>
+
+<p>Sixteen scenes and sixteen gravity slots is a generous evening if the set is
+one continuous thing, and nowhere near enough if it is twelve songs that each
+want their own looks. A <strong>deck</strong> is a page of both grids together,
+one per song.</p>
+
+<p>The chips above the pads on the performance layout are the set list.</p>
+
+<ol class="steps">
+<li>Click a chip to turn the page. The pads underneath — scenes and gravity
+both — become that song's.</li>
+<li><strong>+</strong> makes a fresh empty page; right-click a chip and choose
+<strong>duplicate</strong> to start the next song from this one, which is
+usually what you want.</li>
+<li>Right-click for <strong>rename…</strong> and <strong>delete page</strong>.
+The last page cannot be deleted.</li>
+</ol>
+
+<p><strong>A deck holds references, not copies.</strong> Looks live in one pool,
+so the same preset can sit on a pad in every song and refining it once improves
+all twelve. Deleting a page throws away an arrangement, not an evening's
+work.</p>
+
+<p><strong>Turning a page changes nothing on screen.</strong> Switching decks
+fires nothing and writes no parameter: whatever is showing stays until you press
+a pad. Every page turn happens in front of an audience. A blend already running
+finishes, but stops claiming a pad — after a page turn no pad on screen produced
+what you are looking at.</p>
+
+<p><code>/deck/select</code> is an ordinary parameter, so a chip, a controller
+button and an OSC message are one gesture. Bindings name the <em>deck
+number</em>, exactly as the pads and preset slots do, so sixteen buttons address
+sixteen pages. Right-click a chip to learn one.</p>
+
+<h3>Following Resolume's columns</h3>
+
+<p>Arena's column launches can drive vizz. In <strong>Arena ▸ Preferences ▸
+OSC</strong> turn on <strong>OSC Output</strong> and point it at this machine on
+vizz's OSC port (7000 unless <code>--osc-port</code> says otherwise), then turn
+on <strong>resolume</strong> beside the deck chips.</p>
+
+<p>Launching Arena column N then fires <strong>column N here — the scene pad and
+the gravity pad of that number, together</strong>, which is what a column means
+in Arena too. Keep the two grids arranged in parallel and one button runs the
+video and the field.</p>
+
+<p><strong>Off unless you ask for it.</strong> The OSC listener binds every
+interface by default, so following hands anyone on the venue's wifi the scene
+transport. The switch is remembered between runs.</p>
+
+<p><strong>Each page declares which columns it follows.</strong> A deck's
+<em>origin</em> is the Arena column its column 1 follows, on the chip's
+right-click menu. With one grid in Arena, leave every page at 1. With one long
+composition and a song every sixteen columns, set 1, 17, 33 … and each page
+follows its own stretch; a column outside the live page's stretch does nothing
+rather than landing on the nearest pad.</p>
+
+<p>Relaunching the column already showing fires it again, unlike pressing the
+same pad twice — a relaunch in Arena is a deliberate re-trigger and has to land.
+<code>/column/fire</code> is an ordinary address, so anything else that speaks
+OSC can play the show by column too.</p>
+
+<p><strong>Arena's deck changes come too.</strong>
+<code>/composition/decks/N/select</code> picks page N here. A deck is the song
+and a column is the section, so with the same messages reaching the lighting rig
+one launch moves the video, the lights and the field to the same place.</p>
+
+<h3>The built-in set</h3>
+
+<p>A machine that has never had a show set up on it opens with one: twenty
+songs, eight sections each, in the same idiom the app was built alongside —
+hard-edged flat geometry, black paper, bold limited palettes, layers at close
+frequencies interfering into moiré.</p>
+
+<p>The pads are the parts of a song, in the order you play them:
+<strong>Intro, Build, Break, Drop, Bridge, Peak, Outro, Blackout</strong> — the
+same eight the lighting rig uses.</p>
+
+<p><strong>Only on a machine with no show on it.</strong> No deck file, one
+page, nothing on it. Anything else and the set stays out of the way. To ask for
+it later, right-click the <strong>+</strong> beside the deck chips; it replaces
+every page, so it asks once.</p>
+
+<p>Each song carries one designed look, and its eight pads are that look read
+through the shape a song has — a bed, a rise, something stripped back, a hit, a
+hold, the biggest thing in the song, a return to the bed, and an ember. The
+<strong>Drop</strong> pad is the designed look exactly; everything else is
+measured from it. A quiet song's peak stays under a loud song's, so the set's
+arc survives into the pads.</p>
+
+<p>Every pad is an ordinary preset, so any of them is one <strong>store</strong>
+away from being yours.</p>
 
 <h2 id="punch">Punch FX</h2>
 
@@ -796,9 +891,16 @@ control input can never crash the renderer.</p>
 /shape/mode 5
 /preset/recall 3</code></pre>
 
-<p>Every parameter in the app is an OSC address, and every OSC address is a
-parameter — the panel is generated from the same table, so the two can never
-drift apart. The full list is <a href="#osc-table">below</a>.</p>
+<p>Every parameter in the app is an OSC address, and every address in the table
+below is a parameter — the panel is generated from the same table, so the two
+can never drift apart. The full list is <a href="#osc-table">below</a>.</p>
+
+<p>Two families of addresses are listened for without being parameters:
+<code>/composition/columns/N/connect</code> and
+<code>/composition/decks/N/select</code>, which are what Resolume Arena emits
+when a column is launched and when a deck is chosen. They are translated into
+<code>/column/fire</code> and <code>/deck/select</code> on the way in, and only
+while <a href="#decks">following</a> is on.</p>
 
 <h2 id="keyboard">Keyboard</h2>
 
@@ -1012,6 +1114,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/scene/curve</code></td><td>0 – 4</td><td>1</td><td>0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut</td></tr>
     <tr><td><code>/scene/auto</code></td><td>0 – 1</td><td>0</td><td>scene autopilot on/off</td></tr>
     <tr><td><code>/scene/bars</code></td><td>0.25 – 16</td><td>4</td><td>bars between scene autopilot steps</td></tr>
+    <tr><td><code>/deck/select</code></td><td>0 – 24</td><td>0</td><td>turn to page 1–24 on change; 0 = none</td></tr>
+    <tr><td><code>/column/fire</code></td><td>0 – 16</td><td>0</td><td>fire column 1–16 — the scene pad and the gravity pad of that number, together</td></tr>
     <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to a PNG sequence; 1 starts, 0 stops</td></tr>
     <tr><td><code>/master/dim</code></td><td>0 – 1</td><td>1</td><td>master fader</td></tr>
 </table>
@@ -1023,7 +1127,9 @@ running app by a test, so it cannot drift out of date.</p>
 <table>
 <tr><td><code>~/.config/vizz/presets/</code></td><td>Your saved looks, one JSON each</td></tr>
 <tr><td><code>~/.config/vizz/patches/</code></td><td>Modulation graphs</td></tr>
-<tr><td><code>~/.config/vizz/grid.json</code></td><td>The scene grid</td></tr>
+<tr><td><code>~/.config/vizz/grid.json</code></td><td>The scene grid, as the live deck left it</td></tr>
+<tr><td><code>~/.config/vizz/gravity-grid.json</code></td><td>The gravity grid, likewise</td></tr>
+<tr><td><code>~/.config/vizz/decks.json</code></td><td>The set list: every page of pads, and which one is live</td></tr>
 <tr><td><code>~/.config/vizz/midi.json</code></td><td>Your controller map</td></tr>
 <tr><td><code>~/.config/vizz/settings.json</code></td><td>Output size, audio device, loaded clouds, fullscreen</td></tr>
 <tr><td><code>~/Movies/vizz/</code></td><td>Recordings (macOS; <code>~/Videos/vizz/</code> elsewhere)</td></tr>

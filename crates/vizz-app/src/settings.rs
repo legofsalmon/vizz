@@ -28,6 +28,15 @@ pub struct Settings {
     /// lives here with the other preferences.
     #[serde(default)]
     pub autopilot_lock: bool,
+    /// Follow Resolume's column launches over OSC.
+    ///
+    /// Off unless asked for, and deliberately so. The OSC listener binds
+    /// every interface by default, so this turns any packet from anyone on
+    /// the venue's wifi into a scene change on both grids at once — which
+    /// is exactly what you want from the machine running Arena beside you
+    /// and exactly what you do not want from a stranger.
+    #[serde(default)]
+    pub follow_columns: bool,
     /// Input device name, or `None` for the system default.
     pub audio_device: Option<String>,
     /// Point clouds loaded into the loadable slots, in slot order.
@@ -310,6 +319,13 @@ pub fn save_fullscreen(fullscreen: bool) -> Result<()> {
 pub fn save_autopilot_lock(locked: bool) -> Result<()> {
     let mut s = load();
     s.autopilot_lock = locked;
+    save(&s)
+}
+
+/// Remember whether the columns follow Resolume.
+pub fn save_follow_columns(follow: bool) -> Result<()> {
+    let mut s = load();
+    s.follow_columns = follow;
     save(&s)
 }
 

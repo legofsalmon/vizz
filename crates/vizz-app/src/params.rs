@@ -130,6 +130,8 @@ pub struct AppParams {
     pub scene_curve: ParamId,
     pub scene_auto: ParamId,
     pub scene_bars: ParamId,
+    pub deck_select: ParamId,
+    pub column_fire: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
@@ -145,6 +147,12 @@ pub const MAX_PRESET_SLOT: f32 = 64.0;
 /// runs from 1, exactly as preset recall does, so a control resting at
 /// zero cannot fire a scene on the first frame.
 pub const SCENE_SLOTS: f32 = vizz_mod::scene::SLOTS as f32;
+
+/// Highest deck `/deck/select` will address, with 0 meaning "none" the
+/// same way. Taken from the deck book's own ceiling rather than typed
+/// again — the two disagreeing would mean a controller button that selects
+/// a deck the app refuses to create, or a deck with no way to reach it.
+pub const MAX_DECKS: f32 = vizz_mod::deck::MAX_DECKS as f32;
 
 /// Longest blend either grid will accept.
 ///
@@ -524,6 +532,24 @@ impl AppParams {
         // scene change on every beat is a legitimate effect and a minimum
         // of one bar would rule it out.
         let scene_bars = b.add(ParamDef::new("/scene/bars", 0.25, 16.0, 4.0).transport());
+        // Which page of pads is loaded. A parameter for the same reason
+        // every other transport is: a deck button on a controller and a
+        // deck chip on screen have to be the same gesture, and the moment
+        // they are two they start behaving differently.
+        //
+        // Unsmoothed, and this one matters more than most. A glided select
+        // does not merely fire what it passes over — a deck switch *writes
+        // the outgoing deck's pads back* on its way through, so a swept
+        // fader would shuffle the contents of every deck between here and
+        // there into each other. That is not a wrong picture, it is a lost
+        // set list.
+        let deck_select = b.add(ParamDef::new("/deck/select", 0.0, MAX_DECKS, 0.0).transport());
+        // A column: the scene pad and the gravity pad of the same number,
+        // fired together. This is what a Resolume column launch lands on,
+        // and it is an ordinary address so anything else that speaks OSC —
+        // TouchOSC, QLab, a script — can play the show by column too.
+        let column_fire =
+            b.add(ParamDef::new(vizz_osc::COLUMN_FIRE, 0.0, SCENE_SLOTS, 0.0).transport());
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
         Self {
@@ -596,6 +622,8 @@ impl AppParams {
             scene_curve,
             scene_auto,
             scene_bars,
+            deck_select,
+            column_fire,
         }
     }
 }
@@ -668,6 +696,10 @@ mod tests {
                 "/punch/strobe",
                 "/punch/strobe_div",
                 "/record/active",
+                // The deck transport. A captured deck select would turn
+                // the page out from under the pad that was just pressed.
+                "/deck/select",
+                "/column/fire",
             ]
         );
     }
@@ -706,6 +738,40 @@ mod tests {
             def.max,
             vizz_mod::scene::SLOTS as f32,
             "not every pad is reachable"
+        );
+    }
+
+    /// The deck transport must not glide, and worse than a scene glide.
+    ///
+    /// A swept `/scene/fire` fires every pad it passes over, which is a
+    /// wrong picture. A swept `/deck/select` *writes the outgoing deck's
+    /// pads back* at every step on the way through, shuffling the contents
+    /// of every page between here and there into each other — a lost set
+    /// list rather than a bad look. Nothing generic asserts that transport
+    /// parameters are unsmoothed: `.gesture()` refuses a smoothing time,
+    /// `.transport()` accepts one silently.
+    #[test]
+    fn the_deck_transport_rests_at_nothing_and_does_not_glide() {
+        let p = AppParams::build();
+        for (id, noun) in [(p.deck_select, "deck select"), (p.column_fire, "column fire")] {
+            let def = &p.registry.defs()[id.index()];
+            assert_eq!(def.default, 0.0, "{noun} does not rest at nothing");
+            assert_eq!(def.min, 0.0, "{noun} has no 'nothing selected'");
+            assert_eq!(def.smooth, 0.0, "{noun} glides, and would sweep every page");
+            assert!(def.transport, "{noun} is not transport, so a preset could capture it");
+        }
+        assert_eq!(
+            p.registry.defs()[p.deck_select.index()].max,
+            MAX_DECKS,
+            "not every page is reachable"
+        );
+        // A column is a pad number on both grids, so its range has to be
+        // the grid's — the OSC listener reads this ceiling to decide
+        // whether a Resolume column falls inside the deck at all.
+        assert_eq!(
+            p.registry.defs()[p.column_fire.index()].max,
+            SCENE_SLOTS,
+            "a column cannot address every pad"
         );
     }
 
@@ -929,6 +995,67 @@ mod reference_tests {
                 "README documents {addr}, which no longer exists"
             );
         }
+    }
+
+    /// Every value in a built-in set is a real address, in range.
+    ///
+    /// `vizz-mod` builds the set and cannot see this table, so it restates
+    /// the ranges it clamps to. Two copies of a number is two things that
+    /// can drift, and the drift is silent: a clamp against a stale ceiling
+    /// writes a value the registry then clamps again, and a pad comes out
+    /// dimmer or slower than it was designed with nothing to say so. An
+    /// address that no longer exists is worse — it is dropped, and the pad
+    /// inherits whatever the look before it left there.
+    #[test]
+    fn the_built_in_set_writes_real_addresses_in_range() {
+        let p = super::AppParams::build();
+        let set = vizz_mod::sets::electronic();
+        let mut checked = 0;
+        for (name, preset) in &set.presets {
+            for (addr, value) in &preset.values {
+                let id = p
+                    .registry
+                    .id(addr)
+                    .unwrap_or_else(|| panic!("{name} writes {addr}, which is not a parameter"));
+                let def = &p.registry.defs()[id.index()];
+                assert!(
+                    *value >= def.min && *value <= def.max,
+                    "{name} writes {addr} = {value}, outside {}..{}",
+                    def.min,
+                    def.max
+                );
+                checked += 1;
+            }
+        }
+        // A hundred and sixty looks of forty-odd values each. The floor
+        // catches a set that silently built empty far more cheaply than
+        // any of the assertions above would.
+        assert!(checked > 5_000, "only checked {checked} values — did the set build?");
+    }
+
+    /// The set fits in the book, and every song is reachable.
+    ///
+    /// These are two constants in two crates — the deck ceiling and the
+    /// parameter's range — and a set is the thing that finds out they
+    /// disagree. A song past the end of `/deck/select` is a song no
+    /// controller and no OSC client can reach.
+    #[test]
+    fn every_song_in_the_built_in_set_can_be_selected() {
+        let p = super::AppParams::build();
+        let set = vizz_mod::sets::electronic();
+        assert!(
+            set.decks.len() <= vizz_mod::deck::MAX_DECKS,
+            "the set is {} songs and the book holds {}",
+            set.decks.len(),
+            vizz_mod::deck::MAX_DECKS
+        );
+        let def = &p.registry.defs()[p.deck_select.index()];
+        assert!(
+            def.max >= set.decks.len() as f32,
+            "/deck/select tops out at {} but the set has {} songs",
+            def.max,
+            set.decks.len()
+        );
     }
 
     /// `SHAPE_CLOUD_PAIR` is a bare number pointed at a position in a

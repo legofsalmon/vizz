@@ -115,6 +115,30 @@ pub struct PerformanceState<'a> {
     /// driving it and offer to change it. `None` in contexts with no
     /// modulation at all, where the faders simply omit the control.
     pub graph: Option<&'a vizz_mod::graph::NodeGraph>,
+    /// The pages of pads, in order, and which one is live. Empty in
+    /// contexts that have no deck book, where the row is not drawn at all.
+    pub decks: &'a [DeckChip],
+    pub active_deck: usize,
+    /// Whether Resolume's column launches are being followed, or `None`
+    /// where the toggle is not on offer.
+    pub follow_columns: Option<bool>,
+}
+
+/// One page, as the chip row needs to see it.
+///
+/// A name and its binding rather than the deck itself, for the reason the
+/// grid view takes names: this crate does not depend on the deck module's
+/// internals, and a chip row that did could not be drawn in a test without
+/// building a book.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeckChip {
+    pub name: String,
+    /// The controller button that selects this deck, if one is mapped.
+    pub midi: Option<String>,
+    /// This chip is the one waiting for a button.
+    pub learning: bool,
+    /// Which Resolume column this deck's column 1 follows.
+    pub origin: u32,
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +175,34 @@ pub struct PerformanceActions {
     /// Put a ready-made modulator on this parameter, or take it off with
     /// `None`. Indexes [`vizz_mod::shapes::SHAPES`].
     pub set_mod_shape: Option<(String, Option<usize>)>,
+    /// What the deck row asks for this frame.
+    pub decks: DeckActions,
+}
+
+/// What the deck row asks the app to do.
+///
+/// Its own struct rather than fields on [`PerformanceActions`], and
+/// deliberately not on [`crate::grid_view::GridActions`]: a page spans
+/// both grids, and grid actions are applied once per grid — a deck field
+/// there would be acted on twice, or handled by a third special case
+/// beside `resync` and `set_lock` that reads only the scene grid's copy
+/// and silently drops gravity's.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct DeckActions {
+    /// Turn to this page (0-based).
+    pub select: Option<usize>,
+    /// Add an empty page and go to it.
+    pub add: bool,
+    /// Copy this page and go to the copy.
+    pub duplicate: Option<usize>,
+    pub rename: Option<(usize, String)>,
+    pub delete: Option<usize>,
+    /// Point this page at a stretch of Resolume's columns.
+    pub origin: Option<(usize, u32)>,
+    /// Start or stop following Resolume's column launches.
+    pub follow: Option<bool>,
+    /// Replace every page with the built-in set.
+    pub install_set: bool,
 }
 
 
@@ -164,7 +216,7 @@ const PANE_EDGE: egui::Color32 = egui::Color32::from_rgb(0x2C, 0x33, 0x42);
 const DESK_MIN_W: f32 = 1180.0;
 /// The narrowest the control column may be squeezed: eight gravity pads
 /// plus their gaps at a size a hand can still hit. Sixteen used to set
-/// this, before the scene grid moved to the deck.
+/// this, before the scene grid moved to the desk.
 const COL_MIN_W: f32 = 470.0;
 /// The smallest picture worth calling a preview.
 const PANE_MIN_W: f32 = 420.0;
@@ -244,7 +296,7 @@ fn paint_scrim(
 }
 
 /// The CONTROLS caption and its hint line, which sit between the pads
-/// and the faders and so belong to the deck's height.
+/// and the faders and so belong to the desk's height.
 const CAPTION_H: f32 = 34.0;
 
 /// Where last frame's measured scene-block height lives.
@@ -253,7 +305,7 @@ fn scene_h_id() -> egui::Id {
 }
 
 /// Below this window height the sections between the status strip and
-/// the deck stay stood down once they have been stood down.
+/// the desk stay stood down once they have been stood down.
 ///
 /// Hysteresis, not a second opinion. Standing the sections down frees
 /// exactly the room that would say they can come back, so a single
@@ -360,7 +412,7 @@ pub fn draw(
             // a small window goes back to being the single column it was.
             let desk = full.x >= DESK_MIN_W && !peeking;
             let col_w = if desk {
-                // Narrower now that the scene grid has gone to the deck.
+                // Narrower now that the scene grid has gone to the desk.
                 // What is left has to carry the gravity grid at eight
                 // pads wide, which is what sets the floor; everything
                 // else in the column is a single row.
@@ -415,7 +467,7 @@ pub fn draw(
                     }
 
                     });
-                    // The bottom deck: the pads and the faders, both
+                    // The bottom of the desk: the pads and the faders, both
                     // full width, under both columns.
                     //
                     // These are the two things played rather than set,
@@ -428,7 +480,7 @@ pub fn draw(
                     //
                     // It separates the two grids as well, which colour
                     // alone was only papering over: scenes are on the
-                    // deck you play, gravity is in the column you edit.
+                    // desk you play, gravity is in the column you edit.
                     ui.set_width(inner_w);
                     // Whatever vertical space is left goes to the faders,
                     // which are the thing you actually play. Measured from
@@ -463,7 +515,7 @@ pub fn draw(
                         // Its height depends on what is in it — whether
                         // autopilot is armed, whether a pad is waiting —
                         // so it cannot be computed before drawing it, and
-                        // the deck has to be positioned before. Last
+                        // the desk has to be positioned before. Last
                         // frame's measurement is right in every frame but
                         // the one where it changes, and wrong by a row
                         // for a sixtieth of a second in that one.
@@ -483,10 +535,28 @@ pub fn draw(
                             ui.add_space(gap);
                         }
                     }
-                    // The pads, at the top of the deck.
-                    let deck_top = ui.cursor().top();
+                    // The pads, at the top of the desk.
+                    let desk_top = ui.cursor().top();
                     if !peeking {
-                        let top = deck_top;
+                        let top = desk_top;
+                    // The set list, above both grids, and inside the block
+                    // `measured` covers — so the gap above the pads shrinks
+                    // by the row's height next frame and the faders keep
+                    // the room they had.
+                    //
+                    // Drawn at every size, including the ones where PUNCH
+                    // and LAYERS stand down. It was guarded by `cramped`
+                    // at first, on the theory that the single-column
+                    // layout has no gap to give up and the row would come
+                    // straight off the fader budget — but the budget
+                    // absorbs it: removing the guard and re-running the
+                    // window sweep changed nothing, and it takes about
+                    // three hundred points of added height before the
+                    // faders are laid out below the window at all. Hiding
+                    // the set list on a laptop screen, which is where a
+                    // set list is most needed, was a real cost paid
+                    // against a theoretical one.
+                    deck_row(ui, state, &mut actions);
                     if let Some(gravity) = state.gravity.filter(|_| !peeking) {
                         section(ui, "GRAVITY");
                         // Sixteen empty pads for a layer nobody has touched
@@ -511,9 +581,9 @@ pub fn draw(
 
 
                         section(ui, "SCENES");
-                        let mut deck = state.grid.clone();
-                        deck.width = Some(inner_w);
-                        actions.grid = crate::grid_view::draw(ui, &deck);
+                        let mut scenes = state.grid.clone();
+                        scenes.width = Some(inner_w);
+                        actions.grid = crate::grid_view::draw(ui, &scenes);
                         ui.add_space(10.0);
                         // Measured to include the caption below, which is
                         // part of the block the gap has to account for.
@@ -619,7 +689,7 @@ pub fn draw(
                     // and the dim fader that recovers a black output was
                     // simply absent.
                     //
-                    // `left` above still positions the deck in desk
+                    // `left` above still positions the desk block in desk
                     // mode, where the gap is sized so the two agree.
                     // This is the number the faders are actually given.
                     let fader_top = ui.cursor().top();
@@ -651,7 +721,7 @@ pub fn draw(
                     let pane = if desk {
                         Some(egui::Rect::from_min_max(
                             egui::pos2(PAD + col_w + PAD, pane_top),
-                            egui::pos2(full.x - PAD, deck_top - 6.0),
+                            egui::pos2(full.x - PAD, desk_top - 6.0),
                         ))
                     } else if peeking {
                         Some(egui::Rect::from_min_max(
@@ -775,6 +845,296 @@ fn section(ui: &mut egui::Ui, title: &str) {
         );
     });
     ui.add_space(4.0);
+}
+
+/// The address a deck chip binds to. Bindings name a parameter by address
+/// rather than by id, since they outlive the process.
+const DECK_SELECT: &str = "/deck/select";
+
+/// Longest deck name a chip will show before it starts shrinking. Wide
+/// enough for a song title, narrow enough that eight of them fit a row.
+const CHIP_NAME_W: f32 = 96.0;
+
+/// The pages, as a row of chips above the pads.
+///
+/// Above rather than below, and above *both* grids rather than beside one
+/// of them, because it says what every pad underneath means. A row that
+/// changes sixteen scene pads and sixteen gravity pads at once, drawn
+/// under one of the two, would read as belonging to that one.
+///
+/// The chips are what a set list looks like: one per song, in the order
+/// you play them, with the live one lit. Everything else about a deck —
+/// rename, duplicate, delete, which Resolume columns it follows — is on
+/// the chip's own menu, because those are things you do at soundcheck and
+/// the row has to stay hittable at a metre in the dark.
+fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut PerformanceActions) {
+    if state.decks.is_empty() {
+        return;
+    }
+    let editing_id = ui.make_persistent_id("deck-rename");
+    let editing: Option<(usize, String)> = ui.data(|d| d.get_temp(editing_id));
+
+    ui.horizontal_wrapped(|ui| {
+        for (i, deck) in state.decks.iter().enumerate() {
+            let live = i == state.active_deck;
+            let (text, size) = fit_label(ui, &deck.name, CHIP_NAME_W);
+            let button = egui::Button::new(egui::RichText::new(text).size(size).color(INK))
+                .min_size(vec2(0.0, 26.0))
+                .fill(if deck.learning {
+                    LEARN
+                } else if live {
+                    vizz_design::surface::RAISED
+                } else {
+                    // Recessed rather than raised: a row where every chip
+                    // stands proud says nothing about which page is
+                    // playing, and that is the only thing the row is for.
+                    vizz_design::surface::WELL
+                })
+                // The live chip carries the same blue edge the current
+                // scene pad and the recalled preset wear. One colour for
+                // "this is the thing you are on", everywhere.
+                .stroke(if live {
+                    egui::Stroke::new(1.5, crate::theme::CURRENT)
+                } else {
+                    egui::Stroke::new(1.0, vizz_design::surface::EDGE)
+                });
+            let response = ui.add(button);
+            if response.clicked() && !live {
+                actions.decks.select = Some(i);
+            }
+            let hint = match (&deck.midi, deck.learning) {
+                (_, true) => "press a button on your controller".to_string(),
+                (Some(s), _) => format!("{}  ·  {s}", deck.name),
+                (None, _) => {
+                    if state.follow_columns == Some(true) {
+                        format!("{}  ·  follows Resolume columns {}–{}", deck.name, deck.origin,
+                            deck.origin + crate::grid_view::SLOTS as u32 - 1)
+                    } else {
+                        deck.name.clone()
+                    }
+                }
+            };
+            let response = response.on_hover_text(hint);
+            response.context_menu(|ui| deck_menu(ui, state, i, editing_id, actions));
+        }
+
+        if state.decks.len() < vizz_mod::deck::MAX_DECKS {
+            let plus = ui
+                .add(egui::Button::new("+").min_size(vec2(26.0, 26.0)))
+                .on_hover_text("a new empty page of pads  ·  right-click for the built-in set");
+            if plus.clicked() {
+                actions.decks.add = true;
+            }
+            // The way back to the shipped show. It installs itself on a
+            // machine that has never had one, so this is for the case that
+            // is otherwise a dead end: somebody who cleared their pages and
+            // wants it again. Armed, because it replaces every page.
+            plus.context_menu(|ui| {
+                if vizz_design::widgets::armed_button(
+                    ui,
+                    egui::Id::new("deck-set-armed"),
+                    0,
+                    vizz_design::widgets::Armed {
+                        idle_label: "load the built-in set",
+                        armed_label: "replace every page",
+                        idle_hover: "twenty songs, eight sections each (asks once)",
+                        armed_hover: "every page you have now goes; the looks they name stay",
+                        small: false,
+                    },
+                ) {
+                    actions.decks.install_set = true;
+                    ui.close();
+                }
+            });
+        }
+
+        // The follow switch sits with the decks rather than with the
+        // sequencer controls: what it does is hand the deck's columns to
+        // another program, which is a fact about the pages, not about how
+        // a blend is shaped.
+        if let Some(following) = state.follow_columns {
+            ui.add_space(10.0);
+            if ui
+                .selectable_label(following, egui::RichText::new("resolume").size(13.0))
+                .on_hover_text(
+                    "follow Arena's column launches: launching a column there fires \
+                     the scene and gravity pads of the same number here. Turn on \
+                     OSC Output in Arena's preferences and point it at this app.",
+                )
+                .clicked()
+            {
+                actions.decks.follow = Some(!following);
+            }
+        }
+    });
+
+    if let Some((slot, text)) = editing {
+        deck_rename_row(ui, slot, text, editing_id, actions);
+    }
+    ui.add_space(6.0);
+}
+
+/// What a chip offers on a right click. Soundcheck work, deliberately one
+/// gesture away from the row you play.
+fn deck_menu(
+    ui: &mut egui::Ui,
+    state: &PerformanceState<'_>,
+    index: usize,
+    editing_id: egui::Id,
+    actions: &mut PerformanceActions,
+) {
+    let deck = &state.decks[index];
+    if ui.button("rename…").clicked() {
+        ui.data_mut(|d| d.insert_temp(editing_id, (index, deck.name.clone())));
+        ui.close();
+    }
+    if state.decks.len() < vizz_mod::deck::MAX_DECKS && ui.button("duplicate").clicked() {
+        actions.decks.duplicate = Some(index);
+        ui.close();
+    }
+    if state.follow_columns.is_some() {
+        ui.separator();
+        ui.label(
+            egui::RichText::new(format!("resolume columns from {}", deck.origin))
+                .size(12.0)
+                .color(INK_2),
+        );
+        // Held in egui's own memory while the drag is live, and handed
+        // over when it settles. Emitting on `changed()` wrote the set
+        // list to disk on every frame of a drag — a file per frame, on
+        // the render thread, for one adjustment.
+        let pending = ui.make_persistent_id(("deck-origin", index));
+        let mut origin: f32 = ui
+            .data(|d| d.get_temp(pending))
+            .unwrap_or(deck.origin as f32);
+        // A whole number of columns: Resolume has no column 4.5, and a
+        // slider that offers one would produce a deck that follows
+        // nothing. The top is a full book laid out on the ladder the
+        // hover text describes — sixteen pages, sixteen columns apart.
+        let top = ((vizz_mod::deck::MAX_DECKS - 1) * crate::grid_view::SLOTS + 1) as f32;
+        let slider = ui
+            .add(
+                egui::Slider::new(&mut origin, 1.0..=top)
+                    .step_by(1.0)
+                    .clamping(egui::SliderClamping::Always),
+            )
+            .on_hover_text(
+                "which Arena column this page's column 1 follows. Leave every page \
+                 at 1 when Arena has one grid; set 1, 17, 33 … when it has one long \
+                 one and a song every sixteen columns.",
+            );
+        if slider.changed() {
+            ui.data_mut(|d| d.insert_temp(pending, origin));
+        }
+        if slider.drag_stopped() || slider.lost_focus() {
+            actions.decks.origin = Some((index, origin.round().max(1.0) as u32));
+            ui.data_mut(|d| d.remove_temp::<f32>(pending));
+        }
+    }
+    // A deck maps exactly as a scene pad and a preset slot do: the binding
+    // names the deck number and the button only says when. A plain binding
+    // on `/deck/select` would spread one control across the whole book and
+    // land on the last page every time.
+    if state.midi.available {
+        ui.separator();
+        let value = index as f32 + 1.0;
+        match (&deck.midi, deck.learning) {
+            (Some(s), _) => {
+                if ui.button(format!("unmap {s}")).clicked() {
+                    actions.clear_slot_binding = Some((DECK_SELECT.to_string(), value));
+                    ui.close();
+                }
+            }
+            (None, true) => {
+                if ui.button("cancel MIDI learn").clicked() {
+                    actions.set_learn_target = Some(None);
+                    ui.close();
+                }
+            }
+            (None, false) => {
+                if ui.button("MIDI learn").clicked() {
+                    actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::value(
+                        DECK_SELECT,
+                        value,
+                        format!("deck {}", index + 1),
+                    )));
+                    ui.close();
+                }
+            }
+        }
+    }
+    // The last page cannot go: a show with no decks has nowhere to put a
+    // pad, and there would be no chip left to click to make one.
+    if state.decks.len() > 1 {
+        ui.separator();
+        if vizz_design::widgets::armed_button(
+            ui,
+            egui::Id::new("deck-delete-armed"),
+            index as u64,
+            vizz_design::widgets::Armed {
+                idle_label: "delete page",
+                armed_label: "delete for good",
+                idle_hover: "throw this page of pads away (asks once)",
+                armed_hover: "the pads on this page go; the looks they name stay",
+                small: false,
+            },
+        ) {
+            actions.decks.delete = Some(index);
+            // Delete is the only gesture that renumbers the pages, so a
+            // rename still open is holding a position that will name a
+            // different song by the time it is committed.
+            ui.data_mut(|d| d.remove_temp::<(usize, String)>(editing_id));
+            ui.close();
+        }
+    }
+}
+
+/// Typing a deck's name. A row rather than a popup, for the reason the
+/// grid's rename is one: a text field floating over the pads covers the
+/// thing you are naming.
+fn deck_rename_row(
+    ui: &mut egui::Ui,
+    index: usize,
+    mut text: String,
+    editing_id: egui::Id,
+    actions: &mut PerformanceActions,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("name").size(12.0).color(INK_2));
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .desired_width(180.0)
+                .hint_text("song"),
+        );
+        // Once, on the frame the row appears. Asking every frame re-grabs
+        // focus after egui has released it, so `lost_focus` never became
+        // true and Enter did not commit — the only way out was the button.
+        let focused = editing_id.with("focused");
+        let first = ui.data_mut(|d| {
+            let first = !d.get_temp::<bool>(focused).unwrap_or(false);
+            d.insert_temp(focused, true);
+            first
+        });
+        if first {
+            field.request_focus();
+        }
+        let commit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if commit || ui.button("ok").clicked() {
+            actions.decks.rename = Some((index, text.clone()));
+            ui.data_mut(|d| {
+                d.remove_temp::<(usize, String)>(editing_id);
+                d.remove_temp::<bool>(focused);
+            });
+        } else if cancel || ui.button("cancel").clicked() {
+            ui.data_mut(|d| {
+                d.remove_temp::<(usize, String)>(editing_id);
+                d.remove_temp::<bool>(focused);
+            });
+        } else {
+            ui.data_mut(|d| d.insert_temp(editing_id, (index, text.clone())));
+        }
+    });
 }
 
 /// Presets as a row of buttons, numbered to match the keyboard.
@@ -2050,7 +2410,7 @@ fn assign_popup(
     // the ones a wide set puts there.
     // Same source the layout itself measures from, a few hundred lines
     // up: `raw.screen_rect` rather than a derived one, so the picker and
-    // the deck cannot disagree about where the window ends.
+    // the desk cannot disagree about where the window ends.
     let screen = ui
         .ctx()
         .input(|i| i.raw.screen_rect)
@@ -2221,7 +2581,7 @@ fn vertical_fader(
     let span = (max - min).max(f32::EPSILON);
     let t = ((value - min) / span).clamp(0.0, 1.0);
 
-    // The well is a hole milled into the deck, not a block raised out of
+    // The well is a hole milled into the desk, not a block raised out of
     // it. That is the whole idea, and it is also the only version that
     // survives the room: when the output behind the scrim flashes white
     // the ground lifts, so a raised block closes on it and all but
@@ -2343,7 +2703,7 @@ fn vertical_fader(
     // renders as exactly one pixel of a 48-point luminance step — real
     // in the code, invisible in the room, which a pixel scan of the
     // rendered frame settled rather than an argument about it. The well
-    // then had no drawn boundary at all: only GROOVE against the deck,
+    // then had no drawn boundary at all: only GROOVE against the desk,
     // nine points apart.
     let (rim_w, rim) = if midi.learning(&def.addr) {
         // Breathing rather than blinking: insistent, never a strobe.
@@ -2366,7 +2726,7 @@ fn vertical_fader(
 
     // A control your hardware owns, said as a rail in the margin rather
     // than only as small print below. A word has to be read; a rail at a
-    // constant x does not, so a mapped deck and an unmapped deck are
+    // constant x does not, so a mapped desk and an unmapped desk are
     // different pictures from across a room.
     //
     // Flush against the well rather than floating beside it. With a gap
@@ -2665,6 +3025,23 @@ mod tests {
         /// Set by [`render_peeking`] so the harness can put the context
         /// into the peeking state before the layout reads it.
         static RENDER_PEEK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The set list the shared harness draws, so the layout tests can
+        /// opt into a deck row without every other test in the file
+        /// suddenly finding chip names in its sheet.
+        static SHEET_DECKS: std::cell::RefCell<Vec<DeckChip>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Run `f` with a set list on the desk.
+    fn with_decks<T>(decks: Vec<DeckChip>, f: impl FnOnce() -> T) -> T {
+        SHEET_DECKS.with(|d| *d.borrow_mut() = decks);
+        let out = f();
+        SHEET_DECKS.with(|d| d.borrow_mut().clear());
+        out
+    }
+
+    fn chip(name: &str) -> DeckChip {
+        DeckChip { name: name.into(), midi: None, learning: false, origin: 1 }
     }
 
 
@@ -2713,7 +3090,7 @@ mod tests {
         // is its own problem and not the width fallback under test here.
         // Asserting a name would be asserting that bug instead of this
         // one, and would go on failing after this one was fixed.
-        assert!(text.contains("CONTROLS"), "the narrow layout lost the deck: {text}");
+        assert!(text.contains("CONTROLS"), "the narrow layout lost the desk: {text}");
     }
 
 
@@ -2724,7 +3101,7 @@ mod tests {
     /// still has to show the picture, and faders you cannot see past
     /// are not more control.
     #[test]
-    fn the_fader_count_can_be_changed_from_the_deck() {
+    fn the_fader_count_can_be_changed_from_the_desk() {
         let reg = registry();
         let mut macros = Macros::default();
         macros.set(0, Some("/particles/size".to_string()));
@@ -2732,7 +3109,7 @@ mod tests {
         let text = render(&mut macros, &reg);
         assert!(
             text.contains("CONTROLS"),
-            "the deck lost its caption: {text}"
+            "the desk lost its caption: {text}"
         );
         // The count is shown, not only implied by counting faders.
         assert!(
@@ -2839,6 +3216,9 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            decks: &[],
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             outputs: &[],
@@ -2918,14 +3298,14 @@ mod tests {
 
     /// A modulator can be put on a fader without leaving the layout.
     ///
-    /// Driven through real clicks on the deck rather than by calling the
+    /// Driven through real clicks on the desk rather than by calling the
     /// popup directly, because the thing worth proving is that the
     /// control is *reachable*: the value line has to take a click, the
     /// popup has to open over a layout that redraws every frame, and the
     /// pick has to survive as an action. Any of those failing leaves a
     /// feature that exists and cannot be used.
     #[test]
-    fn a_modulator_can_be_put_on_a_fader_from_the_deck() {
+    fn a_modulator_can_be_put_on_a_fader_from_the_desk() {
         let reg = registry();
         let mut macros = Macros::default();
         let ctx = egui::Context::default();
@@ -2951,6 +3331,9 @@ mod tests {
                          macros: &mut Macros|
          -> (PerformanceActions, Vec<(String, egui::Rect)>) {
             let state = PerformanceState {
+                decks: &[],
+                active_deck: 0,
+                follow_columns: None,
                 recording: None,
                 preset_current: None,
                 outputs: &[],
@@ -3006,14 +3389,14 @@ mod tests {
 
         /// Where the readout under a named fader is, measured on the
         /// frame it will be clicked on rather than remembered from an
-        /// earlier one — the deck animates, and a stale position is how
+        /// earlier one — the desk animates, and a stale position is how
         /// this test first "passed" a click that landed on nothing.
         fn readout_under(texts: &[(String, egui::Rect)], name: &str) -> egui::Pos2 {
             let label = texts
                 .iter()
                 .find(|(t, _)| t.trim() == name)
                 .map(|(_, r)| *r)
-                .unwrap_or_else(|| panic!("no fader labelled '{name}' on the deck"));
+                .unwrap_or_else(|| panic!("no fader labelled '{name}' on the desk"));
             texts
                 .iter()
                 .filter(|(_, r)| {
@@ -3080,14 +3463,14 @@ mod tests {
         assert!(!vizz_mod::shapes::driven(&graph, &addr));
     }
 
-    /// Clear works from the performance deck, not only from the widget.
+    /// Clear works from the performance desk, not only from the widget.
     ///
     /// The grid widget clears correctly when driven on its own — that is
     /// tested in grid_view. Reported behaviour is that it does nothing
     /// on the performance screen, which means the fault is in what this
     /// layout does around it, so this drives the whole layout.
     #[test]
-    fn clear_works_from_the_performance_deck() {
+    fn clear_works_from_the_performance_desk() {
         let reg = registry();
         let mut macros = Macros::default();
         let ctx = egui::Context::default();
@@ -3106,6 +3489,9 @@ mod tests {
                          macros: &mut Macros|
          -> Vec<(String, egui::Pos2)> {
             let state = PerformanceState {
+                decks: &[],
+                active_deck: 0,
+                follow_columns: None,
                 recording: None,
                 preset_current: None,
                 outputs: &[],
@@ -3168,14 +3554,14 @@ mod tests {
             .iter()
             .find(|(t, _)| t.trim() == "clear")
             .map(|(_, p)| *p)
-            .expect("no clear button on the performance deck");
+            .expect("no clear button on the performance desk");
         // The pad we mean to clear, found by its own name so the test
         // does not depend on the deck's layout arithmetic.
         let pad_at = texts
             .iter()
             .find(|(t, _)| t.trim() == "intro")
             .map(|(_, p)| *p)
-            .expect("no intro pad on the performance deck");
+            .expect("no intro pad on the performance desk");
 
         frame(Some(clear_at), &ctx, &mut macros);
         frame(Some(pad_at), &ctx, &mut macros);
@@ -3183,7 +3569,7 @@ mod tests {
         assert_eq!(
             actions.grid.clear,
             Some(0),
-            "arming clear and pressing a pad on the deck produced no clear"
+            "arming clear and pressing a pad on the desk produced no clear"
         );
     }
 
@@ -3294,6 +3680,9 @@ mod tests {
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
+                decks: &[],
+                active_deck: 0,
+                follow_columns: None,
                 recording: None,
                 preset_current: None,
                 outputs: &[],
@@ -3475,6 +3864,149 @@ mod tests {
         }
     }
 
+    /// The set list is on the screen you play on, named, and the live
+    /// page is not the one you have to guess at.
+    ///
+    /// The row exists to answer "which song's pads am I looking at"
+    /// across a dark room. A row that draws but does not name the pages,
+    /// or names them all identically, answers nothing.
+    #[test]
+    fn the_deck_row_names_every_page() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = with_decks(
+            vec![chip("opener"), chip("second song"), chip("encore")],
+            || sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1440.0, 900.0)),
+        );
+        let text = sheet.text();
+        for name in ["opener", "second song", "encore"] {
+            assert!(text.contains(name), "'{name}' is not on the desk: {text}");
+        }
+        // And the way to make another one, which is the only route to a
+        // second page there is.
+        assert!(text.contains('+'), "no way to add a page: {text}");
+    }
+
+    /// The Resolume switch is offered before it is on.
+    ///
+    /// Following is off by default, so a toggle that only appeared once
+    /// following was already running would be a switch nobody could ever
+    /// find to turn on — the locked-door shape this codebase has shipped
+    /// once already with the gravity sequencer.
+    #[test]
+    fn the_resolume_switch_is_visible_while_it_is_off() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = with_decks(vec![chip("opener")], || {
+            sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1440.0, 900.0))
+        });
+        assert!(
+            sheet.text().contains("resolume"),
+            "the column-follow switch is not on the desk: {}",
+            sheet.text()
+        );
+    }
+
+    /// Without a book there is no row at all.
+    ///
+    /// Every context that is not the live app — the mockups, the panel
+    /// preview — hands an empty set list, and a row of nothing would take
+    /// height off the picture to say that there are no pages.
+    #[test]
+    fn no_book_means_no_row() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1440.0, 900.0));
+        assert!(
+            !sheet.text().contains("resolume"),
+            "the deck row drew itself with no pages to show: {}",
+            sheet.text()
+        );
+    }
+
+    /// The faders survive every window worth playing on *with* a full set
+    /// list on the desk.
+    ///
+    /// The row costs height off the pads block, and the pads block is what
+    /// the fader budget subtracts — in the single-column layout there is
+    /// no gap to absorb it, so it comes straight off `room`, the number
+    /// that decides whether the fader block is laid out below the window
+    /// and culled entirely. `the_faders_survive_every_window_worth_playing_on`
+    /// cannot catch that: it runs with no decks and no row.
+    ///
+    /// Sixteen pages with long names, which is the worst the row can be —
+    /// a full book, every chip at its widest, wrapping to as many lines as
+    /// it takes. Probed by adding height at the row's position: the
+    /// assertions here start failing at around three hundred points, so
+    /// they are measuring the budget and not merely the strings.
+    #[test]
+    fn the_faders_survive_every_window_with_a_full_set_list_on_the_desk() {
+        let reg = registry();
+        let decks: Vec<DeckChip> = (1..=vizz_mod::deck::MAX_DECKS)
+            .map(|n| chip(&format!("song {n} with a long title")))
+            .collect();
+        for size in [
+            vec2(1280.0, 720.0),
+            vec2(1280.0, 680.0),
+            vec2(1024.0, 640.0),
+            vec2(1440.0, 900.0),
+            vec2(1920.0, 1080.0),
+            vec2(900.0, 700.0),
+            vec2(1100.0, 620.0),
+        ] {
+            let mut macros = Macros::default();
+            let sheet = with_decks(decks.clone(), || {
+                sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, size)
+            });
+            let text = sheet.text();
+            assert!(
+                text.contains("MASTER"),
+                "at {}x{} the master fader is not on screen with a set list up: {text}",
+                size.x,
+                size.y
+            );
+            assert!(
+                text.contains("size"),
+                "at {}x{} the macro faders are not on screen with a set list up: {text}",
+                size.x,
+                size.y
+            );
+            let off = sheet.offscreen();
+            assert!(
+                off.is_empty(),
+                "at {}x{}, {:?} was painted outside the window",
+                size.x,
+                size.y,
+                off.iter().map(|p| p.text.trim()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A song title long enough to be a real one does not push the row
+    /// past the right edge.
+    ///
+    /// Chips are laid out wrapped, so a name that refuses to shrink grows
+    /// the row instead — which in the single column comes off the faders.
+    /// `fit_label` is what stops it, and nothing else would.
+    #[test]
+    fn a_long_song_title_stays_inside_the_window() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let decks = vec![
+            chip("the one with the very long name that nobody would type"),
+            chip("also quite a long name for a song"),
+        ];
+        let sheet = with_decks(decks, || {
+            sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1024.0, 640.0))
+        });
+        let off = sheet.offscreen();
+        assert!(
+            off.is_empty(),
+            "{:?} was painted outside the window",
+            off.iter().map(|p| p.text.trim()).collect::<Vec<_>>()
+        );
+    }
+
     /// One run of text as it was actually painted, and where it landed.
     #[derive(Clone, Debug)]
     struct Painted {
@@ -3565,7 +4097,11 @@ mod tests {
         let audio = AudioView::default();
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let grid = crate::grid_view::GridView::default();
+        let decks = SHEET_DECKS.with(|f| f.borrow().clone());
         let state = PerformanceState {
+            decks: &decks,
+            active_deck: 1,
+            follow_columns: (!decks.is_empty()).then_some(false),
             recording,
             preset_current: None,
             outputs: &[OutputStatus {
@@ -3626,6 +4162,9 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            decks: &[],
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             outputs: &[OutputStatus { name: "syphon:vizz".into(), live: true }],
@@ -3696,6 +4235,9 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            decks: &[],
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             outputs: &[],
@@ -3752,6 +4294,9 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            decks: &[],
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             outputs: &[],

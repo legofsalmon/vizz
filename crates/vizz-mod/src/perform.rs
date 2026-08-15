@@ -31,7 +31,7 @@ pub const MACRO_COUNT: usize = 16;
 /// Fewest faders a set can be reduced to.
 ///
 /// Not zero and not one. A performance screen with no faders is a
-/// screen with nothing to play, and the deck below the pads would
+/// screen with nothing to play, and the desk below the pads would
 /// collapse to a caption — which is a worse thing to have shipped than
 /// four faders somebody is not using.
 pub const MACRO_MIN: usize = 4;
@@ -40,7 +40,7 @@ pub const MACRO_MIN: usize = 4;
 ///
 /// Twenty-four is where the arithmetic stops working rather than an
 /// arbitrary round number. They wrap at eight to a row, so 24 is three
-/// full rows; at a 1400-point deck that is about 170 points a column,
+/// full rows; at a 1400-point desk that is about 170 points a column,
 /// which still carries a name, a value and a MIDI chip on three lines.
 /// A fourth row would take the height back off the output pane, which
 /// is the thing the whole layout exists to protect — and faders you

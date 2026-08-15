@@ -83,6 +83,10 @@ pub struct PanelActions {
     pub output_setup: Option<OutputSetup>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
+    /// What the deck row asks for. Kept off [`crate::grid_view::GridActions`]
+    /// because a page spans both grids and grid actions are applied once
+    /// per grid — a deck field there would be acted on twice.
+    pub decks: crate::performance::DeckActions,
     /// Put this cloud slot on screen. `true` sets it as the far end of
     /// the morph (b) rather than the near end (a).
     pub cloud_show: Option<(usize, bool)>,
@@ -196,6 +200,14 @@ pub struct PanelState {
     /// The gravity grid, when the layer is in use. `None` hides it from
     /// the performance layout entirely.
     pub gravity_grid: Option<crate::grid_view::GridView>,
+    /// The pages of pads, in play order. Carried through rather than
+    /// drawn here: the panel is where a look is designed, and the set list
+    /// belongs on the screen where it is played.
+    pub decks: Vec<crate::performance::DeckChip>,
+    pub active_deck: usize,
+    /// Whether Resolume's column launches are being followed, or `None`
+    /// where the toggle is not on offer.
+    pub follow_columns: Option<bool>,
     /// The `/` shortcut was pressed this frame; focus the parameter filter.
     pub focus_filter: bool,
     /// A recording in progress, if one is.
