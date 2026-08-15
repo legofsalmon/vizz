@@ -8,12 +8,69 @@
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rosc::{OscPacket, OscType};
 use vizz_params::ParamRegistry;
+
+/// The address a Resolume column launch arrives on, as
+/// `/composition/columns/<n>/connect`.
+const RESOLUME_COLUMNS: &str = "/composition/columns/";
+const RESOLUME_CONNECT: &str = "/connect";
+
+/// Where a followed column lands. See [`ColumnSync`].
+pub const COLUMN_FIRE: &str = "/column/fire";
+
+/// Everything the listener needs to know to follow Resolume's columns.
+///
+/// Three atomics rather than a lock, for the reason the module header
+/// gives: this thread must never be able to stall a frame, and a mutex
+/// shared with the render thread is exactly how that happens. Nothing here
+/// has two writers — the app stores `enabled` and `origin`, the listener
+/// only reads them; the listener bumps `fires`, the app only reads it — so
+/// there is no state a torn update could produce.
+#[derive(Debug, Default)]
+pub struct ColumnSync {
+    /// Whether Resolume's column launches drive this app at all.
+    ///
+    /// Off unless asked for. The listener binds every interface by
+    /// default, and following columns turns any packet from anyone on the
+    /// venue's wifi into a scene change on both grids at once.
+    pub enabled: AtomicBool,
+    /// Which Resolume column the live deck's column 1 follows, 1-based.
+    /// Mirrored here by the app on every deck change; see
+    /// `vizz_mod::deck::Deck::origin`.
+    pub origin: AtomicU32,
+    /// How many columns have been accepted, ever.
+    ///
+    /// Firing is edge triggered on the slot number, which is right for a
+    /// pad — pressing 5 twice in a row is one move — and wrong for a
+    /// column. Relaunching the same Resolume column is a deliberate
+    /// re-trigger and has to land, so the render thread watches this
+    /// counter and re-arms the grids when it moves. A counter rather than
+    /// a flag because the render thread must not have to clear anything:
+    /// a flag it failed to clear before the next packet would swallow a
+    /// launch, and it is sampled at frame rate against a source that is
+    /// not.
+    pub fires: AtomicU32,
+}
+
+impl ColumnSync {
+    /// The vizz column a Resolume column maps to, 1-based, or `None` when
+    /// this deck does not cover it.
+    ///
+    /// Out of range is silence rather than a clamp. Clamping would make
+    /// every column past the end fire the last pad — a whole song's worth
+    /// of launches all landing on scene 16 — which reads as the feature
+    /// being broken rather than as the deck not covering that stretch.
+    fn column_for(&self, resolume: u32, slots: u32) -> Option<u32> {
+        let origin = self.origin.load(Ordering::Relaxed).max(1);
+        let slot = resolume.checked_sub(origin)?.checked_add(1)?;
+        (slot <= slots).then_some(slot)
+    }
+}
 
 /// Handle to the OSC listener thread. Dropping it shuts the thread down.
 pub struct OscServer {
@@ -24,7 +81,11 @@ pub struct OscServer {
 
 impl OscServer {
     /// Bind a UDP socket and start the listener thread.
-    pub fn spawn(registry: Arc<ParamRegistry>, bind: impl ToSocketAddrs) -> io::Result<Self> {
+    pub fn spawn(
+        registry: Arc<ParamRegistry>,
+        columns: Arc<ColumnSync>,
+        bind: impl ToSocketAddrs,
+    ) -> io::Result<Self> {
         let socket = UdpSocket::bind(bind)?;
         // Short timeout so the thread notices the stop flag promptly.
         socket.set_read_timeout(Some(Duration::from_millis(200)))?;
@@ -46,7 +107,7 @@ impl OscServer {
                 while !thread_stop.load(Ordering::Relaxed) {
                     match socket.recv_from(&mut buf) {
                         Ok((n, _peer)) => match rosc::decoder::decode_udp(&buf[..n]) {
-                            Ok((_, packet)) => apply_packet(&registry, packet),
+                            Ok((_, packet)) => apply_packet(&registry, &columns, packet),
                             Err(e) => log::warn!("dropped malformed OSC packet: {e}"),
                         },
                         Err(e)
@@ -85,9 +146,15 @@ impl Drop for OscServer {
 
 /// Route a decoded packet into the registry. Bundles recurse; each message's
 /// first numeric argument becomes the parameter value.
-fn apply_packet(registry: &ParamRegistry, packet: OscPacket) {
+fn apply_packet(registry: &ParamRegistry, columns: &ColumnSync, packet: OscPacket) {
     match packet {
         OscPacket::Message(msg) => {
+            // Resolume first, because a column launch is not a parameter
+            // write and — more to the point — need not carry an argument
+            // at all, so the numeric-argument guard below would drop it.
+            if follow_column(registry, columns, &msg) {
+                return;
+            }
             let Some(value) = msg.args.iter().find_map(as_f32) else {
                 log::debug!("OSC message {} had no numeric argument", msg.addr);
                 return;
@@ -96,10 +163,65 @@ fn apply_packet(registry: &ParamRegistry, packet: OscPacket) {
         }
         OscPacket::Bundle(bundle) => {
             for inner in bundle.content {
-                apply_packet(registry, inner);
+                apply_packet(registry, columns, inner);
             }
         }
     }
+}
+
+/// Turn `/composition/columns/N/connect` into a column fire, if this is
+/// one and we are listening for them.
+///
+/// Returns whether the message was Resolume's and has been dealt with, so
+/// the caller does not also hand it to the registry — which would be
+/// harmless today and a silent double-write the moment somebody registers
+/// a parameter under a composition address.
+///
+/// The argument rule is Resolume's, not ours. Arena sends `connect 1` when
+/// a column starts and `connect 0` when it is disconnected, and sends the
+/// message with no argument at all in some configurations. So: no argument
+/// means yes, and an argument means yes only when it is 1 or more. Reading
+/// the *first* argument rather than the first numeric one matters here —
+/// a message whose leading argument is a string is not something to go
+/// hunting through for a number to act on.
+fn follow_column(registry: &ParamRegistry, columns: &ColumnSync, msg: &rosc::OscMessage) -> bool {
+    let Some(rest) = msg.addr.strip_prefix(RESOLUME_COLUMNS) else {
+        return false;
+    };
+    let Some(number) = rest.strip_suffix(RESOLUME_CONNECT) else {
+        return false;
+    };
+    let Ok(resolume) = number.parse::<u32>() else {
+        return false;
+    };
+    // Claimed from here on: this is a column connect, whatever we decide
+    // to do with it.
+    if !columns.enabled.load(Ordering::Relaxed) {
+        return true;
+    }
+    if resolume < 1 || msg.args.first().and_then(as_f32).is_some_and(|v| v < 1.0) {
+        return true;
+    }
+    let Some(id) = registry.id(COLUMN_FIRE) else {
+        // The app that owns this registry did not register the address.
+        // Nothing to do, and nothing worth saying every packet.
+        log::debug!("{COLUMN_FIRE} is not a parameter here; column {resolume} ignored");
+        return true;
+    };
+    // The parameter's own ceiling is the number of columns there are —
+    // taken from the registry rather than restated here, so this cannot
+    // disagree with the grid about how many pads a row has.
+    let slots = registry.defs().get(id.index()).map_or(0.0, |d| d.max) as u32;
+    let Some(slot) = columns.column_for(resolume, slots) else {
+        log::debug!("Resolume column {resolume} is outside this deck's columns");
+        return true;
+    };
+    registry.set(id, slot as f32);
+    // Released after the value, and read with Acquire on the other side,
+    // so a render thread that sees the bump is guaranteed to see the
+    // column it belongs to rather than the one before it.
+    columns.fires.fetch_add(1, Ordering::Release);
+    true
 }
 
 fn as_f32(arg: &OscType) -> Option<f32> {
@@ -124,7 +246,33 @@ mod tests {
         let mut b = ParamRegistry::builder();
         b.add(ParamDef::new("/test/a", 0.0, 100.0, 0.0));
         b.add(ParamDef::new("/test/b", 0.0, 1.0, 0.5));
+        // Sixteen columns, matching the grid the app actually has, so the
+        // out-of-range tests below are testing the real boundary.
+        b.add(ParamDef::new(COLUMN_FIRE, 0.0, 16.0, 0.0));
         Arc::new(b.build())
+    }
+
+    /// A listener that is following columns from the first one.
+    fn following() -> Arc<ColumnSync> {
+        let columns = Arc::new(ColumnSync::default());
+        columns.enabled.store(true, Ordering::Relaxed);
+        columns.origin.store(1, Ordering::Relaxed);
+        columns
+    }
+
+    fn connect(column: u32, args: Vec<OscType>) -> OscPacket {
+        OscPacket::Message(OscMessage {
+            addr: format!("/composition/columns/{column}/connect"),
+            args,
+        })
+    }
+
+    /// What the registry holds for a column, and how many have landed.
+    fn state(reg: &ParamRegistry, columns: &ColumnSync) -> (f32, u32) {
+        (
+            reg.target(reg.id(COLUMN_FIRE).unwrap()),
+            columns.fires.load(Ordering::Acquire),
+        )
     }
 
     fn wait_for(reg: &ParamRegistry, addr: &str, expect: f32) -> bool {
@@ -142,7 +290,7 @@ mod tests {
     #[test]
     fn end_to_end_udp_message_sets_param() {
         let reg = registry();
-        let server = OscServer::spawn(Arc::clone(&reg), "127.0.0.1:0").unwrap();
+        let server = OscServer::spawn(Arc::clone(&reg), Arc::new(ColumnSync::default()), "127.0.0.1:0").unwrap();
 
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
         let msg = OscPacket::Message(OscMessage {
@@ -171,7 +319,7 @@ mod tests {
                 }),
             ],
         });
-        apply_packet(&reg, bundle);
+        apply_packet(&reg, &ColumnSync::default(), bundle);
         assert_eq!(reg.target(reg.id("/test/a").unwrap()), 7.0);
         assert_eq!(reg.target(reg.id("/test/b").unwrap()), 0.25);
     }
@@ -179,7 +327,7 @@ mod tests {
     #[test]
     fn garbage_and_unknown_addresses_are_ignored() {
         let reg = registry();
-        let server = OscServer::spawn(Arc::clone(&reg), "127.0.0.1:0").unwrap();
+        let server = OscServer::spawn(Arc::clone(&reg), Arc::new(ColumnSync::default()), "127.0.0.1:0").unwrap();
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
 
         // Garbage bytes, then an unknown address, then a valid message.
@@ -199,5 +347,186 @@ mod tests {
 
         // The listener survived the garbage and still processes real traffic.
         assert!(wait_for(&reg, "/test/a", 3.0));
+    }
+
+    /// The whole point: launching a column in Resolume fires the matching
+    /// column here.
+    #[test]
+    fn a_resolume_column_launch_fires_the_matching_column() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, connect(3, vec![OscType::Int(1)]));
+        assert_eq!(state(&reg, &columns), (3.0, 1));
+    }
+
+    /// Arena sends the connect with no argument at all in some
+    /// configurations, and the numeric-argument guard that protects every
+    /// other address would drop it — which is why the column handler runs
+    /// first. This is the case that made mouse launches appear to do
+    /// nothing while a MIDI launch of the same column worked.
+    #[test]
+    fn a_column_launch_with_no_argument_still_fires() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, connect(2, vec![]));
+        assert_eq!(state(&reg, &columns), (2.0, 1));
+    }
+
+    /// `connect 0` is Resolume saying a column was *dis*connected. Firing
+    /// on it would make every column launch fire twice — once for the
+    /// column arriving and once for the one it replaced leaving.
+    #[test]
+    fn disconnecting_a_column_fires_nothing() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, connect(4, vec![OscType::Int(1)]));
+        assert_eq!(state(&reg, &columns), (4.0, 1));
+        apply_packet(&reg, &columns, connect(4, vec![OscType::Int(0)]));
+        assert_eq!(
+            state(&reg, &columns),
+            (4.0, 1),
+            "a disconnect was treated as a launch"
+        );
+    }
+
+    /// Relaunching the same column has to land. Firing is edge triggered
+    /// on the slot number, so the value alone cannot say a second launch
+    /// happened — the counter is what carries it.
+    #[test]
+    fn relaunching_the_same_column_is_a_second_fire() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, connect(5, vec![OscType::Int(1)]));
+        apply_packet(&reg, &columns, connect(5, vec![OscType::Int(1)]));
+        assert_eq!(
+            state(&reg, &columns),
+            (5.0, 2),
+            "the second launch of the same column left no trace"
+        );
+    }
+
+    /// A deck pointed at its own stretch of a long composition follows
+    /// that stretch, and stays silent either side of it. Clamping instead
+    /// would land every column past the end on the last pad, which reads
+    /// as the feature being broken.
+    #[test]
+    fn a_deck_follows_its_own_stretch_of_columns_and_no_others() {
+        let (reg, columns) = (registry(), following());
+        columns.origin.store(17, Ordering::Relaxed);
+
+        apply_packet(&reg, &columns, connect(17, vec![]));
+        assert_eq!(state(&reg, &columns), (1.0, 1), "the deck's first column did not fire");
+        apply_packet(&reg, &columns, connect(32, vec![]));
+        assert_eq!(state(&reg, &columns), (16.0, 2), "the deck's last column did not fire");
+
+        apply_packet(&reg, &columns, connect(16, vec![]));
+        apply_packet(&reg, &columns, connect(33, vec![]));
+        assert_eq!(
+            state(&reg, &columns),
+            (16.0, 2),
+            "a column outside this deck's stretch fired anyway"
+        );
+    }
+
+    /// Off means off. The listener binds every interface by default, so
+    /// following columns hands the venue's wifi the scene transport —
+    /// nobody should get that without asking.
+    #[test]
+    fn a_column_launch_does_nothing_while_following_is_off() {
+        let (reg, columns) = (registry(), Arc::new(ColumnSync::default()));
+        assert!(!columns.enabled.load(Ordering::Relaxed), "following defaulted to on");
+        apply_packet(&reg, &columns, connect(3, vec![OscType::Int(1)]));
+        assert_eq!(state(&reg, &columns), (0.0, 0));
+    }
+
+    /// A composition address is claimed by the column handler whether or
+    /// not it fires, so it can never also fall through to the registry.
+    /// Nothing registers a `/composition/*` parameter today; a silent
+    /// double-write the day something does is exactly the kind of fault
+    /// that gets blamed on Resolume.
+    #[test]
+    fn a_composition_address_never_reaches_the_registry() {
+        let mut b = ParamRegistry::builder();
+        b.add(ParamDef::new("/composition/columns/1/connect", 0.0, 9.0, 0.0));
+        b.add(ParamDef::new(COLUMN_FIRE, 0.0, 16.0, 0.0));
+        let reg = Arc::new(b.build());
+        let trap = reg.id("/composition/columns/1/connect").unwrap();
+
+        apply_packet(&reg, &following(), connect(1, vec![OscType::Int(1)]));
+        assert_eq!(reg.target(trap), 0.0, "the column message also wrote a parameter");
+
+        // And with following off, it is still claimed rather than passed on.
+        apply_packet(&reg, &Arc::new(ColumnSync::default()), connect(1, vec![OscType::Int(1)]));
+        assert_eq!(reg.target(trap), 0.0);
+    }
+
+    /// Addresses that only look like Resolume's are left alone, so a
+    /// parameter named near one keeps working.
+    #[test]
+    fn addresses_that_merely_resemble_a_column_are_left_alone() {
+        let columns = following();
+        let mut b = ParamRegistry::builder();
+        for addr in [
+            "/composition/columns/2/name",
+            "/composition/columns/two/connect",
+            "/composition/columns//connect",
+        ] {
+            b.add(ParamDef::new(addr, 0.0, 9.0, 0.0));
+        }
+        b.add(ParamDef::new(COLUMN_FIRE, 0.0, 16.0, 0.0));
+        let reg = Arc::new(b.build());
+
+        for addr in [
+            "/composition/columns/2/name",
+            "/composition/columns/two/connect",
+            "/composition/columns//connect",
+        ] {
+            apply_packet(
+                &reg,
+                &columns,
+                OscPacket::Message(OscMessage { addr: addr.into(), args: vec![OscType::Float(4.0)] }),
+            );
+            assert_eq!(
+                reg.target(reg.id(addr).unwrap()),
+                4.0,
+                "{addr} was swallowed by the column handler"
+            );
+        }
+        assert_eq!(columns.fires.load(Ordering::Acquire), 0, "one of them fired a column");
+    }
+
+    /// Column launches arrive inside bundles too — Resolume batches its
+    /// output — and the handler has to be reachable through the recursion
+    /// rather than only at the top level.
+    #[test]
+    fn a_column_launch_inside_a_bundle_fires() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(
+            &reg,
+            &columns,
+            OscPacket::Bundle(OscBundle {
+                timetag: OscTime { seconds: 0, fractional: 0 },
+                content: vec![
+                    OscPacket::Message(OscMessage {
+                        addr: "/test/a".into(),
+                        args: vec![OscType::Float(9.0)],
+                    }),
+                    connect(6, vec![OscType::Int(1)]),
+                ],
+            }),
+        );
+        assert_eq!(state(&reg, &columns), (6.0, 1));
+        assert_eq!(reg.target(reg.id("/test/a").unwrap()), 9.0);
+    }
+
+    /// End to end over a real socket, because everything above calls
+    /// `apply_packet` directly and would pass even if the listener never
+    /// handed it a Resolume message.
+    #[test]
+    fn a_column_launch_arrives_over_udp() {
+        let (reg, columns) = (registry(), following());
+        let server =
+            OscServer::spawn(Arc::clone(&reg), Arc::clone(&columns), "127.0.0.1:0").unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let bytes = rosc::encoder::encode(&connect(8, vec![OscType::Int(1)])).unwrap();
+        client.send_to(&bytes, server.local_addr()).unwrap();
+
+        assert!(wait_for(&reg, COLUMN_FIRE, 8.0), "the column never arrived");
     }
 }

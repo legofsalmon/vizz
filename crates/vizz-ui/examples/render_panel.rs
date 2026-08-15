@@ -125,6 +125,12 @@ fn main() {
         "/scene/curve",
         "/scene/auto",
         "/scene/bars",
+        // The deck transport. Hidden from the parameter list like the
+        // rest of it, and here for the same reason the record control
+        // is: the harness mirrors the registry outright, so a transport
+        // parameter costs a line here and nothing on screen.
+        "/deck/select",
+        "/column/fire",
         // Transport, and hidden from the parameter list — but the
         // outputs section draws a record button only when this exists,
         // so without it here the one screenshot anyone reviews the panel
@@ -276,6 +282,9 @@ fn main() {
     }
 
     let state = PanelState {
+        decks: Vec::new(),
+        active_deck: 0,
+        follow_columns: None,
         recording: None,
         preset_current: Some(2),
         update_available: Some("0.2.0".into()),

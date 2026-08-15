@@ -72,6 +72,34 @@ pub struct FrameEngine {
     /// pointing one at a different library is all a second layer needs.
     pub gravity_grid: vizz_mod::scene::Grid,
     last_gravity: Option<usize>,
+    /// The pages of pads, and which one is live.
+    ///
+    /// Here rather than in the app for the same reason the grids are: a
+    /// page turn writes both grids' cells, and the thing that owns the
+    /// grids has to be the thing that swaps them or there are two writers
+    /// and one of them is a frame behind.
+    pub decks: vizz_mod::deck::Book,
+    /// Last `/deck/select` index acted on, edge-triggered like recall.
+    ///
+    /// The authoritative current deck is the book's, not this. A MIDI
+    /// trigger drives its parameter back to rest on release — that is what
+    /// makes a second press of the same pad work — so the parameter reads
+    /// 0 while deck 3 is live, and anything asking it "which deck am I on"
+    /// gets the wrong answer the moment a finger comes off a button.
+    last_deck: Option<usize>,
+    /// What Resolume's column launches arrive through. Shared with the
+    /// OSC listener; see [`vizz_osc::ColumnSync`].
+    columns: Arc<vizz_osc::ColumnSync>,
+    last_column: Option<usize>,
+    /// The listener's fire count as of the last frame. A column relaunched
+    /// while it is already showing has to fire again, and the slot number
+    /// alone cannot say that happened.
+    last_column_fires: u32,
+    /// A page turn happened inside the frame and the set list is worth
+    /// writing. Collected here rather than returned, because the deck can
+    /// change from a controller or an OSC message with nothing on screen
+    /// having been touched, and the caller cannot know to ask.
+    decks_dirty: bool,
 }
 
 pub struct FrameInputs {
@@ -124,7 +152,122 @@ impl FrameEngine {
             autopilot_lock: false,
             gravity_grid: vizz_mod::scene::Grid::for_kind(vizz_mod::preset::Kind::Gravity),
             last_gravity: None,
+            decks: vizz_mod::deck::Book::default(),
+            last_deck: None,
+            columns: Arc::new(vizz_osc::ColumnSync::default()),
+            last_column: None,
+            last_column_fires: 0,
+            decks_dirty: false,
         }
+    }
+
+    /// Whether the set list has changed since this was last asked, and
+    /// should be written to disk. Taken rather than read, so one save
+    /// answers one change.
+    pub fn take_decks_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.decks_dirty)
+    }
+
+    /// Share the listener's column state.
+    ///
+    /// Adopted rather than passed to the constructor because the listener
+    /// is bound before the window exists and the engine is built after it.
+    /// A engine that never adopts one keeps the standalone it was built
+    /// with, which is inert and is what every test and the headless path
+    /// run on.
+    pub fn adopt_column_sync(&mut self, columns: Arc<vizz_osc::ColumnSync>) {
+        columns
+            .origin
+            .store(self.decks.origin(), std::sync::atomic::Ordering::Relaxed);
+        self.columns = columns;
+        // Start from the listener's count, not from zero. It has been
+        // running since before the window opened, so a fresh latch would
+        // read every column it accepted in that time as one relaunch. The
+        // first frame's decision is then made by the column *value* alone,
+        // which is what catches vizz up to whatever Arena is showing.
+        self.last_column_fires = self
+            .columns
+            .fires
+            .load(std::sync::atomic::Ordering::Acquire);
+    }
+
+    /// Whether Resolume's column launches are being followed.
+    pub fn follow_columns(&self) -> bool {
+        self.columns
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Start or stop following Resolume's columns.
+    pub fn set_follow_columns(&mut self, follow: bool) {
+        self.columns
+            .enabled
+            .store(follow, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Adopt the deck book loaded from disk and put its live page on the
+    /// grids.
+    ///
+    /// Called after both grids have been adopted, because the book's own
+    /// idea of the live page is a mirror of what is already in the grid
+    /// files — see `vizz_mod::deck::load`.
+    pub fn adopt_decks(&mut self, decks: vizz_mod::deck::Book) {
+        self.decks = decks;
+        self.columns
+            .origin
+            .store(self.decks.origin(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Turn to a page, from the UI rather than through the parameter.
+    ///
+    /// Returns whether anything moved, so the caller knows whether the
+    /// set list is worth writing to disk.
+    pub fn switch_deck(&mut self, index: usize) -> bool {
+        if !self
+            .decks
+            .switch(index, &mut self.grid, &mut self.gravity_grid)
+        {
+            return false;
+        }
+        self.after_deck_change();
+        true
+    }
+
+    /// Everything a page turn implies beyond the cells themselves.
+    ///
+    /// Public because a page can also arrive by being created, copied or
+    /// deleted, and those go through the book directly.
+    pub fn after_deck_change(&mut self) {
+        // Both fire parameters back to rest, latches with them.
+        //
+        // Not one or the other. Clearing the latch alone would leave the
+        // parameter holding the slot fired on the old page, so the very
+        // next frame would read a change and fire that number on the new
+        // one — turning a page would play a scene, which is the one thing
+        // a page turn must never do. Leaving both alone instead makes the
+        // pad you are most likely to reach for dead: arriving from pad 3
+        // of the old deck, pad 3 of the new one is not a change and does
+        // nothing at all.
+        //
+        // Rest is the same trick a MIDI trigger uses on release, and for
+        // the same reason: passing through zero is what makes the next
+        // press of any pad, including the one just pressed, land.
+        let reg = &self.params.registry;
+        reg.set(self.params.scene_fire, 0.0);
+        reg.set(self.params.gravity_fire, 0.0);
+        self.last_scene = Some(0);
+        self.last_gravity = Some(0);
+        // The column path needs no such reset: it re-arms off the
+        // listener's counter, so a Resolume column relaunched after a page
+        // turn lands on its own.
+        self.refresh_column_origin();
+    }
+
+    /// Tell the listener which of Resolume's columns the live page covers.
+    pub fn refresh_column_origin(&mut self) {
+        self.columns
+            .origin
+            .store(self.decks.origin(), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Adopt a grid loaded from disk, pushing its stored transition
@@ -171,6 +314,57 @@ impl FrameEngine {
         );
         reg.set(self.params.gravity_bars, grid.autopilot.bars);
         self.gravity_grid = grid;
+    }
+
+    /// Turn the page when `/deck/select` has moved, and fire a column when
+    /// one has arrived.
+    ///
+    /// Both before [`FrameEngine::tick_grid`], so a page turn and a pad
+    /// press landing on the same frame happen in that order — the pad
+    /// belongs to the deck that was selected, not the one being left.
+    ///
+    /// Returns whether the set list changed and is worth saving. A page
+    /// turn is the only gesture here that writes cells.
+    fn tick_decks(&mut self) -> bool {
+        use std::sync::atomic::Ordering;
+        let p = Arc::clone(&self.params);
+        let reg = &p.registry;
+
+        let mut turned = false;
+        let deck = reg.target(p.deck_select).round().max(0.0) as usize;
+        if self.last_deck != Some(deck) {
+            self.last_deck = Some(deck);
+            if let Some(index) = deck.checked_sub(1) {
+                // An index past the end is silence rather than a clamp, and
+                // the edge is recorded either way: a fader swept across a
+                // bank of eight buttons on a show with three decks must not
+                // retry the same missing deck sixty times a second.
+                turned = self.switch_deck(index);
+            }
+        }
+
+        // A column launch is a scene pad and a gravity pad of the same
+        // number, fired together — which is what a column *is* in the
+        // program this follows.
+        let fires = self.columns.fires.load(Ordering::Acquire);
+        let relaunched = fires != self.last_column_fires;
+        self.last_column_fires = fires;
+        let column = reg.target(p.column_fire).round().max(0.0) as usize;
+        if relaunched || self.last_column != Some(column) {
+            self.last_column = Some(column);
+            if column > 0 {
+                // Through the fire parameters rather than into the grids,
+                // so a column, a pad click and a MIDI note are one path.
+                // The latches go with it: relaunching the column already
+                // showing is a deliberate re-trigger and has to land, and
+                // the value alone cannot say a second launch happened.
+                self.last_scene = None;
+                self.last_gravity = None;
+                reg.set(p.scene_fire, column as f32);
+                reg.set(p.gravity_fire, column as f32);
+            }
+        }
+        turned
     }
 
     /// Fire a scene when `/scene/fire` has moved, then advance the blend.
@@ -341,6 +535,10 @@ impl FrameEngine {
         // advances, so a preset's values are targets for this same frame
         // and the glide starts immediately rather than one frame late.
         self.apply_pending_preset();
+        // The page before anything played on it: a deck arriving over MIDI
+        // or OSC on the same frame as a pad press has to be the deck that
+        // pad belongs to.
+        self.decks_dirty |= self.tick_decks();
         // Then the grid, so a scene fired on this frame starts blending
         // on it. A recall on this frame has already halted any transition
         // in flight — both are edge-triggered, so whichever the user
@@ -983,6 +1181,241 @@ mod tests {
             );
         }
     }
+
+    // ---- decks ----------------------------------------------------------
+
+    /// A book of two pages with one pad filled on each, so a page turn
+    /// has something to be right or wrong about.
+    fn two_decks(e: &mut FrameEngine) {
+        e.grid.assign(0, "Slow bloom");
+        e.decks.store(&e.grid, &e.gravity_grid);
+        e.decks
+            .add(&mut e.grid, &mut e.gravity_grid)
+            .expect("a second deck");
+        e.grid.assign(1, "Tunnel");
+        e.after_deck_change();
+        e.decks.switch(0, &mut e.grid, &mut e.gravity_grid);
+        e.after_deck_change();
+    }
+
+    /// Starting up must not turn a page, for the same reason it must not
+    /// recall a preset: `/deck/select` rests at 0, and treating the first
+    /// frame as a change would store the loaded grids into deck 1 and load
+    /// deck 1 back over them before the window is on screen.
+    #[test]
+    fn startup_does_not_turn_a_page() {
+        let mut e = engine();
+        two_decks(&mut e);
+        assert_eq!(e.decks.active(), 0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 0, "startup turned a page");
+        assert_eq!(
+            e.grid.cell(0).map(|c| c.preset.as_str()),
+            Some("Slow bloom"),
+            "startup disturbed the pads"
+        );
+    }
+
+    /// The gesture: writing the parameter turns the page, and the pads
+    /// underneath change with it.
+    #[test]
+    fn selecting_a_deck_swaps_the_pads() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let reg = Arc::clone(&e.params.registry);
+
+        reg.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 1);
+        assert_eq!(e.grid.cell(1).map(|c| c.preset.as_str()), Some("Tunnel"));
+        assert_eq!(e.grid.cell(0), None, "the first deck's pads came along");
+
+        reg.set(e.params.deck_select, 1.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 0);
+        assert_eq!(e.grid.cell(0).map(|c| c.preset.as_str()), Some("Slow bloom"));
+    }
+
+    /// Turning a page must not play anything. Every page turn happens in
+    /// front of an audience, and a scene firing itself because the
+    /// parameter still held the last pad's number would be a picture
+    /// change nobody asked for.
+    ///
+    /// This is the failure the re-arm in `after_deck_change` exists for:
+    /// clearing the latch alone left `/scene/fire` holding slot 1, and the
+    /// very next frame read that as a change.
+    #[test]
+    fn turning_a_page_does_not_fire_a_scene() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let reg = Arc::clone(&e.params.registry);
+
+        // Play the first deck's pad, and let the cut land. The blend
+        // time goes through the parameter because `tick_grid` reads it
+        // back over the field every frame.
+        reg.set(e.params.scene_time, 0.0);
+        reg.set(e.params.scene_fire, 1.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.grid.current(), Some(0), "the scene never fired");
+
+        // Deck 2 has its pad at slot 2, so slot 1 is empty there. If the
+        // page turn re-fired, `current` would move; if it left the latch
+        // alone, the pad could never be pressed again.
+        reg.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 1);
+        assert_eq!(
+            reg.target(e.params.scene_fire),
+            0.0,
+            "the fire control did not go back to rest, so the next frame fires the old slot"
+        );
+
+        // And the same pad number is live again straight away, which is
+        // the other half of the trade.
+        reg.set(e.params.scene_fire, 1.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(
+            e.grid.in_flight().map(|(s, _)| s).or(e.grid.current()),
+            None,
+            "slot 1 is empty on this deck, so nothing should have fired"
+        );
+        reg.set(e.params.scene_fire, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.grid.current(), Some(1), "the new deck's pad would not fire");
+    }
+
+    /// A page that does not exist is silence, and the edge is still
+    /// recorded — a fader swept across a bank of eight buttons on a show
+    /// with two decks must not retry the missing ones every frame.
+    #[test]
+    fn selecting_a_page_that_does_not_exist_does_nothing() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let reg = Arc::clone(&e.params.registry);
+        reg.set(e.params.deck_select, 9.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 0, "a page past the end was selected anyway");
+        assert_eq!(e.grid.cell(0).map(|c| c.preset.as_str()), Some("Slow bloom"));
+    }
+
+    /// A column is the scene pad and the gravity pad of the same number,
+    /// together. That is what a column means in the program this follows,
+    /// and it is why one address drives two grids.
+    #[test]
+    fn a_column_fires_both_grids() {
+        let mut e = engine();
+        e.grid.assign(2, "Slow bloom");
+        e.gravity_grid.assign(2, "a well");
+        let reg = Arc::clone(&e.params.registry);
+
+        reg.set(e.params.column_fire, 3.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(reg.target(e.params.scene_fire), 3.0);
+        assert_eq!(reg.target(e.params.gravity_fire), 3.0);
+    }
+
+    /// Relaunching the column already showing has to land. Firing is edge
+    /// triggered on the slot number, which is right for a pad — pressing 5
+    /// twice is one move — and wrong for a column, where a relaunch is a
+    /// deliberate re-trigger. The listener's counter is what carries it.
+    #[test]
+    fn relaunching_a_column_fires_it_again() {
+        let mut e = engine();
+        e.grid.assign(0, "Slow bloom");
+        e.grid.assign(1, "Tunnel");
+        let reg = Arc::clone(&e.params.registry);
+        reg.set(e.params.scene_time, 0.0);
+
+        reg.set(e.params.column_fire, 1.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.grid.current(), Some(0));
+
+        // Move away by hand, then relaunch the same column. The value has
+        // not changed, so only the counter can say this happened.
+        reg.set(e.params.scene_fire, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.grid.current(), Some(1));
+
+        e.columns.fires.fetch_add(1, std::sync::atomic::Ordering::Release);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(
+            e.grid.current(),
+            Some(0),
+            "relaunching the same column left the grid where it was"
+        );
+    }
+
+    /// A column that arrived before the window opened is caught up to
+    /// exactly once.
+    ///
+    /// The listener binds before the engine exists, so by the time it is
+    /// adopted `/column/fire` can already hold the column Arena is
+    /// showing. Landing on it once is the right answer — it is what makes
+    /// vizz agree with Resolume from the first frame rather than from the
+    /// next launch. Landing on it *repeatedly* would pin the grid there
+    /// and make every pad on the desk dead, which is what the value latch
+    /// prevents.
+    #[test]
+    fn a_column_that_arrived_before_the_window_is_caught_up_once() {
+        let mut e = engine();
+        e.grid.assign(0, "Slow bloom");
+        e.grid.assign(1, "Tunnel");
+        let reg = Arc::clone(&e.params.registry);
+        reg.set(e.params.scene_time, 0.0);
+
+        let columns = Arc::new(vizz_osc::ColumnSync::default());
+        columns.fires.store(7, std::sync::atomic::Ordering::Release);
+        reg.set(e.params.column_fire, 1.0);
+        e.adopt_column_sync(columns);
+
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.grid.current(), Some(0), "vizz did not catch up to the live column");
+
+        // Move away by hand. A column that is not relaunched must not drag
+        // the grid back on the next frame.
+        reg.set(e.params.scene_fire, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(
+            e.grid.current(),
+            Some(1),
+            "the startup column kept re-firing and pinned the grid"
+        );
+    }
+
+    /// The live page's stretch of Resolume's composition is mirrored to
+    /// the listener, which is the only place that value is read.
+    #[test]
+    fn the_listeners_column_origin_follows_the_live_deck() {
+        use std::sync::atomic::Ordering;
+        let mut e = engine();
+        two_decks(&mut e);
+        e.decks.set_origin(1, 17);
+        let columns = Arc::new(vizz_osc::ColumnSync::default());
+        e.adopt_column_sync(Arc::clone(&columns));
+        assert_eq!(columns.origin.load(Ordering::Relaxed), 1);
+
+        e.params.registry.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(
+            columns.origin.load(Ordering::Relaxed),
+            17,
+            "the listener is still following the page that was left"
+        );
+    }
+
+    /// A page turn is worth writing to disk, and being asked clears the
+    /// flag — one save answers one change.
+    #[test]
+    fn a_page_turn_asks_to_be_saved_once() {
+        let mut e = engine();
+        two_decks(&mut e);
+        assert!(!e.take_decks_dirty(), "nothing has happened yet");
+        e.params.registry.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert!(e.take_decks_dirty(), "a page turn went unrecorded");
+        assert!(!e.take_decks_dirty(), "the same page turn asked to be saved twice");
+    }
 }
 #[cfg(test)]
 mod vector_pack_tests {
@@ -1035,4 +1468,5 @@ mod vector_pack_tests {
         let inputs = engine.begin_frame(16.0 / 9.0, Some(std::time::Duration::from_secs(1)));
         assert!(!inputs.vector_active, "defaults must leave the stack off");
     }
+
 }

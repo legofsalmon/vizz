@@ -63,6 +63,12 @@ pub const EXCLUDED: &[&str] = &[
     // A preset with a recording embedded would start disk writes on
     // recall. Transport, like the fire controls.
     "/record/active",
+    // Which page of pads is loaded, and the column that loaded it. Worse
+    // than a self-firing scene: a captured deck select would turn the page
+    // out from under the pad that was just pressed, so the look would
+    // arrive and the grid it came from would be gone.
+    "/deck/select",
+    "/column/fire",
 ];
 
 fn excluded(addr: &str) -> bool {

@@ -747,6 +747,9 @@ impl Gui {
             output_texture: self.output_texture,
             output_aspect: self.output_aspect,
             graph: Some(&modulation.graph),
+            decks: &state.decks,
+            active_deck: state.active_deck,
+            follow_columns: state.follow_columns,
         };
         let mut perf = performance::draw(&self.ctx, registry, &perf_state, &mut self.macros);
         // The armed-learn banner rides both screens; see the panel path.
@@ -818,6 +821,7 @@ impl Gui {
         // panel's does, so storing a scene mid-set works from either.
         actions.grid = perf.grid;
         actions.gravity = perf.gravity;
+        actions.decks = perf.decks;
         // Learn and unbind are handled identically to the panel's, so a
         // controller mapped from the performance layout and one mapped
         // from the parameter list end up in the same map by the same path.
@@ -966,6 +970,9 @@ mod tests {
         reg.set(mode, 5.0);
         let ctx = egui::Context::default();
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1011,6 +1018,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1059,6 +1069,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1109,6 +1122,9 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1151,6 +1167,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1247,6 +1266,9 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1298,6 +1320,9 @@ mod tests {
     fn update_banner_appears_only_when_a_newer_version_exists() {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: update,
@@ -1447,6 +1472,9 @@ mod tests {
     fn the_recalled_preset_is_outlined_in_the_panel_list_too() {
         let reg = registry();
         let state = |current: Option<usize>| PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: current,
             update_available: None,
@@ -1497,6 +1525,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1549,6 +1580,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1605,6 +1639,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1657,6 +1694,9 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,
@@ -1774,6 +1814,9 @@ mod tests {
     /// A believable panel, for tests that only vary one thing.
     fn base_state() -> PanelState {
         PanelState {
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
             recording: None,
             preset_current: None,
             update_available: None,

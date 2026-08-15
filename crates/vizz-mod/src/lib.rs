@@ -47,6 +47,7 @@ pub(crate) mod test_env {
         (guard, dir)
     }
 }
+pub mod deck;
 pub mod library;
 pub mod perform;
 pub mod preset;

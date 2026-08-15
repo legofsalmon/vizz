@@ -194,7 +194,15 @@ impl Autopilot {
 #[derive(Debug, Clone)]
 struct Transition {
     /// The cell being moved to, for the UI and for `current` when it ends.
-    to_slot: usize,
+    ///
+    /// `None` once the pads underneath have been swapped out — see
+    /// [`Grid::adopt_cells`]. The blend itself is a pair of value maps
+    /// captured at fire time and finishes correctly regardless, but the
+    /// slot number stops meaning anything the moment a different page of
+    /// pads is loaded: pad 3 of the new deck is a different look, and
+    /// landing on it would light the wrong pad and then record the grid as
+    /// sitting on a scene it never played.
+    to_slot: Option<usize>,
     /// Where every parameter was when the transition started. Captured
     /// from the live values rather than from the outgoing cell, so firing
     /// a scene mid-transition, or after moving things by hand, starts from
@@ -299,7 +307,34 @@ impl Grid {
     /// The cell being moved to and how far along, for the UI to draw.
     pub fn in_flight(&self) -> Option<(usize, f32)> {
         let t = self.transition.as_ref()?;
-        Some((t.to_slot, t.progress()))
+        Some((t.to_slot?, t.progress()))
+    }
+
+    /// Put a different page of pads under the grid, leaving the picture
+    /// alone.
+    ///
+    /// This is what switching decks is. The cells are the *set list*; the
+    /// parameters on screen are the performance, and swapping one must not
+    /// disturb the other — a page turn during a show that snapped the
+    /// output would be unusable, and every deck switch happens during a
+    /// show.
+    ///
+    /// So a blend already running keeps running to its end: it holds
+    /// captured value maps rather than any reference to a cell, and
+    /// abandoning it would freeze the picture half way between two looks.
+    /// What it loses is its pad. `current` goes with it, because after a
+    /// swap no pad on screen produced what is showing, and a lit pad that
+    /// claims otherwise is worse than none.
+    pub fn adopt_cells(&mut self, cells: Vec<Option<Cell>>) {
+        self.cells = cells;
+        // A file written by another build, or a deck saved when SLOTS was
+        // a different number, could be any length.
+        self.cells.resize(SLOTS, None);
+        self.cells.truncate(SLOTS);
+        self.current = None;
+        if let Some(t) = self.transition.as_mut() {
+            t.to_slot = None;
+        }
     }
 
     /// Point a slot at a preset. The core gesture: preparing looks and
@@ -334,7 +369,7 @@ impl Grid {
             return;
         }
         self.cells[slot] = None;
-        if self.transition.as_ref().is_some_and(|t| t.to_slot == slot) {
+        if self.transition.as_ref().is_some_and(|t| t.to_slot == Some(slot)) {
             self.transition = None;
         }
         if self.current == Some(slot) {
@@ -378,7 +413,7 @@ impl Grid {
         let cloud = (effective_cloud(&from), effective_cloud(&to));
         let duration = self.duration.clamp(MIN_DURATION, MAX_DURATION);
         self.transition = Some(Transition {
-            to_slot: slot,
+            to_slot: Some(slot),
             from,
             to,
             cloud,
@@ -493,7 +528,7 @@ impl Grid {
     }
 
     fn next_filled(&self) -> Option<usize> {
-        let from = self.transition.as_ref().map(|t| t.to_slot).or(self.current);
+        let from = self.transition.as_ref().and_then(|t| t.to_slot).or(self.current);
         let start = from.map_or(0, |s| s + 1);
         self.next_filled_from(start)
     }
@@ -515,7 +550,7 @@ impl Grid {
         let shaped = t.curve.shape(t.progress());
         t.write(reg, shaped, done, kind);
         if done {
-            self.current = Some(t.to_slot);
+            self.current = t.to_slot;
             self.transition = None;
         }
     }

@@ -58,6 +58,9 @@ pub struct WindowedOpts {
     pub live_cloud: Option<vizz_render::plystream::Source>,
     /// Live video input spec, if one was asked for.
     pub video_source: Option<String>,
+    /// Shared with the OSC listener: whether Resolume's columns are being
+    /// followed, and which of them the live deck covers.
+    pub columns: Arc<vizz_osc::ColumnSync>,
 }
 
 struct RenderState {
@@ -1157,6 +1160,12 @@ impl App {
             // chances to miss.
             let update_view = update_view(&self.update, recording.is_some());
             let panel_state = PanelState {
+                decks: deck_chips(&self.engine.decks, &self.midi_view),
+                active_deck: self.engine.decks.active(),
+                // Always on offer. Following is off by default, so a
+                // toggle only shown once it was on would be a switch you
+                // could never find to turn on in the first place.
+                follow_columns: Some(self.engine.follow_columns()),
                 recording,
                 // try_lock: the update thread holds this for microseconds, but
                 // the render thread still never waits on it.
@@ -1440,6 +1449,15 @@ impl App {
                     &mut self.library,
                     &mut notes,
                     &self.clouds,
+                );
+                // Before the grids: a page turn and a pad press landing on
+                // the same frame have to happen in that order, or the pad
+                // is applied to the deck being left.
+                apply_deck_actions(
+                    &actions.decks,
+                    &mut self.engine,
+                    &self.params,
+                    &mut notes,
                 );
                 apply_grid_actions(
                     &actions.grid,
@@ -2185,6 +2203,32 @@ fn gravity_grid_view(
 /// in one of the three is a pad that maps to nothing.
 const SCENE_FIRE: &str = "/scene/fire";
 const GRAVITY_FIRE: &str = "/gravity/fire";
+/// The address a deck chip writes. Same reason as the two above.
+const DECK_SELECT: &str = "/deck/select";
+
+/// The set list as the chip row needs to see it.
+///
+/// Bindings are per deck rather than per address, exactly as the pads are:
+/// sixteen chips share one address, so one binding shown beside them all
+/// would say nothing about which page is mapped.
+fn deck_chips(
+    book: &vizz_mod::deck::Book,
+    midi: &MidiView,
+) -> Vec<vizz_ui::performance::DeckChip> {
+    book.decks()
+        .iter()
+        .enumerate()
+        .map(|(i, deck)| {
+            let value = fire_value(i);
+            vizz_ui::performance::DeckChip {
+                name: deck.name.clone(),
+                midi: midi.map.source_for_value(DECK_SELECT, value).map(|s| s.label()),
+                learning: midi.learning_value(DECK_SELECT, value),
+                origin: deck.origin,
+            }
+        })
+        .collect()
+}
 
 /// The slot number a pad addresses. Pads are numbered from 1 because 0 is
 /// "nothing selected" — see `Engine::tick_grid`.
@@ -2319,6 +2363,127 @@ impl GridBinding {
     }
 }
 
+
+/// Everything the deck row asked for, and the saves it implies.
+///
+/// Takes the engine rather than the whole app, because the frame that
+/// calls this already holds a borrow of the render state and the two are
+/// disjoint fields — the same reason `apply_grid_actions` is a free
+/// function.
+fn apply_deck_actions(
+    actions: &vizz_ui::performance::DeckActions,
+    engine: &mut crate::engine::FrameEngine,
+    params: &crate::params::AppParams,
+    notes: &mut Notes,
+) {
+    // A page turn rewrote both grids; a rename or a column origin only
+    // touched the set list. Tracked apart because the first costs three
+    // files and the second costs one.
+    let mut turned = false;
+    let mut listed = false;
+    let full = format!("no room for another page — {} is the limit", vizz_mod::deck::MAX_DECKS);
+
+    if let Some(index) = actions.select {
+        // Through the parameter, so a chip click, a controller button and
+        // an OSC message take the same path — the rule the pads already
+        // follow, and for the same reason: two paths to one thing drift
+        // apart, and then only one of them gets the fix.
+        params.registry.set(params.deck_select, fire_value(index));
+    }
+    if actions.add {
+        match engine.decks.add(&mut engine.grid, &mut engine.gravity_grid) {
+            Some(i) => {
+                let name = engine.decks.decks()[i].name.clone();
+                engine.after_deck_change();
+                notes.push((false, format!("on '{name}', a fresh page")));
+                turned = true;
+            }
+            // Said out loud. A "+" that does nothing reads as a bug, and
+            // the reason is not visible anywhere on screen.
+            None => notes.push((true, full.clone())),
+        }
+    }
+    if let Some(index) = actions.duplicate {
+        match engine
+            .decks
+            .duplicate(index, &mut engine.grid, &mut engine.gravity_grid)
+        {
+            Some(i) => {
+                let name = engine.decks.decks()[i].name.clone();
+                engine.after_deck_change();
+                notes.push((false, format!("copied to '{name}'")));
+                turned = true;
+            }
+            None => notes.push((true, full.clone())),
+        }
+    }
+    if let Some(index) = actions.delete {
+        let name = engine.decks.decks().get(index).map(|d| d.name.clone());
+        if engine
+            .decks
+            .remove(index, &mut engine.grid, &mut engine.gravity_grid)
+        {
+            engine.after_deck_change();
+            if let Some(name) = name {
+                // Worth saying which half went. A deck holds references,
+                // so deleting one throws away an arrangement and not an
+                // evening's work — and that is not obvious from a row of
+                // chips getting shorter.
+                notes.push((false, format!("'{name}' deleted — the looks it named are still there")));
+            }
+            turned = true;
+        }
+    }
+    if let Some((index, name)) = &actions.rename {
+        listed |= engine.decks.rename(*index, name.clone());
+    }
+    if let Some((index, origin)) = actions.origin
+        && engine.decks.set_origin(index, origin)
+    {
+        listed = true;
+        // The live page's stretch is what the listener reads, so
+        // re-mirror it rather than waiting for the next page turn.
+        engine.refresh_column_origin();
+    }
+    if let Some(follow) = actions.follow {
+        engine.set_follow_columns(follow);
+        if let Err(e) = crate::settings::save_follow_columns(follow) {
+            log::warn!("could not remember the Resolume column follow: {e:#}");
+        }
+        notes.push((
+            false,
+            if follow {
+                "following Resolume's columns — turn on OSC Output in Arena".to_string()
+            } else {
+                "no longer following Resolume's columns".to_string()
+            },
+        ));
+    }
+
+    // A page turn rewrites both grids, so both files go with the set list.
+    // Writing only `decks.json` would leave the grid files holding the
+    // page that was left, and the next launch would open on a deck whose
+    // pads are somebody else's.
+    if turned {
+        for (kind, grid, noun) in [
+            (vizz_mod::preset::Kind::Look, &engine.grid, "scene"),
+            (vizz_mod::preset::Kind::Gravity, &engine.gravity_grid, "gravity"),
+        ] {
+            if let Err(e) = vizz_mod::scene::save_kind(kind, grid) {
+                log::error!("could not save the {noun} grid: {e:#}");
+                notes.push((true, format!("could NOT save the {noun} grid: {e}")));
+            }
+        }
+    }
+    // `take_decks_dirty` covers a page turned by a controller or an OSC
+    // message, which never passes through this function at all.
+    if turned || listed || engine.take_decks_dirty() {
+        if let Err(e) = vizz_mod::deck::save(&engine.decks) {
+            log::error!("could not save the deck list: {e:#}");
+            notes.push((true, format!("could NOT save the deck list: {e}")));
+        }
+    }
+}
 
 fn apply_grid_actions(
     actions: &vizz_ui::grid_view::GridActions,
@@ -2723,6 +2888,12 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // rather than a startup failure — see `scene::load`.
     engine.adopt_grid(vizz_mod::scene::load());
     engine.adopt_gravity_grid(vizz_mod::scene::load_kind(vizz_mod::preset::Kind::Gravity));
+    // And the pages the grids are one of. Read after them, because the
+    // live page is a mirror of the two grid files and the book adopts
+    // what they hold — a pad filled and never followed by a page turn is
+    // in the grid file and nowhere else.
+    engine.adopt_decks(vizz_mod::deck::load(&engine.grid, &engine.gravity_grid));
+    engine.adopt_column_sync(Arc::clone(&opts.columns));
     let mut app = App {
         engine,
         params,

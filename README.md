@@ -1234,6 +1234,8 @@ control input can never crash the renderer.
 | `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
 | `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
+| `/deck/select` | 0 – 16 | 0 | turn to page 1–16 on change; 0 = none |
+| `/column/fire` | 0 – 16 | 0 | fire column 1–16 — the scene pad and the gravity pad of that number, together |
 | `/record/active` | 0 – 1 | 0 | record the master to a PNG sequence; 1 starts, 0 stops |
 | `/master/dim` | 0 – 1 | 1 | master fader |
 

@@ -136,6 +136,9 @@ fn main() {
         "Ribbon".to_string(),
     ];
     let state = performance::PerformanceState {
+        decks: &[],
+        active_deck: 0,
+        follow_columns: None,
         recording: Some(vizz_ui::RecordingView { secs: 72, frames: 4310, dropped: 12 }),
         preset_current: Some(2),
         outputs: &[

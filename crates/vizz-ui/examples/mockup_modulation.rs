@@ -452,6 +452,9 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     };
     let midi = vizz_ui::MidiView::default();
     let state = vizz_ui::PerformanceState {
+        decks: &[],
+        active_deck: 0,
+        follow_columns: None,
         recording: None,
         preset_current: Some(2),
         grid: &grid,
