@@ -16,7 +16,7 @@ deliberately alike: one performer, two programs, one mental model.
 - `crates/vizz-mod/src/deck.rs`: `Deck` (a name, both grids' cells, a
   Resolume column origin) and `Book` (the pages and which is live), with
   `decks.json` beside `grid.json` and `gravity-grid.json`.
-- `/deck/select` — transport, 0 = none, 1..16 = the pages. An ordinary
+- `/deck/select` — transport, 0 = none, 1..24 = the pages. An ordinary
   parameter, so a chip on screen, a MIDI button and an OSC message are
   one gesture, and bindings name the deck number the way pad bindings
   name the slot.
