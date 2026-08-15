@@ -901,6 +901,9 @@ The address vizz listens for is `/composition/columns/N/connect`, which is
 not a vizz parameter and so is not in the table below — it is translated
 into `/column/fire` on the way in.
 
+The full design note, including what was deliberately left out, is in
+`docs/decks.md`.
+
 ## Point clouds
 
 ```sh
