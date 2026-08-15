@@ -238,10 +238,14 @@ pub struct Grid {
     kind: crate::preset::Kind,
     /// Always [`SLOTS`] long. A `Vec` rather than an array so serde does
     /// not need const-generic help, with the length restored on load.
+    #[serde(default = "empty_cells")]
     cells: Vec<Option<Cell>>,
     /// Transition length in seconds.
+    #[serde(default = "default_duration")]
     pub duration: f32,
+    #[serde(default)]
     pub curve: Curve,
+    #[serde(default)]
     pub autopilot: Autopilot,
     /// The cell that finished arriving, if any.
     #[serde(skip)]
@@ -253,6 +257,26 @@ pub struct Grid {
     /// waits for the next boundary, which is what "in time" means.
     #[serde(skip)]
     last_step: Option<i64>,
+}
+
+/// Defaults for a grid file that does not carry every field.
+///
+/// Every one of them used to be required, so a file written by anything
+/// other than this exact build — a generator, a hand edit, an older
+/// release — failed to parse, was quarantined as corrupt, and left the
+/// user with an empty grid and a log line. That is the wrong end of the
+/// trade: a grid naming its pads and nothing else is a perfectly clear
+/// statement of intent, and the fields it omits have obvious answers.
+///
+/// The same tolerance the settings file has, for the same reason.
+fn empty_cells() -> Vec<Option<Cell>> {
+    vec![None; SLOTS]
+}
+
+/// Two seconds, matching [`Grid::default`]. Serde's own default for `f32`
+/// is zero, which would silently turn every unstated blend into a cut.
+fn default_duration() -> f32 {
+    2.0
 }
 
 impl Default for Grid {
@@ -897,6 +921,40 @@ fn migrate_inline(bytes: &[u8]) -> Option<Grid> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A grid file that names its pads and nothing else loads.
+    ///
+    /// Every field used to be required, so a file from a generator, a hand
+    /// edit or an older release failed to parse, was quarantined as
+    /// corrupt, and left an empty grid behind a log line. The sister
+    /// lighting app emits exactly this shape — cells, duration, curve, no
+    /// autopilot — and it was silently rejected.
+    #[test]
+    fn a_grid_file_missing_fields_loads_rather_than_being_quarantined() {
+        let partial = br#"{"cells":[{"preset":"Slow bloom"}],"duration":0.3,"curve":"easein"}"#;
+        let mut grid: Grid = serde_json::from_slice(partial).expect("a partial grid was rejected");
+        grid.cells.resize(SLOTS, None);
+        assert_eq!(grid.cell(0).map(|c| c.preset.as_str()), Some("Slow bloom"));
+        assert_eq!(grid.duration, 0.3);
+        assert_eq!(grid.curve, Curve::EaseIn);
+        assert_eq!(
+            grid.autopilot,
+            Autopilot::default(),
+            "the missing autopilot did not fall back to the default"
+        );
+
+        // Cells alone, which is the minimum a set list is.
+        let bare: Grid = serde_json::from_slice(br#"{"cells":[]}"#).expect("cells alone rejected");
+        assert_eq!(
+            bare.duration, 2.0,
+            "an unstated blend became a cut — serde's f32 default is zero"
+        );
+        assert_eq!(bare.curve, Curve::Smooth);
+
+        // And an empty object is still a grid rather than an error.
+        let nothing: Grid = serde_json::from_slice(b"{}").expect("an empty object was rejected");
+        assert_eq!(nothing.duration, 2.0);
+    }
 
     /// Adopting the page already loaded is not a page turn.
     ///
