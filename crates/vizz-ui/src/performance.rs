@@ -201,6 +201,8 @@ pub struct DeckActions {
     pub origin: Option<(usize, u32)>,
     /// Start or stop following Resolume's column launches.
     pub follow: Option<bool>,
+    /// Replace every page with the built-in set.
+    pub install_set: bool,
 }
 
 
@@ -916,13 +918,34 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
             response.context_menu(|ui| deck_menu(ui, state, i, editing_id, actions));
         }
 
-        if state.decks.len() < vizz_mod::deck::MAX_DECKS
-            && ui
+        if state.decks.len() < vizz_mod::deck::MAX_DECKS {
+            let plus = ui
                 .add(egui::Button::new("+").min_size(vec2(26.0, 26.0)))
-                .on_hover_text("a new empty page of pads")
-                .clicked()
-        {
-            actions.decks.add = true;
+                .on_hover_text("a new empty page of pads  ·  right-click for the built-in set");
+            if plus.clicked() {
+                actions.decks.add = true;
+            }
+            // The way back to the shipped show. It installs itself on a
+            // machine that has never had one, so this is for the case that
+            // is otherwise a dead end: somebody who cleared their pages and
+            // wants it again. Armed, because it replaces every page.
+            plus.context_menu(|ui| {
+                if vizz_design::widgets::armed_button(
+                    ui,
+                    egui::Id::new("deck-set-armed"),
+                    0,
+                    vizz_design::widgets::Armed {
+                        idle_label: "load the built-in set",
+                        armed_label: "replace every page",
+                        idle_hover: "twenty songs, eight sections each (asks once)",
+                        armed_hover: "every page you have now goes; the looks they name stay",
+                        small: false,
+                    },
+                ) {
+                    actions.decks.install_set = true;
+                    ui.close();
+                }
+            });
         }
 
         // The follow switch sits with the decks rather than with the

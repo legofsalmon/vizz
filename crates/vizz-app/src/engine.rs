@@ -1590,3 +1590,152 @@ mod vector_pack_tests {
     }
 
 }
+
+/// Contact sheet for a built-in set: the acceptance artifact for the looks
+/// the pads actually fire.
+///
+///     cargo test -p vizz-app -- --ignored set_contact_sheet --nocapture
+///
+/// Ignored because it wants a GPU and writes a file, so it is not CI's
+/// business. It exists because the assertions in `vizz-mod::sets` can say
+/// a layer is on and its blend is not one of the two that render black,
+/// and still not say whether anything is *visible*. A set whose pads were
+/// all correct and all dark would pass every one of them.
+///
+/// Every tile goes the whole way through the real path — the preset's
+/// values into the registry, a frame through `FrameEngine`, the stack it
+/// packs — so what is judged is what a pad press produces.
+#[cfg(test)]
+mod set_contact_sheet {
+    use super::*;
+    use vizz_render::vector::VectorScene;
+    use vizz_render::{GpuContext, output};
+
+    const TILE_W: u32 = 480;
+    const TILE_H: u32 = 270;
+    const COLS: u32 = 4;
+
+    /// Mean channel value below which a pad is not showing anything worth
+    /// projecting. Deliberately low: a blackout pad is *meant* to be an
+    /// ember, and the number that matters is "is this frame empty", not
+    /// "is this frame bright".
+    const DARK: f64 = 0.35;
+
+    #[test]
+    #[ignore = "wants a GPU and writes a png"]
+    fn every_pad_in_the_set_shows_something() {
+        let filter = std::env::var("VIZZ_SET_FILTER").unwrap_or_default();
+        let out = std::env::var("VIZZ_SET_SHEET").unwrap_or_else(|_| "set-sheet.png".into());
+
+        let set = vizz_mod::sets::electronic();
+        let looks: Vec<_> = set
+            .presets
+            .iter()
+            .filter(|(n, _)| filter.is_empty() || n.contains(&filter))
+            .collect();
+        assert!(!looks.is_empty(), "nothing in the set matches {filter:?}");
+
+        let params = Arc::new(AppParams::build());
+        let mut engine = FrameEngine::new(
+            Arc::clone(&params),
+            vizz_audio::AudioEngine::start(Some("\0none")),
+        );
+        let ctx = pollster::block_on(GpuContext::new(None)).expect("no GPU adapter");
+        let scene = VectorScene::new(&ctx, output::OUTPUT_FORMAT);
+        let target = output::OutputTarget::new(&ctx.device, TILE_W, TILE_H);
+
+        let rows = (looks.len() as u32).div_ceil(COLS);
+        let mut sheet = image::RgbaImage::new(TILE_W * COLS, TILE_H * rows);
+        let mut dark = Vec::new();
+
+        for (i, (name, preset)) in looks.iter().enumerate() {
+            for (addr, value) in &preset.values {
+                params.registry.set_by_addr(addr, *value);
+            }
+            // Long steps, so the smoothing has landed on this preset's
+            // values rather than being caught part-way from the one
+            // before — a tile of a look mid-glide is not a picture of it.
+            let mut inputs = engine.begin_frame(TILE_W as f32 / TILE_H as f32, None);
+            for _ in 0..8 {
+                inputs = engine.begin_frame(
+                    TILE_W as f32 / TILE_H as f32,
+                    Some(Duration::from_millis(100)),
+                );
+            }
+            assert!(inputs.vector_active, "{name} has no layer on at all");
+            let mut stack = inputs.vector;
+            stack.bg[3] = TILE_H as f32;
+
+            let mut enc = ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            scene.render(&ctx, &mut enc, &target.view, &stack);
+            ctx.queue.submit([enc.finish()]);
+            let pixels = read_back(&ctx, &target.texture);
+
+            let mut lit = 0u64;
+            let (cx, cy) = (i as u32 % COLS * TILE_W, i as u32 / COLS * TILE_H);
+            for y in 0..TILE_H {
+                for x in 0..TILE_W {
+                    let o = ((y * TILE_W + x) * 4) as usize;
+                    // BGRA from the master format; swap for `image`.
+                    let (r, g, b) = (pixels[o + 2], pixels[o + 1], pixels[o]);
+                    lit += r as u64 + g as u64 + b as u64;
+                    sheet.put_pixel(cx + x, cy + y, image::Rgba([r, g, b, 255]));
+                }
+            }
+            let mean = lit as f64 / (TILE_W as f64 * TILE_H as f64 * 3.0);
+            println!("{mean:7.3}  {name}");
+            if mean < DARK {
+                dark.push(format!("{name} ({mean:.3})"));
+            }
+        }
+
+        sheet.save(&out).expect("png write failed");
+        println!("wrote {out} — {} tiles", looks.len());
+        assert!(dark.is_empty(), "pads that project nothing: {dark:#?}");
+    }
+
+    fn read_back(ctx: &GpuContext, texture: &wgpu::Texture) -> Vec<u8> {
+        let unpadded = TILE_W * 4;
+        let padded = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (padded * TILE_H) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d { width: TILE_W, height: TILE_H, depth_or_array_layers: 1 },
+        );
+        ctx.queue.submit([enc.finish()]);
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let data = slice.get_mapped_range().expect("buffer map").to_vec();
+        let mut out = Vec::with_capacity((unpadded * TILE_H) as usize);
+        for y in 0..TILE_H {
+            let start = (y * padded) as usize;
+            out.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
+        out
+    }
+}

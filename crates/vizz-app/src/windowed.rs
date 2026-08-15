@@ -2454,6 +2454,25 @@ fn apply_deck_actions(
         // re-mirror it rather than waiting for the next page turn.
         engine.refresh_column_origin();
     }
+    if actions.install_set {
+        let set = vizz_mod::sets::electronic();
+        let songs = set.decks.len();
+        match install_set(&set) {
+            Ok(book) => {
+                engine.decks = book;
+                engine.decks.restore(&mut engine.grid, &mut engine.gravity_grid);
+                engine.after_deck_change();
+                notes.push((false, format!("the built-in set is loaded — {songs} songs")));
+                // The book is already on disk; the grid files that mirror
+                // its live page are not.
+                turned = true;
+            }
+            Err(e) => {
+                log::error!("could not install the built-in set: {e:#}");
+                notes.push((true, format!("could NOT load the built-in set: {e}")));
+            }
+        }
+    }
     if let Some(follow) = actions.follow {
         engine.set_follow_columns(follow);
         if let Err(e) = crate::settings::save_follow_columns(follow) {
@@ -2479,6 +2498,25 @@ fn apply_deck_actions(
         log::error!("could not save the deck list: {e:#}");
         notes.push((true, format!("could NOT save the deck list: {e}")));
     }
+}
+
+/// Put a built-in set on this machine: its looks into the library, its
+/// pages into a book, and the book to disk.
+///
+/// Written before it is adopted, and the looks before the pages. A deck
+/// names its looks, so a book installed over a library that does not hold
+/// them yet is a row of dead pads — briefly, but during the one launch a
+/// new user is deciding what this program is.
+fn install_set(set: &vizz_mod::sets::Set) -> anyhow::Result<vizz_mod::deck::Book> {
+    let book = vizz_mod::sets::install(set)?;
+    vizz_mod::deck::save(&book)?;
+    log::info!(
+        "installed the {} set: {} songs, {} looks",
+        set.name,
+        book.len(),
+        set.presets.len()
+    );
+    Ok(book)
 }
 
 /// Write the set list and the two grid files that mirror its live page.
@@ -2930,7 +2968,39 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         vizz_mod::scene::read_kind(vizz_mod::preset::Kind::Look),
         vizz_mod::scene::read_kind(vizz_mod::preset::Kind::Gravity),
     );
-    engine.adopt_decks(vizz_mod::deck::load(read.0.as_ref(), read.1.as_ref()));
+    let saved = vizz_mod::deck::exists();
+    let mut book = vizz_mod::deck::load(read.0.as_ref(), read.1.as_ref());
+    // A machine nobody has ever set a show up on opens with one, rather
+    // than with sixteen empty pads and no way to tell what the instrument
+    // is for. Strictly guarded — see `sets::is_fresh_install` — because
+    // installing over somebody's own decks would be unforgivable.
+    let mut installed = false;
+    if vizz_mod::sets::is_fresh_install(&book, saved) {
+        match install_set(&vizz_mod::sets::electronic()) {
+            Ok(fresh) => {
+                book = fresh;
+                installed = true;
+            }
+            Err(e) => log::error!("could not install the built-in set: {e:#} — starting empty"),
+        }
+    }
+    engine.adopt_decks(book);
+    // The live page onto the grids. A no-op on a normal launch — the book
+    // adopted these same cells a moment ago — and the recovery when a grid
+    // file was lost, since the book still holds the page it mirrored.
+    engine.decks.restore(&mut engine.grid, &mut engine.gravity_grid);
+    if installed {
+        // And the mirror, so the two grid files agree with the set from
+        // the first frame rather than from the first pad press.
+        for (kind, grid) in [
+            (vizz_mod::preset::Kind::Look, &engine.grid),
+            (vizz_mod::preset::Kind::Gravity, &engine.gravity_grid),
+        ] {
+            if let Err(e) = vizz_mod::scene::save_kind(kind, grid) {
+                log::error!("could not mirror the installed set into its grid file: {e:#}");
+            }
+        }
+    }
     engine.adopt_column_sync(Arc::clone(&opts.columns));
     let mut app = App {
         engine,

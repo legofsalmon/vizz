@@ -833,7 +833,7 @@ with the gravity layer's own grid in `gravity-grid.json` next to it.
 ## Decks
 
 ```
-/deck/select       0 = none, 1..16 = the pages
+/deck/select       0 = none, 1..24 = the pages
 /column/fire       0 = none, 1..16 = the columns
 ```
 
@@ -842,7 +842,7 @@ is one continuous thing, and nowhere near enough if it is twelve songs that
 each want their own looks. A **deck** is a page of both grids together, one
 per song. The chips above the pads on the performance layout are the set
 list: click one to turn the page, right-click for rename, duplicate, delete
-and the Resolume column range, `+` for a fresh page.
+and the Resolume column range, `+` for a fresh page. Twenty-four pages.
 
 **A deck holds references, not copies.** Looks live in one pool, so the same
 preset can sit on a pad in every song and refining it once improves all
@@ -897,9 +897,48 @@ land. `/column/fire` is an ordinary address, so anything else that speaks
 OSC can play the show by column: `/column/fire 3` does exactly what
 launching Arena's column 3 does.
 
-The address vizz listens for is `/composition/columns/N/connect`, which is
-not a vizz parameter and so is not in the table below — it is translated
-into `/column/fire` on the way in.
+**Arena's deck changes come too.** `/composition/decks/N/select` picks page
+N here, so with the same message going to the lighting rig one launch moves
+the video, the lights and the field to the same song. A deck is the song; a
+column is the section.
+
+The two addresses vizz listens for — `/composition/columns/N/connect` and
+`/composition/decks/N/select` — are not vizz parameters and so are not in
+the table below. They are translated into `/column/fire` and `/deck/select`
+on the way in, and only while following is on.
+
+### The built-in set
+
+A machine that has never had a show set up on it opens with one: twenty
+songs, eight sections each. It is the set the app was built alongside —
+hard-edged flat geometry in the 555-5555 idiom, black paper, bold limited
+palettes, layers at close frequencies interfering into moiré.
+
+The pads are the parts of a song, in the order you play them:
+
+```
+Intro   Build   Break   Drop   Bridge   Peak   Outro   Blackout
+```
+
+Those are the same eight the lighting rig uses, which is the point — with
+both programs following Arena's columns, one launch cuts the visuals and
+the lights on the same word.
+
+**Only on a machine with no show on it.** The check is deliberately strict:
+no deck file, one page, and nothing on it. Anything else and the set stays
+out of the way. To ask for it later, right-click the `+` beside the deck
+chips — it replaces every page, so it asks once.
+
+Each song carries one designed look, and the eight pads are that look read
+through the shape a song has: a bed, a rise, something stripped back, a
+hit, a hold, the biggest thing in the song, a return to the bed, and an
+ember. **The `Drop` pad is the designed look exactly**; everything else is
+measured from it. A quiet song's peak stays under a loud song's, so the
+set's arc — peaks at 7, 12 and 18, troughs at 8–9 and 14 — survives into
+the pads.
+
+Every pad is an ordinary preset, so any of them is one `store` away from
+being yours.
 
 The full design note, including what was deliberately left out, is in
 `docs/decks.md`.
@@ -1309,7 +1348,7 @@ control input can never crash the renderer.
 | `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
 | `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
-| `/deck/select` | 0 – 16 | 0 | turn to page 1–16 on change; 0 = none |
+| `/deck/select` | 0 – 24 | 0 | turn to page 1–24 on change; 0 = none |
 | `/column/fire` | 0 – 16 | 0 | fire column 1–16 — the scene pad and the gravity pad of that number, together |
 | `/record/active` | 0 – 1 | 0 | record the master to a PNG sequence; 1 starts, 0 stops |
 | `/master/dim` | 0 – 1 | 1 | master fader |

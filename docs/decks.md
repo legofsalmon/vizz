@@ -107,9 +107,65 @@ mid-set.
 - "Deck" already meant the mixing-desk surface throughout the UI's prose.
   Those now say "desk", so the word has one meaning.
 
+## The built-in set
+
+`crates/vizz-mod/src/sets.rs` and `sets/electronic.json` — twenty songs of
+eight sections, installed on a machine that has never had a show on it and
+offered from the `+` beside the deck chips otherwise.
+
+The eight pads are named after the parts of a song, and they are the same
+eight the lighting rig uses. That is the whole reason they are named at
+all: with both programs following Arena's columns, one launch cuts the
+visuals and the lights on the same word, and a pad called 5 could not do
+that.
+
+![Every song's Peak pad](img/set-peaks.webp)
+
+**One look per song, read through one shape.** The handover carried twenty
+designed looks. It did not carry a hundred and sixty, and hand-writing the
+other hundred and forty would have been a hundred and forty files nobody
+could check — the differences between them are not that many decisions but
+one repeated: a bed, a rise, something stripped back, a hit, a hold, the
+biggest thing in the song, a return to the bed, and an ember. That shape is
+written once in `SECTIONS`, and the `Drop` pad is the designed look
+*exactly*, so the drawings survive in the set rather than being
+approximated by it.
+
+![One song, all eight sections](img/sirens.webp)
+
+**A stripped section is one element, not three dim ones.** Three layers at
+low opacity is mud, and clearing the mud is what a break is for — so the
+quiet sections stand the later layers down rather than fading them.
+
+**Energy tilts the whole song.** A quiet song's peak has to stay under a
+loud song's or the set's arc flattens into twenty songs that all reach the
+same place. The spread is deliberately narrow: the palette and the geometry
+already say which song this is.
+
+**Peak is denser, not brighter.** Most of these designs already sit at or
+near full opacity, so multiplying it only clamps and the two big pads would
+be the same picture. In the lighting they are very nearly the same cue, so
+the distance here is small and it is frequency — closer-spaced layers
+interfere harder, which is how this idiom gets louder.
+
+**Drift is set on every pad, and the handover did not know about it.**
+`/lN/drift` landed one release earlier than the brief was written against,
+and it defaults to 0.1 — so leaving it out would have given every pad in
+the set a movement nobody chose, on an idiom built from hard flat shapes
+where unasked-for movement is exactly what spoils it.
+
+The tests can say a layer is on and its blend is not one of the two that
+render black on black paper. They cannot say the frame is *visible*, and a
+set whose pads were all correct and all dark would pass every one of them —
+hence the contact sheet above, which is an ignored test that renders each
+pad the whole way through the real path and fails on any that projects
+nothing.
+
 ## Deferred, deliberately
 
-- **Tempo follow.** Arena sends `/composition/tempocontroller/tempo` as
+- **Tempo follow.** The last piece of the Arena sync. Deck select and
+  column fire are both followed now; tempo is not. Arena sends
+  `/composition/tempocontroller/tempo` as
   its slider normalised over 20–500 BPM, and the sister app converts it
   back. vizz has no BPM *parameter* — the clock is a plain field written
   from three places — so this needs a registry address and a third

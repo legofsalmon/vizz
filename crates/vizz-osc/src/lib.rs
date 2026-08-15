@@ -20,8 +20,18 @@ use vizz_params::ParamRegistry;
 const RESOLUME_COLUMNS: &str = "/composition/columns/";
 const RESOLUME_CONNECT: &str = "/connect";
 
+/// And a Resolume deck change, as `/composition/decks/<n>/select`.
+///
+/// The two together are the whole sync: a deck is the song, a column is
+/// the section, and both programs following both means one launch in Arena
+/// moves the video, the lights and the field to the same place.
+const RESOLUME_DECKS: &str = "/composition/decks/";
+const RESOLUME_SELECT: &str = "/select";
+
 /// Where a followed column lands. See [`ColumnSync`].
 pub const COLUMN_FIRE: &str = "/column/fire";
+/// Where a followed deck lands.
+pub const DECK_SELECT: &str = "/deck/select";
 
 /// Everything the listener needs to know to follow Resolume's columns.
 ///
@@ -149,10 +159,10 @@ impl Drop for OscServer {
 fn apply_packet(registry: &ParamRegistry, columns: &ColumnSync, packet: OscPacket) {
     match packet {
         OscPacket::Message(msg) => {
-            // Resolume first, because a column launch is not a parameter
-            // write and — more to the point — need not carry an argument
-            // at all, so the numeric-argument guard below would drop it.
-            if follow_column(registry, columns, &msg) {
+            // Resolume first, because a launch is not a parameter write
+            // and — more to the point — need not carry an argument at
+            // all, so the numeric-argument guard below would drop it.
+            if follow_column(registry, columns, &msg) || follow_deck(registry, columns, &msg) {
                 return;
             }
             let Some(value) = msg.args.iter().find_map(as_f32) else {
@@ -167,6 +177,48 @@ fn apply_packet(registry: &ParamRegistry, columns: &ColumnSync, packet: OscPacke
             }
         }
     }
+}
+
+/// Turn `/composition/decks/N/select` into a deck select, if this is one
+/// and we are listening.
+///
+/// No origin arithmetic, unlike a column: a deck is a song and songs are
+/// numbered the same on both sides. A deck past the end of the book is
+/// clamped away by the parameter's own range and then ignored by the
+/// engine, which is the right outcome — a composition with more decks
+/// than this show has songs should not park the set on its last page.
+///
+/// The counter is not bumped. Reselecting the deck already showing is a
+/// no-op here on purpose: a page turn is not a trigger, and re-running one
+/// would put both fire controls back to rest under a performer who had
+/// just pressed a pad.
+fn follow_deck(registry: &ParamRegistry, columns: &ColumnSync, msg: &rosc::OscMessage) -> bool {
+    let Some(rest) = msg.addr.strip_prefix(RESOLUME_DECKS) else {
+        return false;
+    };
+    let Some(number) = rest.strip_suffix(RESOLUME_SELECT) else {
+        return false;
+    };
+    let Ok(deck) = number.parse::<u32>() else {
+        return false;
+    };
+    if !columns.enabled.load(Ordering::Relaxed) {
+        return true;
+    }
+    if deck < 1 || msg.args.first().and_then(as_f32).is_some_and(|v| v < 1.0) {
+        return true;
+    }
+    let Some(id) = registry.id(DECK_SELECT) else {
+        log::debug!("{DECK_SELECT} is not a parameter here; deck {deck} ignored");
+        return true;
+    };
+    let pages = registry.defs().get(id.index()).map_or(0.0, |d| d.max) as u32;
+    if deck > pages {
+        log::debug!("Resolume deck {deck} is past the end of this show");
+        return true;
+    }
+    registry.set(id, deck as f32);
+    true
 }
 
 /// Turn `/composition/columns/N/connect` into a column fire, if this is
@@ -249,7 +301,20 @@ mod tests {
         // Sixteen columns, matching the grid the app actually has, so the
         // out-of-range tests below are testing the real boundary.
         b.add(ParamDef::new(COLUMN_FIRE, 0.0, 16.0, 0.0));
+        // Twenty-four pages, matching the deck book's ceiling.
+        b.add(ParamDef::new(DECK_SELECT, 0.0, 24.0, 0.0));
         Arc::new(b.build())
+    }
+
+    fn select(deck: u32, args: Vec<OscType>) -> OscPacket {
+        OscPacket::Message(OscMessage {
+            addr: format!("/composition/decks/{deck}/select"),
+            args,
+        })
+    }
+
+    fn page(reg: &ParamRegistry) -> f32 {
+        reg.target(reg.id(DECK_SELECT).unwrap())
     }
 
     /// A listener that is following columns from the first one.
@@ -513,6 +578,70 @@ mod tests {
         );
         assert_eq!(state(&reg, &columns), (6.0, 1));
         assert_eq!(reg.target(reg.id("/test/a").unwrap()), 9.0);
+    }
+
+    /// Changing deck in Arena changes the song here. A deck is the song
+    /// and a column is the section; following both is what makes one
+    /// launch move the video, the lights and the field together.
+    #[test]
+    fn a_resolume_deck_change_selects_the_matching_song() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, select(7, vec![OscType::Int(1)]));
+        assert_eq!(page(&reg), 7.0);
+        apply_packet(&reg, &columns, select(2, vec![]));
+        assert_eq!(page(&reg), 2.0, "a select with no argument did not land");
+    }
+
+    /// A page turn is not a trigger, so it must not disturb the pads.
+    ///
+    /// Bumping the fire counter here would re-arm both grids and put the
+    /// fire controls back to rest under a performer who had just pressed
+    /// a pad — a deck message arriving mid-song would silently reset the
+    /// section they were playing.
+    #[test]
+    fn selecting_a_deck_does_not_fire_anything() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, connect(4, vec![]));
+        let (column, fires) = state(&reg, &columns);
+        apply_packet(&reg, &columns, select(3, vec![]));
+        assert_eq!(
+            state(&reg, &columns),
+            (column, fires),
+            "a deck change touched the column transport"
+        );
+    }
+
+    /// A composition with more decks than this show has songs must not
+    /// park the set on its last page.
+    #[test]
+    fn a_deck_past_the_end_of_the_show_is_ignored() {
+        let (reg, columns) = (registry(), following());
+        apply_packet(&reg, &columns, select(3, vec![]));
+        apply_packet(&reg, &columns, select(99, vec![]));
+        assert_eq!(page(&reg), 3.0, "a deck past the end was clamped onto the last page");
+        apply_packet(&reg, &columns, select(0, vec![]));
+        assert_eq!(page(&reg), 3.0, "deck 0 does not exist in Resolume");
+    }
+
+    /// One switch covers both halves of the sync.
+    #[test]
+    fn a_deck_change_does_nothing_while_following_is_off() {
+        let (reg, columns) = (registry(), Arc::new(ColumnSync::default()));
+        apply_packet(&reg, &columns, select(5, vec![OscType::Int(1)]));
+        assert_eq!(page(&reg), 0.0);
+    }
+
+    /// A deck address is claimed whether or not it fires, so it can never
+    /// also fall through to the registry.
+    #[test]
+    fn a_deck_address_never_reaches_the_registry() {
+        let mut b = ParamRegistry::builder();
+        b.add(ParamDef::new("/composition/decks/1/select", 0.0, 9.0, 0.0));
+        b.add(ParamDef::new(DECK_SELECT, 0.0, 24.0, 0.0));
+        let reg = Arc::new(b.build());
+        let trap = reg.id("/composition/decks/1/select").unwrap();
+        apply_packet(&reg, &following(), select(1, vec![OscType::Int(1)]));
+        assert_eq!(reg.target(trap), 0.0, "the deck message also wrote a parameter");
     }
 
     /// End to end over a real socket, because everything above calls

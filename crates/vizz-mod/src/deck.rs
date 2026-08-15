@@ -42,16 +42,20 @@ use crate::scene::{Cell, Grid, SLOTS};
 
 /// Pages available.
 ///
-/// Sixteen, to match the pad row: a deck row wider than the grid it pages
-/// through would be a strange shape, and sixteen songs is already a longer
-/// set than this is built for. The number is a ceiling rather than a size
-/// — a show starts with one deck and grows.
+/// Twenty-four. It was sixteen, to match the pad row — until the first
+/// real set arrived at twenty songs and the cap was the thing standing in
+/// front of it. A ceiling that a show is expected to hit is not a
+/// ceiling, it is a bug with a constant's name.
+///
+/// Twenty-four rather than twenty: a set arriving exactly at the limit
+/// leaves nowhere to put an encore, and the row wraps to a second line
+/// long before this many chips anyway.
 ///
 /// It is fixed rather than derived from the deck list because the
 /// parameter registry's topology is built once at startup, and
 /// `/deck/select` needs a range on the frame the app opens. Adding a deck
 /// mid-show must not reshape the registry under a running show.
-pub const MAX_DECKS: usize = 16;
+pub const MAX_DECKS: usize = 24;
 
 /// Where a deck's column 1 sits in Resolume's composition, when the
 /// columns are following. See [`Deck::origin`].
@@ -191,6 +195,21 @@ impl Book {
         if let Some(gravity) = gravity {
             deck.gravity = gravity.cells().to_vec();
         }
+    }
+
+    /// Replace every page, landing on the first.
+    ///
+    /// For installing a set. Deliberately not a merge: a set is a show,
+    /// and half of one interleaved with half of somebody else's is
+    /// neither. The caller decides whether replacing is allowed — see
+    /// [`crate::sets::is_fresh_install`].
+    pub fn replace(&mut self, decks: Vec<Deck>) {
+        if decks.is_empty() {
+            return;
+        }
+        self.decks = decks;
+        self.active = 0;
+        self.fit();
     }
 
     /// Copy the live pads into the active deck.
@@ -355,6 +374,17 @@ pub fn path() -> PathBuf {
         .map(|p| p.to_path_buf())
         .unwrap_or_default()
         .join("decks.json")
+}
+
+/// Whether a set list has ever been written here.
+///
+/// The one thing `load` cannot say: it returns a book either way, and a
+/// default book and a book that was saved as a single empty page are the
+/// same value. Only the file's existence tells you whether anybody has
+/// ever set this machine up — which is what a first run has to know
+/// before it installs a show over the top.
+pub fn exists() -> bool {
+    path().exists()
 }
 
 /// Written and renamed, like the grids: a crash part-way through must not

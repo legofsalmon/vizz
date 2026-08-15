@@ -997,6 +997,67 @@ mod reference_tests {
         }
     }
 
+    /// Every value in a built-in set is a real address, in range.
+    ///
+    /// `vizz-mod` builds the set and cannot see this table, so it restates
+    /// the ranges it clamps to. Two copies of a number is two things that
+    /// can drift, and the drift is silent: a clamp against a stale ceiling
+    /// writes a value the registry then clamps again, and a pad comes out
+    /// dimmer or slower than it was designed with nothing to say so. An
+    /// address that no longer exists is worse — it is dropped, and the pad
+    /// inherits whatever the look before it left there.
+    #[test]
+    fn the_built_in_set_writes_real_addresses_in_range() {
+        let p = super::AppParams::build();
+        let set = vizz_mod::sets::electronic();
+        let mut checked = 0;
+        for (name, preset) in &set.presets {
+            for (addr, value) in &preset.values {
+                let id = p
+                    .registry
+                    .id(addr)
+                    .unwrap_or_else(|| panic!("{name} writes {addr}, which is not a parameter"));
+                let def = &p.registry.defs()[id.index()];
+                assert!(
+                    *value >= def.min && *value <= def.max,
+                    "{name} writes {addr} = {value}, outside {}..{}",
+                    def.min,
+                    def.max
+                );
+                checked += 1;
+            }
+        }
+        // A hundred and sixty looks of forty-odd values each. The floor
+        // catches a set that silently built empty far more cheaply than
+        // any of the assertions above would.
+        assert!(checked > 5_000, "only checked {checked} values — did the set build?");
+    }
+
+    /// The set fits in the book, and every song is reachable.
+    ///
+    /// These are two constants in two crates — the deck ceiling and the
+    /// parameter's range — and a set is the thing that finds out they
+    /// disagree. A song past the end of `/deck/select` is a song no
+    /// controller and no OSC client can reach.
+    #[test]
+    fn every_song_in_the_built_in_set_can_be_selected() {
+        let p = super::AppParams::build();
+        let set = vizz_mod::sets::electronic();
+        assert!(
+            set.decks.len() <= vizz_mod::deck::MAX_DECKS,
+            "the set is {} songs and the book holds {}",
+            set.decks.len(),
+            vizz_mod::deck::MAX_DECKS
+        );
+        let def = &p.registry.defs()[p.deck_select.index()];
+        assert!(
+            def.max >= set.decks.len() as f32,
+            "/deck/select tops out at {} but the set has {} songs",
+            def.max,
+            set.decks.len()
+        );
+    }
+
     /// `SHAPE_CLOUD_PAIR` is a bare number pointed at a position in a
     /// list that has grown twice. Held to the label, so inserting a form
     /// ahead of the cloud pair fails here rather than silently making
