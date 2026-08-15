@@ -915,7 +915,7 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
                 }
             };
             let response = response.on_hover_text(hint);
-            response.context_menu(|ui| deck_menu(ui, state, i, editing_id, actions));
+            armed_menu(&response, |ui| deck_menu(ui, state, i, editing_id, actions));
         }
 
         if state.decks.len() < vizz_mod::deck::MAX_DECKS {
@@ -929,7 +929,7 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
             // machine that has never had one, so this is for the case that
             // is otherwise a dead end: somebody who cleared their pages and
             // wants it again. Armed, because it replaces every page.
-            plus.context_menu(|ui| {
+            armed_menu(&plus, |ui| {
                 if vizz_design::widgets::armed_button(
                     ui,
                     egui::Id::new("deck-set-armed"),
@@ -972,6 +972,25 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
         deck_rename_row(ui, slot, text, editing_id, actions);
     }
     ui.add_space(6.0);
+}
+
+/// A context menu that survives being clicked.
+///
+/// egui closes a menu on any click inside it, which is right for ordinary
+/// items and fatal for an armed one: the first press arms the button and
+/// takes the menu away with it, so the second press — the one that
+/// actually does the thing — has nothing to land on. The state persists,
+/// so re-opening the menu inside the arm window shows a confirm nobody
+/// would think to look for; after it lapses, the item is simply inert
+/// forever.
+///
+/// That is not a subtle failure. It made "load the built-in set"
+/// impossible to reach by any route, on the one screen it is offered
+/// from, and deleting a page equally so.
+fn armed_menu(on: &egui::Response, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Popup::context_menu(on)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(contents);
 }
 
 /// What a chip offers on a right click. Soundcheck work, deliberately one
@@ -4004,6 +4023,257 @@ mod tests {
             off.is_empty(),
             "{:?} was painted outside the window",
             off.iter().map(|p| p.text.trim()).collect::<Vec<_>>()
+        );
+    }
+
+    /// The built-in set can actually be loaded from the desk.
+    ///
+    /// Reported behaviour is that it cannot. The set installs itself only
+    /// on a machine that has never had a show, so for anyone who has ever
+    /// filled a pad the right-click on `+` is the *only* route — and an
+    /// only route that does not work is the feature not existing.
+    ///
+    /// Driven through real pointer events, because "the menu item is
+    /// painted" and "the menu item loads the set" are different claims and
+    /// only the second one matters. The arming click and the confirming
+    /// click are separate frames, exactly as a hand would send them.
+    #[test]
+    fn the_built_in_set_can_be_loaded_from_the_deck_row() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut macros = Macros::default();
+        let size = vec2(1440.0, 900.0);
+        let decks = vec![chip("deck 1")];
+
+        // (label, centre) for every text run, so the menu items can be hit
+        // where they actually landed rather than where they were meant to.
+        let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
+            let audio = AudioView::default();
+            let names = ["Slow bloom".to_string()];
+            let grid = crate::grid_view::GridView::default();
+            let midi = MidiView::default();
+            let state = PerformanceState {
+                decks: &decks,
+                active_deck: 0,
+                follow_columns: Some(false),
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            });
+            let actions = draw(&ctx, &reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        painted(&t.galley),
+                        egui::Rect::from_min_size(t.pos, t.galley.rect.size()).center(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            (actions, found)
+        };
+
+        let press = |at: egui::Pos2, button: egui::PointerButton| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+
+        // Settle. The layout animates and areas need a second pass, so a
+        // single frame is a picture of the desk mid-assembly.
+        let mut painted_now = Vec::new();
+        for _ in 0..8 {
+            painted_now = frame(Vec::new()).1;
+        }
+        let plus = painted_now
+            .iter()
+            .find(|(t, _)| t.trim() == "+")
+            .map(|(_, p)| *p)
+            .expect("no + button beside the deck chips");
+
+        // Right-click it. The menu opens on the next frame.
+        frame(press(plus, egui::PointerButton::Secondary));
+        let mut with_menu = Vec::new();
+        for _ in 0..3 {
+            with_menu = frame(Vec::new()).1;
+        }
+        let item = with_menu
+            .iter()
+            .find(|(t, _)| t.contains("load the built-in set"))
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no way to load the set on the + menu: {:?}",
+                    with_menu.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+
+        // Arm it, then confirm. The item relabels between the two.
+        frame(press(item, egui::PointerButton::Primary));
+        let mut armed = Vec::new();
+        for _ in 0..3 {
+            armed = frame(Vec::new()).1;
+        }
+        let confirm = armed
+            .iter()
+            .find(|(t, _)| t.contains("replace every page"))
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the menu item did not arm — it is unreachable in two clicks: {:?}",
+                    armed.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+        let (actions, _) = frame(press(confirm, egui::PointerButton::Primary));
+        assert!(
+            actions.decks.install_set,
+            "the confirming click did not ask for the set"
+        );
+    }
+
+    /// Deleting a page works too, by the same route and for the same
+    /// reason: it is the other armed button living in a menu, and it was
+    /// broken in exactly the same way.
+    #[test]
+    fn a_page_can_be_deleted_from_its_own_chip() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut macros = Macros::default();
+        let size = vec2(1440.0, 900.0);
+        // Two pages, because the last one cannot be deleted.
+        let decks = vec![chip("opener"), chip("encore")];
+
+        let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
+            let audio = AudioView::default();
+            let names = ["Slow bloom".to_string()];
+            let grid = crate::grid_view::GridView::default();
+            let midi = MidiView::default();
+            let state = PerformanceState {
+                decks: &decks,
+                active_deck: 0,
+                follow_columns: Some(false),
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            });
+            let actions = draw(&ctx, &reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        painted(&t.galley),
+                        egui::Rect::from_min_size(t.pos, t.galley.rect.size()).center(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            (actions, found)
+        };
+        let press = |at: egui::Pos2, button: egui::PointerButton| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button, pressed: true, modifiers: Default::default() },
+                egui::Event::PointerButton { pos: at, button, pressed: false, modifiers: Default::default() },
+            ]
+        };
+        let find = |painted: &[(String, egui::Pos2)], want: &str| -> egui::Pos2 {
+            painted
+                .iter()
+                .find(|(t, _)| t.contains(want))
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no {want:?}: {:?}",
+                        painted.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                    )
+                })
+        };
+
+        let mut painted_now = Vec::new();
+        for _ in 0..8 {
+            painted_now = frame(Vec::new()).1;
+        }
+        let chip_at = find(&painted_now, "encore");
+
+        frame(press(chip_at, egui::PointerButton::Secondary));
+        let mut menu = Vec::new();
+        for _ in 0..3 {
+            menu = frame(Vec::new()).1;
+        }
+        let item = find(&menu, "delete page");
+
+        frame(press(item, egui::PointerButton::Primary));
+        let mut armed = Vec::new();
+        for _ in 0..3 {
+            armed = frame(Vec::new()).1;
+        }
+        let confirm = find(&armed, "delete for good");
+        let (actions, _) = frame(press(confirm, egui::PointerButton::Primary));
+        assert_eq!(
+            actions.decks.delete,
+            Some(1),
+            "the confirming click did not delete the page it was opened on"
         );
     }
 
