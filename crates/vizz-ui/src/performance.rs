@@ -222,6 +222,25 @@ const COL_MIN_W: f32 = 470.0;
 const PANE_MIN_W: f32 = 420.0;
 
 
+/// How wide the control column is.
+///
+/// Named, rather than computed at its one call site, because the widgets
+/// inside the column have to be *told* it: the column's `Ui` is set to the
+/// full inner width — the status strip spans that — so anything laying
+/// itself out from `available_width` wraps across the output pane instead
+/// of inside its column. The layer strip has always been handed this. The
+/// preset row was not, which nobody could see while a library was a
+/// handful and everybody could see the moment one was a hundred and sixty.
+fn column_width(inner_w: f32, desk: bool) -> f32 {
+    if !desk {
+        return inner_w;
+    }
+    // Narrower now that the scene grid has gone to the desk. What is left
+    // has to carry the gravity grid at eight pads wide, which is what sets
+    // the floor; everything else in the column is a single row.
+    (inner_w * 0.42).clamp(COL_MIN_W, inner_w - PANE_MIN_W - PAD)
+}
+
 /// The largest rect of `aspect` that fits inside `outer`, centred.
 ///
 /// A picture stretched to its container is a picture you cannot judge:
@@ -411,15 +430,7 @@ pub fn draw(
             // — a two-inch preview beside a cramped grid helps nobody, so
             // a small window goes back to being the single column it was.
             let desk = full.x >= DESK_MIN_W && !peeking;
-            let col_w = if desk {
-                // Narrower now that the scene grid has gone to the desk.
-                // What is left has to carry the gravity grid at eight
-                // pads wide, which is what sets the floor; everything
-                // else in the column is a single row.
-                (inner_w * 0.42).clamp(COL_MIN_W, inner_w - PANE_MIN_W - PAD)
-            } else {
-                inner_w
-            };
+            let col_w = column_width(inner_w, desk);
             ui.horizontal(|ui| {
                 ui.add_space(PAD);
                 ui.vertical(|ui| {
@@ -462,7 +473,7 @@ pub fn draw(
 
                     if !state.presets.is_empty() && !peeking && !cramped {
                         section(ui, "PRESETS");
-                        preset_row(ui, state, &mut actions);
+                        preset_row(ui, state, &mut actions, col_w);
                         ui.add_space(10.0);
                     }
 
@@ -851,6 +862,13 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// rather than by id, since they outlive the process.
 const DECK_SELECT: &str = "/deck/select";
 
+/// Preset buttons are 30 points tall; the row shows about three of them
+/// before it scrolls. Three because two reads as an accident of layout and
+/// four is most of the column — and because a library worth scrolling is
+/// one you are not reading during a song anyway.
+const PRESET_BUTTON_H: f32 = 30.0;
+const PRESET_ROWS_SHOWN: f32 = 3.0;
+
 /// Longest deck name a chip will show before it starts shrinking. Wide
 /// enough for a song title, narrow enough that eight of them fit a row.
 const CHIP_NAME_W: f32 = 96.0;
@@ -1157,7 +1175,26 @@ fn deck_rename_row(
 }
 
 /// Presets as a row of buttons, numbered to match the keyboard.
-fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut PerformanceActions) {
+///
+/// `width` is the column's, and has to be passed in — see
+/// [`column_width`]. Bounded in height as well, because a library is no
+/// longer necessarily a handful: installing a set puts a hundred and sixty
+/// looks in it, and a wrapped row of that many is taller than the screen.
+/// Scrolling keeps every one of them reachable while the block stays the
+/// size the layout budgeted for it.
+fn preset_row(
+    ui: &mut egui::Ui,
+    state: &PerformanceState<'_>,
+    actions: &mut PerformanceActions,
+    width: f32,
+) {
+    ui.scope(|ui| {
+    ui.set_max_width(width);
+    egui::ScrollArea::vertical()
+        .max_height(PRESET_ROWS_SHOWN * (PRESET_BUTTON_H + 4.0))
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+    ui.set_max_width(width);
     ui.horizontal_wrapped(|ui| {
         for (i, name) in state.presets.iter().enumerate() {
             let slot = i as u32 + 1;
@@ -1232,6 +1269,8 @@ fn preset_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Per
                 });
             }
         }
+    });
+        });
     });
 }
 
@@ -3049,7 +3088,34 @@ mod tests {
         /// suddenly finding chip names in its sheet.
         static SHEET_DECKS: std::cell::RefCell<Vec<DeckChip>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        /// The preset library the shared harness draws, for the tests that
+        /// care what happens when it is large.
+        static SHEET_PRESETS: std::cell::RefCell<Vec<String>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
+
+    /// Run `f` with a large preset library loaded.
+    fn with_presets<T>(names: Vec<String>, f: impl FnOnce() -> T) -> T {
+        SHEET_PRESETS.with(|d| *d.borrow_mut() = names);
+        let out = f();
+        SHEET_PRESETS.with(|d| d.borrow_mut().clear());
+        out
+    }
+
+    /// What the built-in set puts in the library: twenty songs of eight.
+    fn a_set_of_presets() -> Vec<String> {
+        (1..=20)
+            .flat_map(|n| {
+                SECTION_NAMES
+                    .iter()
+                    .map(move |s| format!("{n:02} Song Title Here - {s}"))
+            })
+            .collect()
+    }
+
+    const SECTION_NAMES: [&str; 8] = [
+        "Intro", "Build", "Break", "Drop", "Bridge", "Peak", "Outro", "Blackout",
+    ];
 
     /// Run `f` with a set list on the desk.
     fn with_decks<T>(decks: Vec<DeckChip>, f: impl FnOnce() -> T) -> T {
@@ -4277,6 +4343,109 @@ mod tests {
         );
     }
 
+    /// A full preset library does not push the desk apart.
+    ///
+    /// The row draws one button per preset and was written when a library
+    /// was a handful. Installing the built-in set makes it a hundred and
+    /// sixty, wrapped — a block taller than the column it sits in, which
+    /// takes the faders and the master off the bottom of the window with
+    /// it. Reported as "presets now overflow the container", and it is the
+    /// set that made an old assumption load-bearing.
+    #[test]
+    fn a_large_preset_library_does_not_overflow_the_desk() {
+        let reg = registry();
+        let library = a_set_of_presets();
+        assert_eq!(library.len(), 160);
+        for size in [
+            vec2(1440.0, 900.0),
+            vec2(1920.0, 1080.0),
+            vec2(1280.0, 720.0),
+            vec2(1280.0, 900.0),
+        ] {
+            let mut macros = Macros::default();
+            // A full library *and* a full set list: the two arrive
+            // together, since installing the set is what produces both.
+            let chips: Vec<DeckChip> = (1..=20).map(|n| chip(&format!("{n:02} Song Title"))).collect();
+            let sheet = with_presets(library.clone(), || {
+                with_decks(chips.clone(), || {
+                    sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, size)
+                })
+            });
+            let text = sheet.text();
+            // Presence, not absence. egui culls anything laid out past
+            // the clip rect, so an unbounded row of a hundred and sixty
+            // buttons does not paint *outside* the column — it does not
+            // paint at all, while still taking the space. Measured: the
+            // original draws zero preset runs here. Asserting that
+            // nothing spilled would therefore have passed against the
+            // bug, and did, until this was turned round — the same trap
+            // that once passed a fader test against a build with no
+            // faders in it.
+            let shown = sheet
+                .items
+                .iter()
+                .filter(|p| library.iter().any(|n| p.text.contains(n.as_str())))
+                .count();
+            assert!(
+                shown > 0,
+                "at {}x{} the preset row painted nothing — a full library is laid out past its clip",
+                size.x,
+                size.y
+            );
+            // The chips are the only way to change song. A library that
+            // pushes them off the desk takes the set with it.
+            assert!(
+                text.contains("01 Song Title"),
+                "at {}x{} a full library pushed the deck chips off the desk",
+                size.x,
+                size.y
+            );
+            assert!(
+                text.contains("MASTER"),
+                "at {}x{} a full library pushed the master off the desk",
+                size.x,
+                size.y
+            );
+            assert!(
+                text.contains("size"),
+                "at {}x{} a full library pushed the faders off the desk",
+                size.x,
+                size.y
+            );
+            let off = sheet.offscreen();
+            assert!(
+                off.is_empty(),
+                "at {}x{}, {:?} was painted outside the window",
+                size.x,
+                size.y,
+                off.iter().map(|p| p.text.trim()).take(8).collect::<Vec<_>>()
+            );
+
+            // And inside its own column, which is the failure that was
+            // actually reported. `offscreen` cannot see this: the row
+            // stayed within the window the whole time, it just wrapped at
+            // the window's width instead of the column's and painted
+            // itself across the output pane.
+            let desk = size.x >= DESK_MIN_W;
+            let right = PAD + column_width(size.x - PAD * 2.0, desk);
+            // And what it does paint stays inside its column.
+            let spilled: Vec<&str> = sheet
+                .items
+                .iter()
+                .filter(|p| library.iter().any(|n| p.text.contains(n.as_str())))
+                .filter(|p| p.rect.right() > right + 1.0)
+                .map(|p| p.text.trim())
+                .take(6)
+                .collect();
+            assert!(
+                spilled.is_empty(),
+                "at {}x{} the preset row spilled past the column at x={right}: {spilled:?}",
+                size.x,
+                size.y
+            );
+        }
+    }
+
     /// One run of text as it was actually painted, and where it landed.
     #[derive(Clone, Debug)]
     struct Painted {
@@ -4365,7 +4534,14 @@ mod tests {
             ctx.data_mut(|d| d.insert_temp(peek_id(), true));
         }
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
+        let names = SHEET_PRESETS.with(|f| {
+            let extra = f.borrow().clone();
+            if extra.is_empty() {
+                vec!["Slow bloom".to_string(), "Butterfly".to_string()]
+            } else {
+                extra
+            }
+        });
         let grid = crate::grid_view::GridView::default();
         let decks = SHEET_DECKS.with(|f| f.borrow().clone());
         let state = PerformanceState {
