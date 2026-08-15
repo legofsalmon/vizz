@@ -540,13 +540,21 @@ pub fn draw(
                     // The set list, above both grids, and inside the block
                     // `measured` covers — so the gap above the pads shrinks
                     // by the row's height next frame and the faders keep
-                    // the room they had. In the single-column layout there
-                    // is no gap to give up, so a window already short
-                    // enough to be standing rows down stands this one down
-                    // too rather than taking the height off the faders.
-                    if desk || !cramped {
-                        deck_row(ui, state, &mut actions);
-                    }
+                    // the room they had.
+                    //
+                    // Drawn at every size, including the ones where PUNCH
+                    // and LAYERS stand down. It was guarded by `cramped`
+                    // at first, on the theory that the single-column
+                    // layout has no gap to give up and the row would come
+                    // straight off the fader budget — but the budget
+                    // absorbs it: removing the guard and re-running the
+                    // window sweep changed nothing, and it takes about
+                    // three hundred points of added height before the
+                    // faders are laid out below the window at all. Hiding
+                    // the set list on a laptop screen, which is where a
+                    // set list is most needed, was a real cost paid
+                    // against a theoretical one.
+                    deck_row(ui, state, &mut actions);
                     if let Some(gravity) = state.gravity.filter(|_| !peeking) {
                         section(ui, "GRAVITY");
                         // Sixteen empty pads for a layer nobody has touched
@@ -908,14 +916,13 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
             response.context_menu(|ui| deck_menu(ui, state, i, editing_id, actions));
         }
 
-        if state.decks.len() < vizz_mod::deck::MAX_DECKS {
-            if ui
+        if state.decks.len() < vizz_mod::deck::MAX_DECKS
+            && ui
                 .add(egui::Button::new("+").min_size(vec2(26.0, 26.0)))
                 .on_hover_text("a new empty page of pads")
                 .clicked()
-            {
-                actions.decks.add = true;
-            }
+        {
+            actions.decks.add = true;
         }
 
         // The follow switch sits with the decks rather than with the
@@ -2962,6 +2969,23 @@ mod tests {
         /// Set by [`render_peeking`] so the harness can put the context
         /// into the peeking state before the layout reads it.
         static RENDER_PEEK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// The set list the shared harness draws, so the layout tests can
+        /// opt into a deck row without every other test in the file
+        /// suddenly finding chip names in its sheet.
+        static SHEET_DECKS: std::cell::RefCell<Vec<DeckChip>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Run `f` with a set list on the desk.
+    fn with_decks<T>(decks: Vec<DeckChip>, f: impl FnOnce() -> T) -> T {
+        SHEET_DECKS.with(|d| *d.borrow_mut() = decks);
+        let out = f();
+        SHEET_DECKS.with(|d| d.borrow_mut().clear());
+        out
+    }
+
+    fn chip(name: &str) -> DeckChip {
+        DeckChip { name: name.into(), midi: None, learning: false, origin: 1 }
     }
 
 
@@ -3784,6 +3808,149 @@ mod tests {
         }
     }
 
+    /// The set list is on the screen you play on, named, and the live
+    /// page is not the one you have to guess at.
+    ///
+    /// The row exists to answer "which song's pads am I looking at"
+    /// across a dark room. A row that draws but does not name the pages,
+    /// or names them all identically, answers nothing.
+    #[test]
+    fn the_deck_row_names_every_page() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = with_decks(
+            vec![chip("opener"), chip("second song"), chip("encore")],
+            || sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1440.0, 900.0)),
+        );
+        let text = sheet.text();
+        for name in ["opener", "second song", "encore"] {
+            assert!(text.contains(name), "'{name}' is not on the desk: {text}");
+        }
+        // And the way to make another one, which is the only route to a
+        // second page there is.
+        assert!(text.contains('+'), "no way to add a page: {text}");
+    }
+
+    /// The Resolume switch is offered before it is on.
+    ///
+    /// Following is off by default, so a toggle that only appeared once
+    /// following was already running would be a switch nobody could ever
+    /// find to turn on — the locked-door shape this codebase has shipped
+    /// once already with the gravity sequencer.
+    #[test]
+    fn the_resolume_switch_is_visible_while_it_is_off() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = with_decks(vec![chip("opener")], || {
+            sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1440.0, 900.0))
+        });
+        assert!(
+            sheet.text().contains("resolume"),
+            "the column-follow switch is not on the desk: {}",
+            sheet.text()
+        );
+    }
+
+    /// Without a book there is no row at all.
+    ///
+    /// Every context that is not the live app — the mockups, the panel
+    /// preview — hands an empty set list, and a row of nothing would take
+    /// height off the picture to say that there are no pages.
+    #[test]
+    fn no_book_means_no_row() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1440.0, 900.0));
+        assert!(
+            !sheet.text().contains("resolume"),
+            "the deck row drew itself with no pages to show: {}",
+            sheet.text()
+        );
+    }
+
+    /// The faders survive every window worth playing on *with* a full set
+    /// list on the desk.
+    ///
+    /// The row costs height off the pads block, and the pads block is what
+    /// the fader budget subtracts — in the single-column layout there is
+    /// no gap to absorb it, so it comes straight off `room`, the number
+    /// that decides whether the fader block is laid out below the window
+    /// and culled entirely. `the_faders_survive_every_window_worth_playing_on`
+    /// cannot catch that: it runs with no decks and no row.
+    ///
+    /// Sixteen pages with long names, which is the worst the row can be —
+    /// a full book, every chip at its widest, wrapping to as many lines as
+    /// it takes. Probed by adding height at the row's position: the
+    /// assertions here start failing at around three hundred points, so
+    /// they are measuring the budget and not merely the strings.
+    #[test]
+    fn the_faders_survive_every_window_with_a_full_set_list_on_the_desk() {
+        let reg = registry();
+        let decks: Vec<DeckChip> = (1..=vizz_mod::deck::MAX_DECKS)
+            .map(|n| chip(&format!("song {n} with a long title")))
+            .collect();
+        for size in [
+            vec2(1280.0, 720.0),
+            vec2(1280.0, 680.0),
+            vec2(1024.0, 640.0),
+            vec2(1440.0, 900.0),
+            vec2(1920.0, 1080.0),
+            vec2(900.0, 700.0),
+            vec2(1100.0, 620.0),
+        ] {
+            let mut macros = Macros::default();
+            let sheet = with_decks(decks.clone(), || {
+                sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, size)
+            });
+            let text = sheet.text();
+            assert!(
+                text.contains("MASTER"),
+                "at {}x{} the master fader is not on screen with a set list up: {text}",
+                size.x,
+                size.y
+            );
+            assert!(
+                text.contains("size"),
+                "at {}x{} the macro faders are not on screen with a set list up: {text}",
+                size.x,
+                size.y
+            );
+            let off = sheet.offscreen();
+            assert!(
+                off.is_empty(),
+                "at {}x{}, {:?} was painted outside the window",
+                size.x,
+                size.y,
+                off.iter().map(|p| p.text.trim()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A song title long enough to be a real one does not push the row
+    /// past the right edge.
+    ///
+    /// Chips are laid out wrapped, so a name that refuses to shrink grows
+    /// the row instead — which in the single column comes off the faders.
+    /// `fit_label` is what stops it, and nothing else would.
+    #[test]
+    fn a_long_song_title_stays_inside_the_window() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let decks = vec![
+            chip("the one with the very long name that nobody would type"),
+            chip("also quite a long name for a song"),
+        ];
+        let sheet = with_decks(decks, || {
+            sheet_sized(&mut macros, &reg, &MidiView::default(), None, None, vec2(1024.0, 640.0))
+        });
+        let off = sheet.offscreen();
+        assert!(
+            off.is_empty(),
+            "{:?} was painted outside the window",
+            off.iter().map(|p| p.text.trim()).collect::<Vec<_>>()
+        );
+    }
+
     /// One run of text as it was actually painted, and where it landed.
     #[derive(Clone, Debug)]
     struct Painted {
@@ -3874,10 +4041,11 @@ mod tests {
         let audio = AudioView::default();
         let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
         let grid = crate::grid_view::GridView::default();
+        let decks = SHEET_DECKS.with(|f| f.borrow().clone());
         let state = PerformanceState {
-            decks: &[],
-            active_deck: 0,
-            follow_columns: None,
+            decks: &decks,
+            active_deck: 1,
+            follow_columns: (!decks.is_empty()).then_some(false),
             recording,
             preset_current: None,
             outputs: &[OutputStatus {

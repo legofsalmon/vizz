@@ -827,7 +827,79 @@ fire control would fire itself the moment it arrived, forever.
 
 The grid is drawn four by four in the control panel and sixteen across on
 the performance layout, which has the width for the shape it wants. It is
-saved to `~/.config/vizz/grid.json` beside the presets and the MIDI map.
+saved to `~/.config/vizz/grid.json` beside the presets and the MIDI map,
+with the gravity layer's own grid in `gravity-grid.json` next to it.
+
+## Decks
+
+```
+/deck/select       0 = none, 1..16 = the pages
+/column/fire       0 = none, 1..16 = the columns
+```
+
+Sixteen scenes and sixteen gravity slots is a generous evening if the set
+is one continuous thing, and nowhere near enough if it is twelve songs that
+each want their own looks. A **deck** is a page of both grids together, one
+per song. The chips above the pads on the performance layout are the set
+list: click one to turn the page, right-click for rename, duplicate, delete
+and the Resolume column range, `+` for a fresh page.
+
+**A deck holds references, not copies.** Looks live in one pool, so the same
+preset can sit on a pad in every song and refining it once improves all
+twelve. A page costs a few hundred bytes rather than a megabyte of
+duplicated parameters, and deleting one throws away an arrangement rather
+than an evening's work.
+
+**Turning a page changes nothing on screen.** Switching decks fires nothing
+and writes no parameter: whatever is showing stays until you press a pad.
+Every page turn happens in front of an audience, so a page turn that
+changed the output would be unusable. A blend already running finishes —
+it holds captured values rather than cell references — but it stops
+claiming a pad, because after a swap no pad on screen produced what you are
+looking at.
+
+`/deck/select` is an ordinary parameter, so a chip, a controller button and
+an OSC message are one gesture. Bindings name the *deck number* rather than
+the address, exactly as the pads and the preset slots do, so sixteen
+buttons address sixteen pages rather than one button sweeping the lot.
+Right-click a chip to learn one.
+
+Pages are saved to `~/.config/vizz/decks.json`, with the live page still
+mirrored into `grid.json` and `gravity-grid.json` — so losing that file
+costs the songs you are not playing tonight rather than the one you are.
+
+### Following Resolume's columns
+
+Arena's column launches can drive vizz. In **Arena ▸ Preferences ▸ OSC**
+turn on **OSC Output** and point it at this machine on vizz's OSC port
+(7000 unless `--osc-port` says otherwise), then turn on **resolume** beside
+the deck chips.
+
+Launching Arena column N then fires **column N here — the scene pad and the
+gravity pad of that number, together**, which is what a column means in
+Arena too. Keep the two grids arranged in parallel and one button runs the
+video and the field.
+
+**Off unless you ask for it.** The OSC listener binds every interface by
+default, so following hands anyone on the venue's wifi the scene transport.
+The switch is remembered between runs.
+
+**Each page declares which columns it follows.** A deck's *origin* is the
+Arena column its column 1 follows, on the chip's right-click menu. With one
+grid in Arena, leave every page at 1. With one long composition and a song
+every sixteen columns, set 1, 17, 33 … and each page follows its own
+stretch; a column outside the live page's stretch does nothing rather than
+landing on the nearest pad.
+
+Relaunching the column already showing fires it again, unlike pressing the
+same pad twice — a relaunch in Arena is a deliberate re-trigger and has to
+land. `/column/fire` is an ordinary address, so anything else that speaks
+OSC can play the show by column: `/column/fire 3` does exactly what
+launching Arena's column 3 does.
+
+The address vizz listens for is `/composition/columns/N/connect`, which is
+not a vizz parameter and so is not in the table below — it is translated
+into `/column/fire` on the way in.
 
 ## Point clouds
 

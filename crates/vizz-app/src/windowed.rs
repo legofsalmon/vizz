@@ -1097,6 +1097,15 @@ impl App {
         // CPU work on the render thread and it scales with what is on
         // screen, so when a frame goes over budget this is the number
         // that says whether to look here or at the render passes.
+        // A page can also be turned by a controller or an OSC message,
+        // with the panel hidden and no actions to apply — which is the
+        // whole point of mapping a deck to a button. Outside the UI gate
+        // below, because the show that was played has to be the show that
+        // comes back whether or not anybody was looking at the screen.
+        if self.engine.take_decks_dirty() {
+            let mut unseen = Notes::new();
+            save_deck_state(&self.engine, &mut unseen);
+        }
         let ui_start = Instant::now();
         let actions = if let Some(preview) = &preview
             && state.gui.will_draw()
@@ -2460,28 +2469,36 @@ fn apply_deck_actions(
         ));
     }
 
-    // A page turn rewrites both grids, so both files go with the set list.
-    // Writing only `decks.json` would leave the grid files holding the
-    // page that was left, and the next launch would open on a deck whose
-    // pads are somebody else's.
     if turned {
-        for (kind, grid, noun) in [
-            (vizz_mod::preset::Kind::Look, &engine.grid, "scene"),
-            (vizz_mod::preset::Kind::Gravity, &engine.gravity_grid, "gravity"),
-        ] {
-            if let Err(e) = vizz_mod::scene::save_kind(kind, grid) {
-                log::error!("could not save the {noun} grid: {e:#}");
-                notes.push((true, format!("could NOT save the {noun} grid: {e}")));
-            }
+        save_deck_state(engine, notes);
+    } else if listed
+        && let Err(e) = vizz_mod::deck::save(&engine.decks)
+    {
+        // A rename or a column origin touched the set list and nothing
+        // else, so the grid files are still right.
+        log::error!("could not save the deck list: {e:#}");
+        notes.push((true, format!("could NOT save the deck list: {e}")));
+    }
+}
+
+/// Write the set list and the two grid files that mirror its live page.
+///
+/// All three or none. Writing only `decks.json` would leave the grid files
+/// holding the page that was left, and the next launch would open on a
+/// deck whose pads are somebody else's.
+fn save_deck_state(engine: &crate::engine::FrameEngine, notes: &mut Notes) {
+    for (kind, grid, noun) in [
+        (vizz_mod::preset::Kind::Look, &engine.grid, "scene"),
+        (vizz_mod::preset::Kind::Gravity, &engine.gravity_grid, "gravity"),
+    ] {
+        if let Err(e) = vizz_mod::scene::save_kind(kind, grid) {
+            log::error!("could not save the {noun} grid: {e:#}");
+            notes.push((true, format!("could NOT save the {noun} grid: {e}")));
         }
     }
-    // `take_decks_dirty` covers a page turned by a controller or an OSC
-    // message, which never passes through this function at all.
-    if turned || listed || engine.take_decks_dirty() {
-        if let Err(e) = vizz_mod::deck::save(&engine.decks) {
-            log::error!("could not save the deck list: {e:#}");
-            notes.push((true, format!("could NOT save the deck list: {e}")));
-        }
+    if let Err(e) = vizz_mod::deck::save(&engine.decks) {
+        log::error!("could not save the deck list: {e:#}");
+        notes.push((true, format!("could NOT save the deck list: {e}")));
     }
 }
 
