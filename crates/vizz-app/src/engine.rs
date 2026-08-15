@@ -176,9 +176,21 @@ impl FrameEngine {
     /// with, which is inert and is what every test and the headless path
     /// run on.
     pub fn adopt_column_sync(&mut self, columns: Arc<vizz_osc::ColumnSync>) {
+        // Origin first, then the switch. The listener starts before the
+        // book is read, so until this runs it has no idea which of
+        // Resolume's columns the live page covers — and a column arriving
+        // in that window would be measured against the wrong stretch. So
+        // following is turned on *here*, once both halves are known,
+        // rather than at the bind: the cost is that a column launched
+        // during the second the window takes to open is ignored, which is
+        // the right way round.
         columns
             .origin
             .store(self.decks.origin(), std::sync::atomic::Ordering::Relaxed);
+        columns.enabled.store(
+            crate::settings::load().follow_columns,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.columns = columns;
         // Start from the listener's count, not from zero. It has been
         // running since before the window opened, so a fresh latch would
@@ -257,6 +269,21 @@ impl FrameEngine {
         reg.set(self.params.gravity_fire, 0.0);
         self.last_scene = Some(0);
         self.last_gravity = Some(0);
+        // And the page control itself, to the page that is now live.
+        //
+        // A page can arrive by being created, copied or deleted, and those
+        // reach the book directly rather than through the parameter — so
+        // without this the parameter goes on naming the chip that was live
+        // before the "+", and clicking that chip writes the number it
+        // already holds. No edge, no turn, and the chip is dead until you
+        // click a different one first.
+        //
+        // Both halves again. Moving the latch alone would leave the
+        // parameter naming the old page, and the next frame would read
+        // that as a change and turn straight back off the page just made.
+        let live = self.decks.active() as f32 + 1.0;
+        reg.set(self.params.deck_select, live);
+        self.last_deck = Some(live as usize);
         // The column path needs no such reset: it re-arms off the
         // listener's counter, so a Resolume column relaunched after a page
         // turn lands on its own.
@@ -1282,6 +1309,99 @@ mod tests {
         reg.set(e.params.scene_fire, 2.0);
         e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
         assert_eq!(e.grid.current(), Some(1), "the new deck's pad would not fire");
+    }
+
+    /// A chip stays live after a page is created, copied or deleted.
+    ///
+    /// The parameter is the address of the live page and is edge-triggered
+    /// on its value, but `+`, duplicate and delete reach the book directly
+    /// — so the parameter went on naming the chip that was live before the
+    /// gesture. Clicking that chip then wrote the number it already held:
+    /// no edge, no turn, and the chip was dead until some other chip was
+    /// clicked first. Found by review, reproduced here before the fix.
+    #[test]
+    fn a_chip_is_not_dead_after_a_page_is_added() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let reg = Arc::clone(&e.params.registry);
+
+        // On deck 2 by its chip.
+        reg.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 1);
+
+        // "+" — the book moves without the parameter hearing about it.
+        e.decks.add(&mut e.grid, &mut e.gravity_grid).expect("a third deck");
+        e.after_deck_change();
+        assert_eq!(e.decks.active(), 2);
+
+        // Deck 2's chip again. This is the click that did nothing.
+        reg.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(
+            e.decks.active(),
+            1,
+            "the chip for the page selected before the '+' is dead"
+        );
+        assert_eq!(
+            e.grid.cell(1).map(|c| c.preset.as_str()),
+            Some("Tunnel"),
+            "the page turned but its pads did not come with it"
+        );
+    }
+
+    /// And the same after a delete, which renumbers the pages under the
+    /// parameter rather than merely moving past them.
+    #[test]
+    fn a_chip_is_not_dead_after_a_page_is_deleted() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let reg = Arc::clone(&e.params.registry);
+        e.decks.add(&mut e.grid, &mut e.gravity_grid).expect("a third deck");
+        e.after_deck_change();
+
+        reg.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 1);
+
+        // Delete the page below the live one: everything shifts down.
+        assert!(e.decks.remove(0, &mut e.grid, &mut e.gravity_grid));
+        e.after_deck_change();
+        assert_eq!(e.decks.active(), 0);
+
+        // The chip now at position 2 is the one that was 3.
+        reg.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 1, "the chip below the deleted page is dead");
+    }
+
+    /// Reseating the page control must not itself be read as a selection
+    /// on the next frame, or a "+" would turn straight back off the page
+    /// it just made.
+    ///
+    /// This is the half-fix: clearing the latch and leaving the parameter
+    /// naming the page you were on. The next frame reads that as a change
+    /// and turns back, so the "+" appears to do nothing at all. The
+    /// parameter has to move with the latch, which is why the fix is two
+    /// lines and not one.
+    ///
+    /// The deck must be selected *through the parameter* first, or it
+    /// rests at 0 and there is no stale value to turn back to — which is
+    /// how the first version of this test passed against the half-fix.
+    #[test]
+    fn adding_a_page_stays_on_the_page_it_added() {
+        let mut e = engine();
+        two_decks(&mut e);
+        e.params.registry.set(e.params.deck_select, 2.0);
+        e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        assert_eq!(e.decks.active(), 1, "the fixture never reached deck 2");
+
+        e.decks.add(&mut e.grid, &mut e.gravity_grid).expect("a third deck");
+        e.after_deck_change();
+        for _ in 0..3 {
+            e.begin_frame(16.0 / 9.0, Some(Duration::from_millis(16)));
+        }
+        assert_eq!(e.decks.active(), 2, "the new page was turned away from");
     }
 
     /// A page that does not exist is silence, and the edge is still

@@ -2487,6 +2487,7 @@ fn apply_deck_actions(
 /// holding the page that was left, and the next launch would open on a
 /// deck whose pads are somebody else's.
 fn save_deck_state(engine: &crate::engine::FrameEngine, notes: &mut Notes) {
+    let mut mirrored = true;
     for (kind, grid, noun) in [
         (vizz_mod::preset::Kind::Look, &engine.grid, "scene"),
         (vizz_mod::preset::Kind::Gravity, &engine.gravity_grid, "gravity"),
@@ -2494,7 +2495,18 @@ fn save_deck_state(engine: &crate::engine::FrameEngine, notes: &mut Notes) {
         if let Err(e) = vizz_mod::scene::save_kind(kind, grid) {
             log::error!("could not save the {noun} grid: {e:#}");
             notes.push((true, format!("could NOT save the {noun} grid: {e}")));
+            mirrored = false;
         }
+    }
+    // The set list only moves once the grids that mirror its live page
+    // have. Writing it anyway — a full disk takes the grids and leaves
+    // this one — would leave the file naming a page the grid files do not
+    // hold, and the next launch adopts those grids over that page. The
+    // song that was on screen when the disk filled would be the one it
+    // took.
+    if !mirrored {
+        log::warn!("the set list was not written: its grid files did not save");
+        return;
     }
     if let Err(e) = vizz_mod::deck::save(&engine.decks) {
         log::error!("could not save the deck list: {e:#}");
@@ -2909,7 +2921,16 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // live page is a mirror of the two grid files and the book adopts
     // what they hold — a pad filled and never followed by a page turn is
     // in the grid file and nowhere else.
-    engine.adopt_decks(vizz_mod::deck::load(&engine.grid, &engine.gravity_grid));
+    //
+    // Asked a second time, and for the one thing the adopted grids cannot
+    // say: whether their file was actually there. An unreadable grid loads
+    // as sixteen empty pads, and adopting *that* over the book would let a
+    // lost `grid.json` take a song with it.
+    let read = (
+        vizz_mod::scene::read_kind(vizz_mod::preset::Kind::Look),
+        vizz_mod::scene::read_kind(vizz_mod::preset::Kind::Gravity),
+    );
+    engine.adopt_decks(vizz_mod::deck::load(read.0.as_ref(), read.1.as_ref()));
     engine.adopt_column_sync(Arc::clone(&opts.columns));
     let mut app = App {
         engine,

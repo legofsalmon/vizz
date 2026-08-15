@@ -976,13 +976,22 @@ fn deck_menu(
                 .size(12.0)
                 .color(INK_2),
         );
-        let mut origin = deck.origin as f32;
+        // Held in egui's own memory while the drag is live, and handed
+        // over when it settles. Emitting on `changed()` wrote the set
+        // list to disk on every frame of a drag — a file per frame, on
+        // the render thread, for one adjustment.
+        let pending = ui.make_persistent_id(("deck-origin", index));
+        let mut origin: f32 = ui
+            .data(|d| d.get_temp(pending))
+            .unwrap_or(deck.origin as f32);
         // A whole number of columns: Resolume has no column 4.5, and a
         // slider that offers one would produce a deck that follows
-        // nothing.
-        if ui
+        // nothing. The top is a full book laid out on the ladder the
+        // hover text describes — sixteen pages, sixteen columns apart.
+        let top = ((vizz_mod::deck::MAX_DECKS - 1) * crate::grid_view::SLOTS + 1) as f32;
+        let slider = ui
             .add(
-                egui::Slider::new(&mut origin, 1.0..=128.0)
+                egui::Slider::new(&mut origin, 1.0..=top)
                     .step_by(1.0)
                     .clamping(egui::SliderClamping::Always),
             )
@@ -990,10 +999,13 @@ fn deck_menu(
                 "which Arena column this page's column 1 follows. Leave every page \
                  at 1 when Arena has one grid; set 1, 17, 33 … when it has one long \
                  one and a song every sixteen columns.",
-            )
-            .changed()
-        {
+            );
+        if slider.changed() {
+            ui.data_mut(|d| d.insert_temp(pending, origin));
+        }
+        if slider.drag_stopped() || slider.lost_focus() {
             actions.decks.origin = Some((index, origin.round().max(1.0) as u32));
+            ui.data_mut(|d| d.remove_temp::<f32>(pending));
         }
     }
     // A deck maps exactly as a scene pad and a preset slot do: the binding
@@ -1045,6 +1057,10 @@ fn deck_menu(
             },
         ) {
             actions.decks.delete = Some(index);
+            // Delete is the only gesture that renumbers the pages, so a
+            // rename still open is holding a position that will name a
+            // different song by the time it is committed.
+            ui.data_mut(|d| d.remove_temp::<(usize, String)>(editing_id));
             ui.close();
         }
     }
@@ -1067,14 +1083,31 @@ fn deck_rename_row(
                 .desired_width(180.0)
                 .hint_text("song"),
         );
-        field.request_focus();
+        // Once, on the frame the row appears. Asking every frame re-grabs
+        // focus after egui has released it, so `lost_focus` never became
+        // true and Enter did not commit — the only way out was the button.
+        let focused = editing_id.with("focused");
+        let first = ui.data_mut(|d| {
+            let first = !d.get_temp::<bool>(focused).unwrap_or(false);
+            d.insert_temp(focused, true);
+            first
+        });
+        if first {
+            field.request_focus();
+        }
         let commit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if commit || ui.button("ok").clicked() {
             actions.decks.rename = Some((index, text.clone()));
-            ui.data_mut(|d| d.remove_temp::<(usize, String)>(editing_id));
+            ui.data_mut(|d| {
+                d.remove_temp::<(usize, String)>(editing_id);
+                d.remove_temp::<bool>(focused);
+            });
         } else if cancel || ui.button("cancel").clicked() {
-            ui.data_mut(|d| d.remove_temp::<(usize, String)>(editing_id));
+            ui.data_mut(|d| {
+                d.remove_temp::<(usize, String)>(editing_id);
+                d.remove_temp::<bool>(focused);
+            });
         } else {
             ui.data_mut(|d| d.insert_temp(editing_id, (index, text.clone())));
         }

@@ -174,6 +174,25 @@ impl Book {
         self.current().origin
     }
 
+    /// Take the live grids into the active page, where there are any.
+    ///
+    /// A grid whose file was missing or unreadable arrives as `None`
+    /// rather than as sixteen empty pads, and is skipped. Adopting the
+    /// empty one would let a lost `grid.json` erase the page this file is
+    /// now the only copy of — the two mirrors of the live page are meant
+    /// to protect each other, and that is the direction in which it
+    /// matters.
+    fn adopt_live(&mut self, scenes: Option<&Grid>, gravity: Option<&Grid>) {
+        let active = self.active.min(self.decks.len() - 1);
+        let deck = &mut self.decks[active];
+        if let Some(scenes) = scenes {
+            deck.scenes = scenes.cells().to_vec();
+        }
+        if let Some(gravity) = gravity {
+            deck.gravity = gravity.cells().to_vec();
+        }
+    }
+
     /// Copy the live pads into the active deck.
     ///
     /// Called before every switch and before every save. A deck is not a
@@ -360,10 +379,19 @@ pub fn save(book: &Book) -> Result<()> {
 /// is the point of keeping the active deck mirrored in the grid files —
 /// the worst a broken `decks.json` can cost you is the songs you are not
 /// currently playing.
-pub fn load(scenes: &Grid, gravity: &Grid) -> Book {
+/// `scenes` and `gravity` are what [`crate::scene::read_kind`] actually
+/// read, so `None` means the grid file was missing or unreadable rather
+/// than empty — the difference between a page the user cleared and a page
+/// whose only surviving copy is this file.
+pub fn load(scenes: Option<&Grid>, gravity: Option<&Grid>) -> Book {
     let path = path();
+    let fallback = || {
+        let mut book = Book::default();
+        book.adopt_live(scenes, gravity);
+        book
+    };
     let Ok(bytes) = std::fs::read(&path) else {
-        return Book::from_grids(scenes, gravity);
+        return fallback();
     };
     match serde_json::from_slice::<Book>(&bytes) {
         Ok(mut book) => {
@@ -372,7 +400,7 @@ pub fn load(scenes: &Grid, gravity: &Grid) -> Book {
             // they are written on every pad edit, and this file only on a
             // deck gesture. Adopting them here means a pad filled and then
             // never followed by a page turn is still there next launch.
-            book.store(scenes, gravity);
+            book.adopt_live(scenes, gravity);
             book
         }
         Err(e) => {
@@ -381,7 +409,7 @@ pub fn load(scenes: &Grid, gravity: &Grid) -> Book {
                 path.display()
             );
             crate::library::quarantine(&path);
-            Book::from_grids(scenes, gravity)
+            fallback()
         }
     }
 }
@@ -611,6 +639,53 @@ mod tests {
         );
         // And the grids themselves are untouched by being read.
         assert_eq!(names(&scenes)[7].as_deref(), Some("prepared"));
+    }
+
+    /// A lost or unreadable `grid.json` must not take a song with it.
+    ///
+    /// The two files mirror each other so that either can be lost — but
+    /// the adoption ran unconditionally, and an unreadable grid loads as
+    /// sixteen empty pads, which is indistinguishable from a page the
+    /// user emptied. So the file that survived was overwritten by the
+    /// wreckage of the one that did not, on the next launch, silently.
+    #[test]
+    fn a_grid_file_that_did_not_load_does_not_erase_its_page() {
+        let (mut scenes, mut gravity) = grids();
+        scenes.assign(0, "only copy");
+        gravity.assign(1, "only well");
+        let mut book = Book::from_grids(&scenes, &gravity);
+
+        // What `read_kind` returns when the file is gone.
+        book.adopt_live(None, None);
+        assert_eq!(
+            book.decks()[0].scenes[0].as_ref().map(|c| c.preset.as_str()),
+            Some("only copy"),
+            "an unreadable scene grid emptied the page"
+        );
+        assert_eq!(
+            book.decks()[0].gravity[1].as_ref().map(|c| c.preset.as_str()),
+            Some("only well")
+        );
+
+        // One file lost and the other not: the survivor is still adopted.
+        scenes.assign(0, "edited since");
+        book.adopt_live(Some(&scenes), None);
+        assert_eq!(
+            book.decks()[0].scenes[0].as_ref().map(|c| c.preset.as_str()),
+            Some("edited since"),
+            "a grid that did load was not adopted"
+        );
+        assert_eq!(
+            book.decks()[0].gravity[1].as_ref().map(|c| c.preset.as_str()),
+            Some("only well"),
+            "the lost gravity grid took the page with it after all"
+        );
+
+        // And a grid that loaded genuinely empty still empties the page —
+        // clearing every pad is a thing people do, and it has to stick.
+        let (empty, _) = grids();
+        book.adopt_live(Some(&empty), None);
+        assert_eq!(book.decks()[0].scenes[0], None, "clearing every pad did not stick");
     }
 
     /// A round trip through the file format keeps every field. Serde

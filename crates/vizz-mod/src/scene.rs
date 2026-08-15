@@ -326,11 +326,21 @@ impl Grid {
     /// swap no pad on screen produced what is showing, and a lit pad that
     /// claims otherwise is worse than none.
     pub fn adopt_cells(&mut self, cells: Vec<Option<Cell>>) {
-        self.cells = cells;
+        let mut cells = cells;
         // A file written by another build, or a deck saved when SLOTS was
         // a different number, could be any length.
-        self.cells.resize(SLOTS, None);
-        self.cells.truncate(SLOTS);
+        cells.resize(SLOTS, None);
+        cells.truncate(SLOTS);
+        // Adopting the page already loaded is not a page turn. Duplicating
+        // the live deck hands back exactly the cells under the grid, and
+        // treating that as a swap put out the pad that was lit and sent
+        // the autopilot back to the top of the page — in the middle of a
+        // song, for a gesture whose whole point is that it changes
+        // nothing you can see.
+        if cells == self.cells {
+            return;
+        }
+        self.cells = cells;
         self.current = None;
         if let Some(t) = self.transition.as_mut() {
             t.to_slot = None;
@@ -697,9 +707,20 @@ pub fn save_kind(kind: crate::preset::Kind, grid: &Grid) -> Result<()> {
 /// Load a grid for one layer. Same tolerance as [`load`]: a missing file
 /// is a first run, a corrupt one is logged and replaced.
 pub fn load_kind(kind: crate::preset::Kind) -> Grid {
+    read_kind(kind).unwrap_or_else(|| Grid::for_kind(kind))
+}
+
+/// As [`load_kind`], but saying whether a grid was actually read.
+///
+/// The distinction matters to exactly one caller. A missing or unreadable
+/// file yields sixteen empty pads, which is indistinguishable from a grid
+/// the user genuinely emptied — and the deck book adopts the live grids on
+/// load, so "empty" adopted over a page that has pads on it is the set
+/// list quietly deleting a song. `None` is what lets it decline.
+pub fn read_kind(kind: crate::preset::Kind) -> Option<Grid> {
     let path = path_for(kind);
     let Ok(bytes) = std::fs::read(&path) else {
-        return Grid::new();
+        return None;
     };
     match serde_json::from_slice::<Grid>(&bytes) {
         Ok(mut grid) => {
@@ -710,7 +731,7 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
             grid.cells.resize(SLOTS, None);
             grid.cells.truncate(SLOTS);
             grid.duration = grid.duration.clamp(MIN_DURATION, MAX_DURATION);
-            grid
+            Some(grid)
         }
         Err(e) => {
             log::error!(
@@ -718,7 +739,7 @@ pub fn load_kind(kind: crate::preset::Kind) -> Grid {
                 path.display()
             );
             crate::library::quarantine(&path);
-            Grid::for_kind(kind)
+            None
         }
     }
 }
@@ -876,6 +897,42 @@ fn migrate_inline(bytes: &[u8]) -> Option<Grid> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Adopting the page already loaded is not a page turn.
+    ///
+    /// Duplicating the live deck takes the copy from the live grids and
+    /// then loads it straight back in, so nothing about the pads changes
+    /// — but the adoption cleared `current` anyway. On stage that is the
+    /// lit pad going dark and the autopilot jumping back to the top of
+    /// the song, for a gesture whose whole point is that nothing visible
+    /// happens.
+    #[test]
+    fn adopting_the_page_already_loaded_leaves_the_lit_pad_lit() {
+        let (reg, hue, _, _) = registry();
+        let mut lib = std::collections::BTreeMap::new();
+        reg.set(hue, 0.3);
+        lib.insert("playing".to_string(), Preset::capture(&reg));
+        let presets = src(&lib);
+
+        let mut grid = Grid::new();
+        grid.duration = 0.0;
+        grid.assign(1, "playing");
+        assert!(grid.fire(1, &reg, &presets));
+        assert_eq!(grid.current(), Some(1), "the fixture never lit a pad");
+
+        grid.adopt_cells(grid.cells().to_vec());
+        assert_eq!(
+            grid.current(),
+            Some(1),
+            "adopting the same pads put out the pad that was lit"
+        );
+
+        // A genuinely different page still turns.
+        let mut other = vec![None; SLOTS];
+        other[4] = Some(Cell { preset: "playing".into(), label: None });
+        grid.adopt_cells(other);
+        assert_eq!(grid.current(), None, "a real page turn kept claiming a pad");
+    }
 
     /// Two grids put back in step land on their first pad together and
     /// take the next boundary together.
