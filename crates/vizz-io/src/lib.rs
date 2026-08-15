@@ -23,6 +23,37 @@
 
 use anyhow::Result;
 
+/// Serialises the tests that mutate `VIZZ_NDI_RUNTIME`.
+///
+/// Two of them set that one variable — the sender's loader test and the
+/// receiver's — and they live in the same test binary, which the default
+/// runner runs in parallel. Each was written believing it had the process
+/// to itself. Neither did: whichever ran second could clear the variable
+/// while the first was still reading it, or overwrite it with its own
+/// path, and the assertion then failed with "path not reported" naming a
+/// value the other test had put there.
+///
+/// It failed roughly one Windows run in two and passed everywhere else,
+/// which is the worst possible shape for a test — the same commit going
+/// red and green in two runs side by side.
+///
+/// The same guard, for the same reason, as `vizz_mod::test_env`.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// Hold this for as long as the variable is set, and set it *after*
+    /// taking the guard. Poisoning is ignored: a panicking test has
+    /// already failed, and refusing to run the others adds nothing.
+    pub fn env_guard() -> MutexGuard<'static, ()> {
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 pub mod ndi;
 pub mod ndi_recv;
 pub mod readback;
