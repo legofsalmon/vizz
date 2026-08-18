@@ -1169,6 +1169,7 @@ impl App {
             // chances to miss.
             let update_view = update_view(&self.update, recording.is_some());
             let panel_state = PanelState {
+                project: vizz_mod::project::open(),
                 decks: deck_chips(&self.engine.decks, &self.midi_view),
                 active_deck: self.engine.decks.active(),
                 // Always on offer. Following is off by default, so a
@@ -1507,6 +1508,20 @@ impl App {
                 // Same deferral, for the same reason: see the bottom of
                 // this function.
                 pending_device = actions.audio.device.clone();
+                // Last, deliberately. A pad press and a show change can
+                // only reach the same frame through two different input
+                // devices, but if they do, the press belongs to the show
+                // that was on screen when it happened — so it is applied
+                // to that one, and the reload below replaces everything
+                // afterwards.
+                apply_project_actions(
+                    &actions.project,
+                    &mut self.engine,
+                    &mut self.library,
+                    &mut self.saved_modulation,
+                    &mut state.gui,
+                    &mut notes,
+                );
                 apply_panel_actions(
                     actions,
                     &self.midi_shared,
@@ -2379,6 +2394,111 @@ impl GridBinding {
 /// calls this already holds a borrow of the render state and the two are
 /// disjoint fields — the same reason `apply_grid_actions` is a free
 /// function.
+/// New show, open, save as, rename, delete — and the reload each of them
+/// implies.
+///
+/// All but the rename change which directory the whole app reads and
+/// writes, and the only correct thing to do after that is to read all of
+/// it back: the grids, the pages, the looks, the patches, the slider
+/// ranges, the fader layout and the modulation rack. Anything left in
+/// memory from the show before would be written into the new one at the
+/// next autosave, which is how one show quietly eats another.
+fn apply_project_actions(
+    actions: &vizz_ui::project_bar::ProjectActions,
+    engine: &mut crate::engine::FrameEngine,
+    library: &mut vizz_mod::preset::Library,
+    saved_modulation: &mut Vec<u8>,
+    gui: &mut vizz_ui::Gui,
+    notes: &mut Notes,
+) {
+    if !actions.any() {
+        return;
+    }
+    // The pages, before the pointer moves. Every other file autosaves the
+    // moment it changes; the set list is written from the action gate, so
+    // this is the one that could still be a frame behind — and a frame
+    // behind is exactly where it would be if the show is switched
+    // immediately after a page turn.
+    save_deck_state(engine, notes);
+
+    // A rename moves the directory with everything in it, so what is in
+    // memory is still what is on disk and reloading would only throw away
+    // which pad is lit. Everything else here changes the directory the
+    // app is pointed at.
+    let mut reload = true;
+    let done = if let Some(name) = &actions.open {
+        vizz_mod::project::set_open(name).map(|()| format!("opened “{name}”"))
+    } else if let Some(name) = &actions.create {
+        vizz_mod::project::create(name)
+            .map(|n| format!("new show “{n}” — empty pages, and its own empty library"))
+    } else if let Some(name) = &actions.save_as {
+        vizz_mod::project::save_as(name).map(|n| format!("copied to “{n}” — you are working in the copy"))
+    } else if let Some(name) = &actions.rename {
+        reload = false;
+        let from = vizz_mod::project::open();
+        vizz_mod::project::rename(&from, name).map(|n| format!("renamed to “{n}”"))
+    } else if let Some(name) = &actions.delete {
+        vizz_mod::project::remove(name).map(|n| format!("deleted “{name}” — now in “{n}”"))
+    } else {
+        return;
+    };
+    match done {
+        Ok(note) => {
+            if reload {
+                reload_show(engine, library, saved_modulation, gui);
+            }
+            notes.push((false, note));
+        }
+        Err(e) => {
+            log::error!("could not change show: {e:#}");
+            notes.push((true, format!("could NOT change show: {e}")));
+        }
+    }
+}
+
+/// Read a whole show back off disk, in the order launch reads it.
+///
+/// The same sequence as startup, and deliberately so: two ways to open a
+/// show is two behaviours to keep in step, and the one used once per
+/// launch is not the one that would get the fix.
+fn reload_show(
+    engine: &mut crate::engine::FrameEngine,
+    library: &mut vizz_mod::preset::Library,
+    saved_modulation: &mut Vec<u8>,
+    gui: &mut vizz_ui::Gui,
+) {
+    // The looks first. A pad names a look, so pages adopted over a
+    // library still holding the last show's is a row of dead pads.
+    library.refresh();
+    engine.adopt_grid(vizz_mod::scene::load());
+    engine.adopt_gravity_grid(vizz_mod::scene::load_kind(vizz_mod::preset::Kind::Gravity));
+    // Asked a second time for the one thing the adopted grids cannot say:
+    // whether their file was actually there. See the launch path.
+    let read = (
+        vizz_mod::scene::read_kind(vizz_mod::preset::Kind::Look),
+        vizz_mod::scene::read_kind(vizz_mod::preset::Kind::Gravity),
+    );
+    engine.adopt_decks(vizz_mod::deck::load(read.0.as_ref(), read.1.as_ref()));
+    engine.decks.restore(&mut engine.grid, &mut engine.gravity_grid);
+    // Exactly what a page turn does, because this is one: both fire
+    // parameters back through rest and `/deck/select` onto the page that
+    // is now live. Without it the first pad pressed on the new show is
+    // whichever number was last pressed on the old one, and it is dead.
+    engine.after_deck_change();
+    // The rack, and the copy the autosave compares against. Reseeding is
+    // not optional: the next tick would otherwise see "changed" and write
+    // the show just left over the one just opened.
+    engine.modulation =
+        vizz_mod::library::load_session().unwrap_or_else(vizz_mod::ModEngine::with_defaults);
+    *saved_modulation = vizz_mod::library::session_bytes(&engine.modulation);
+    // Slider ranges, fader layout, and the patch name in the canvas.
+    gui.adopt_show();
+    // Nothing here is a change *to* the show — it is the show, as found.
+    // Leaving the flag set writes the file straight back, which is
+    // harmless until the read failed, and then it is not.
+    engine.take_decks_dirty();
+}
+
 fn apply_deck_actions(
     actions: &vizz_ui::performance::DeckActions,
     engine: &mut crate::engine::FrameEngine,

@@ -52,6 +52,10 @@ impl MidiView {
 /// directly so the panel keeps no privileged access of its own.
 #[derive(Default)]
 pub struct PanelActions {
+    /// New show, open, save as, rename, delete. Carried on the panel's
+    /// actions rather than its own return value because both screens
+    /// offer the menu and the app applies one merged set.
+    pub project: crate::project_bar::ProjectActions,
     /// Begin MIDI-learn (or cancel, with None).
     pub set_learn_target: Option<Option<vizz_midi::LearnTarget>>,
     /// Remove the MIDI binding for this parameter.
@@ -203,6 +207,11 @@ pub struct PanelState {
     /// The pages of pads, in play order. Carried through rather than
     /// drawn here: the panel is where a look is designed, and the set list
     /// belongs on the screen where it is played.
+    /// The open show's name. Passed in rather than read here: this is
+    /// built every frame, and asking the storage layer who is open on
+    /// each one is a lock and a clone for an answer that changes when
+    /// somebody clicks a menu.
+    pub project: String,
     pub decks: Vec<crate::performance::DeckChip>,
     pub active_deck: usize,
     /// Whether Resolume's column launches are being followed, or `None`
@@ -440,6 +449,17 @@ pub fn draw(
 /// — it is a thing you do while playing, not while setting up.
 fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     ui.horizontal_wrapped(|ui| {
+        // The open show, first — the same place it sits on the
+        // performance strip, so it is one thing in one position rather
+        // than two arrangements to learn.
+        //
+        // On this line rather than on a row of its own above it. Its own
+        // row costs about thirty points of height at the very top of the
+        // panel, which pushes everything below it down; measured, that is
+        // enough to take the bottom of the preset list past the edge of a
+        // thousand-point window and have egui cull it.
+        crate::project_bar::chip(ui, &state.project, &mut actions.project);
+        ui.add_space(6.0);
         if let Some(h) = &state.health {
             let over = h.over_budget_window_pct > 1.0;
             ui.colored_label(

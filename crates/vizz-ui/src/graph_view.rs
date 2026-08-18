@@ -234,6 +234,18 @@ impl GraphView {
         changed | inner_changed
     }
 
+    /// Forget which patch is open, after the show changed.
+    ///
+    /// The graph itself arrives with the new show's modulation session,
+    /// so the canvas is already right; the *name* in the field came from
+    /// the show before, and "save" under it would write a patch of the
+    /// new graph into the new show under the old show's name.
+    pub fn adopt_show(&mut self) {
+        self.patch_name.clear();
+        self.selected = None;
+        self.status = None;
+    }
+
     /// Patch name, save/load, and the palette toggle.
     fn toolbar(&mut self, ui: &mut egui::Ui, graph: &mut NodeGraph) -> bool {
         use vizz_mod::library;

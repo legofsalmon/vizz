@@ -186,6 +186,7 @@
   <h4>Start</h4>
   <a href="#install">Install and first launch</a>
   <a href="#screens">The three screens</a>
+  <a href="#shows">Shows</a>
   <a href="#first-look">Build your first look</a>
 
   <h4>Playing</h4>
@@ -284,6 +285,41 @@ destroy work.</td></tr>
   <figcaption>The control panel. The status line at the top stays visible; everything
   above the presets folds away, because it is setup rather than performance.</figcaption>
 </figure>
+
+<h2 id="shows">Shows</h2>
+
+<p>The name at the start of the panel, and at the start of the performance
+strip, is the <strong>show</strong> you have open. Click it for the list of
+shows on this machine, and for <code>new show…</code>,
+<code>save as…</code>, <code>rename…</code> and <code>delete</code>.</p>
+
+<p>A show is everything you built for one band or one night: both grids, the
+pages of pads, your looks, your patches, your fader layout and your slider
+ranges. Switching shows swaps all of it at once.</p>
+
+<p>A show carries <em>its own preset library</em>, which is what makes one a
+complete thing you can copy to another machine and have work — a pad names a
+look, so the pool it names travels with it. So <code>new show…</code> starts
+with an empty library: the built-in looks are always there,
+<code>save as…</code> is how you carry your own looks into a new show, and
+the built-in set is one right-click away on the <code>+</code> beside the deck
+chips.</p>
+
+<p>What does <em>not</em> travel is the rig. Your output size, audio device
+and controller map stay where they are, because they describe the machine in
+front of you rather than the set you are playing — plug into a different rig
+and your show is unchanged; open a different show and your rig is
+unchanged.</p>
+
+<p><strong>There is no save button.</strong> Everything above is written the
+moment it changes, so <code>save as…</code> means <em>copy this show and
+carry on in the copy</em> rather than "write it down before you lose it".
+Nothing is ever lost for not having pressed anything.</p>
+
+<p>A name already taken counts up rather than overwriting: type
+<code>Warehouse</code> twice and the second one is <code>Warehouse 2</code>.
+The last show cannot be deleted — there would be nowhere for the next pad to
+live.</p>
 
 <h2 id="first-look">Build your first look</h2>
 
@@ -1125,13 +1161,16 @@ running app by a test, so it cannot drift out of date.</p>
 
 <div class="scroll">
 <table>
-<tr><td><code>~/.config/vizz/presets/</code></td><td>Your saved looks, one JSON each</td></tr>
-<tr><td><code>~/.config/vizz/patches/</code></td><td>Modulation graphs</td></tr>
-<tr><td><code>~/.config/vizz/grid.json</code></td><td>The scene grid, as the live deck left it</td></tr>
-<tr><td><code>~/.config/vizz/gravity-grid.json</code></td><td>The gravity grid, likewise</td></tr>
-<tr><td><code>~/.config/vizz/decks.json</code></td><td>The set list: every page of pads, and which one is live</td></tr>
-<tr><td><code>~/.config/vizz/midi.json</code></td><td>Your controller map</td></tr>
-<tr><td><code>~/.config/vizz/settings.json</code></td><td>Output size, audio device, loaded clouds, fullscreen</td></tr>
+<tr><td><code>~/.config/vizz/projects/&lt;show&gt;/</code></td><td>One show — everything below this line lives in one of these</td></tr>
+<tr><td><code>&nbsp;&nbsp;presets/</code></td><td>Your saved looks, one JSON each</td></tr>
+<tr><td><code>&nbsp;&nbsp;patches/</code></td><td>Modulation graphs</td></tr>
+<tr><td><code>&nbsp;&nbsp;grid.json</code></td><td>The scene grid, as the live deck left it</td></tr>
+<tr><td><code>&nbsp;&nbsp;gravity-grid.json</code></td><td>The gravity grid, likewise</td></tr>
+<tr><td><code>&nbsp;&nbsp;decks.json</code></td><td>The set list: every page of pads, and which one is live</td></tr>
+<tr><td><code>&nbsp;&nbsp;macros.json</code></td><td>Your fader assignments</td></tr>
+<tr><td><code>~/.config/vizz/open.json</code></td><td>Which show is open</td></tr>
+<tr><td><code>~/.config/vizz/midi.json</code></td><td>Your controller map — the rig, so it stays put when the show changes</td></tr>
+<tr><td><code>~/.config/vizz/settings.json</code></td><td>Output size, audio device, loaded clouds, fullscreen — the rig too</td></tr>
 <tr><td><code>~/Movies/vizz/</code></td><td>Recordings (macOS; <code>~/Videos/vizz/</code> elsewhere)</td></tr>
 </table>
 </div>
@@ -1139,6 +1178,10 @@ running app by a test, so it cannot drift out of date.</p>
 <p>Built-in presets are compiled into the binary rather than written to disk, so
 they are always present, cannot be half-installed, and cannot be lost by
 clearing the config directory.</p>
+
+<p>Upgrading from a build without shows moves what was in
+<code>~/.config/vizz/</code> into <code>projects/Show 1/</code> on first launch.
+Nothing is copied and nothing is left behind.</p>
 
 <h2 id="cli">Command line</h2>
 

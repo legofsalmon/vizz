@@ -148,6 +148,7 @@ fn main() {
         })
         .collect();
     let state = performance::PerformanceState {
+        project: "Warehouse",
         decks: &decks,
         active_deck: 1,
         follow_columns: Some(true),

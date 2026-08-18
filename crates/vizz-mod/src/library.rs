@@ -16,14 +16,11 @@ use anyhow::{Context as _, Result};
 
 use crate::graph::NodeGraph;
 
-/// Where patches live. Alongside the MIDI map, so all user state is in one
-/// place someone can back up or copy between machines.
+/// Where patches live: inside the open show, beside its presets and its
+/// grids. A patch is something you built for a set, so it travels with
+/// the set — see [`crate::project`].
 pub fn patch_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("vizz").join("patches")
+    crate::project::show_dir().join("patches")
 }
 
 /// Reduce a user-typed name to something safe to use as a filename.
@@ -155,11 +152,15 @@ pub fn quarantine(path: &std::path::Path) {
 /// to keep, and putting it there would list it in the load menu as if it
 /// were one.
 fn session_path() -> PathBuf {
-    patch_dir()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default()
-        .join("modulation.json")
+    crate::project::show_dir().join("modulation.json")
+}
+
+/// The same path, for the test that checks every show-shaped file is
+/// named in [`crate::project::CONTENTS`]. Not public API: the working
+/// modulation state is not something to open by name.
+#[cfg(test)]
+pub(crate) fn session_path_for_test() -> PathBuf {
+    session_path()
 }
 
 /// Write the whole modulation state — clock, LFOs, routes and graph.

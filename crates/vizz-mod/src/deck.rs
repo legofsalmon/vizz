@@ -369,11 +369,7 @@ impl Book {
 
 /// Where the deck book lives, beside the two grid files it pages through.
 pub fn path() -> PathBuf {
-    crate::library::patch_dir()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default()
-        .join("decks.json")
+    crate::project::show_dir().join("decks.json")
 }
 
 /// Whether a set list has ever been written here.
