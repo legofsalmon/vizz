@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.21.2/vizz-0.21.2.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.22.0/vizz-0.22.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,29 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.22.0">0.22.0</a></div>
+      <ul>
+        <li><strong>Shows: one project per set, switched from the top of
+          the app.</strong> Everything the app remembered sat in one flat
+          directory, so a machine held exactly one show — fine for an
+          instrument you set up once, wrong for one that goes to two gigs
+          a week. A show is now a folder of its own holding both grids,
+          the pages of pads, your looks, your patches, your fader layout
+          and your slider ranges, and the name at the start of the panel
+          and of the performance strip is which one is open. Its menu is
+          the list, plus <strong>new show</strong>,
+          <strong>save as</strong>, <strong>rename</strong> and
+          <strong>delete</strong>. Your output size, audio device and
+          controller map stay where they are: they describe the rig in
+          front of you, not the set you are playing. There is still no
+          save button, because everything is still written the moment it
+          changes — “save as” means copy this show and carry on in the
+          copy. Upgrading moves what you already have into
+          <em>Show 1</em>, nothing copied and nothing left behind.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.21.2">0.21.2</a></div>
