@@ -12,6 +12,7 @@ pub mod grid_view;
 pub mod panel;
 pub mod theme;
 pub mod performance;
+pub mod project_bar;
 mod renderer;
 
 /// Exposed for the offscreen panel-preview example; the app uses [`Gui`].
@@ -413,6 +414,19 @@ impl Gui {
     /// and `render` returning early after all of it had been assembled
     /// meant paying for a panel nobody could see. Which is the state a set
     /// is actually played in.
+    /// Re-read what this crate holds on behalf of a show, after the open
+    /// one changed.
+    ///
+    /// The slider ranges and the fader layout live here rather than in the
+    /// app, so the app cannot reload them itself — and both are per-show
+    /// files. Leaving them would carry one show's fader assignments into
+    /// the next, and then write them there at the first drag.
+    pub fn adopt_show(&mut self) {
+        self.ranges = vizz_mod::ranges::Ranges::load();
+        self.macros = vizz_mod::perform::Macros::load();
+        self.graph_view.adopt_show();
+    }
+
     pub fn will_draw(&self) -> bool {
         self.visible
             || self.graph_open
@@ -747,6 +761,7 @@ impl Gui {
             output_texture: self.output_texture,
             output_aspect: self.output_aspect,
             graph: Some(&modulation.graph),
+            project: &state.project,
             decks: &state.decks,
             active_deck: state.active_deck,
             follow_columns: state.follow_columns,
@@ -822,6 +837,7 @@ impl Gui {
         actions.grid = perf.grid;
         actions.gravity = perf.gravity;
         actions.decks = perf.decks;
+        actions.project = perf.project;
         // Learn and unbind are handled identically to the panel's, so a
         // controller mapped from the performance layout and one mapped
         // from the parameter list end up in the same map by the same path.
@@ -970,6 +986,7 @@ mod tests {
         reg.set(mode, 5.0);
         let ctx = egui::Context::default();
         let state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1018,6 +1035,10 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            // Distinct from every preset name below, so the assertion
+            // that the panel names its show cannot be satisfied by one of
+            // the looks it happens to be listing.
+            project: "Basement".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1053,6 +1074,15 @@ mod tests {
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
+        // Every look, patch and slider range in this window belongs to a
+        // show, and a panel that will not say which is a panel you have
+        // to guess about after a set change. Presence, not absence: egui
+        // culls what does not fit, so a chip that failed to lay out would
+        // simply not arrive.
+        assert!(
+            text.contains("Basement"),
+            "the panel does not say which show is open: {text}"
+        );
         assert!(text.contains("Presets"), "no presets section: {text}");
         assert!(text.contains("Slow bloom"), "built-in missing: {text}");
         assert!(text.contains("Warehouse 2"), "user preset missing: {text}");
@@ -1069,6 +1099,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1122,6 +1153,7 @@ mod tests {
         // First frames have no health snapshot yet and no senders; the
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1167,6 +1199,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1266,6 +1299,7 @@ mod tests {
             "/master/dim",
         );
         let state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1320,6 +1354,7 @@ mod tests {
     fn update_banner_appears_only_when_a_newer_version_exists() {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1472,6 +1507,7 @@ mod tests {
     fn the_recalled_preset_is_outlined_in_the_panel_list_too() {
         let reg = registry();
         let state = |current: Option<usize>| PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1525,6 +1561,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1580,6 +1617,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1639,6 +1677,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1694,6 +1733,7 @@ mod tests {
         let reg = registry();
         let ctx = egui::Context::default();
         let mut state = PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1814,6 +1854,7 @@ mod tests {
     /// A believable panel, for tests that only vary one thing.
     fn base_state() -> PanelState {
         PanelState {
+            project: "Show 1".into(),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,

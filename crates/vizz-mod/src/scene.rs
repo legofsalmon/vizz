@@ -713,10 +713,7 @@ pub fn grid_path() -> PathBuf {
 /// the two are independent everywhere else and there is no reason for
 /// them to share a failure.
 pub fn path_for(kind: crate::preset::Kind) -> PathBuf {
-    let base = crate::library::patch_dir()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
+    let base = crate::project::show_dir();
     match kind {
         crate::preset::Kind::Look => base.join("grid.json"),
         crate::preset::Kind::Gravity => base.join("gravity-grid.json"),

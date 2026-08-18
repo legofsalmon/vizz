@@ -51,6 +51,7 @@ pub mod deck;
 pub mod library;
 pub mod perform;
 pub mod preset;
+pub mod project;
 pub mod ranges;
 pub mod scene;
 pub mod sets;

@@ -528,7 +528,8 @@ right-click menu does, so a new kind appears in both — and it makes the
 operators discoverable rather than hidden behind a right-click nobody
 thinks to try.
 
-Patches save to `~/.config/vizz/patches/*.json`, including node positions:
+Patches save to `~/.config/vizz/projects/<show>/patches/*.json`, including
+node positions:
 a patch that reloads with its layout scrambled has to be re-read from
 scratch. Writes go to a temporary file and are renamed over the target, so
 a crash or a full disk mid-save cannot destroy the patch that was already
@@ -562,7 +563,7 @@ value rather than dragging relatively, which is what you want when
 reaching quickly.
 
 Click a fader's name to reassign it. Assignments live in
-`~/.config/vizz/macros.json`, separately from patches: which parameters
+`macros.json` inside the open show, separately from patches: which parameters
 you want under your fingers is a property of how you play, not of the
 modulation graph, and loading someone else's patch should not rearrange
 your faders. A slot pointing at a parameter this build no longer has draws
@@ -741,8 +742,7 @@ so they are always present, cannot be half-installed, and cannot be lost by
 clearing the config directory. They are also read-only — "put it back how
 it shipped" has to stay available.
 
-Your own go to `~/.config/vizz/presets/*.json`, beside patches and the MIDI
-map. Type a name, press save. Names are sanitised the same way patch names
+Your own go to `presets/*.json` inside the open show, beside its patches. Type a name, press save. Names are sanitised the same way patch names
 are, because they become filenames.
 
 **Recall does not snap.** Values go in as parameter *targets*, and the
@@ -827,8 +827,8 @@ fire control would fire itself the moment it arrived, forever.
 
 The grid is drawn four by four in the control panel and sixteen across on
 the performance layout, which has the width for the shape it wants. It is
-saved to `~/.config/vizz/grid.json` beside the presets and the MIDI map,
-with the gravity layer's own grid in `gravity-grid.json` next to it.
+saved to `grid.json` inside the open show, beside its presets, with the
+gravity layer's own grid in `gravity-grid.json` next to it.
 
 ## Decks
 
@@ -864,7 +864,7 @@ the address, exactly as the pads and the preset slots do, so sixteen
 buttons address sixteen pages rather than one button sweeping the lot.
 Right-click a chip to learn one.
 
-Pages are saved to `~/.config/vizz/decks.json`, with the live page still
+Pages are saved to `decks.json` inside the open show, with the live page still
 mirrored into `grid.json` and `gravity-grid.json` — so losing that file
 costs the songs you are not playing tonight rather than the one you are.
 
@@ -942,6 +942,46 @@ being yours.
 
 The full design note, including what was deliberately left out, is in
 `docs/decks.md`.
+
+## Shows
+
+The name at the start of the panel and of the performance strip is the
+**show** you have open. Click it for the list, and for `new show…`,
+`save as…`, `rename…` and `delete`.
+
+A show is everything you built for one band or one night: both grids, the
+pages of pads, your looks, your patches, your fader layout and your slider
+ranges. Switching shows swaps all of it at once.
+
+**A show carries its own preset library**, which is what makes one a
+complete thing you can copy to another machine and have work — a pad names
+a look, so the pool it names has to travel with it. The consequence is
+that `new show…` starts with an empty library: the built-in looks are
+always there, `save as…` is how you carry your own into a new show, and
+the built-in set is one right-click away on the deck row's `+`. What does *not* travel is
+the rig — `settings.json` and `midi.json` stay put, because the output
+size, the audio device and the controller map describe the machine in
+front of you rather than the set you are playing. Plugging into a
+different rig should not change your show, and opening a different show
+should not change your rig.
+
+**There is no save button, and that is deliberate.** Every one of those
+files is written the moment it changes and always has been. A performer
+who loses an hour of pad work for not having pressed a button at the end
+of it has been failed by the program, so "save as" here means *copy this
+show and carry on in the copy* — which is the useful half of the idea and
+the half a live tool can honour. The menu says so in as many words, on the
+line under the name.
+
+Shows live in `~/.config/vizz/projects/<name>/`, one directory each, and
+`open.json` beside them records which is open. The name you type is the
+directory name, sanitised the way patch and preset names are. A name
+already taken counts up rather than overwriting — `Warehouse` typed twice
+gives you `Warehouse 2`, never one show on top of another.
+
+Upgrading from a build without shows moves what was in `~/.config/vizz/`
+into `projects/Show 1/` on first launch; nothing is copied and nothing is
+left behind.
 
 ## Point clouds
 

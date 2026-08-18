@@ -154,10 +154,7 @@ impl Kind {
     }
 
     pub fn dir(self) -> PathBuf {
-        let base = crate::library::patch_dir()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let base = crate::project::show_dir();
         match self {
             Kind::Look => base.join("presets"),
             Kind::Gravity => base.join("gravity"),
@@ -232,11 +229,7 @@ impl Preset {
 /// Where user presets live, beside patches and the MIDI map so all user
 /// state is in one directory to back up or copy between machines.
 pub fn preset_dir() -> PathBuf {
-    crate::library::patch_dir()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default()
-        .join("presets")
+    crate::project::show_dir().join("presets")
 }
 
 fn path_for(name: &str) -> PathBuf {

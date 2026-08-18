@@ -31,11 +31,7 @@ pub struct Ranges {
 
 impl Ranges {
     pub fn path() -> PathBuf {
-        crate::library::patch_dir()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default()
-            .join("ranges.json")
+        crate::project::show_dir().join("ranges.json")
     }
 
     /// Load, falling back to empty. A corrupt file costs you your slider

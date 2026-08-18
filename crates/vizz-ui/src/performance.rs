@@ -117,6 +117,8 @@ pub struct PerformanceState<'a> {
     pub graph: Option<&'a vizz_mod::graph::NodeGraph>,
     /// The pages of pads, in order, and which one is live. Empty in
     /// contexts that have no deck book, where the row is not drawn at all.
+    /// The open show's name, for the chip at the start of the strip.
+    pub project: &'a str,
     pub decks: &'a [DeckChip],
     pub active_deck: usize,
     /// Whether Resolume's column launches are being followed, or `None`
@@ -143,6 +145,9 @@ pub struct DeckChip {
 
 #[derive(Debug, Default)]
 pub struct PerformanceActions {
+    /// New show, open, save as, rename, delete — see
+    /// [`crate::project_bar`].
+    pub project: crate::project_bar::ProjectActions,
     /// The user tapped tempo.
     pub tapped: bool,
     /// Macro assignments changed and should be persisted.
@@ -1677,6 +1682,11 @@ fn status_strip(
     width: f32,
 ) {
     ui.horizontal(|ui| {
+        // First on the strip, before the output lights: it says which
+        // show every pad, look and patch below belongs to, and that has
+        // to be readable before any of them are.
+        crate::project_bar::chip(ui, state.project, &mut actions.project);
+        ui.add_space(12.0);
         for out in state.outputs {
             let (r, _) = ui.allocate_exact_size(vec2(11.0, 11.0), Sense::hover());
             ui.painter()
@@ -3301,6 +3311,7 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            project: "Show 1",
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -3416,7 +3427,8 @@ mod tests {
                          macros: &mut Macros|
          -> (PerformanceActions, Vec<(String, egui::Rect)>) {
             let state = PerformanceState {
-                decks: &[],
+                project: "Show 1",
+            decks: &[],
                 active_deck: 0,
                 follow_columns: None,
                 recording: None,
@@ -3574,7 +3586,8 @@ mod tests {
                          macros: &mut Macros|
          -> Vec<(String, egui::Pos2)> {
             let state = PerformanceState {
-                decks: &[],
+                project: "Show 1",
+            decks: &[],
                 active_deck: 0,
                 follow_columns: None,
                 recording: None,
@@ -3765,7 +3778,8 @@ mod tests {
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
-                decks: &[],
+                project: "Show 1",
+            decks: &[],
                 active_deck: 0,
                 follow_columns: None,
                 recording: None,
@@ -4092,6 +4106,188 @@ mod tests {
         );
     }
 
+    /// The open show is named, and named first.
+    ///
+    /// A presence test, not an absence one: egui culls anything laid out
+    /// past the clip rect, so a chip that failed to fit would simply not
+    /// arrive and every "nothing spilled" assertion would still pass.
+    #[test]
+    fn the_open_show_is_named_at_the_start_of_the_strip() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let midi = MidiView::default();
+        let sheet = sheet_sized(
+            &mut macros,
+            &reg,
+            &midi,
+            None,
+            None,
+            vec2(1440.0, 900.0),
+        );
+        let show = sheet
+            .items
+            .iter()
+            .find(|p| p.text.trim() == "Show 1")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the open show is not named anywhere on the strip: {:?}",
+                    sheet
+                        .items
+                        .iter()
+                        .map(|p| p.text.trim())
+                        .filter(|t| !t.is_empty())
+                        .collect::<Vec<_>>()
+                )
+            });
+        // Ahead of the output lights, which are the next thing along.
+        let output = sheet
+            .items
+            .iter()
+            .find(|p| p.text.contains("syphon"))
+            .expect("no output name on the strip");
+        assert!(
+            show.rect.left() < output.rect.left(),
+            "the show name is not first: it sits at {} and the output name at {}",
+            show.rect.left(),
+            output.rect.left()
+        );
+    }
+
+    /// Making a new show works from the chip, click by click.
+    ///
+    /// The lesson of the built-in set, applied before it can be repeated:
+    /// a menu item that paints and cannot be reached is the feature not
+    /// existing. This one carries a text field as well, which egui's
+    /// default close-on-click would take away on the first press.
+    #[test]
+    fn a_new_show_can_be_made_from_the_chip() {
+        let _guard = crate::project_bar::tests::scoped_config("perf-newshow");
+        let reg = registry();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut macros = Macros::default();
+        let size = vec2(1440.0, 900.0);
+        let decks = vec![chip("deck 1")];
+
+        let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
+            let audio = AudioView::default();
+            let names = ["Slow bloom".to_string()];
+            let grid = crate::grid_view::GridView::default();
+            let midi = MidiView::default();
+            let state = PerformanceState {
+                project: "Show 1",
+                decks: &decks,
+                active_deck: 0,
+                follow_columns: Some(false),
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &names,
+                grid: &grid,
+                gravity: None,
+                midi: &midi,
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            });
+            let actions = draw(&ctx, &reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        painted(&t.galley),
+                        egui::Rect::from_min_size(t.pos, t.galley.rect.size()).center(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            (actions, found)
+        };
+
+        let press = |at: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+
+        let mut painted_now = Vec::new();
+        for _ in 0..8 {
+            painted_now = frame(Vec::new()).1;
+        }
+        let chip_at = painted_now
+            .iter()
+            .find(|(t, _)| t.trim() == "Show 1")
+            .map(|(_, p)| *p)
+            .expect("no show chip on the strip");
+
+        // Left-click opens it: this is a menu, not a context menu.
+        frame(press(chip_at));
+        let mut with_menu = Vec::new();
+        for _ in 0..3 {
+            with_menu = frame(Vec::new()).1;
+        }
+        let item = with_menu
+            .iter()
+            .find(|(t, _)| t.contains("new show"))
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no way to make a show from the chip: {:?}",
+                    with_menu.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+
+        frame(press(item));
+        let mut prompt = Vec::new();
+        for _ in 0..3 {
+            prompt = frame(Vec::new()).1;
+        }
+        let ok = prompt
+            .iter()
+            .find(|(t, _)| t.trim() == "ok")
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the name field did not survive the click that opened it: {:?}",
+                    prompt.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+        let (actions, _) = frame(press(ok));
+        assert_eq!(
+            actions.project.create.as_deref(),
+            Some("Show 2"),
+            "the confirming click did not ask for a new show"
+        );
+    }
+
     /// The built-in set can actually be loaded from the desk.
     ///
     /// Reported behaviour is that it cannot. The set installs itself only
@@ -4120,6 +4316,7 @@ mod tests {
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
+                project: "Show 1",
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -4253,6 +4450,7 @@ mod tests {
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
+                project: "Show 1",
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -4545,6 +4743,7 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let decks = SHEET_DECKS.with(|f| f.borrow().clone());
         let state = PerformanceState {
+            project: "Show 1",
             decks: &decks,
             active_deck: 1,
             follow_columns: (!decks.is_empty()).then_some(false),
@@ -4608,6 +4807,7 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            project: "Show 1",
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -4681,6 +4881,7 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            project: "Show 1",
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -4740,6 +4941,7 @@ mod tests {
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
+            project: "Show 1",
             decks: &[],
             active_deck: 0,
             follow_columns: None,

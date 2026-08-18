@@ -282,6 +282,7 @@ fn main() {
     }
 
     let state = PanelState {
+        project: "Show 1".into(),
         decks: Vec::new(),
         active_deck: 0,
         follow_columns: None,

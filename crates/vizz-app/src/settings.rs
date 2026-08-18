@@ -205,11 +205,7 @@ impl Settings {
 }
 
 pub fn path() -> PathBuf {
-    vizz_mod::library::patch_dir()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default()
-        .join("settings.json")
+    vizz_mod::project::root().join("settings.json")
 }
 
 /// Load, falling back to defaults. A missing file is the normal first-run
@@ -279,11 +275,7 @@ pub fn take_dir() -> PathBuf {
             }
         })
         .unwrap_or_else(|| {
-            vizz_mod::library::patch_dir()
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default()
-                .join("recordings")
+            vizz_mod::project::root().join("recordings")
         });
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -91,11 +91,7 @@ impl Default for Macros {
 
 impl Macros {
     pub fn path() -> PathBuf {
-        crate::library::patch_dir()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default()
-            .join("macros.json")
+        crate::project::show_dir().join("macros.json")
     }
 
     /// Load, falling back to the defaults. A corrupt or absent file is a
