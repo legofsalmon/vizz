@@ -556,8 +556,39 @@ impl LiveCloud {
     }
 
     /// Run `f` over the newest cloud, if the slot is free.
+    ///
+    /// The lock is held for as long as `f` runs, so this is for cheap
+    /// questions — how many points arrived, is there anything there. For
+    /// the upload, which is neither cheap nor quick, use
+    /// [`Self::take_latest`].
     pub fn with_latest<R>(&self, f: impl FnOnce(&[Point]) -> R) -> Option<R> {
         self.slot.points.try_lock().ok().map(|p| f(&p))
+    }
+
+    /// Swap the newest cloud into `buffer`, if the slot is free.
+    ///
+    /// Returns whether anything was taken. The lock is held for a pointer
+    /// swap and nothing else — the caller then owns the points outright
+    /// and can spend as long as it likes on them without the reader
+    /// thread waiting.
+    ///
+    /// That matters because the reader publishes with `try_lock` and
+    /// drops the frame when it cannot get in. Doing the whole upload
+    /// inside `with_latest` means the slot is held for the duration, so
+    /// every frame arriving during it is dropped: at 180 ms of work and
+    /// 30 fps of input that was five frames thrown away for each one
+    /// drawn. The upload is far cheaper now, but the shape was wrong
+    /// either way — the next expensive thing on this path would have
+    /// quietly done the same.
+    ///
+    /// `buffer` goes into the slot in exchange, so the two sides pass
+    /// allocations back and forth rather than allocating per frame.
+    pub fn take_latest(&self, buffer: &mut Vec<Point>) -> bool {
+        let Ok(mut held) = self.slot.points.try_lock() else {
+            return false;
+        };
+        std::mem::swap(&mut *held, buffer);
+        true
     }
 }
 
@@ -567,6 +598,62 @@ impl Drop for LiveCloud {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+/// Taking a frame must not block the reader for longer than a swap.
+#[cfg(test)]
+mod handover_tests {
+    use super::*;
+
+    #[test]
+    fn taking_a_frame_swaps_the_buffers_rather_than_copying() {
+        let slot = std::sync::Arc::new(Slot::default());
+        publish(&slot, vec![Point::new(1.0, 2.0, 3.0); 4]);
+        let live = LiveCloud {
+            slot: std::sync::Arc::clone(&slot),
+            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            thread: None,
+            label: "test".into(),
+        };
+
+        let mut mine = Vec::with_capacity(64);
+        mine.push(Point::new(9.0, 9.0, 9.0));
+        assert!(live.take_latest(&mut mine));
+        assert_eq!(mine.len(), 4, "the frame did not come across");
+        assert_eq!(mine[0].pos, [1.0, 2.0, 3.0]);
+
+        // And the slot got my buffer, so the reader has somewhere to
+        // write without allocating.
+        let left = slot.points.lock().unwrap();
+        assert_eq!(left.len(), 1, "the slot did not take the buffer in exchange");
+    }
+
+    /// The point of the exercise: a reader can publish while the caller
+    /// is still working on the frame it took.
+    #[test]
+    fn the_reader_is_not_blocked_while_a_frame_is_being_used() {
+        let slot = std::sync::Arc::new(Slot::default());
+        publish(&slot, vec![Point::new(1.0, 0.0, 0.0); 2]);
+        let live = LiveCloud {
+            slot: std::sync::Arc::clone(&slot),
+            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            thread: None,
+            label: "test".into(),
+        };
+
+        let mut mine = Vec::new();
+        assert!(live.take_latest(&mut mine));
+        // Still holding `mine` — this is where the upload happens — and
+        // the reader gets in anyway. Under the old shape the slot was
+        // locked for all of it and this frame was dropped.
+        publish(&slot, vec![Point::new(2.0, 0.0, 0.0); 3]);
+        assert_eq!(
+            slot.dropped.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the reader was blocked by a frame already handed over"
+        );
+        assert_eq!(mine.len(), 2, "the frame in hand was disturbed");
     }
 }
 

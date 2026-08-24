@@ -114,7 +114,12 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             if revision != live_revision
                 && live
                     .with_latest(|points| {
-                        scene.set_cloud(
+                        // The streaming path, matching the windowed one.
+                        // This used `set_cloud`, which re-measures and
+                        // re-fits every frame — so a headless capture of
+                        // a stream swam in a way the app it is supposed
+                        // to be measuring does not.
+                        scene.set_cloud_streaming(
                             &ctx,
                             vizz_render::particles::ParticleScene::LIVE_SLOT,
                             points,

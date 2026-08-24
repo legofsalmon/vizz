@@ -1003,6 +1003,30 @@ mod tests {
         );
     }
 
+    /// What a stream frame actually costs, broken down. Not an
+    /// assertion — a measurement, printed, for deciding what to fix.
+    #[test]
+    #[ignore = "measurement, not a check: run with --nocapture"]
+    fn where_a_stream_frame_spends_its_time() {
+        let Some(ctx) = gpu() else { return };
+        let mut scene = ParticleScene::new(&ctx, FORMAT);
+        let mut seed = 4321u32;
+        let mut rng = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 16_777_216.0 - 0.5
+        };
+        for n in [20_000usize, crate::attractor::POINTS, 200_000] {
+            let frame: Vec<crate::pointcloud::Point> =
+                (0..n).map(|_| crate::pointcloud::Point::new(rng(), rng(), rng())).collect();
+            scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
+            }
+            eprintln!("{n:>7} points in: {:?} per frame", t.elapsed() / 10);
+        }
+    }
+
     /// The uniform block has to stay 16-byte aligned where WGSL says it
     /// is.
     ///

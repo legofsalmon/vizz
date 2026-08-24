@@ -120,6 +120,9 @@ struct App {
     live: Option<vizz_render::plystream::LiveCloud>,
     /// Revision last uploaded, so an unchanged stream costs nothing.
     live_revision: u64,
+    /// The buffer swapped into the stream slot each frame, so neither
+    /// side allocates and the lock is held only for the swap.
+    live_points: Vec<vizz_render::pointcloud::Point>,
     /// How the next take is written, and the limits it stops at.
     record_settings: vizz_io::recorder::Settings,
     /// Seconds to count down before the first frame, and the moment the
@@ -879,7 +882,14 @@ impl App {
         if let Some(live) = &self.live {
             let revision = live.revision();
             if revision != self.live_revision {
-                let uploaded = live.with_latest(|points| {
+                // Taken out of the slot rather than borrowed in place.
+                // The reader publishes with `try_lock` and drops whatever
+                // arrives while the slot is held, so doing the upload
+                // inside the lock throws away every frame that lands
+                // during it. The buffer handed over in exchange is the
+                // one used last time, so neither side allocates.
+                let uploaded = live.take_latest(&mut self.live_points);
+                if uploaded {
                     // The streaming path, not set_cloud: a live cloud
                     // re-measured every frame swims, because the frame it
                     // is measured against changes even when the geometry
@@ -887,10 +897,11 @@ impl App {
                     state.scene.set_cloud_streaming(
                         &state.ctx,
                         ParticleScene::LIVE_SLOT,
-                        points,
+                        &self.live_points,
                         "live",
                     );
-                });
+                }
+                let uploaded = uploaded.then_some(());
                 // Only advance when the slot was actually free; otherwise
                 // this frame is skipped and the next one retries.
                 if uploaded.is_some() {
@@ -3135,6 +3146,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         tap: vizz_audio::TapTempo::new(),
         live: None,
         live_revision: 0,
+        live_points: Vec::new(),
         live_shown: false,
         video: None,
         record_settings: Default::default(),
