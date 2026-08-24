@@ -91,6 +91,48 @@ other palette.
 **Instances are numbered from one.** Addresses count from zero; nobody
 reading a panel does. `gravity/0/x` is "1" on screen.
 
+## Modulation moved onto the row
+
+The row's modulation control was a button labelled **LFO 1** that routed
+the first rack LFO at a fixed quarter depth. Everything you modulated got
+the same LFO, and shaping it meant leaving the row, finding that LFO in
+the rack, and remembering which of the parameters sharing it you were
+trying to change. One modulator driving many parameters was the *default*,
+which is backwards — sharing is the special case.
+
+Pressing `~` now gives the parameter a modulator of its own and opens it
+under the row: source, shape, cycle length in beats, depth. Resolume's
+shape, and the reason it is Resolume's shape is that a modulator belongs
+to the control it drives.
+
+**It is not a new concept.** An owned modulator is an ordinary LFO with
+exactly one route and an `owner` field naming the parameter. Making it a
+separate kind of thing would have meant a second evaluation path, a second
+thing for a patch to serialise, and a second answer to "what is moving
+this" — all to express something the model already said. What the field
+buys is the rack staying a rack: without it, forty owned modulators would
+appear in a list meant for the handful you route by hand. The rack now
+lists shared LFOs only, and says how many others are shaped on their own
+rows rather than leaving the count unexplained.
+
+**Sharing is still there, one step further in.** The source picker offers
+`its own`, every rack LFO, the four audio bands and the level — so
+pointing several parameters at one LFO is a choice you make rather than
+the thing that happens by default. Depth stays on the route, so a shared
+LFO can swing two parameters by different amounts, which is most of why
+you would share one.
+
+**Shape and rate are only editable for a modulator the parameter owns.**
+Editing a shared LFO from one of the rows it drives would silently change
+every other row it drives. The row says so and points at the rack.
+
+The one that is easy to get wrong: removing an LFO shifts every index
+above it, and routes name their source *by* index. A missed renumber does
+not fail — it re-points somebody else's route at a different LFO, and a
+parameter starts moving to a shape nobody chose.
+`detaching_renumbers_the_routes_above_it` covers it, probed against the
+un-renumbered version.
+
 ## What was considered and not done
 
 **Colour swatches for `bg` and `pal`.** Twelve ink rows and four
@@ -110,6 +152,14 @@ side by side when opened; a selector would not.
 with proper controls one screen away, which is the same argument that
 hides transport parameters. Left in: `black` is the one people look for
 under pressure, and finding it in two places is better than not.
+
+**A permanent modulation affordance on every row.** `~` appears on hover,
+like the range and MIDI-learn controls beside it, and stays once the
+parameter is modulated. Resolume shows its triangle always. Consistency
+with the two controls already on the row won here, but it does cost
+discoverability on a parameter nobody has touched — heuristic 6 pulling
+against heuristic 8, and worth revisiting with a real user rather than by
+argument.
 
 **Section chips that scroll to a section.** Worth having at 66 rows,
 worth more at 200. Deferred rather than rejected.

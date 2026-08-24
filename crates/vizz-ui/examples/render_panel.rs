@@ -425,6 +425,10 @@ fn main() {
     let mut modulation = vizz_mod::ModEngine::with_defaults();
     modulation.add_route(vizz_mod::Source::Lfo(0), "/particles/hue", 0.3);
     modulation.add_route(vizz_mod::Source::Audio(0), "/particles/size", 0.4);
+    // A parameter with a modulator of its own, which is the ordinary case
+    // now and the one a preview should show. `/particles/hue` above keeps
+    // the shared-LFO case in the same shot.
+    modulation.attach_modulator("/particles/speed", 0.35);
     let ctx = egui::Context::default();
     ctx.set_visuals(egui::Visuals::dark());
     let input = egui::RawInput {
@@ -472,6 +476,14 @@ fn main() {
         // replace a preset in silence, and the warning that now says so is
         // only reviewable if the preview renders the state it appears in —
         // an empty field draws the one case where there is nothing to say.
+        // A row's modulator, opened for review. The editor only exists
+        // while a row is open, so a shot of the panel cannot otherwise
+        // contain the thing most worth looking at.
+        if let Some(addr) = std::env::args().find_map(|a| {
+            a.strip_prefix("modulator=").map(str::to_string)
+        }) {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open-modulator"), addr));
+        }
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::new("preset-save-name"), "Warehouse 2".to_string())
         });

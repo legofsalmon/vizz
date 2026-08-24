@@ -232,6 +232,52 @@ pub struct PanelState {
     pub expand_sections: bool,
 }
 
+/// `Default` so a test can name the two or three fields it cares about
+/// rather than the forty it does not.
+///
+/// Written out rather than derived because one field has no sensible
+/// zero: a `Band` of all zeroes matches no frequencies and never rises,
+/// so `default_bands()` is what "no particular bands" actually means.
+impl Default for PanelState {
+    fn default() -> Self {
+        Self {
+            update_available: Default::default(),
+            update: Default::default(),
+            health: Default::default(),
+            outputs: Default::default(),
+            frame_times_ms: Default::default(),
+            frame_budget_ms: 16.67,
+            midi: Default::default(),
+            audio: Default::default(),
+            record: Default::default(),
+            video_sources: Default::default(),
+            video: Default::default(),
+            local_address: Default::default(),
+            live_cloud: Default::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: Default::default(),
+            modulated: Default::default(),
+            clouds: Default::default(),
+            output: Default::default(),
+            palettes: Default::default(),
+            bpm: 120.0,
+            bar_phase: Default::default(),
+            presets: Default::default(),
+            preset_current: Default::default(),
+            grid: Default::default(),
+            gravity_grid: Default::default(),
+            project: Default::default(),
+            decks: Default::default(),
+            active_deck: Default::default(),
+            follow_columns: Default::default(),
+            focus_filter: Default::default(),
+            recording: Default::default(),
+            expand_sections: Default::default(),
+        }
+    }
+}
+
+
 /// How the next take is written, and what it will cost.
 ///
 /// A mirror of `vizz_io::recorder::Settings` plus the two numbers that
@@ -1309,7 +1355,15 @@ fn modulation_section(
         }
     });
 
+    // The rack is the *shared* LFOs. A modulator a parameter owns is
+    // shaped on that parameter's own row, and listing it here as well
+    // would put one control in two places — and fill a list meant for the
+    // handful you route by hand with one entry per modulated parameter.
+    let owned = m.lfos.iter().filter(|l| l.owner.is_some()).count();
     for (i, lfo) in m.lfos.iter_mut().enumerate() {
+        if lfo.owner.is_some() {
+            continue;
+        }
         ui.horizontal(|ui| {
             // "LFO 1", capitalised, because that is how the routes list
             // and the canvas both name it — one object, one name.
@@ -1374,8 +1428,19 @@ fn modulation_section(
     if let Some(i) = remove {
         m.routes.remove(i);
     }
+    // Said out loud rather than left as a discrepancy between the number
+    // of things moving and the number of LFOs listed.
+    if owned > 0 {
+        ui.small(
+            egui::RichText::new(format!(
+                "{owned} more modulator{} shaped on their own rows",
+                if owned == 1 { "" } else { "s" }
+            ))
+            .color(vizz_design::ink::FAINT),
+        );
+    }
     if m.routes.is_empty() {
-        ui.small("no routes — use “LFO 1” next to a parameter, or wire nodes on the canvas");
+        ui.small("no routes — press ~ next to a parameter, or wire nodes on the canvas");
     }
     // The canvas is this section's bigger sibling — envelopes, gates,
     // beat-synced patterns — and `G` was its only door. A section about
@@ -2989,33 +3054,46 @@ fn param_row(
             }
         }
 
-        // A toggle, and drawn as one. Routing the first LFO here is a
-        // starting point; which LFO and how deep are adjustable above.
-        let lfo1 = vizz_mod::Source::Lfo(0);
-        let routed = modulation.has_route(lfo1, &def.addr);
-        let hint = if routed {
-            "LFO 1 is routed here — click to remove"
-        } else {
-            "route LFO 1 to this parameter"
-        };
-    // Modulation cannot reach transport: the engine reads fire, blend time,
-    // curve and autopilot from `target()`, which modulation never touches,
-    // so a route there is inert. Offering the button and then drawing the
-    // "modulated" marker beside it was the app claiming to do something it
-    // had no path to do.
-    // Labelled with what it actually routes. As "mod" it contradicted
-    // the ~ marker: a parameter driven by an audio band showed ~ while
-    // the button sat unlit, which read as the panel disagreeing with
-    // itself about whether the row was modulated.
-    if show_setup
-        && !is_transport(def)
-        && ui
-            .add(egui::Button::new("LFO 1").small().selected(routed))
-            .on_hover_text(hint)
-            .clicked()
-    {
-        modulation.toggle_route(lfo1, &def.addr, 0.25);
-    }
+        // The row's own modulation control.
+        //
+        // This used to be a button labelled "LFO 1" that routed the first
+        // rack LFO at a fixed quarter depth. Everything you modulated got
+        // the same LFO, and shaping it meant leaving the row, finding
+        // that LFO in the rack, and remembering which of the parameters
+        // sharing it you were trying to change. One modulator, many
+        // parameters, by default — which is backwards: sharing a
+        // modulator is the special case, not the ordinary one.
+        //
+        // Now it opens this parameter's own modulator, and the source
+        // picker inside is where you point it at a shared one instead.
+        //
+        // Modulation cannot reach transport: the engine reads fire, blend
+        // time, curve and autopilot from `target()`, which modulation
+        // never touches, so a route there is inert. Offering the button
+        // and then drawing the "modulated" marker beside it was the app
+        // claiming to do something it had no path to do.
+        if show_setup && !is_transport(def) {
+            let driven = modulation.routes.iter().any(|r| r.param == def.addr);
+            let open = open_modulator(ui) == Some(def.addr.clone());
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("~").monospace())
+                        .small()
+                        .selected(driven || open),
+                )
+                .on_hover_text(if driven {
+                    "this parameter is being modulated — click to shape it"
+                } else {
+                    "give this parameter a modulator"
+                })
+                .clicked()
+            {
+                if !driven {
+                    modulation.attach_modulator(&def.addr, 0.25);
+                }
+                set_open_modulator(ui, (!open).then(|| def.addr.clone()));
+            }
+        }
 
         if !state.midi.available || !show_setup {
             return;
@@ -3044,6 +3122,163 @@ fn param_row(
             }
         }
     });
+    if open_modulator(ui).as_deref() == Some(def.addr.as_str()) {
+        modulator_editor(ui, modulation, &def.addr);
+    }
+}
+
+/// Which row's modulator is open, if any.
+///
+/// One at a time. Several open at once turns the list back into the thing
+/// this is meant to fix — and the question a modulator answers is about
+/// one parameter, so there is nothing to compare against.
+fn open_modulator(ui: &egui::Ui) -> Option<String> {
+    ui.ctx()
+        .data(|d| d.get_temp::<String>(egui::Id::new("open-modulator")))
+}
+
+fn set_open_modulator(ui: &egui::Ui, addr: Option<String>) {
+    ui.ctx().data_mut(|d| {
+        let key = egui::Id::new("open-modulator");
+        match addr {
+            Some(a) => {
+                d.insert_temp(key, a);
+            }
+            None => {
+                d.remove_temp::<String>(key);
+            }
+        }
+    });
+}
+
+/// What is moving this parameter, and how — on the parameter's own row.
+///
+/// The shape a Resolume user expects: the modulator belongs to the
+/// control it drives, and you set it where you are already looking. The
+/// shared rack has not gone anywhere — the source picker is how you point
+/// several parameters at one LFO, which is the case worth the extra step.
+fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, addr: &str) {
+    ui.indent(("modulator", addr), |ui| {
+        // What is driving it now. Several routes onto one parameter sum,
+        // so this reads the first and says so if there are more.
+        let sources: Vec<vizz_mod::Source> = modulation
+            .routes
+            .iter()
+            .filter(|r| r.param == addr)
+            .map(|r| r.source)
+            .collect();
+        let own = modulation.own_modulator(addr);
+        let current = sources.first().copied();
+
+        ui.horizontal(|ui| {
+            ui.small("from");
+            let label = match current {
+                Some(s) if Some(s) == own.map(vizz_mod::Source::Lfo) => "its own".to_string(),
+                Some(s) => s.label(),
+                None => "nothing".to_string(),
+            };
+            egui::ComboBox::from_id_salt(("mod-source", addr))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(own.is_some(), "its own").clicked() {
+                        clear_routes(modulation, addr);
+                        modulation.attach_modulator(addr, 0.25);
+                    }
+                    // The rack, for the case this whole change exists to
+                    // keep possible: several parameters moving together.
+                    let shared: Vec<usize> =
+                        modulation.shared_lfos().map(|(i, _)| i).collect();
+                    for i in shared {
+                        let src = vizz_mod::Source::Lfo(i);
+                        if ui.selectable_label(current == Some(src), src.label()).clicked() {
+                            clear_routes(modulation, addr);
+                            modulation.add_route(src, addr, 0.25);
+                        }
+                    }
+                    for i in 0..4 {
+                        let src = vizz_mod::Source::Audio(i);
+                        if ui.selectable_label(current == Some(src), src.label()).clicked() {
+                            clear_routes(modulation, addr);
+                            modulation.add_route(src, addr, 0.25);
+                        }
+                    }
+                    let level = vizz_mod::Source::Level;
+                    if ui.selectable_label(current == Some(level), level.label()).clicked() {
+                        clear_routes(modulation, addr);
+                        modulation.add_route(level, addr, 0.25);
+                    }
+                });
+            if sources.len() > 1 {
+                ui.small(format!("+{} more", sources.len() - 1))
+                    .on_hover_text("several routes drive this parameter; their offsets sum");
+            }
+            if ui
+                .small_button("remove")
+                .on_hover_text("stop modulating this parameter")
+                .clicked()
+            {
+                clear_routes(modulation, addr);
+                set_open_modulator(ui, None);
+            }
+        });
+
+        // Shape and rate, but only for a modulator this parameter owns.
+        // Editing a shared LFO from one of the rows it drives would change
+        // it for every other row without saying so.
+        if let Some(i) = own
+            && let Some(lfo) = modulation.lfos.get_mut(i)
+        {
+            ui.horizontal(|ui| {
+                ui.small("shape");
+                egui::ComboBox::from_id_salt(("mod-shape", addr))
+                    .selected_text(lfo.shape.label())
+                    .show_ui(ui, |ui| {
+                        for shape in vizz_mod::Shape::ALL {
+                            ui.selectable_value(&mut lfo.shape, shape, shape.label());
+                        }
+                    });
+                ui.small("every");
+                let mut beats = match lfo.rate {
+                    vizz_mod::Rate::Beats(b) => b,
+                    vizz_mod::Rate::Hz(hz) => 1.0 / hz.max(0.01),
+                };
+                if ui
+                    .add(egui::DragValue::new(&mut beats).speed(0.1).range(0.25..=64.0))
+                    .on_hover_text("cycle length in beats, so it stays with the track")
+                    .changed()
+                {
+                    lfo.rate = vizz_mod::Rate::Beats(beats);
+                }
+                ui.small("beats");
+            });
+        } else if current.is_some() {
+            ui.small(
+                egui::RichText::new("shared — shape it in the modulation rack")
+                    .color(vizz_design::ink::FAINT),
+            );
+        }
+
+        // Depth belongs to the route, so it is per-parameter even when the
+        // source is shared. That is the whole point of a shared LFO: one
+        // shape, different amounts.
+        if let Some(route) = modulation.routes.iter_mut().find(|r| r.param == addr) {
+            ui.horizontal(|ui| {
+                ui.small("depth");
+                ui.add(
+                    egui::Slider::new(&mut route.depth, -1.0..=1.0)
+                        .fixed_decimals(2)
+                        .show_value(true),
+                )
+                .on_hover_text("how much of the parameter's range it swings — negative inverts");
+            });
+        }
+    });
+}
+
+/// Every route into this parameter, gone.
+fn clear_routes(modulation: &mut ModEngine, addr: &str) {
+    modulation.detach_modulator(addr);
+    modulation.routes.retain(|r| r.param != addr);
 }
 
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
@@ -3199,6 +3434,124 @@ mod layout_tests {
         assert!(
             more.groups.iter().any(|g| g.name == "newthing"),
             "the unplaced group is not in MORE"
+        );
+    }
+
+    /// Pressing `~` on a row gives that parameter its own modulator and
+    /// opens it, in one click.
+    ///
+    /// Driven through real pointer events, because "the button is
+    /// painted" and "the button attaches a modulator" are different
+    /// claims and only the second one is the feature. The row's control
+    /// used to route the first rack LFO at a fixed depth, so the shape of
+    /// this test is the shape of what changed.
+    #[test]
+    fn pressing_the_row_control_attaches_a_modulator() {
+        let reg = registry_with(&["/particles/size"]);
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut modulation = vizz_mod::ModEngine::with_defaults();
+
+        let frame = |events: Vec<egui::Event>,
+                         m: &mut vizz_mod::ModEngine|
+         -> Vec<(String, egui::Pos2)> {
+            let state = PanelState { expand_sections: true, ..Default::default() };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(900.0, 1400.0),
+                )),
+                events,
+                ..Default::default()
+            });
+            let _ = draw(&ctx, &reg, &state, m, &mut Default::default());
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        t.galley.text().to_string(),
+                        egui::Rect::from_min_size(t.pos, t.galley.rect.size()).center(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        let mut painted = Vec::new();
+        for _ in 0..8 {
+            painted = frame(Vec::new(), &mut modulation);
+        }
+        // The row's setup controls appear on hover — the same restraint
+        // the range and MIDI-learn controls use, so a row you are not
+        // working on stays a name and a value. Nothing is reachable
+        // without a pointer on the row, which is worth a test knowing.
+        // To the right of the value, which is where the row's controls
+        // live: hover is measured from the cursor *after* the slider, so
+        // the label's own position is outside it.
+        let value = painted
+            .iter()
+            .find(|(t, _)| t.trim() == "0.50")
+            .map(|(_, p)| *p)
+            .expect("the parameter's value");
+        let row = value + egui::vec2(60.0, 0.0);
+        for _ in 0..3 {
+            painted = frame(vec![egui::Event::PointerMoved(row)], &mut modulation);
+        }
+        let at = painted
+            .iter()
+            .find(|(t, _)| t.trim() == "~")
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no modulation control on the row: {:?}",
+                    painted.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+
+        assert!(
+            modulation.own_modulator("/particles/size").is_none(),
+            "the premise needs a parameter with no modulator"
+        );
+        frame(
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut modulation,
+        );
+        assert!(
+            modulation.own_modulator("/particles/size").is_some(),
+            "the click did not give the parameter a modulator"
+        );
+
+        // And the editor is on screen, so it can be shaped without going
+        // anywhere — which is the whole point.
+        let mut after = Vec::new();
+        for _ in 0..3 {
+            after = frame(vec![egui::Event::PointerMoved(at)], &mut modulation);
+        }
+        let text: Vec<&str> = after.iter().map(|(t, _)| t.trim()).collect();
+        assert!(
+            text.contains(&"its own") && text.contains(&"depth"),
+            "the modulator did not open on the row: {text:?}"
         );
     }
 

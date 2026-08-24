@@ -168,6 +168,21 @@ pub struct Lfo {
     /// a reloaded sample-and-hold LFO would emit a constant.
     #[serde(skip, default = "seed_default")]
     seed: u32,
+    /// The parameter this LFO belongs to, or `None` for one in the shared
+    /// rack.
+    ///
+    /// An owned LFO is not a new kind of thing — it is an ordinary LFO
+    /// with exactly one route, presented on the parameter's own row
+    /// instead of in the rack. That is deliberate: making it a separate
+    /// concept would have meant a second evaluation path, a second thing
+    /// for a patch to serialise and a second answer to "what is moving
+    /// this", all to express something the existing model already says.
+    ///
+    /// What the field buys is the *rack* staying a rack. Without it,
+    /// giving forty parameters their own modulator would put forty LFOs
+    /// in a list meant for the handful you route by hand.
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 const fn seed_default() -> u32 {
@@ -176,7 +191,14 @@ const fn seed_default() -> u32 {
 
 impl Default for Lfo {
     fn default() -> Self {
-        Self { shape: Shape::Sine, rate: Rate::Beats(4.0), phase: 0.0, hold: 0.0, seed: seed_default() }
+        Self {
+            shape: Shape::Sine,
+            rate: Rate::Beats(4.0),
+            phase: 0.0,
+            hold: 0.0,
+            seed: seed_default(),
+            owner: None,
+        }
     }
 }
 
@@ -400,6 +422,66 @@ impl ModEngine {
     }
 
     /// Whether this exact source already drives this parameter.
+    /// The LFO this parameter owns, if it has one.
+    pub fn own_modulator(&self, param: &str) -> Option<usize> {
+        self.lfos
+            .iter()
+            .position(|l| l.owner.as_deref() == Some(param))
+    }
+
+    /// The rack: the LFOs anybody can route to, with their indices.
+    pub fn shared_lfos(&self) -> impl Iterator<Item = (usize, &Lfo)> {
+        self.lfos
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.owner.is_none())
+    }
+
+    /// Give this parameter an LFO of its own, and route it here.
+    ///
+    /// Returns the LFO's index. Idempotent: a parameter that already has
+    /// one keeps it, so the button that calls this can be pressed twice
+    /// without collecting a second.
+    pub fn attach_modulator(&mut self, param: &str, depth: f32) -> usize {
+        if let Some(i) = self.own_modulator(param) {
+            return i;
+        }
+        // A gentle default that visibly does something: a slow sine is
+        // the shape somebody reaches for first, and an inaudible depth
+        // would read as the button not working.
+        self.lfos.push(Lfo {
+            shape: Shape::Sine,
+            rate: Rate::Beats(4.0),
+            owner: Some(param.to_string()),
+            ..Default::default()
+        });
+        let i = self.lfos.len() - 1;
+        self.add_route(Source::Lfo(i), param, depth);
+        i
+    }
+
+    /// Take away this parameter's own LFO, and the route from it.
+    ///
+    /// Removing an LFO shifts every index above it, and routes name their
+    /// source *by* index — so this renumbers them. Getting that wrong
+    /// does not fail: it silently re-points somebody else's route at a
+    /// different LFO, which is a parameter that starts moving to a shape
+    /// nobody chose.
+    pub fn detach_modulator(&mut self, param: &str) {
+        let Some(i) = self.own_modulator(param) else {
+            return;
+        };
+        self.routes.retain(|r| r.source != Source::Lfo(i));
+        self.lfos.remove(i);
+        for route in &mut self.routes {
+            if let Source::Lfo(n) = route.source
+                && n > i
+            {
+                route.source = Source::Lfo(n - 1);
+            }
+        }
+    }
+
     pub fn has_route(&self, source: Source, param: &str) -> bool {
         self.routes.iter().any(|r| r.source == source && r.param == param)
     }
@@ -593,6 +675,93 @@ mod tests {
             seen.insert(back.tick(1.0 / 60.0, 0.0).to_bits());
         }
         assert!(seen.len() > 3, "sample-and-hold froze after a reload: {seen:?}");
+    }
+
+    /// A parameter's own modulator is an ordinary LFO with one route.
+    #[test]
+    fn a_parameter_can_own_its_modulator() {
+        let mut engine = ModEngine::with_defaults();
+        let shared = engine.lfos.len();
+        let i = engine.attach_modulator("/a", 0.5);
+        assert_eq!(i, shared, "the owned LFO went somewhere unexpected");
+        assert_eq!(engine.own_modulator("/a"), Some(i));
+        assert!(engine.has_route(Source::Lfo(i), "/a"));
+        // And it is not in the rack, or forty of these would fill it.
+        assert_eq!(engine.shared_lfos().count(), shared);
+
+        // Pressing the button again keeps the one it has.
+        assert_eq!(engine.attach_modulator("/a", 0.9), i);
+        assert_eq!(engine.lfos.len(), shared + 1);
+    }
+
+    /// Removing an LFO renumbers every route above it.
+    ///
+    /// This is the one that fails silently: routes name their source by
+    /// index, so a missed renumber does not error — it points somebody
+    /// else's route at a different LFO, and a parameter starts moving to
+    /// a shape nobody chose.
+    #[test]
+    fn detaching_renumbers_the_routes_above_it() {
+        let mut engine = ModEngine::with_defaults();
+        engine.lfos.truncate(2);
+        engine.routes.clear();
+        // Rack routes either side of the one about to go.
+        engine.add_route(Source::Lfo(0), "/first", 0.1);
+        engine.add_route(Source::Lfo(1), "/second", 0.2);
+        let owned = engine.attach_modulator("/mine", 0.3);
+        assert_eq!(owned, 2);
+        // Another owned one above it, which is the case that moves.
+        let above = engine.attach_modulator("/later", 0.4);
+        assert_eq!(above, 3);
+
+        engine.detach_modulator("/mine");
+
+        assert_eq!(engine.own_modulator("/mine"), None);
+        assert!(!engine.routes.iter().any(|r| r.param == "/mine"));
+        // The rack routes are untouched…
+        assert!(engine.has_route(Source::Lfo(0), "/first"));
+        assert!(engine.has_route(Source::Lfo(1), "/second"));
+        // …and the one that was above the hole moved down with its LFO,
+        // rather than being left pointing at whatever now sits there.
+        let moved = engine.own_modulator("/later").expect("the later modulator");
+        assert_eq!(moved, 2);
+        assert!(
+            engine.has_route(Source::Lfo(moved), "/later"),
+            "the route did not follow its LFO: {:?}",
+            engine.routes
+        );
+    }
+
+    /// An owned modulator moves its parameter like any other route, so
+    /// nothing about evaluation is special-cased.
+    #[test]
+    fn an_owned_modulator_actually_moves_the_parameter() {
+        let reg = registry();
+        let mut engine = ModEngine::with_defaults();
+        engine.attach_modulator("/a", 1.0);
+        // A quarter of a cycle in, a sine is at its peak.
+        let lfo = engine.own_modulator("/a").expect("owned");
+        engine.lfos[lfo].phase = 0.25;
+        let offsets = engine.tick(0.0, &reg, AudioLevels::default());
+        let id = reg.id("/a").expect("/a");
+        assert!(
+            offsets[id.index()] > 0.5,
+            "an owned modulator produced {} — it is not being evaluated",
+            offsets[id.index()]
+        );
+    }
+
+    /// A patch written before parameters could own modulators still
+    /// loads, and everything in it is shared.
+    #[test]
+    fn a_patch_without_owners_loads_as_a_rack() {
+        let engine = ModEngine::with_defaults();
+        let json = serde_json::to_string(&engine).expect("serialise");
+        // Strip the field the way a file written before it existed would.
+        let older = json.replace(",\"owner\":null", "");
+        let back: ModEngine = serde_json::from_str(&older).expect("an older patch must still load");
+        assert_eq!(back.lfos.len(), engine.lfos.len());
+        assert!(back.lfos.iter().all(|l| l.owner.is_none()));
     }
 
     #[test]
