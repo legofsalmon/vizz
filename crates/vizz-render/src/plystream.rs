@@ -156,6 +156,11 @@ fn read_packed_patient(
                 f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
                 f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
             ],
+            // A live stream carries position and colour only — the
+            // packed frame format has no room for a normal and a sender
+            // computing one per frame would be spending its budget in the
+            // wrong place. Estimation fills these in downstream.
+            normal: [0.0; 3],
             color: [c[12], c[13], c[14]],
         })
         .collect();

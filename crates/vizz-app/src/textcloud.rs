@@ -122,6 +122,13 @@ pub fn image_points(image: &image::RgbaImage) -> Vec<Point> {
         let depth = (lum - 0.5) * 0.3 * tw as f32;
         points.push(Point {
             pos: [x as f32, -(y as f32), depth],
+            // A word or a picture is a flat sheet standing in space, so
+            // it faces the way a sheet faces. Left for the estimator
+            // rather than asserted here: the relief pushes each point
+            // along z by its own brightness, so the surface is not
+            // actually flat and a hardcoded normal would be a lie about
+            // exactly the part that is interesting.
+            normal: [0.0; 3],
             color: [r, g, b],
         });
     }

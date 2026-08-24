@@ -205,6 +205,8 @@
   <a href="#colour">Colour and palettes</a>
   <a href="#effects">Effects</a>
   <a href="#camera">Camera and room</a>
+  <a href="#moves">Camera moves</a>
+  <a href="#light">Light</a>
 
   <h4>Making it move</h4>
   <a href="#audio">Audio reactivity</a>
@@ -733,6 +735,83 @@ preset and the layers move with the music.</p>
   and five blend modes.</figcaption>
 </figure>
 
+<h2 id="moves">Camera moves</h2>
+
+<p>A camera move is the one gesture you cannot make by hand: orbiting smoothly
+for eight bars while also firing pads is two jobs and one pair of hands.
+<code>/camera/move</code> picks one of ten canned paths, <code>move_bars</code>
+sets how long a cycle takes, and <code>move_size</code> how far it travels.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Move</th><th>What it is for</th></tr>
+<tr><td><strong>orbit</strong></td><td>A full turn per cycle. The one that can run all night.</td></tr>
+<tr><td><strong>sway</strong></td><td>Handheld: a partial turn back and forth, the horizon breathing under it.</td></tr>
+<tr><td><strong>push</strong></td><td>In and back out — the build.</td></tr>
+<tr><td><strong>pull</strong></td><td>Out and back in — the reveal.</td></tr>
+<tr><td><strong>crane</strong></td><td>Rising over the top, looking down by the end.</td></tr>
+<tr><td><strong>spiral</strong></td><td>A helix: turn, rise and close all together. The drop.</td></tr>
+<tr><td><strong>look around</strong></td><td>The camera holds still and its aim sweeps — standing in one place and turning your head.</td></tr>
+<tr><td><strong>fly through</strong></td><td>In through the front, out the back, and round again.</td></tr>
+<tr><td><strong>walkthrough</strong></td><td>Four legs and four corners of a square, at eye level, inside the cloud. Moving through a house.</td></tr>
+<tr><td><strong>drift</strong></td><td>Very slow, never repeating inside a song, always moving. For long ambient sections.</td></tr>
+</table>
+</div>
+
+<p>A move is <em>added</em> to the camera your faders already describe, never
+written back into it. Switch one off and you are exactly where you were, and a
+move running is never a reason you cannot still steer. Rate is in bars, so a
+move locks to the same clock as the sequencer and the LFOs.</p>
+
+<p><code>/camera/at_x</code>, <code>at_y</code> and <code>at_z</code> aim the
+camera at a point in the world — which is what makes a walkthrough possible.
+Pan moves the target in the camera's own screen plane, so it keeps the subject
+centred by construction: right for framing, and no use for travelling.</p>
+
+<h2 id="light">Light</h2>
+
+<p>Two movable lamps and a directional sun, on top of an ambient level.
+Everything defaults to off, and off means <em>identical</em> — ambient is 1 and
+every lamp is 0, which multiplies the picture by exactly one, so no preset you
+have ever saved looks any different.</p>
+
+<p><strong>Lamps light a volume.</strong> Each has a position, a reach, a level
+and a colour, and falls off smoothly with distance. Walk one through a scan and
+it reveals the scan. This works on everything — imported clouds, procedural
+shapes, live video — because it only needs to know where a point is.</p>
+
+<p><strong>The sun lights surfaces.</strong> A wall facing the light comes up, a
+wall facing away goes down. That needs to know which way each point faces, so it
+only does anything on a cloud that has normals — see below.
+<code>/light/shape</code> is the dial between the two readings: at 0 a lamp is
+pure volumetric falloff, at 1 it respects the surface.</p>
+
+<p><strong>Lamps are white until you colour them.</strong> Each has a hue and a
+<em>tint</em>, because hue on its own has no value that means "no colour" — hue
+0 is red, so a lamp described by hue alone would turn your scan red the moment
+you raised it to see what it did.</p>
+
+<p><code>/light/torch</code> puts lamp 1 on the camera. It is the partner to a
+walkthrough: light arriving from where you are is what makes moving through a
+scan read as moving, rather than as the scan fading up.</p>
+
+<h3>Normals</h3>
+
+<p>A point cloud is points. Whether it also knows which way its surface faces
+depends on whoever exported it, and most exports leave the field empty. vizz
+reads <code>nx</code>/<code>ny</code>/<code>nz</code> from a PLY when they are
+there, and works them out from each point's neighbours when they are not — about
+a tenth of a second when a cloud loads. A cloud that genuinely has no surface —
+a procedural shape, a video frame — is left alone, and the sun simply does
+nothing to it rather than lighting it from a direction nobody measured.</p>
+
+<p>Shading is two-sided: a surface always faces you. Fitting a plane to
+neighbours cannot tell a normal from its opposite, and picking consistently
+across a whole cloud still comes out backwards for a scan of a room, where the
+surfaces you want lit face inwards. There are no shadows here for two-sidedness
+to contradict, and the alternative is half your scan going black for a reason
+you cannot diagnose from the front of a stage.</p>
+
 <h2 id="colour">Colour and palettes</h2>
 
 <p><code>/color/palette</code> starts at <strong>0 = plain HSV</strong> and
@@ -1121,6 +1200,12 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/camera/defocus</code></td><td>0 – 1</td><td>0</td><td>depth-of-field blur amount</td></tr>
     <tr><td><code>/camera/pan_x</code></td><td>-4 – 4</td><td>0</td><td>sideways pan of the view</td></tr>
     <tr><td><code>/camera/pan_y</code></td><td>-4 – 4</td><td>0</td><td>vertical pan of the view</td></tr>
+    <tr><td><code>/camera/at_x</code></td><td>-8 – 8</td><td>0</td><td>where in the world the camera is aimed, X</td></tr>
+    <tr><td><code>/camera/at_y</code></td><td>-8 – 8</td><td>0</td><td>where in the world the camera is aimed, Y</td></tr>
+    <tr><td><code>/camera/at_z</code></td><td>-8 – 8</td><td>0</td><td>where in the world the camera is aimed, Z</td></tr>
+    <tr><td><code>/camera/move</code></td><td>0 – 10</td><td>0</td><td>canned path: off, orbit, sway, push, pull, crane, spiral, look around, fly through, walkthrough, drift</td></tr>
+    <tr><td><code>/camera/move_bars</code></td><td>1 – 64</td><td>8</td><td>bars per cycle of the move</td></tr>
+    <tr><td><code>/camera/move_size</code></td><td>0 – 1</td><td>0.5</td><td>how far the move travels</td></tr>
     <tr><td><code>/room/brightness</code></td><td>0 – 1</td><td>0</td><td>wireframe room visibility</td></tr>
     <tr><td><code>/room/depth</code></td><td>1 – 20</td><td>7</td><td>how deep the room extends</td></tr>
     <tr><td><code>/room/fade</code></td><td>0 – 1</td><td>0.75</td><td>distance fade of the room lines</td></tr>
@@ -1129,6 +1214,21 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/room/vanish_y</code></td><td>-1 – 1</td><td>0</td><td>vanishing point, vertical</td></tr>
     <tr><td><code>/room/anchor</code></td><td>0 – 1</td><td>0.35</td><td>where the cloud sits between front and back</td></tr>
     <tr><td><code>/room/embed</code></td><td>0 – 1</td><td>0</td><td>how much the room's perspective bends the cloud</td></tr>
+    <tr><td><code>/light/ambient</code></td><td>0 – 1</td><td>1</td><td>how much light there is everywhere; 1 is the unlit picture</td></tr>
+    <tr><td><code>/light/shape</code></td><td>0 – 1</td><td>1</td><td>how much a surface's own orientation counts (needs normals)</td></tr>
+    <tr><td><code>/light/torch</code></td><td>0 – 1</td><td>0</td><td>lamp 1 rides the camera</td></tr>
+    <tr><td><code>/light/N/x</code> (N = 1–2)</td><td>-6 – 6</td><td>0</td><td>lamp N position, X</td></tr>
+    <tr><td><code>/light/N/y</code> (N = 1–2)</td><td>-6 – 6</td><td>0</td><td>lamp N position, Y</td></tr>
+    <tr><td><code>/light/N/z</code> (N = 1–2)</td><td>-6 – 6</td><td>0</td><td>lamp N position, Z</td></tr>
+    <tr><td><code>/light/N/radius</code> (N = 1–2)</td><td>0.05 – 8</td><td>1.5</td><td>lamp N reach</td></tr>
+    <tr><td><code>/light/N/level</code> (N = 1–2)</td><td>0 – 2</td><td>0</td><td>lamp N brightness</td></tr>
+    <tr><td><code>/light/N/hue</code> (N = 1–2)</td><td>0 – 1</td><td>0</td><td>lamp N colour</td></tr>
+    <tr><td><code>/light/N/tint</code> (N = 1–2)</td><td>0 – 1</td><td>0</td><td>how much of lamp N's colour to use; 0 is white</td></tr>
+    <tr><td><code>/sun/level</code></td><td>0 – 2</td><td>0</td><td>directional key brightness (needs normals)</td></tr>
+    <tr><td><code>/sun/azimuth</code></td><td>-3.15 – 3.15</td><td>0.8</td><td>which way the sun is, around</td></tr>
+    <tr><td><code>/sun/elevation</code></td><td>-1.57 – 1.57</td><td>0.6</td><td>which way the sun is, up</td></tr>
+    <tr><td><code>/sun/hue</code></td><td>0 – 1</td><td>0.12</td><td>sun colour</td></tr>
+    <tr><td><code>/sun/tint</code></td><td>0 – 1</td><td>0</td><td>how much of the sun's colour to use; 0 is white</td></tr>
     <tr><td><code>/gravity/amount</code></td><td>0 – 1</td><td>0</td><td>master depth of the gravity layer</td></tr>
     <tr><td><code>/gravity/N/x</code> (N = 0–3)</td><td>-3 – 3</td><td>0</td><td>well N position, X</td></tr>
     <tr><td><code>/gravity/N/y</code> (N = 0–3)</td><td>-3 – 3</td><td>0</td><td>well N position, Y</td></tr>

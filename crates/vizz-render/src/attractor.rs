@@ -58,6 +58,16 @@ const WHITE: f32 = f32::from_bits(0x00FF_FFFF);
 
 pub struct Attractors {
     pub texture: wgpu::Texture,
+    /// Which way each point's surface faces, in the same texel layout as
+    /// the positions. All-zero means "not known", and every directional
+    /// lighting term stands down there rather than guessing.
+    ///
+    /// A second texture rather than more channels in the first: the
+    /// positions already use all four — xyz and the colour bit-packed
+    /// into w — and half-float is plenty for a direction, so this costs
+    /// half what the position bank does.
+    pub normals: wgpu::Texture,
+    pub normals_view: wgpu::TextureView,
     pub view: wgpu::TextureView,
     /// A label per slot for the UI, so a loaded cloud is identifiable.
     pub names: [String; SLOTS],
@@ -178,9 +188,39 @@ impl Attractors {
             texture.size(),
         );
 
+        let normals = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("attractor normals"),
+            size: texture.size(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Half-float: a unit direction has nothing like 32 bits of
+            // meaning in it, and this is the one place the bank's size
+            // can be halved without losing anything anybody can see.
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        // Zeroed: the procedural attractors are curves through space with
+        // no surface to speak of, so "not known" is the honest answer for
+        // them and stays the answer until a scan is loaded over them.
+        ctx.queue.write_texture(
+            normals.as_image_copy(),
+            &vec![0u8; (POINTS * SLOTS) * 8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(WIDTH * 8),
+                rows_per_image: None,
+            },
+            normals.size(),
+        );
+
         let view = texture.create_view(&Default::default());
+        let normals_view = normals.create_view(&Default::default());
         Self {
             texture,
+            normals,
+            normals_view,
             view,
             names: std::array::from_fn(|i| match i {
                 0 => "Lorenz".into(),
@@ -208,6 +248,7 @@ impl Attractors {
             return;
         }
         let mut data = Vec::with_capacity(POINTS);
+        let mut normals: Vec<[f32; 4]> = Vec::with_capacity(POINTS);
         // Deterministic jitter, so reloading the same file gives the same
         // cloud rather than a subtly different one each run.
         let mut seed = 0x9E37_79B9u32;
@@ -217,17 +258,51 @@ impl Attractors {
             seed ^= seed << 5;
             (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
         };
-        for i in 0..POINTS {
-            let p = &points[i % points.len()];
+        // Which point of the cloud lands in slot texel `i`.
+        //
+        // A stride across the whole cloud, not the first `POINTS` of it.
+        // The original took `points[i % len]`, which for any cloud bigger
+        // than the slot is exactly `points[i]` — the first sixty-five
+        // thousand points and nothing else. Scanners write in scan order,
+        // so on a five-million-point room that is one corner of it, and
+        // the rest of the scan had simply never been on screen.
+        //
+        // Below the slot size the expression is the old one: `i % len`
+        // wraps and each point repeats with a jitter.
+        let n = points.len();
+        let pick = |i: usize| -> usize {
+            if n >= POINTS {
+                // Rounded rather than truncated so the last texel reaches
+                // the end of the cloud instead of stopping short of it.
+                ((i as u64 * n as u64 + POINTS as u64 / 2) / POINTS as u64).min(n as u64 - 1)
+                    as usize
+            } else {
+                i % n
+            }
+        };
+        // Which points are actually going to be drawn — so a normal is
+        // estimated for the ones on screen rather than for millions that
+        // are not.
+        let mut chosen: Vec<crate::pointcloud::Point> =
+            (0..POINTS).map(|i| points[pick(i)]).collect();
+        // Only if the file did not bring its own. Cheap enough at this
+        // size to do inline: measured at about a tenth of a second for a
+        // full slot in a debug build, next to a file read and a parse
+        // that already cost more.
+        if !chosen.iter().any(|p| p.oriented()) {
+            crate::pointcloud::estimate_normals(&mut chosen);
+        }
+        for (i, p) in chosen.iter().enumerate() {
             // Only jitter the repeats; the first pass through the cloud is
             // exact, so a cloud that already fills the slot is untouched.
-            let j = if i < points.len() { 0.0 } else { 0.004 };
+            let j = if i < n { 0.0 } else { 0.004 };
             data.push([
                 p.pos[0] + rng() * j,
                 p.pos[1] + rng() * j,
                 p.pos[2] + rng() * j,
                 pack_color(p.color),
             ]);
+            normals.push([p.normal[0], p.normal[1], p.normal[2], 0.0]);
         }
 
         ctx.queue.write_texture(
@@ -253,7 +328,91 @@ impl Attractors {
                 depth_or_array_layers: 1,
             },
         );
+        // Half-floats, packed by hand: `f32::to_bits` down to 16 is a
+        // handful of lines and avoids a dependency for one conversion.
+        let half: Vec<u16> = normals
+            .iter()
+            .flat_map(|n| n.iter().map(|v| f32_to_f16(*v)))
+            .collect();
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.normals,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: (slot * POINTS) as u32 / WIDTH,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&half),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(WIDTH * 8),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: WIDTH,
+                height: POINTS as u32 / WIDTH,
+                depth_or_array_layers: 1,
+            },
+        );
         self.names[slot] = name.to_string();
+    }
+}
+
+/// An IEEE half, from a float.
+///
+/// Only ever fed unit-vector components and zero, so the interesting
+/// cases are the ordinary ones: no infinities to preserve, and subnormals
+/// round to zero, which for a direction is the same "not known" that zero
+/// already means.
+fn f32_to_f16(v: f32) -> u16 {
+    let bits = v.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mantissa = (bits & 0x007f_ffff) >> 13;
+    if !v.is_finite() || exp <= 0 {
+        return sign;
+    }
+    if exp >= 0x1f {
+        // Saturate rather than produce an infinity: nothing downstream
+        // wants one, and a direction component cannot legitimately be
+        // this large.
+        return sign | 0x7bff;
+    }
+    sign | ((exp as u16) << 10) | mantissa as u16
+}
+
+#[cfg(test)]
+mod half_tests {
+    use super::f32_to_f16;
+
+    /// Round-tripped through the same conversion the GPU will do reading
+    /// it back, for the range this is ever handed: unit components.
+    #[test]
+    fn unit_components_survive_the_round_trip() {
+        fn from_f16(h: u16) -> f32 {
+            let sign = ((h & 0x8000) as u32) << 16;
+            let exp = ((h >> 10) & 0x1f) as u32;
+            let man = (h & 0x03ff) as u32;
+            if exp == 0 {
+                return f32::from_bits(sign);
+            }
+            f32::from_bits(sign | ((exp + 112) << 23) | (man << 13))
+        }
+        for step in -100..=100 {
+            let v = step as f32 / 100.0;
+            let back = from_f16(f32_to_f16(v));
+            assert!(
+                (back - v).abs() < 0.001,
+                "{v} came back as {back}"
+            );
+        }
+        assert_eq!(f32_to_f16(0.0), 0);
+        // And nothing pathological escapes as an infinity or a NaN.
+        assert!(from_f16(f32_to_f16(f32::NAN)).is_finite());
+        assert!(from_f16(f32_to_f16(f32::INFINITY)).is_finite());
     }
 }
 

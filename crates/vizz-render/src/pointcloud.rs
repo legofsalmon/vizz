@@ -19,12 +19,25 @@ use anyhow::{Context as _, Result, bail};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
     pub pos: [f32; 3],
+    /// Which way the surface faces here, or all-zero for "not known".
+    ///
+    /// Zero rather than a default direction, and the distinction is
+    /// load-bearing: the shader stands every directional term down where
+    /// the normal is zero, because a made-up normal lights a wall the
+    /// wrong way round and that is worse than not lighting it at all.
+    pub normal: [f32; 3],
     pub color: [u8; 3],
 }
 
 impl Point {
     pub fn new(x: f32, y: f32, z: f32) -> Self {
-        Self { pos: [x, y, z], color: [255, 255, 255] }
+        Self { pos: [x, y, z], normal: [0.0; 3], color: [255, 255, 255] }
+    }
+
+    /// Whether this point knows which way it faces.
+    pub fn oriented(&self) -> bool {
+        let n = self.normal;
+        n[0] * n[0] + n[1] * n[1] + n[2] * n[2] > 0.25
     }
 }
 
@@ -209,13 +222,21 @@ pub fn read_ply(reader: &mut impl BufRead) -> Result<Vec<Point>> {
         bail!("PLY vertex element has no x/y/z properties");
     };
     let color_idx = ["red", "green", "blue"].map(index);
+    // Normals, where the export bothered. The property table already
+    // carried them — the header parser keeps every vertex property by
+    // name because the binary offsets depend on all of them — so this is
+    // only a matter of asking.
+    let normal_idx = ["nx", "ny", "nz"].map(index);
 
     match format {
-        PlyFormat::Ascii => read_ply_ascii(reader, count, xi, yi, zi, color_idx),
-        PlyFormat::BinaryLe => read_ply_binary(reader, count, &props, xi, yi, zi, color_idx),
+        PlyFormat::Ascii => read_ply_ascii(reader, count, xi, yi, zi, color_idx, normal_idx),
+        PlyFormat::BinaryLe => {
+            read_ply_binary(reader, count, &props, xi, yi, zi, color_idx, normal_idx)
+        }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_ply_ascii(
     reader: &mut impl BufRead,
     count: usize,
@@ -223,6 +244,7 @@ fn read_ply_ascii(
     yi: usize,
     zi: usize,
     color_idx: [Option<usize>; 3],
+    normal_idx: [Option<usize>; 3],
 ) -> Result<Vec<Point>> {
     let mut out = Vec::with_capacity(count.min(1 << 20));
     for line in reader.lines() {
@@ -258,12 +280,37 @@ fn read_ply_ascii(
                 f[b].parse::<f32>().unwrap_or(255.0).clamp(0.0, 255.0) as u8,
             ];
         }
+        if let [Some(nx), Some(ny), Some(nz)] = normal_idx
+            && f.len() > nx.max(ny).max(nz)
+            && let (Ok(a), Ok(b), Ok(c)) = (
+                f[nx].parse::<f32>(),
+                f[ny].parse::<f32>(),
+                f[nz].parse::<f32>(),
+            )
+        {
+            p.normal = unit([a, b, c]);
+        }
         out.push(p);
         if out.len() == count {
             break;
         }
     }
     Ok(out)
+}
+
+/// A unit vector, or all-zero where there is nothing to normalise.
+///
+/// Zero-length in gives zero-length out rather than a NaN: an export that
+/// wrote `0 0 0` for a normal it could not compute is a real file, and it
+/// should read as "unknown" rather than poison every lighting term the
+/// point touches.
+fn unit(v: [f32; 3]) -> [f32; 3] {
+    let len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if !len2.is_finite() || len2 < 1e-12 {
+        return [0.0; 3];
+    }
+    let inv = len2.sqrt().recip();
+    [v[0] * inv, v[1] * inv, v[2] * inv]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -275,6 +322,7 @@ fn read_ply_binary(
     yi: usize,
     zi: usize,
     color_idx: [Option<usize>; 3],
+    normal_idx: [Option<usize>; 3],
 ) -> Result<Vec<Point>> {
     let stride: usize = props.iter().map(|(_, p)| p.size).sum();
     if stride == 0 {
@@ -331,6 +379,9 @@ fn read_ply_binary(
                 get(g).clamp(0.0, 255.0) as u8,
                 get(b).clamp(0.0, 255.0) as u8,
             ];
+        }
+        if let [Some(nx), Some(ny), Some(nz)] = normal_idx {
+            p.normal = unit([get(nx), get(ny), get(nz)]);
         }
         out.push(p);
     }
@@ -477,6 +528,7 @@ mod tests {
             (0..200)
                 .map(|i| Point {
                     pos: [(i % 10) as f32 * 0.1, (i / 10) as f32 * 0.1, 0.0],
+                    normal: [0.0; 3],
                     color: [255, 255, 255],
                 })
                 .collect::<Vec<_>>()
@@ -487,7 +539,7 @@ mod tests {
         let mut a = body();
         normalize(&mut a);
         let mut b = body();
-        b.push(Point { pos: [50.0, 0.0, 0.0], color: [255, 255, 255] });
+        b.push(Point { pos: [50.0, 0.0, 0.0], normal: [0.0; 3], color: [255, 255, 255] });
         normalize(&mut b);
         let moved = (a[0].pos[0] - b[0].pos[0]).abs();
         assert!(
@@ -500,7 +552,7 @@ mod tests {
         let mut a = body();
         fit.apply(&mut a);
         let mut b = body();
-        b.push(Point { pos: [50.0, 0.0, 0.0], color: [255, 255, 255] });
+        b.push(Point { pos: [50.0, 0.0, 0.0], normal: [0.0; 3], color: [255, 255, 255] });
         fit.apply(&mut b);
         let moved = (a[0].pos[0] - b[0].pos[0]).abs();
         assert!(
@@ -517,6 +569,7 @@ mod tests {
             (0..200)
                 .map(|i| Point {
                     pos: [x + (i % 10) as f32 * 0.1, (i / 10) as f32 * 0.1, 0.0],
+                    normal: [0.0; 3],
                     color: [255, 255, 255],
                 })
                 .collect::<Vec<_>>()
@@ -730,5 +783,378 @@ mod tests {
         let mut same = vec![Point::new(5.0, 5.0, 5.0); 3];
         normalize(&mut same);
         assert!(same.iter().all(|p| p.pos.iter().all(|v| v.is_finite())), "{same:?}");
+    }
+}
+
+/// Work out which way each point's surface faces, from its neighbours.
+///
+/// Most scans are exported without normals — the format has a slot for
+/// them and half the tools leave it empty — so without this, directional
+/// light would work on a minority of files and whether relighting did
+/// anything would be decided by whoever pressed export.
+///
+/// The method is the standard one: take each point's nearest neighbours,
+/// fit a plane through them, and the plane's normal is the surface's. A
+/// plane fit is the eigenvector of the neighbourhood's covariance with
+/// the smallest eigenvalue — the direction in which the neighbours vary
+/// least, which for anything locally flat is straight off the surface.
+///
+/// # Orientation is left ambiguous, on purpose
+///
+/// A plane fit cannot tell `n` from `-n`, and resolving it properly means
+/// propagating a consistent choice across the whole cloud — which is a
+/// minimum spanning tree over a graph of a million nodes, and still gets
+/// it backwards for a scan of a room, where the surfaces you want lit
+/// face inwards. The shader flips the normal towards the eye instead, so
+/// every surface is two-sided. There are no shadows here for that to be
+/// inconsistent with, and a point cloud lit from the wrong side is black
+/// for no reason a performer could diagnose.
+///
+/// Points already carrying a normal — from a file that did write them —
+/// are left alone.
+pub fn estimate_normals(points: &mut [Point]) {
+    const NEIGHBOURS: usize = 12;
+    if points.len() < NEIGHBOURS {
+        return;
+    }
+    let grid = Grid::build(points);
+    // Read from a copy: filling in a normal must not change what the next
+    // point's neighbourhood looks like, and more practically the borrow
+    // checker is right that reading and writing the same slice here is a
+    // question worth answering explicitly.
+    let positions: Vec<[f32; 3]> = points.iter().map(|p| p.pos).collect();
+    let mut near: Vec<(f32, usize)> = Vec::with_capacity(64);
+    for i in 0..points.len() {
+        if points[i].oriented() {
+            continue;
+        }
+        near.clear();
+        grid.around(positions[i], |j| {
+            if j != i {
+                near.push((dist2(positions[i], positions[j]), j));
+            }
+        });
+        if near.len() < 3 {
+            continue;
+        }
+        // Partial rather than a full sort: only the nearest handful are
+        // read, and a neighbourhood can easily be a few hundred points in
+        // a dense scan.
+        let k = NEIGHBOURS.min(near.len());
+        near.select_nth_unstable_by(k - 1, |a, b| a.0.total_cmp(&b.0));
+        points[i].normal = plane_normal(&positions, &near[..k], positions[i]);
+    }
+}
+
+fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+}
+
+/// The direction a neighbourhood varies *least* in: the eigenvector of
+/// its covariance with the smallest eigenvalue.
+fn plane_normal(pos: &[[f32; 3]], near: &[(f32, usize)], _centre: [f32; 3]) -> [f32; 3] {
+    let n = near.len() as f32;
+    let mut mean = [0.0f32; 3];
+    for (_, j) in near {
+        for a in 0..3 {
+            mean[a] += pos[*j][a];
+        }
+    }
+    for m in &mut mean {
+        *m /= n;
+    }
+    // Upper triangle of the covariance; it is symmetric.
+    let (mut xx, mut xy, mut xz, mut yy, mut yz, mut zz) = (0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (_, j) in near {
+        let d = [
+            pos[*j][0] - mean[0],
+            pos[*j][1] - mean[1],
+            pos[*j][2] - mean[2],
+        ];
+        xx += d[0] * d[0];
+        xy += d[0] * d[1];
+        xz += d[0] * d[2];
+        yy += d[1] * d[1];
+        yz += d[1] * d[2];
+        zz += d[2] * d[2];
+    }
+    smallest_eigenvector([xx, xy, xz, yy, yz, zz])
+}
+
+/// Eigenvector of the smallest eigenvalue of a symmetric 3×3, given as
+/// `[xx, xy, xz, yy, yz, zz]`.
+///
+/// Closed form rather than an iteration: the eigenvalues of a symmetric
+/// 3×3 have an exact expression, and an iterative solver would need a
+/// convergence criterion tuned against clouds nobody has yet.
+fn smallest_eigenvector(m: [f32; 6]) -> [f32; 3] {
+    let [xx, xy, xz, yy, yz, zz] = m;
+    let off = xy * xy + xz * xz + yz * yz;
+    if off < 1e-20 {
+        // Already diagonal: the answer is whichever axis varies least.
+        let (mut best, mut which) = (xx, 0);
+        if yy < best {
+            best = yy;
+            which = 1;
+        }
+        if zz < best {
+            which = 2;
+        }
+        let mut v = [0.0; 3];
+        v[which] = 1.0;
+        return v;
+    }
+    let q = (xx + yy + zz) / 3.0;
+    let p2 = (xx - q) * (xx - q) + (yy - q) * (yy - q) + (zz - q) * (zz - q) + 2.0 * off;
+    let p = (p2 / 6.0).max(1e-30).sqrt();
+    // B = (A − qI)/p, whose determinant gives the angle.
+    let b = [
+        (xx - q) / p,
+        xy / p,
+        xz / p,
+        (yy - q) / p,
+        yz / p,
+        (zz - q) / p,
+    ];
+    let det = b[0] * (b[3] * b[5] - b[4] * b[4]) - b[1] * (b[1] * b[5] - b[4] * b[2])
+        + b[2] * (b[1] * b[4] - b[3] * b[2]);
+    let r = (det / 2.0).clamp(-1.0, 1.0);
+    let phi = r.acos() / 3.0;
+    // The smallest of the three, which is the one a plane fit wants.
+    let small = q + 2.0 * p * (phi + std::f32::consts::TAU / 3.0).cos();
+    // Null space of (A − λI): the cross product of two of its rows. Which
+    // two matters — rows can be parallel, and their cross product is then
+    // zero — so all three pairs are tried and the longest wins.
+    let a = [
+        [xx - small, xy, xz],
+        [xy, yy - small, yz],
+        [xz, yz, zz - small],
+    ];
+    let mut best = [0.0f32; 3];
+    let mut best_len = 0.0f32;
+    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+        let c = cross(a[i], a[j]);
+        let l = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+        if l > best_len {
+            best_len = l;
+            best = c;
+        }
+    }
+    unit(best)
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// A uniform bucket grid over the cloud, for neighbour lookups.
+///
+/// Uniform rather than a kd-tree because the clouds this runs on have
+/// already been normalised into a unit box and sampled down to what the
+/// GPU slot holds, so the density is bounded and a grid is both faster to
+/// build and simpler to be sure of.
+struct Grid {
+    cell: f32,
+    lo: [f32; 3],
+    dim: [i32; 3],
+    /// Point indices, bucketed; `start[c]..start[c + 1]` is cell `c`.
+    start: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl Grid {
+    fn build(points: &[Point]) -> Self {
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for p in points {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p.pos[a]);
+                hi[a] = hi[a].max(p.pos[a]);
+            }
+        }
+        let extent = (0..3).map(|a| hi[a] - lo[a]).fold(0.0f32, f32::max);
+        // Aim at a handful of points per cell, so the 27-cell scan around
+        // a point covers a few hundred candidates rather than the cloud.
+        let target = (points.len() as f32 / 4.0).cbrt().max(1.0);
+        let cell = (extent / target).max(1e-6);
+        let dim = std::array::from_fn(|a| (((hi[a] - lo[a]) / cell).ceil() as i32 + 1).max(1));
+        let cells = (dim[0] as usize) * (dim[1] as usize) * (dim[2] as usize);
+        // Counting sort into buckets: two passes, no per-cell Vec.
+        let mut counts = vec![0u32; cells + 1];
+        let index = |lo: [f32; 3], dim: [i32; 3], cell: f32, p: [f32; 3]| -> usize {
+            let c: [i32; 3] = std::array::from_fn(|a| {
+                (((p[a] - lo[a]) / cell) as i32).clamp(0, dim[a] - 1)
+            });
+            (c[2] as usize * dim[1] as usize + c[1] as usize) * dim[0] as usize + c[0] as usize
+        };
+        for p in points {
+            counts[index(lo, dim, cell, p.pos) + 1] += 1;
+        }
+        for i in 0..cells {
+            counts[i + 1] += counts[i];
+        }
+        let start = counts.clone();
+        let mut cursor = counts;
+        let mut items = vec![0u32; points.len()];
+        for (i, p) in points.iter().enumerate() {
+            let c = index(lo, dim, cell, p.pos);
+            items[cursor[c] as usize] = i as u32;
+            cursor[c] += 1;
+        }
+        Self { cell, lo, dim, start, items }
+    }
+
+    /// Every point in the 27 cells around `p`.
+    fn around(&self, p: [f32; 3], mut f: impl FnMut(usize)) {
+        let c: [i32; 3] = std::array::from_fn(|a| {
+            (((p[a] - self.lo[a]) / self.cell) as i32).clamp(0, self.dim[a] - 1)
+        });
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let n = [c[0] + dx, c[1] + dy, c[2] + dz];
+                    if (0..3).any(|a| n[a] < 0 || n[a] >= self.dim[a]) {
+                        continue;
+                    }
+                    let idx = (n[2] as usize * self.dim[1] as usize + n[1] as usize)
+                        * self.dim[0] as usize
+                        + n[0] as usize;
+                    for &i in &self.items[self.start[idx] as usize..self.start[idx + 1] as usize] {
+                        f(i as usize);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod normal_tests {
+    use super::*;
+
+    fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    /// A flat sheet must come out facing off the sheet.
+    ///
+    /// Compared by absolute dot product, because a plane fit genuinely
+    /// cannot tell `n` from `-n` and the shader is written knowing that.
+    /// Asserting a sign here would be asserting something the method does
+    /// not provide, and it would pass or fail on the arbitrary order the
+    /// eigen solver happens to pick.
+    #[test]
+    fn a_flat_sheet_faces_off_the_sheet() {
+        let mut pts = Vec::new();
+        for i in 0..40 {
+            for j in 0..40 {
+                pts.push(Point::new(i as f32 * 0.05, 0.0, j as f32 * 0.05));
+            }
+        }
+        estimate_normals(&mut pts);
+        let mut checked = 0;
+        for p in &pts {
+            // Skip the rim, where the neighbourhood is one-sided.
+            if p.pos[0] < 0.2 || p.pos[0] > 1.7 || p.pos[2] < 0.2 || p.pos[2] > 1.7 {
+                continue;
+            }
+            assert!(p.oriented(), "no normal at {:?}", p.pos);
+            assert!(
+                dot(p.normal, [0.0, 1.0, 0.0]).abs() > 0.97,
+                "{:?} does not face off the sheet: {:?}",
+                p.pos,
+                p.normal
+            );
+            checked += 1;
+        }
+        assert!(checked > 500, "only checked {checked} interior points");
+    }
+
+    /// And a sphere faces outward from its own centre — the case a sheet
+    /// cannot distinguish, since on a sheet every correct answer is the
+    /// same vector.
+    #[test]
+    fn a_sphere_faces_along_its_own_radius() {
+        let mut pts = Vec::new();
+        // Fibonacci sphere: even coverage without clustering at the poles,
+        // which is where a naive lat/long grid would make the
+        // neighbourhood anisotropic and the fit wrong for a reason that
+        // has nothing to do with the fit.
+        let n = 2000;
+        let golden = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+        for i in 0..n {
+            let y = 1.0 - (i as f32 / (n - 1) as f32) * 2.0;
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            let th = golden * i as f32;
+            pts.push(Point::new(th.cos() * r, y, th.sin() * r));
+        }
+        estimate_normals(&mut pts);
+        let mut worst = 1.0f32;
+        for p in &pts {
+            assert!(p.oriented(), "no normal at {:?}", p.pos);
+            // The radius *is* the normal on a sphere.
+            worst = worst.min(dot(p.normal, unit(p.pos)).abs());
+        }
+        assert!(worst > 0.9, "worst point faces {worst} off its own radius");
+    }
+
+    /// Normals a file already carried are left exactly as they were: an
+    /// estimate is a fallback, not an improvement on what the scanner
+    /// measured.
+    #[test]
+    fn a_normal_from_the_file_is_not_overwritten() {
+        let mut pts: Vec<Point> = (0..500)
+            .map(|i| {
+                let mut p = Point::new(i as f32 * 0.01, 0.0, 0.0);
+                p.normal = [0.0, 0.0, 1.0];
+                p
+            })
+            .collect();
+        estimate_normals(&mut pts);
+        assert!(pts.iter().all(|p| p.normal == [0.0, 0.0, 1.0]));
+    }
+
+    /// A zero normal in the file reads as "unknown" rather than poisoning
+    /// every lighting term the point touches.
+    #[test]
+    fn a_zero_normal_is_not_a_direction() {
+        assert_eq!(unit([0.0, 0.0, 0.0]), [0.0; 3]);
+        assert_eq!(unit([f32::NAN, 1.0, 0.0]), [0.0; 3]);
+        let p = Point::new(0.0, 0.0, 0.0);
+        assert!(!p.oriented(), "a fresh point claims to know which way it faces");
+    }
+
+    /// The estimate runs on what the GPU slot actually holds, so this is
+    /// the size that matters. It happens at load, beside a file read and
+    /// a parse that already cost more than this — but a method that took
+    /// ten seconds would need a thread, and the only way to know which is
+    /// to measure.
+    #[test]
+    fn estimating_a_full_slot_is_quick() {
+        let n = crate::attractor::POINTS;
+        let mut pts = Vec::with_capacity(n);
+        let mut seed = 12345u32;
+        let mut rng = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 16777216.0 - 0.5
+        };
+        for _ in 0..n {
+            pts.push(Point::new(rng(), rng(), rng()));
+        }
+        let t = std::time::Instant::now();
+        estimate_normals(&mut pts);
+        let took = t.elapsed();
+        // Generous, because CI runners are slow and this is a guard
+        // against an accidental quadratic rather than a benchmark.
+        assert!(
+            took.as_secs_f32() < 5.0,
+            "estimating {n} normals took {took:?}, which needs a thread rather than a comment"
+        );
+        eprintln!("estimate_normals: {n} points in {took:?}");
     }
 }

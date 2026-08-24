@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.22.0/vizz-0.22.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.23.0/vizz-0.23.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,50 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.23.0">0.23.0</a></div>
+      <ul>
+        <li><strong>Light, for point clouds.</strong> Nothing in the
+          renderer knew where a light was: a point's colour was its
+          palette entry times the scan's own colour times a distance
+          fade. Now there are two movable lamps — position, reach, level
+          and colour — that fall off with distance and work on anything
+          with a position, so you can walk one through a scan and have it
+          reveal the scan. Alongside them a directional <strong>sun</strong>
+          that lights <em>surfaces</em>: the wall facing it comes up, the
+          wall facing away goes down. <strong>Torch</strong> puts a lamp
+          on the camera. All of it is off by default, and off means the
+          picture is exactly what it was — every preset you have saved
+          renders identically.</li>
+        <li><strong>Normals: read, estimated, or absent — never
+          invented.</strong> A point cloud is points; whether it also
+          knows which way its surface faces is up to whoever exported it,
+          and most exports leave the field empty. vizz reads them from a
+          PLY that has them and works them out from each point's
+          neighbours when it does not, in about a tenth of a second as a
+          cloud loads. A cloud with no surface at all — a procedural
+          shape, a video frame — is left alone and the sun simply does
+          nothing to it, rather than lighting it from a direction nobody
+          measured.</li>
+        <li><strong>Ten camera moves.</strong> Orbit, sway, push, pull,
+          crane, spiral, look around, fly through,
+          <strong>walkthrough</strong> — four legs and four corners at eye
+          level, inside the cloud — and a slow drift for long ambient
+          sections. Rate is in bars, so a move locks to the same clock as
+          the sequencer. Every one is <em>added</em> to the camera your
+          faders already describe rather than written back into it, so
+          switching a move off puts you exactly where you were and a move
+          running is never a reason you cannot still steer.</li>
+        <li><strong>A big scan now shows all of itself.</strong> Loading a
+          cloud kept the first sixty-five thousand points rather than a
+          sample across the whole thing — and scanners write in scan
+          order, so a five-million-point room was showing one corner of
+          itself. It now strides the whole cloud. If you have a look built
+          on a large scan it will render more of that scan than it used
+          to.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.22.0">0.22.0</a></div>
