@@ -1074,6 +1074,49 @@ mod reference_tests {
         Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
     }
 
+    /// How many rows the list opens with, against how many it holds.
+    ///
+    /// The claim the instance-splitting makes, measured rather than
+    /// asserted. Not a threshold — a number to look at when the panel
+    /// grows again.
+    #[test]
+    #[ignore = "inspection, not a check: run with --nocapture"]
+    fn print_how_many_rows_open_by_default() {
+        let p = super::AppParams::build();
+        let (visible, open) = vizz_ui::panel::default_row_count(&p.registry);
+        eprintln!(
+            "{open} rows open by default, of {visible} in the list ({:.0}% shown)",
+            open as f32 / visible as f32 * 100.0
+        );
+    }
+
+    /// Print the panel's parameter list as data. Not a check — a way to
+    /// look at the shape of the thing without a screenshot.
+    #[test]
+    #[ignore = "inspection, not a check: run with --nocapture"]
+    fn print_the_parameter_list_shape() {
+        let p = super::AppParams::build();
+        let mut by_prefix: Vec<(String, Vec<String>)> = Vec::new();
+        let mut transport = 0;
+        for (_, d) in p.registry.iter() {
+            if d.transport {
+                transport += 1;
+                continue;
+            }
+            let prefix = d.addr.trim_start_matches('/').split('/').next().unwrap_or("").to_string();
+            let rest = d.addr.trim_start_matches('/')[prefix.len()..].trim_start_matches('/').to_string();
+            match by_prefix.iter_mut().find(|(k, _)| *k == prefix) {
+                Some((_, v)) => v.push(rest),
+                None => by_prefix.push((prefix, vec![rest])),
+            }
+        }
+        let total: usize = by_prefix.iter().map(|(_, v)| v.len()).sum();
+        eprintln!("{total} visible parameters in {} groups ({transport} transport, hidden)\n", by_prefix.len());
+        for (prefix, names) in &by_prefix {
+            eprintln!("  {prefix:<10} {:>3}  {}", names.len(), names.join(" "));
+        }
+    }
+
     /// Every parameter group has a home in the panel's section table.
     ///
     /// Anything the table does not mention still appears — under a bare

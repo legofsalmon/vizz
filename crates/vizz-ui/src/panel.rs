@@ -2107,6 +2107,11 @@ const WARN_COLOR: egui::Color32 = crate::theme::WARN;
 const PRESET_LIST_H: f32 = 112.0;
 
 #[allow(clippy::too_many_arguments)]
+/// Where the "changed only" toggle lives between frames.
+fn changed_id() -> egui::Id {
+    egui::Id::new("param-changed-only")
+}
+
 fn params_section(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
@@ -2151,12 +2156,30 @@ fn params_section(
         if !filter.is_empty() && ui.small_button("x").clicked() {
             filter.clear();
         }
+        // "What have I actually touched?"
+        //
+        // The name filter answers a question you can only ask if you
+        // already know the name — recall, where a list this long wants
+        // recognition. This is the other question, and for building a
+        // look it is the more common one: what is away from its default,
+        // which is to say what this look *is* as opposed to what it
+        // inherited. Also the fastest way to find a value you changed by
+        // accident and cannot see.
+        let changed = ui.ctx().data_mut(|d| *d.get_temp_mut_or(changed_id(), false));
+        if ui
+            .selectable_label(changed, egui::RichText::new("changed").size(vizz_design::text::CAPTION))
+            .on_hover_text("show only parameters away from their default")
+            .clicked()
+        {
+            ui.ctx().data_mut(|d| d.insert_temp(changed_id(), !changed));
+        }
         if scrolls && filter.is_empty() {
             ui.small(format!("{total} params"))
                 .on_hover_text("the list scrolls — or type here to jump");
         }
     });
     let needle = filter.trim().to_ascii_lowercase();
+    let changed_only = ui.ctx().data_mut(|d| *d.get_temp_mut_or(changed_id(), false));
     ui.memory_mut(|m| m.data.insert_temp(filter_id, filter));
 
     // As tall as the display allows, floored so a cramped window still
@@ -2168,6 +2191,25 @@ fn params_section(
         .max_height(height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            if changed_only {
+                // Flattened, like the name filter and for the same
+                // reason: you are asking a question about the whole
+                // list, not browsing it.
+                let mut hits = 0;
+                for (id, def) in registry.iter() {
+                    if is_transport(def) {
+                        continue;
+                    }
+                    if (registry.target(id) - def.default).abs() > 1e-6 {
+                        hits += 1;
+                        param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                    }
+                }
+                if hits == 0 {
+                    ui.small("everything is at its default");
+                }
+                return;
+            }
             if !needle.is_empty() {
                 // Filtering flattens: groups are for browsing, and when
                 // you have typed a name you already know what you want.
@@ -2230,8 +2272,32 @@ fn params_section(
                             // title alone is only self-explanatory to
                             // whoever chose it.
                             ui.small(egui::RichText::new(about).color(vizz_design::ink::FAINT));
-                            for (id, def) in group.params {
+                            let (loose, instances) = split_instances(&group);
+                            for (id, def) in loose {
                                 param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                            }
+                            for (key, params) in instances {
+                                let in_use = instance_in_use(registry, &params);
+                                // Lit when it is doing something, so the
+                                // closed row still says which of the four
+                                // you are actually looking at.
+                                let label = egui::RichText::new(instance_label(&key))
+                                    .color(if in_use {
+                                        vizz_design::ink::PRIMARY
+                                    } else {
+                                        vizz_design::ink::TERTIARY
+                                    });
+                                egui::CollapsingHeader::new(label)
+                                    .id_salt(&key)
+                                    .default_open(in_use)
+                                    .show(ui, |ui| {
+                                        for (id, def) in params {
+                                            param_row(
+                                                ui, registry, id, def, state, modulation, ranges,
+                                                actions,
+                                            );
+                                        }
+                                    });
                             }
                             if name == "camera" {
                                 camera_buttons(ui, registry);
@@ -2252,12 +2318,98 @@ fn params_section(
     ui.small("? shows every shortcut");
 }
 
+/// A run of parameter rows, as the list hands them around.
+type Rows<'a> = Vec<(vizz_params::ParamId, &'a vizz_params::ParamDef)>;
+
+/// Split a group's parameters into the ones that stand alone and the
+/// repeated instances underneath — the four vector layers, the four
+/// gravity wells, the two lamps, the four inks.
+///
+/// Two thirds of this list is repeated structure: sixteen identical
+/// parameter names four times over for the layers alone. Presented flat
+/// it reads as a hundred and fourteen unrelated rows, and reaching the
+/// camera means scrolling past four identical blocks. Presented as
+/// instances the names are stated once and an instance you are not using
+/// costs one row.
+///
+/// An instance is recognised two ways: a numeric segment after the
+/// prefix (`/gravity/2/x`, `/light/1/level`), or the prefix itself where
+/// a group claims several (`l1`…`l4`).
+fn split_instances<'a>(group: &Group<'a>) -> (Rows<'a>, Vec<(String, Rows<'a>)>) {
+    let mut loose: Rows<'a> = Vec::new();
+    let mut instances: Vec<(String, Rows<'a>)> = Vec::new();
+    // A group claiming more than one prefix has the prefixes *as* its
+    // instances — `l1/kind`, `l2/kind` and so on, with nothing numeric to
+    // key on. Written first as "does this differ from the group's name",
+    // which quietly left layer one loose and the other three nested: the
+    // same sixteen parameters presented two different ways in one group.
+    let by_prefix = group.prefixes.len() > 1;
+    for (id, def) in &group.params {
+        let rest = def.addr.trim_start_matches('/');
+        let (head, tail) = rest.split_once('/').unwrap_or((rest, ""));
+        let key = if by_prefix {
+            head.to_string()
+        } else {
+            match tail.split_once('/') {
+                // `gravity/2/x` — the instance is `2`.
+                Some((n, _)) if n.chars().all(|c| c.is_ascii_digit()) => n.to_string(),
+                _ => String::new(),
+            }
+        };
+        if key.is_empty() {
+            loose.push((*id, *def));
+            continue;
+        }
+        match instances.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, v)) => v.push((*id, *def)),
+            None => instances.push((key, vec![(*id, *def)])),
+        }
+    }
+    (loose, instances)
+}
+
+/// Whether anything in this instance has been moved off its default.
+///
+/// What decides whether it opens on first sight. "Everything you have
+/// touched is open, everything you have not is one row" needs no
+/// per-group knowledge and is the answer to the question somebody
+/// opening this list is actually asking. egui remembers the state once
+/// it has been toggled, so this settles rather than reopening things
+/// underneath you as values change.
+fn instance_in_use(registry: &ParamRegistry, params: &[(vizz_params::ParamId, &vizz_params::ParamDef)]) -> bool {
+    params
+        .iter()
+        .any(|(id, def)| (registry.target(*id) - def.default).abs() > 1e-6)
+}
+
+/// What an instance is called on its row.
+///
+/// `l3` is the third vector layer and `2` is the third of something —
+/// neither reads as anything on its own, and the group header above
+/// already says which family it belongs to.
+fn instance_label(key: &str) -> String {
+    if let Some(n) = key.strip_prefix('l')
+        && n.chars().all(|c| c.is_ascii_digit())
+    {
+        return format!("layer {n}");
+    }
+    match key.parse::<u32>() {
+        // Addresses count from zero; people do not.
+        Ok(n) => format!("{}", n + 1),
+        Err(_) => key.to_string(),
+    }
+}
+
 /// One group of parameters, named for what it does.
 struct Group<'a> {
     /// The address prefix this group collects, e.g. `particles`. Kept
     /// because the camera and room buttons attach by it, and because a
     /// stable id_salt must not change when a title is reworded.
     name: &'a str,
+    /// Every prefix this group claims. More than one means the group's
+    /// instances *are* the prefixes — the four vector layers — rather
+    /// than a numbered segment inside one.
+    prefixes: &'static [&'static str],
     /// What a person calls it. `pal` is a namespace; "palette" is the
     /// thing on screen.
     title: &'static str,
@@ -2310,7 +2462,12 @@ impl Group<'_> {
 struct SectionSpec {
     title: &'static str,
     /// Address prefixes, in the order they should read.
-    groups: &'static [(&'static str, &'static str, &'static str)],
+    ///
+    /// A slice per group rather than one prefix, so the four vector
+    /// layers — sixteen identically-named parameters each, thirty-six
+    /// per cent of the whole list — read as one thing with four of them
+    /// rather than as four unrelated groups you scroll past.
+    groups: &'static [(&'static [&'static str], &'static str, &'static str)],
 }
 
 const SECTIONS: &[SectionSpec] = &[
@@ -2318,22 +2475,22 @@ const SECTIONS: &[SectionSpec] = &[
         title: "SHAPE",
         groups: &[
             (
-                "particles",
+                &["particles"],
                 "particles",
                 "how many points there are, how big and how bright",
             ),
             (
-                "shape",
+                &["shape"],
                 "form",
                 "which shape the points take, and the morph between two of them",
             ),
             (
-                "cloud",
+                &["cloud"],
                 "clouds",
                 "which of the eight loaded clouds the morph runs between",
             ),
             (
-                "gravity",
+                &["gravity"],
                 "gravity",
                 "the attract / repel layer that pulls points off their shape",
             ),
@@ -2342,38 +2499,31 @@ const SECTIONS: &[SectionSpec] = &[
     SectionSpec {
         title: "LOOK",
         groups: &[
-            ("color", "colour", "palette choice, hue spread and saturation"),
-            ("pal", "vector palette", "the four inks the vector layers print with"),
-            ("bg", "background", "paper colour behind everything, and its alpha"),
-            ("fx", "effects", "the feedback chain: trails, zoom, spin, mirror, glow"),
+            (&["color"], "colour", "palette choice, hue spread and saturation"),
+            (&["bg"], "background", "paper colour behind everything, and its alpha"),
+            (&["fx"], "effects", "the feedback chain: trails, zoom, spin, mirror, glow"),
         ],
     },
     SectionSpec {
         title: "PRINT",
         groups: &[
+            // One group, four layers. Sixteen identical parameter names
+            // repeated four times was the largest single block in the
+            // list and read as four unrelated things; as instances of
+            // one group the names are stated once and a layer you are
+            // not using is a closed row rather than sixteen open ones.
             (
-                "l1",
-                "vector layer 1",
-                "hard-edged pattern: generator, blend mode, frequency and ink",
+                &["l1", "l2", "l3", "l4"],
+                "vector layers",
+                "hard-edged pattern over the point field — near frequencies interfere into moiré",
             ),
+            // The inks belong with the layers that print in them. They
+            // were under LOOK, one section away from the only thing that
+            // uses them, next to the *other* colour system.
+            (&["pal"], "inks", "the four colours the vector layers print with"),
             (
-                "l2",
-                "vector layer 2",
-                "a second layer — near frequencies interfere into moiré",
-            ),
-            (
-                "l3",
-                "vector layer 3",
-                "a third layer — off by default, like the fourth",
-            ),
-            (
-                "l4",
-                "vector layer 4",
-                "the fourth and last layer of the print stack",
-            ),
-            (
-                "vec",
-                "vector placement",
+                &["vec"],
+                "placement",
                 "whether the stack lives inside the feedback chain or prints clean over it",
             ),
         ],
@@ -2381,29 +2531,54 @@ const SECTIONS: &[SectionSpec] = &[
     SectionSpec {
         title: "STAGE",
         groups: &[
-            ("camera", "camera", "where you are standing: orbit, distance, lens and pan"),
+            (&["camera"], "camera", "where you are standing: orbit, distance, lens and pan"),
             (
-                "light",
+                &["light"],
                 "light",
                 "lamps you can move through the field, and how much light there is everywhere",
             ),
             (
-                "sun",
+                &["sun"],
                 "sun",
                 "a directional key — only bites on a cloud that knows which way it faces",
             ),
-            ("room", "room", "the box around the field, and its wireframe"),
-            ("video", "live video", "how an incoming picture becomes relief"),
+            (&["room"], "room", "the box around the field, and its wireframe"),
+            (&["video"], "live video", "how an incoming picture becomes relief"),
         ],
     },
     SectionSpec {
         title: "OUTPUT",
         groups: &[
-            ("master", "master", "the last thing before the output — dim, and the panic fader"),
-            ("punch", "punch", "the hold-to-engage gestures, also on the performance row"),
+            (&["master"], "master", "the last thing before the output — dim, and the panic fader"),
+            (&["punch"], "punch", "the hold-to-engage gestures, also on the performance row"),
         ],
     },
 ];
+
+/// How many parameter rows the list opens with, and how many it holds.
+///
+/// Public so the app can measure it against the real registry — this
+/// crate's tests build a cut-down one. Two thirds of the list is repeated
+/// structure, and the whole point of splitting it into instances is that
+/// what you are not using costs a row rather than sixteen.
+pub fn default_row_count(registry: &ParamRegistry) -> (usize, usize) {
+    let mut visible = 0;
+    let mut open = 0;
+    for section in sections(registry) {
+        for group in section.groups {
+            let (loose, instances) = split_instances(&group);
+            visible += loose.len();
+            open += loose.len();
+            for (_, params) in instances {
+                visible += params.len();
+                if instance_in_use(registry, &params) {
+                    open += params.len();
+                }
+            }
+        }
+    }
+    (visible, open)
+}
 
 /// Every address prefix [`SECTIONS`] gives a home to.
 ///
@@ -2413,7 +2588,7 @@ const SECTIONS: &[SectionSpec] = &[
 pub fn placed_groups() -> impl Iterator<Item = &'static str> {
     SECTIONS
         .iter()
-        .flat_map(|s| s.groups.iter().map(|(prefix, _, _)| *prefix))
+        .flat_map(|s| s.groups.iter().flat_map(|(prefixes, _, _)| prefixes.iter().copied()))
 }
 
 /// Split the registry by the first path segment, preserving registry order
@@ -2470,14 +2645,24 @@ fn sections(registry: &ParamRegistry) -> Vec<Section<'_>> {
     let mut out = Vec::new();
     for spec in SECTIONS {
         let mut groups = Vec::new();
-        for (prefix, title, about) in spec.groups {
+        for (prefixes, title, about) in spec.groups {
             // `swap_remove`-by-search rather than a lookup: what is left
             // over at the end is exactly the set nothing claimed, which
             // is how the "more" section stays correct without a second
             // list to keep in step.
-            if let Some(i) = by_prefix.iter().position(|(p, _)| p == prefix) {
-                let (name, params) = by_prefix.remove(i);
-                groups.push(Group { name, title, about, params });
+            let mut params = Vec::new();
+            let mut name = "";
+            for prefix in prefixes.iter() {
+                if let Some(i) = by_prefix.iter().position(|(p, _)| p == prefix) {
+                    let (found, mut got) = by_prefix.remove(i);
+                    if name.is_empty() {
+                        name = found;
+                    }
+                    params.append(&mut got);
+                }
+            }
+            if !params.is_empty() {
+                groups.push(Group { name, prefixes, title, about, params });
             }
         }
         if !groups.is_empty() {
@@ -2492,6 +2677,7 @@ fn sections(registry: &ParamRegistry) -> Vec<Section<'_>> {
             .into_iter()
             .map(|(name, params)| Group {
                 name,
+                prefixes: &[],
                 title: "",
                 about: "not yet placed in a section — see SECTIONS in panel.rs",
                 params,
@@ -2984,7 +3170,15 @@ mod layout_tests {
             .iter()
             .flat_map(|s| s.groups.iter().map(|g| g.title))
             .collect();
-        assert!(titles.contains(&"palette") || titles.contains(&"vector palette"));
+        // `pal` is "inks" rather than "vector palette": it used to sit
+        // in LOOK, one section away from the only thing that prints in
+        // it and immediately beside the *point field's* palette, which
+        // is a different system with a similar name. It now lives with
+        // the layers, called what it is.
+        assert!(
+            titles.contains(&"inks"),
+            "the vector inks lost their name: {titles:?}"
+        );
         assert!(!titles.contains(&"pal"), "a raw namespace reached the screen");
         assert!(!titles.contains(&"l1"), "a raw namespace reached the screen");
     }
@@ -3008,6 +3202,94 @@ mod layout_tests {
         );
     }
 
+    /// The four vector layers are four instances of one group, and all
+    /// four the same way.
+    ///
+    /// Keyed at first on "does this prefix differ from the group's
+    /// name", which left layer one loose and the other three nested —
+    /// the same sixteen parameters presented two ways inside one group,
+    /// which is worse than either way on its own.
+    #[test]
+    fn every_vector_layer_is_an_instance() {
+        let addrs: Vec<String> = (1..=4)
+            .flat_map(|l| ["kind", "freq", "opacity"].map(move |f| format!("/l{l}/{f}")))
+            .collect();
+        let refs: Vec<&str> = addrs.iter().map(String::as_str).collect();
+        let reg = registry_with(&refs);
+        let built = sections(&reg);
+        let group = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .find(|g| g.title == "vector layers")
+            .expect("the layers group");
+        let (loose, instances) = split_instances(group);
+        assert!(loose.is_empty(), "{} parameters were left loose", loose.len());
+        let keys: Vec<&str> = instances.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["l1", "l2", "l3", "l4"]);
+        for (key, params) in &instances {
+            assert_eq!(params.len(), 3, "{key} has the wrong count");
+        }
+    }
+
+    /// A numbered family splits on its number, and the loose parameters
+    /// above it stay loose.
+    #[test]
+    fn a_numbered_family_splits_on_its_number() {
+        let reg = registry_with(&[
+            "/gravity/amount",
+            "/gravity/0/x",
+            "/gravity/0/strength",
+            "/gravity/1/x",
+            "/gravity/1/strength",
+        ]);
+        let built = sections(&reg);
+        let group = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .find(|g| g.title == "gravity")
+            .expect("the gravity group");
+        let (loose, instances) = split_instances(group);
+        assert_eq!(loose.len(), 1, "the master amount should stand alone");
+        assert_eq!(instances.len(), 2, "two wells");
+        // Counted from one on screen. Addresses count from zero; nobody
+        // reading a panel does.
+        assert_eq!(instance_label("0"), "1");
+        assert_eq!(instance_label("3"), "4");
+        assert_eq!(instance_label("l2"), "layer 2");
+    }
+
+    /// An instance opens on first sight when something in it is away
+    /// from its default, and stays shut when nothing is.
+    ///
+    /// This is what makes the list short: two thirds of it is repeated
+    /// structure, and a layer you are not using should cost one row
+    /// rather than sixteen.
+    #[test]
+    fn an_unused_instance_starts_closed() {
+        let reg = registry_with(&["/gravity/0/strength", "/gravity/1/strength"]);
+        let built = sections(&reg);
+        let group = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .find(|g| g.title == "gravity")
+            .expect("the gravity group");
+        let (_, instances) = split_instances(group);
+        assert!(
+            instances.iter().all(|(_, p)| !instance_in_use(&reg, p)),
+            "everything is at its default, so nothing should be open"
+        );
+        // Move one, and only that one opens.
+        let id = reg.id("/gravity/1/strength").expect("the address");
+        reg.set(id, reg.defs()[id.index()].max);
+        let (_, instances) = split_instances(group);
+        let open: Vec<&str> = instances
+            .iter()
+            .filter(|(_, p)| instance_in_use(&reg, p))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(open, ["1"], "the wrong instances opened");
+    }
+
     /// Sections read in the order a look gets built, and every group
     /// carries a line saying what it is for.
     #[test]
@@ -3015,11 +3297,12 @@ mod layout_tests {
         let order: Vec<&str> = SECTIONS.iter().map(|s| s.title).collect();
         assert_eq!(order, ["SHAPE", "LOOK", "PRINT", "STAGE", "OUTPUT"]);
         for spec in SECTIONS {
-            for (prefix, title, about) in spec.groups {
-                assert!(!title.is_empty(), "{prefix} has no human title");
+            for (prefixes, title, about) in spec.groups {
+                assert!(!prefixes.is_empty(), "a group claims no prefixes at all");
+                assert!(!title.is_empty(), "{prefixes:?} has no human title");
                 assert!(
                     about.len() > 20,
-                    "{prefix}'s caption is too short to say anything useful"
+                    "{prefixes:?}'s caption is too short to say anything useful"
                 );
             }
         }
