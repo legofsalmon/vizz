@@ -311,6 +311,7 @@ fn main() {
 
     let state = PanelState {
         project: "Show 1".into(),
+        local_address: Some("192.168.1.42".into()),
         decks: Vec::new(),
         active_deck: 0,
         follow_columns: None,

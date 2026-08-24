@@ -1074,6 +1074,44 @@ mod reference_tests {
         Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
     }
 
+    /// Every parameter group has a home in the panel's section table.
+    ///
+    /// Anything the table does not mention still appears — under a bare
+    /// prefix, in a section called MORE, labelled "not yet placed in a
+    /// section — see SECTIONS in panel.rs". That note is written for
+    /// whoever is editing the panel, and the user reads it too.
+    ///
+    /// Which is exactly what shipped in 0.23.0: lighting arrived as
+    /// `/light/*` and `/sun/*`, nothing placed them, and the controls
+    /// landed at the bottom of the list under a developer's to-do. They
+    /// worked. Nobody could find them. A feature nobody can find is the
+    /// feature not existing, and the fallback that was supposed to keep a
+    /// new parameter visible is what hid this one.
+    #[test]
+    fn every_parameter_group_has_a_home_in_the_panel() {
+        let placed: std::collections::BTreeSet<&str> =
+            vizz_ui::panel::placed_groups().collect();
+        let p = super::AppParams::build();
+        let mut orphans = std::collections::BTreeSet::new();
+        for (_, d) in p.registry.iter() {
+            // Transport parameters are deliberately kept out of this
+            // list; they have their own controls on the performance
+            // layout. See `panel::is_transport`.
+            if d.transport {
+                continue;
+            }
+            let prefix = d.addr.trim_start_matches('/').split('/').next().unwrap_or("");
+            if !placed.contains(prefix) {
+                orphans.insert(prefix.to_string());
+            }
+        }
+        assert!(
+            orphans.is_empty(),
+            "these groups have no section, so they land in MORE under a developer note: {orphans:?}\n\
+             add them to SECTIONS in crates/vizz-ui/src/panel.rs"
+        );
+    }
+
     /// The README's OSC reference used to claim completeness while
     /// documenting 21 of 76 addresses, with ranges two releases stale.
     /// This parses the table back out of the README and holds it against

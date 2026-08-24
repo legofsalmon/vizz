@@ -168,6 +168,9 @@ pub struct PanelState {
     /// health belongs on the strip like audio's does — before this, the
     /// only sign a feed had died was the cloud freezing.
     pub video: Option<VideoStatus>,
+    /// This machine's address on the network, for the stream field to
+    /// show. `None` when it is not on one — see `vizz_io::net`.
+    pub local_address: Option<String>,
     /// The live point-cloud stream: `None` when nothing is running.
     pub live_cloud: Option<LiveCloudStatus>,
     /// Current analysis settings, mirrored here so the widgets have
@@ -576,6 +579,60 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
             });
         }
     }
+    send_here(ui, state, &addr);
+}
+
+/// Where to point the sender: this machine's address, and the port the
+/// field is actually listening on.
+///
+/// The hover text has always said to set the sender to "this Mac's
+/// address on port 9848" without saying what that address is, which
+/// leaves the one setup step this feature needs to a trip through System
+/// Settings — at a venue, on a laptop, usually in the dark.
+///
+/// Only while listening. Dialling *out* to `host:port` means the address
+/// is the other machine's and this one's is beside the point, and a line
+/// offering it then would be answering a question nobody asked.
+fn send_here(ui: &mut egui::Ui, state: &PanelState, addr: &str) {
+    let Some(ip) = &state.local_address else { return };
+    let typed = if addr.trim().is_empty() { DEFAULT_LIVE_CLOUD } else { addr.trim() };
+    let Some(port) = listening_port(typed) else { return };
+    let full = format!("{ip}:{port}");
+    ui.horizontal(|ui| {
+        ui.small("send to");
+        // Selectable, so it can be read off the screen *and* dragged out
+        // with a mouse — the copy button beside it is faster, and one of
+        // the two works when the other is inconvenient.
+        ui.add(
+            egui::Label::new(egui::RichText::new(&full).small().strong().color(GOOD))
+                .selectable(true),
+        )
+        .on_hover_text(
+            "this machine's address on the network — type it into the sender. \
+             One line rather than two: the row below this one used to carry \
+             the explanation, and the height it cost pushed the preset list \
+             off the bottom of a thousand-point panel.",
+        );
+        if ui
+            .small_button("copy")
+            .on_hover_text("copy this address to the clipboard")
+            .clicked()
+        {
+            ui.ctx().copy_text(full.clone());
+        }
+    });
+}
+
+/// The port a stream address is listening on, or `None` if it is dialling
+/// out rather than listening.
+///
+/// `listen://host:port` and a bare `host:port` mean opposite things here:
+/// the first waits for a sender to arrive, the second goes looking for
+/// one. Only the first has an address worth showing.
+fn listening_port(addr: &str) -> Option<&str> {
+    let rest = addr.strip_prefix("listen://")?;
+    let port = rest.rsplit(':').next()?;
+    (!port.is_empty() && port.chars().all(|c| c.is_ascii_digit())).then_some(port)
 }
 
 /// Where a live cloud comes from unless told otherwise: waiting on
@@ -2325,6 +2382,16 @@ const SECTIONS: &[SectionSpec] = &[
         title: "STAGE",
         groups: &[
             ("camera", "camera", "where you are standing: orbit, distance, lens and pan"),
+            (
+                "light",
+                "light",
+                "lamps you can move through the field, and how much light there is everywhere",
+            ),
+            (
+                "sun",
+                "sun",
+                "a directional key — only bites on a cloud that knows which way it faces",
+            ),
             ("room", "room", "the box around the field, and its wireframe"),
             ("video", "live video", "how an incoming picture becomes relief"),
         ],
@@ -2337,6 +2404,17 @@ const SECTIONS: &[SectionSpec] = &[
         ],
     },
 ];
+
+/// Every address prefix [`SECTIONS`] gives a home to.
+///
+/// Public so the app can hold it against the real registry — see the test
+/// that does. This crate's own tests build a cut-down registry, so the
+/// check has to live where the whole parameter table does.
+pub fn placed_groups() -> impl Iterator<Item = &'static str> {
+    SECTIONS
+        .iter()
+        .flat_map(|s| s.groups.iter().map(|(prefix, _, _)| *prefix))
+}
 
 /// Split the registry by the first path segment, preserving registry order
 /// both within and between groups.

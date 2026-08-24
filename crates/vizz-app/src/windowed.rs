@@ -1170,6 +1170,9 @@ impl App {
             let update_view = update_view(&self.update, recording.is_some());
             let panel_state = PanelState {
                 project: vizz_mod::project::open(),
+                // Cached in vizz-io, so this is a lock and a clone rather
+                // than a syscall per frame.
+                local_address: vizz_io::net::local_ip().map(|ip| ip.to_string()),
                 decks: deck_chips(&self.engine.decks, &self.midi_view),
                 active_deck: self.engine.decks.active(),
                 // Always on offer. Following is off by default, so a

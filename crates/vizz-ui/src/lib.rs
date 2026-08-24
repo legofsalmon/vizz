@@ -987,6 +987,7 @@ mod tests {
         let ctx = egui::Context::default();
         let state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1039,6 +1040,7 @@ mod tests {
             // that the panel names its show cannot be satisfied by one of
             // the looks it happens to be listing.
             project: "Basement".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1100,6 +1102,7 @@ mod tests {
         let ctx = egui::Context::default();
         let state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1154,6 +1157,7 @@ mod tests {
         // panel must still draw rather than panic on unwrapping.
         let state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1200,6 +1204,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1300,6 +1305,7 @@ mod tests {
         );
         let state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1355,6 +1361,7 @@ mod tests {
         let reg = registry();
         let base = |update: Option<String>| PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1465,6 +1472,15 @@ mod tests {
     /// Every rect-stroke colour the panel painted. The clock advances
     /// across passes because a fresh Window fades in, and mid-fade every
     /// colour is alpha-scaled into something no equality check knows.
+    ///
+    /// The window is tall enough to hold the whole panel, and has to be
+    /// kept that way. egui culls what falls outside it, so a panel that
+    /// has grown past the harness renders with its tail simply absent —
+    /// and this then reports "the recalled preset is not marked" when the
+    /// truth is that the preset list was never drawn. It has said exactly
+    /// that twice while the panel gained rows, both times about a stroke
+    /// that was perfectly fine. The height is incidental to what this
+    /// asserts; in the app the panel is resizable and scrolls.
     fn panel_stroke_colours(reg: &ParamRegistry, state: &PanelState) -> Vec<egui::Color32> {
         let ctx = egui::Context::default();
         let mut out = Vec::new();
@@ -1472,7 +1488,7 @@ mod tests {
             ctx.begin_pass(egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::pos2(0.0, 0.0),
-                    egui::vec2(900.0, 1000.0),
+                    egui::vec2(900.0, 1600.0),
                 )),
                 time: Some(i as f64 * 0.2),
                 ..Default::default()
@@ -1508,6 +1524,7 @@ mod tests {
         let reg = registry();
         let state = |current: Option<usize>| PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1552,6 +1569,82 @@ mod tests {
         );
     }
 
+    /// A panel state with nothing interesting in it, for tests that only
+    /// care about one field. Sections expanded, because most of what is
+    /// worth asserting about lives inside one.
+    fn a_panel_state() -> PanelState {
+        PanelState {
+            project: "Show 1".into(),
+            local_address: None,
+            decks: Vec::new(),
+            active_deck: 0,
+            follow_columns: None,
+            recording: None,
+            preset_current: None,
+            update_available: None,
+            update: None,
+            health: None,
+            outputs: Vec::new(),
+            frame_times_ms: Vec::new(),
+            frame_budget_ms: 16.67,
+            midi: MidiView::default(),
+            audio: AudioView::default(),
+            video: None,
+            live_cloud: None,
+            video_sources: Default::default(),
+            record: Default::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: false,
+            modulated: Vec::new(),
+            clouds: Vec::new(),
+            palettes: Vec::new(),
+            gravity_grid: None,
+            output: Default::default(),
+            bpm: 120.0,
+            focus_filter: false,
+            grid: Default::default(),
+            expand_sections: true,
+            presets: Vec::new(),
+            bar_phase: 0.0,
+        }
+    }
+
+    /// The stream field says where to send to.
+    ///
+    /// The hover text has always told you to point the sender at "this
+    /// Mac's address on port 9848" without saying what that address is,
+    /// which leaves the one setup step this feature needs to a trip
+    /// through System Settings.
+    #[test]
+    fn the_stream_field_says_which_address_to_send_to() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let mut state = a_panel_state();
+        state.local_address = Some("192.168.1.42".into());
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(
+            text.contains("192.168.1.42:9848"),
+            "the panel does not say where to send a stream: {text}"
+        );
+    }
+
+    /// And says nothing when there is nothing true to say. A machine off
+    /// the network has no address to offer, and inventing one — or
+    /// printing `0.0.0.0` — is worse than silence, because it looks like
+    /// an answer and somebody will type it in.
+    #[test]
+    fn no_address_is_offered_when_there_is_none() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        let mut state = a_panel_state();
+        state.local_address = None;
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(
+            !text.contains("send to"),
+            "an address was offered with none known: {text}"
+        );
+    }
+
     /// The status strip only mentions video once a source is configured:
     /// a permanent "no video" dot would alarm about an absence nobody
     /// chose. With one configured, its name and its health belong on the
@@ -1562,6 +1655,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1618,6 +1712,7 @@ mod tests {
         let ctx = egui::Context::default();
         let state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1678,6 +1773,7 @@ mod tests {
         let ctx = egui::Context::default();
         let state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1734,6 +1830,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut state = PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1855,6 +1952,7 @@ mod tests {
     fn base_state() -> PanelState {
         PanelState {
             project: "Show 1".into(),
+            local_address: Some("192.168.1.42".into()),
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
