@@ -3123,7 +3123,7 @@ fn param_row(
         }
     });
     if open_modulator(ui).as_deref() == Some(def.addr.as_str()) {
-        modulator_editor(ui, modulation, &def.addr);
+        modulator_editor(ui, modulation, def);
     }
 }
 
@@ -3157,7 +3157,8 @@ fn set_open_modulator(ui: &egui::Ui, addr: Option<String>) {
 /// control it drives, and you set it where you are already looking. The
 /// shared rack has not gone anywhere — the source picker is how you point
 /// several parameters at one LFO, which is the case worth the extra step.
-fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, addr: &str) {
+fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, def: &vizz_params::ParamDef) {
+    let addr: &str = &def.addr;
     ui.indent(("modulator", addr), |ui| {
         // What is driving it now. Several routes onto one parameter sum,
         // so this reads the first and says so if there are more.
@@ -3258,19 +3259,84 @@ fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, addr: &str) {
             );
         }
 
-        // Depth belongs to the route, so it is per-parameter even when the
-        // source is shared. That is the whole point of a shared LFO: one
-        // shape, different amounts.
+        // How far, or between what and what. Both belong to the route
+        // rather than the source, so they are per-parameter even when the
+        // source is shared — which is the whole point of sharing one: the
+        // same shape, different amounts, in different places.
+        let width = def.max - def.min;
         if let Some(route) = modulation.routes.iter_mut().find(|r| r.param == addr) {
-            ui.horizontal(|ui| {
-                ui.small("depth");
-                ui.add(
-                    egui::Slider::new(&mut route.depth, -1.0..=1.0)
-                        .fixed_decimals(2)
-                        .show_value(true),
-                )
-                .on_hover_text("how much of the parameter's range it swings — negative inverts");
-            });
+            match route.span {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.small("depth");
+                        ui.add(
+                            egui::Slider::new(&mut route.depth, -1.0..=1.0)
+                                .fixed_decimals(2)
+                                .show_value(true),
+                        )
+                        .on_hover_text(
+                            "how much of the parameter's range it swings, either side of \
+                             wherever the fader is — negative inverts",
+                        );
+                        if ui
+                            .small_button("range…")
+                            .on_hover_text(
+                                "set an explicit low and high instead, so the value goes where \
+                                 you say rather than where the fader plus the swing lands",
+                            )
+                            .clicked()
+                        {
+                            // Opened on what it is already doing, so the
+                            // switch shows the same movement rather than
+                            // jumping to something arbitrary and making
+                            // you find your way back.
+                            let d = route.depth.abs().max(0.05) * 0.5;
+                            route.span = Some([(0.5 - d).max(0.0), (0.5 + d).min(1.0)]);
+                        }
+                    });
+                }
+                Some(mut span) => {
+                    ui.horizontal(|ui| {
+                        // In the parameter's own units. A fraction of a
+                        // range is a number you have to convert in your
+                        // head every time, and the whole reason to want
+                        // endpoints is to say a value you have in mind.
+                        let mut low = def.min + span[0] * width;
+                        let mut high = def.min + span[1] * width;
+                        ui.small("in");
+                        let a = ui.add(
+                            egui::DragValue::new(&mut low)
+                                .speed(width / 200.0)
+                                .range(def.min..=def.max),
+                        );
+                        ui.small("out");
+                        let b = ui.add(
+                            egui::DragValue::new(&mut high)
+                                .speed(width / 200.0)
+                                .range(def.min..=def.max),
+                        );
+                        if a.changed() || b.changed() {
+                            // Not sorted. Crossing them over is how you
+                            // invert the movement, which `depth` does with
+                            // a negative — taking that away here would
+                            // lose a gesture the other mode has.
+                            span = [(low - def.min) / width, (high - def.min) / width];
+                            route.span = Some(span);
+                        }
+                        if ui
+                            .small_button("depth…")
+                            .on_hover_text("go back to swinging either side of the fader")
+                            .clicked()
+                        {
+                            route.span = None;
+                        }
+                    });
+                    ui.small(
+                        egui::RichText::new("the fader no longer moves this parameter")
+                            .color(vizz_design::ink::FAINT),
+                    );
+                }
+            }
         }
     });
 }
@@ -3552,6 +3618,70 @@ mod layout_tests {
         assert!(
             text.contains(&"its own") && text.contains(&"depth"),
             "the modulator did not open on the row: {text:?}"
+        );
+    }
+
+    /// A route with a span shows its endpoints, and says what that costs.
+    ///
+    /// The two modes are genuinely different — depth rides on top of the
+    /// fader, a span replaces what the fader was doing — so the row has
+    /// to say which one it is in and what changed.
+    #[test]
+    fn a_span_shows_its_endpoints_and_the_trade() {
+        let reg = registry_with(&["/particles/size"]);
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut modulation = vizz_mod::ModEngine::with_defaults();
+        modulation.attach_modulator("/particles/size", 0.4);
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("open-modulator"), "/particles/size".to_string())
+        });
+
+        let draw_once = |m: &mut vizz_mod::ModEngine| -> Vec<String> {
+            let state = PanelState { expand_sections: true, ..Default::default() };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(900.0, 1400.0),
+                )),
+                ..Default::default()
+            });
+            let _ = draw(&ctx, &reg, &state, m, &mut Default::default());
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push(t.galley.text().trim().to_string()),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        let mut text = Vec::new();
+        for _ in 0..4 {
+            text = draw_once(&mut modulation);
+        }
+        assert!(text.iter().any(|t| t == "depth"), "no depth control: {text:?}");
+        assert!(!text.iter().any(|t| t == "in"), "endpoints shown without a span");
+
+        if let Some(r) = modulation.routes.iter_mut().find(|r| r.param == "/particles/size") {
+            r.span = Some([0.25, 0.75]);
+        }
+        for _ in 0..4 {
+            text = draw_once(&mut modulation);
+        }
+        assert!(
+            text.iter().any(|t| t == "in") && text.iter().any(|t| t == "out"),
+            "a span does not show its endpoints: {text:?}"
+        );
+        assert!(
+            text.iter().any(|t| t.contains("fader no longer moves")),
+            "the row does not say the fader stopped working: {text:?}"
         );
     }
 

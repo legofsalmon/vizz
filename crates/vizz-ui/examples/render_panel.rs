@@ -429,6 +429,10 @@ fn main() {
     // now and the one a preview should show. `/particles/hue` above keeps
     // the shared-LFO case in the same shot.
     modulation.attach_modulator("/particles/speed", 0.35);
+    // With an explicit range, which is the mode worth a look.
+    if let Some(r) = modulation.routes.iter_mut().find(|r| r.param == "/particles/speed") {
+        r.span = Some([0.2, 0.75]);
+    }
     let ctx = egui::Context::default();
     ctx.set_visuals(egui::Visuals::dark());
     let input = egui::RawInput {

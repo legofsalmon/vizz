@@ -126,6 +126,35 @@ you would share one.
 Editing a shared LFO from one of the rows it drives would silently change
 every other row it drives. The row says so and points at the rack.
 
+### Depth, or an explicit range
+
+Depth swings a parameter either side of wherever the fader is, so moving
+the fader moves the whole swing with it. That is the right model for
+"wobble this a bit" and the wrong one for "this should travel between a
+half and three quarters" — which is a statement about where the value
+goes, not about how far it strays from somewhere else.
+
+So a route can carry a **span** instead: an explicit low and high, set in
+the parameter's own units rather than as a fraction of its range, because
+a fraction is a number you convert in your head every time and the point
+of endpoints is to say a value you already have in mind.
+
+The two are a real trade, not a better and a worse, so both are kept and
+the row says which one it is in. **A span means the fader no longer moves
+that parameter**, and the row says that too — it is the cost of the
+endpoints being what you asked for, and finding it out by wondering why a
+fader has stopped working would be miserable. `range…` opens on the
+movement depth was already producing rather than jumping somewhere
+arbitrary, so you can see the same thing before changing it.
+
+Crossing the endpoints over inverts the movement, which is what a negative
+depth does in the other mode. Sorting them would have quietly removed a
+gesture the other mode has.
+
+Both source polarities map into a span the same way, so an audio band
+reaches both ends of it exactly as an LFO does. Without that the endpoints
+would mean different things depending on what was driving them.
+
 The one that is easy to get wrong: removing an LFO shifts every index
 above it, and routes name their source *by* index. A missed renumber does
 not fail — it re-points somebody else's route at a different LFO, and a

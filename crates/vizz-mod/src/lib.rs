@@ -310,8 +310,25 @@ pub struct Route {
     /// OSC-style parameter address.
     pub param: String,
     /// Fraction of the parameter's range the LFO swings it across.
-    /// Negative inverts.
+    /// Negative inverts. Ignored when [`Route::span`] is set.
     pub depth: f32,
+    /// An explicit low and high, as fractions of the parameter's range,
+    /// that the source is mapped between.
+    ///
+    /// `None` is the original behaviour and the default: the source is an
+    /// *offset* riding on top of whatever the fader says, so moving the
+    /// fader moves the whole swing with it. That is the right model for
+    /// "wobble this a bit" and the wrong one for "this should travel
+    /// between a half and three quarters", which is a statement about
+    /// where the value goes rather than about how far it strays.
+    ///
+    /// With a span the route delivers whatever offset lands the value
+    /// inside it, so the endpoints are what you asked for and the fader
+    /// no longer moves the result. Opt-in per route, because that is a
+    /// real trade rather than an improvement: the offset model is what
+    /// keeps a modulated fader still worth touching.
+    #[serde(default)]
+    pub span: Option<[f32; 2]>,
     #[serde(default = "yes")]
     pub enabled: bool,
 }
@@ -395,7 +412,32 @@ impl ModEngine {
             let Some(id) = registry.id(&route.param) else { continue };
             // Several routes may target one parameter; they sum, and the
             // snapshot clamps the total.
-            self.offsets[id.index()] += value * route.depth;
+            match route.span {
+                None => self.offsets[id.index()] += value * route.depth,
+                Some([low, high]) => {
+                    let def = &registry.defs()[id.index()];
+                    let width = def.max - def.min;
+                    if width.abs() < f32::EPSILON {
+                        continue;
+                    }
+                    // Where the fader is, as a fraction of the range —
+                    // because what is delivered is still an offset, and
+                    // the offset that lands on `want` depends on where it
+                    // is starting from.
+                    let base = (registry.target(id) - def.min) / width;
+                    // Sources differ in what they swing across: an LFO is
+                    // bipolar and an audio band is not. Both have to
+                    // arrive as 0..1 or the span's endpoints would mean
+                    // different things depending on what is driving it.
+                    let unit = if route.source.is_bipolar() {
+                        (value + 1.0) * 0.5
+                    } else {
+                        value
+                    };
+                    let want = low + (high - low) * unit;
+                    self.offsets[id.index()] += want - base;
+                }
+            }
         }
 
         self.graph.tick(
@@ -418,7 +460,7 @@ impl ModEngine {
     }
 
     pub fn add_route(&mut self, source: Source, param: impl Into<String>, depth: f32) {
-        self.routes.push(Route { source, param: param.into(), depth, enabled: true });
+        self.routes.push(Route { source, param: param.into(), depth, enabled: true, span: None });
     }
 
     /// Whether this exact source already drives this parameter.
@@ -509,6 +551,7 @@ impl ModEngine {
                 param: param.to_string(),
                 depth,
                 enabled: true,
+            span: None,
             });
             true
         }
@@ -675,6 +718,83 @@ mod tests {
             seen.insert(back.tick(1.0 / 60.0, 0.0).to_bits());
         }
         assert!(seen.len() > 3, "sample-and-hold froze after a reload: {seen:?}");
+    }
+
+    /// A span puts the value where it says, whatever the fader says.
+    ///
+    /// That is the whole difference from depth, and the reason it is a
+    /// separate mode rather than a better one: depth rides on top of the
+    /// fader, a span replaces what the fader was doing.
+    #[test]
+    fn a_span_lands_the_value_on_its_endpoints() {
+        let reg = registry();
+        let id = reg.id("/a").expect("/a");
+        // `/a` is 0..10. Ask for a swing between 2 and 8.
+        let mut engine = ModEngine::with_defaults();
+        engine.attach_modulator("/a", 1.0);
+        let lfo = engine.own_modulator("/a").expect("owned");
+        if let Some(r) = engine.routes.iter_mut().find(|r| r.param == "/a") {
+            r.span = Some([0.2, 0.8]);
+        }
+
+        let at = |engine: &mut ModEngine, phase: f32, base: f32| {
+            reg.set(id, base);
+            engine.lfos[lfo].phase = phase;
+            let offsets = engine.tick(0.0, &reg, AudioLevels::default());
+            // Offsets are normalised; put it back in the parameter's own
+            // units so the assertion reads in the terms it was asked in.
+            base + offsets[id.index()] * 10.0
+        };
+
+        // A sine peaks a quarter of the way in and troughs three quarters.
+        assert!((at(&mut engine, 0.25, 5.0) - 8.0).abs() < 0.01);
+        assert!((at(&mut engine, 0.75, 5.0) - 2.0).abs() < 0.01);
+        // And the same endpoints from a different fader position, which
+        // is exactly what depth cannot do.
+        assert!((at(&mut engine, 0.25, 1.0) - 8.0).abs() < 0.01);
+        assert!((at(&mut engine, 0.75, 9.0) - 2.0).abs() < 0.01);
+    }
+
+    /// Without a span, the fader still moves the swing with it — the
+    /// behaviour every existing patch was written against.
+    #[test]
+    fn depth_still_rides_on_top_of_the_fader() {
+        let reg = registry();
+        let id = reg.id("/a").expect("/a");
+        let mut engine = ModEngine::with_defaults();
+        engine.attach_modulator("/a", 0.2);
+        let lfo = engine.own_modulator("/a").expect("owned");
+        assert!(engine.routes.iter().all(|r| r.span.is_none()));
+
+        let at = |engine: &mut ModEngine, base: f32| {
+            reg.set(id, base);
+            engine.lfos[lfo].phase = 0.25;
+            let offsets = engine.tick(0.0, &reg, AudioLevels::default());
+            base + offsets[id.index()] * 10.0
+        };
+        // A fifth of a 0..10 range, at the peak: two above wherever it is.
+        assert!((at(&mut engine, 5.0) - 7.0).abs() < 0.01);
+        assert!((at(&mut engine, 1.0) - 3.0).abs() < 0.01);
+    }
+
+    /// An audio band is unipolar and an LFO is not, so both have to be
+    /// mapped into the span the same way or the endpoints would mean
+    /// different things depending on what was driving them.
+    #[test]
+    fn a_unipolar_source_reaches_both_ends_of_a_span() {
+        let reg = registry();
+        let id = reg.id("/a").expect("/a");
+        let mut engine = ModEngine::with_defaults();
+        engine.add_route(Source::Audio(0), "/a", 1.0);
+        if let Some(r) = engine.routes.iter_mut().find(|r| r.param == "/a") {
+            r.span = Some([0.2, 0.8]);
+        }
+        reg.set(id, 5.0);
+        let quiet = engine.tick(0.0, &reg, AudioLevels { bands: &[0.0], level: 0.0 });
+        assert!((5.0 + quiet[id.index()] * 10.0 - 2.0).abs() < 0.01, "silence is not the low end");
+        reg.set(id, 5.0);
+        let loud = engine.tick(0.0, &reg, AudioLevels { bands: &[1.0], level: 0.0 });
+        assert!((5.0 + loud[id.index()] * 10.0 - 8.0).abs() < 0.01, "full scale is not the high end");
     }
 
     /// A parameter's own modulator is an ordinary LFO with one route.
