@@ -440,9 +440,33 @@ fn main() {
     // Several passes with advancing time: egui sizes a fresh window on the
     // first pass, and fades new windows in over ~0.1s. Rendering at t=0
     // captures the panel mid-fade — nearly invisible.
+    // How far down the parameter list to scroll before the shot.
+    //
+    // The panel's window tops out around a thousand points however tall
+    // the display is, and the parameter list scrolls inside it — so
+    // everything past the first two dozen rows is unreachable to a static
+    // render, which is most of the list and all of the interesting part.
+    // Driven with real wheel events over the list rather than by reaching
+    // into the scroll area, so what is captured is what a hand would get.
+    let scroll: f32 = std::env::args()
+        .find_map(|a| a.strip_prefix("scroll=").and_then(|v| v.parse().ok()))
+        .unwrap_or(0.0);
     for i in 0..12 {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
+        // Once the layout has settled, and in one go: a wheel event per
+        // pass would be smoothed into an animation and the last frame
+        // would catch it mid-glide.
+        if scroll > 0.0 && i == 8 {
+            let over = egui::pos2(w as f32 * 0.5, h as f32 * 0.5);
+            input.events.push(egui::Event::PointerMoved(over));
+            input.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -scroll),
+                modifiers: Default::default(),
+                phase: egui::TouchPhase::Move,
+            });
+        }
         ctx.begin_pass(input);
         // A name already in use, typed into the save field. Saving used to
         // replace a preset in silence, and the warning that now says so is
