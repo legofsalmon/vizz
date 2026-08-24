@@ -10,6 +10,13 @@ use anyhow::{Context as _, Result};
 pub mod attractor;
 pub mod blit;
 pub mod camera;
+pub mod cameramove;
+
+/// Re-exported so callers can build the vector types this crate's public
+/// API takes without depending on `glam` themselves — and, more to the
+/// point, without depending on a *different version* of it, which is a
+/// type mismatch that reads as a missing trait impl.
+pub use glam;
 pub mod palette;
 pub mod output;
 pub mod particles;
@@ -101,5 +108,41 @@ impl GpuContext {
             device,
             queue,
         })
+    }
+}
+
+/// Every shader this crate ships, compiled offline.
+///
+/// WGSL is compiled by the driver at device-creation time, which means a
+/// typo in a shader is not a build failure, not a test failure, and not
+/// even a failure on the machine that wrote it if that machine never ran
+/// the branch — it is a black screen on somebody else's laptop at a
+/// soundcheck. naga is the same compiler wgpu hands the source to, so
+/// validating here is the real check rather than a lookalike.
+#[cfg(test)]
+mod shader_validation {
+    /// Each shader, by the same `include_str!` the pipelines use, so a
+    /// file that stops being included stops being checked — visibly,
+    /// because the list is right here.
+    const SHADERS: &[(&str, &str)] = &[
+        ("particles.wgsl", include_str!("shaders/particles.wgsl")),
+        ("post.wgsl", include_str!("shaders/post.wgsl")),
+        ("blit.wgsl", include_str!("shaders/blit.wgsl")),
+        ("room.wgsl", include_str!("shaders/room.wgsl")),
+        ("vector.wgsl", include_str!("shaders/vector.wgsl")),
+    ];
+
+    #[test]
+    fn every_shader_parses_and_validates() {
+        for (name, src) in SHADERS {
+            let module = naga::front::wgsl::parse_str(src)
+                .unwrap_or_else(|e| panic!("{name} does not parse:\n{}", e.emit_to_string(src)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name} does not validate:\n{e:?}"));
+        }
     }
 }

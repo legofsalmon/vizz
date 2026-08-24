@@ -65,6 +65,7 @@ fn main() {
         // so anything off-axis loses a limb.
         pan_x: 0.0,
         pan_y: 0.0,
+        at: glam::Vec3::ZERO,
     };
     let cam = camera.uniforms();
     // The room is off, but its placement still has to be supplied — with
@@ -101,6 +102,11 @@ fn main() {
         cloud_b: 1.0,
         cloud_morph: 0.0,
         room: room.placement(0.35, 0.0),
+        lamp: Uniforms::UNLIT.lamp,
+        lamp_tint: Uniforms::UNLIT.lamp_tint,
+        light: Uniforms::UNLIT.light,
+        sun_dir: Uniforms::UNLIT.sun_dir,
+        sun_tint: Uniforms::UNLIT.sun_tint,
         gravity: Default::default(),
         gravity_radius: Default::default(),
         gravity_amount: Default::default(),

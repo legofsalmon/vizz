@@ -38,6 +38,9 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 wgpu = "30"
+# Test-only: validates the WGSL offline. Pinned to wgpu's own naga
+# major, since it is that compiler the shaders actually meet.
+naga = { version = "30", features = ["wgsl-in"] }
 winit = "0.30"
 egui = "0.35"
 egui-winit = { version = "0.35", default-features = false, features = ["links", "wayland", "x11"] }

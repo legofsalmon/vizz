@@ -43,6 +43,16 @@ pub struct Camera {
     /// the only definition that survives being combined with orbit.
     pub pan_x: f32,
     pub pan_y: f32,
+    /// Where in the world the camera is aimed, before pan.
+    ///
+    /// Pan cannot do this job and was never meant to: it moves the target
+    /// in the camera's *own screen plane*, which keeps whatever you are
+    /// looking at centred by construction. That is exactly right for
+    /// framing and exactly wrong for travelling — you cannot walk through
+    /// a scanned room by panning, because panning is defined as not
+    /// getting anywhere. This is the world-space one, so a path through
+    /// the space is a path through the space at any orbit.
+    pub at: Vec3,
 }
 
 impl Default for Camera {
@@ -60,6 +70,7 @@ impl Default for Camera {
             defocus: 0.0,
             pan_x: 0.0,
             pan_y: 0.0,
+            at: Vec3::ZERO,
         }
     }
 }
@@ -100,7 +111,7 @@ impl Camera {
     /// The point the camera is aimed at. The origin until panned.
     pub fn target(&self) -> Vec3 {
         let (right, up) = self.basis();
-        right * self.pan_x + up * self.pan_y
+        self.at + right * self.pan_x + up * self.pan_y
     }
 
     pub fn eye(&self) -> Vec3 {
@@ -166,6 +177,24 @@ mod tests {
 
     /// The origin must land in the middle of the frame at any orbit, or
     /// the camera is not actually looking at what it claims to.
+    /// A world-space `at` puts *that* point in the middle of frame at any
+    /// orbit, which is the whole property a walkthrough rests on: the
+    /// camera has to actually go where it is sent rather than orbit a
+    /// point it merely re-aims at.
+    #[test]
+    fn the_camera_looks_at_where_it_is_aimed() {
+        for at in [Vec3::ZERO, Vec3::new(2.0, 0.0, -3.0), Vec3::new(-1.5, 0.8, 0.4)] {
+            for orbit in [0.0, 1.0, -2.2] {
+                let cam = Camera { orbit, at, ..Default::default() };
+                let ndc = project(&cam, at);
+                assert!(
+                    ndc.x.abs() < 1e-4 && ndc.y.abs() < 1e-4,
+                    "at {at:?} orbit {orbit}: aimed point projected to {ndc:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_camera_looks_at_the_origin() {
         for orbit in [0.0, 1.0, 3.0, -2.2] {

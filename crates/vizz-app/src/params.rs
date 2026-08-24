@@ -51,6 +51,19 @@ pub const VECTOR_LAYERS: usize = 4;
 
 /// The parameter ids for one well.
 #[derive(Debug, Clone, Copy)]
+/// One movable lamp's parameters. Colour is hue *and* tint rather than
+/// hue alone: hue has no value that means "no colour", so a lamp defined
+/// by hue alone is red the instant it is turned up.
+pub struct Lamp {
+    pub x: ParamId,
+    pub y: ParamId,
+    pub z: ParamId,
+    pub radius: ParamId,
+    pub level: ParamId,
+    pub hue: ParamId,
+    pub tint: ParamId,
+}
+
 pub struct GravityWell {
     pub x: ParamId,
     pub y: ParamId,
@@ -113,6 +126,21 @@ pub struct AppParams {
     pub room_embed: ParamId,
     pub cam_pan_x: ParamId,
     pub cam_pan_y: ParamId,
+    pub cam_at_x: ParamId,
+    pub cam_at_y: ParamId,
+    pub cam_at_z: ParamId,
+    pub cam_move: ParamId,
+    pub cam_move_bars: ParamId,
+    pub cam_move_size: ParamId,
+    pub light_ambient: ParamId,
+    pub light_shape: ParamId,
+    pub light_torch: ParamId,
+    pub lamps: Vec<Lamp>,
+    pub sun_level: ParamId,
+    pub sun_az: ParamId,
+    pub sun_el: ParamId,
+    pub sun_hue: ParamId,
+    pub sun_tint: ParamId,
     pub gravity_amount: ParamId,
     pub gravity: Vec<GravityWell>,
     pub gravity_fire: ParamId,
@@ -409,6 +437,34 @@ impl AppParams {
         // a fader whose useful travel is the middle two percent.
         let cam_pan_x = b.add(ParamDef::new("/camera/pan_x", -4.0, 4.0, 0.0).smooth(0.4));
         let cam_pan_y = b.add(ParamDef::new("/camera/pan_y", -4.0, 4.0, 0.0).smooth(0.4));
+        // Where in the world the camera is aimed, as opposed to where in
+        // the frame the subject sits. Pan is screen-relative and so keeps
+        // the subject centred by construction — which is the right
+        // behaviour for framing and makes travelling impossible. Range is
+        // wider than the cloud, because going past the far side of it and
+        // looking back is a shot.
+        let cam_at_x = b.add(ParamDef::new("/camera/at_x", -8.0, 8.0, 0.0).smooth(0.4));
+        let cam_at_y = b.add(ParamDef::new("/camera/at_y", -8.0, 8.0, 0.0).smooth(0.4));
+        let cam_at_z = b.add(ParamDef::new("/camera/at_z", -8.0, 8.0, 0.0).smooth(0.4));
+        // The canned paths. Stepped and labelled, so a fader lands on a
+        // named move rather than between two of them, and so the OSC
+        // address takes the number a person would guess.
+        let cam_move = b.add(
+            ParamDef::new(
+                "/camera/move",
+                0.0,
+                (vizz_render::cameramove::MOVES.len() - 1) as f32,
+                0.0,
+            )
+            .labels(vizz_render::cameramove::MOVES),
+        );
+        // Bars per cycle, not seconds: a move that arrives back where it
+        // started halfway through a phrase reads as a mistake.
+        let cam_move_bars = b.add(ParamDef::new("/camera/move_bars", 1.0, 64.0, 8.0));
+        // How far it travels, which is separate from how fast. "The same
+        // move, smaller" is what a quiet section wants; "the same move,
+        // slower" is a different request.
+        let cam_move_size = b.add(ParamDef::new("/camera/move_size", 0.0, 1.0, 0.5).smooth(0.5));
         // Room. Off by default: it is a strong look, not a neutral one.
         let room = b.add(ParamDef::new("/room/brightness", 0.0, 1.0, 0.0).smooth(0.3));
         let room_depth = b.add(ParamDef::new("/room/depth", 1.0, 20.0, 7.0).smooth(0.4));
@@ -450,6 +506,42 @@ impl AppParams {
         // advance and the whole layer brought up on one fader, which is
         // the control you actually want mid-set — reaching for four
         // strengths at once is not playable.
+        // Lighting. Ambient at 1.0 and every lamp at 0 is the whole
+        // defaulting story: it reproduces the picture this renderer drew
+        // before there were lamps, exactly, so every preset ever saved and
+        // the entire shipped set are unchanged by this feature existing.
+        let light_ambient = b.add(ParamDef::new("/light/ambient", 0.0, 1.0, 1.0).smooth(0.3));
+        // How much a surface's own orientation counts. Only bites on a
+        // cloud that has normals; at 0 a lamp is pure volumetric falloff,
+        // which is the fog-light look and is worth keeping reachable.
+        let light_shape = b.add(ParamDef::new("/light/shape", 0.0, 1.0, 1.0).smooth(0.3));
+        // Lamp 1 rides the camera. The partner to a walkthrough: light
+        // that arrives from where you are is what makes moving through a
+        // scan read as moving rather than as the scan fading up.
+        let light_torch = b.add(ParamDef::new("/light/torch", 0.0, 1.0, 0.0).smooth(0.3));
+        let mut lamps = Vec::with_capacity(vizz_render::particles::LAMPS);
+        for i in 1..=vizz_render::particles::LAMPS {
+            let x = b.add(ParamDef::new(format!("/light/{i}/x"), -6.0, 6.0, 0.0).smooth(0.4));
+            let y = b.add(ParamDef::new(format!("/light/{i}/y"), -6.0, 6.0, 0.0).smooth(0.4));
+            let z = b.add(ParamDef::new(format!("/light/{i}/z"), -6.0, 6.0, 0.0).smooth(0.4));
+            let radius =
+                b.add(ParamDef::new(format!("/light/{i}/radius"), 0.05, 8.0, 1.5).smooth(0.4));
+            let level = b.add(ParamDef::new(format!("/light/{i}/level"), 0.0, 2.0, 0.0).smooth(0.3));
+            // Hue and tint rather than hue alone, so a lamp is white
+            // until you ask for a colour. Hue on its own has no way to
+            // say "no colour" — every value is some colour, and 0 is red,
+            // which would make raising a lamp's level turn the scan red
+            // for no reason anybody asked for.
+            let hue = b.add(ParamDef::new(format!("/light/{i}/hue"), 0.0, 1.0, 0.0).smooth(0.3));
+            let tint = b.add(ParamDef::new(format!("/light/{i}/tint"), 0.0, 1.0, 0.0).smooth(0.3));
+            lamps.push(Lamp { x, y, z, radius, level, hue, tint });
+        }
+        // A directional key, for clouds that know which way they face.
+        let sun_level = b.add(ParamDef::new("/sun/level", 0.0, 2.0, 0.0).smooth(0.3));
+        let sun_az = b.add(ParamDef::new("/sun/azimuth", -3.15, 3.15, 0.8).smooth(0.4));
+        let sun_el = b.add(ParamDef::new("/sun/elevation", -1.57, 1.57, 0.6).smooth(0.4));
+        let sun_hue = b.add(ParamDef::new("/sun/hue", 0.0, 1.0, 0.12).smooth(0.3));
+        let sun_tint = b.add(ParamDef::new("/sun/tint", 0.0, 1.0, 0.0).smooth(0.3));
         let gravity_amount = b.add(ParamDef::new("/gravity/amount", 0.0, 1.0, 0.0).smooth(0.4));
         let mut gravity = Vec::with_capacity(GRAVITY_WELLS);
         for i in 0..GRAVITY_WELLS {
@@ -605,6 +697,21 @@ impl AppParams {
             room_embed,
             cam_pan_x,
             cam_pan_y,
+            cam_at_x,
+            cam_at_y,
+            cam_at_z,
+            cam_move,
+            cam_move_bars,
+            cam_move_size,
+            light_ambient,
+            light_shape,
+            light_torch,
+            lamps,
+            sun_level,
+            sun_az,
+            sun_el,
+            sun_hue,
+            sun_tint,
             gravity_amount,
             gravity,
             gravity_fire,
@@ -928,12 +1035,28 @@ mod reference_tests {
     }
 
     /// Expand a compacted table row into the addresses it stands for.
-    /// `/gravity/N/x` covers wells 0–3; `/lN/kind` covers layers 1–4.
-    /// Everything else stands for itself. Shared by the README and docs
-    /// table tests so the two cannot drift in what they accept.
-    fn expand_compacted(addr: &str) -> Vec<String> {
+    ///
+    /// `/gravity/N/x` covers wells 0–3, `/light/N/x` covers lamps 1–2,
+    /// `/lN/kind` covers layers 1–4. Everything else stands for itself.
+    /// Shared by the README and docs table tests so the two cannot drift
+    /// in what they accept.
+    ///
+    /// `span` is whatever the row wrote after the address — the
+    /// `(N = 0–3)` part — and the bounds are read out of it rather than
+    /// assumed. They were assumed at first, as a hardcoded `0..4`, which
+    /// was correct while gravity was the only family and silently wrong
+    /// the day a second one arrived numbering from 1: the lamps expanded
+    /// to a `/light/0/hue` that does not exist and a `/light/2/hue` that
+    /// does and was therefore reported undocumented. A table that states
+    /// its own range should be believed about it.
+    fn expand_compacted(addr: &str, span: &str) -> Vec<String> {
         if addr.contains("/N/") {
-            return (0..4).map(|i| addr.replace("/N/", &format!("/{i}/"))).collect();
+            let (lo, hi) = compacted_range(span).unwrap_or_else(|| {
+                panic!("{addr} is compacted but its row does not say (N = a–b): {span:?}")
+            });
+            return (lo..=hi)
+                .map(|i| addr.replace("/N/", &format!("/{i}/")))
+                .collect();
         }
         if let Some(rest) = addr.strip_prefix("/lN/") {
             return (1..=super::VECTOR_LAYERS)
@@ -941,6 +1064,14 @@ mod reference_tests {
                 .collect();
         }
         vec![addr.to_string()]
+    }
+
+    /// The `a` and `b` of an `(N = a–b)` note, in either table's markup.
+    fn compacted_range(span: &str) -> Option<(usize, usize)> {
+        let rest = span.split("N =").nth(1)?;
+        let rest = rest.split(')').next()?;
+        let (lo, hi) = rest.trim().split_once('–')?;
+        Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
     }
 
     /// The README's OSC reference used to claim completeness while
@@ -975,7 +1106,7 @@ mod reference_tests {
             let (Ok(min), Ok(max), Ok(default)) = (min, max, cols[2].parse::<f32>()) else {
                 continue;
             };
-            for a in expand_compacted(&addr) {
+            for a in expand_compacted(&addr, rest) {
                 rows.insert(a, (min, max, default));
             }
         }
@@ -1117,8 +1248,9 @@ mod reference_tests {
             ) else {
                 continue;
             };
-            // Compacted rows expand the same way the README's do.
-            for a in expand_compacted(&addr) {
+            // Compacted rows expand the same way the README's do, and
+            // read their range out of the same `(N = a–b)` note.
+            for a in expand_compacted(&addr, rest) {
                 rows.insert(a, (min, max, default));
             }
         }

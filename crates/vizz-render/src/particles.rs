@@ -88,7 +88,63 @@ pub struct Uniforms {
     /// `.z` how far luminance pushes a point along z, `.w` which channel
     /// of the picture does the pushing.
     pub video: [f32; 4],
+    /// Lamps: `xyz` is where the lamp is, `w` how bright.
+    ///
+    /// Two rather than three or eight. A lamp is seven faders once you
+    /// count position, reach, level and colour, and the honest question
+    /// is not how many the shader can afford but how many a person will
+    /// map — two movable lamps plus the sun is already three-point
+    /// lighting, and the third lamp is the one nobody would reach for.
+    pub lamp: [[f32; 4]; LAMPS],
+    /// `rgb` is the lamp's colour, already mixed from hue and tint on the
+    /// CPU so the shader has no palette work to do; `w` is its radius.
+    pub lamp_tint: [[f32; 4]; LAMPS],
+    /// `.x` ambient — the light everywhere, 1.0 by default so an unlit
+    /// scene is exactly the picture this renderer drew before there were
+    /// lamps at all. `.y` how much surface orientation counts. `.z` and
+    /// `.w` are spare and written zero.
+    pub light: [f32; 4],
+    /// Direction *towards* the sun in `xyz`, its level in `w`.
+    pub sun_dir: [f32; 4],
+    /// The sun's colour in `rgb`, mixed on the CPU like a lamp's.
+    pub sun_tint: [f32; 4],
 }
+
+impl Uniforms {
+    /// The lighting fields at their neutral values, and the property the
+    /// whole feature's defaults are chosen to have: ambient one, no
+    /// lamps, no sun.
+    ///
+    /// `light_at` returns exactly `vec3(1.0)` for these — the loop body
+    /// is skipped by its own level guard and the sun by its — so a scene
+    /// carrying them is bit-for-bit the picture this renderer drew before
+    /// there was any lighting at all. Every preset ever saved and the
+    /// whole shipped set depend on that being true rather than nearly
+    /// true, which is why it is a named constant and not three zeroes
+    /// typed into each call site.
+    pub const UNLIT: LightUniforms = LightUniforms {
+        lamp: [[0.0; 4]; LAMPS],
+        lamp_tint: [[1.0, 1.0, 1.0, 1.0]; LAMPS],
+        light: [1.0, 1.0, 0.0, 0.0],
+        sun_dir: [0.0, 1.0, 0.0, 0.0],
+        sun_tint: [1.0, 1.0, 1.0, 0.0],
+    };
+}
+
+/// The lighting half of [`Uniforms`], so the neutral values can be named
+/// once. Not a nested struct in the buffer — the fields are spliced in
+/// flat — because inserting a struct here would change the layout every
+/// field after it depends on.
+pub struct LightUniforms {
+    pub lamp: [[f32; 4]; LAMPS],
+    pub lamp_tint: [[f32; 4]; LAMPS],
+    pub light: [f32; 4],
+    pub sun_dir: [f32; 4],
+    pub sun_tint: [f32; 4],
+}
+
+/// How many movable lamps there are. See [`Uniforms::lamp`].
+pub const LAMPS: usize = 2;
 
 pub struct ParticleScene {
     pipeline: wgpu::RenderPipeline,
@@ -163,6 +219,18 @@ impl ParticleScene {
                 // binding as portable as the two above it.
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Which way each point's surface faces, in the same
+                // texel layout as the positions at binding 1.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -358,6 +426,10 @@ impl ParticleScene {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(&video.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&attractors.normals_view),
                 },
             ],
         })
@@ -631,6 +703,11 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            lamp: Uniforms::UNLIT.lamp,
+            lamp_tint: Uniforms::UNLIT.lamp_tint,
+            light: Uniforms::UNLIT.light,
+            sun_dir: Uniforms::UNLIT.sun_dir,
+            sun_tint: Uniforms::UNLIT.sun_tint,
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -672,6 +749,213 @@ mod tests {
         blown as f32 / (W * W) as f32
     }
 
+    /// Mean luminance of one rendered frame, for the lighting tests.
+    fn mean_luma(ctx: &GpuContext, scene: &ParticleScene, u: &Uniforms) -> f32 {
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lighting-test-target"),
+            size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lighting-test-readback"),
+            size: (W * W * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        scene.render(ctx, &mut encoder, &view, u, 20_000, true, SCENE_CLEAR);
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 4),
+                    rows_per_image: Some(W),
+                },
+            },
+            wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+        );
+        ctx.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range().unwrap().to_vec();
+        let sum: f64 = pixels
+            .chunks_exact(4)
+            .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0)
+            .sum();
+        drop(buffer);
+        (sum / (W * W) as f64) as f32
+    }
+
+    /// A directional key actually depends on which way the surface faces.
+    ///
+    /// This is the test the feature needed and did not have. Every unit
+    /// test around it passed while the sun did nothing at all: the shader
+    /// looked the normal up by *shape mode* where the mapping wanted a
+    /// *cloud slot*, so mode 7 — "the cloud pair" — read slot 7, which is
+    /// empty, and every normal came back zero. Nothing errors, nothing
+    /// looks wrong, and the whole of surface shading is silently absent.
+    ///
+    /// Driven through the real pipeline with a real cloud, because the
+    /// mode-to-slot mapping only exists inside the shader and there is no
+    /// smaller place to check it.
+    #[test]
+    fn the_sun_lights_a_surface_by_the_way_it_faces() {
+        let Some(ctx) = gpu() else { return };
+        let mut scene = ParticleScene::new(&ctx, FORMAT);
+
+        // A flat sheet facing the camera, with normals the estimator will
+        // work out for itself — the case that matters, since most scans
+        // arrive without them.
+        let mut sheet = Vec::new();
+        for i in 0..120 {
+            for j in 0..120 {
+                sheet.push(crate::pointcloud::Point::new(
+                    i as f32 / 119.0 - 0.5,
+                    j as f32 / 119.0 - 0.5,
+                    0.0,
+                ));
+            }
+        }
+        scene.set_cloud(&ctx, 2, &sheet, "sheet");
+
+        let cam = crate::camera::Camera { aspect: 1.0, elevation: 0.0, ..Default::default() };
+        let cu = cam.uniforms();
+        let base = Uniforms {
+            view_proj: cu.view_proj,
+            cam_right: cu.right,
+            focus: 3.5,
+            cam_up: cu.up,
+            defocus: 0.0,
+            cam_position: cu.position,
+            _pad_cam: 0.0,
+            time: 0.0,
+            aspect: 1.0,
+            size: 0.02,
+            spread: 1.0,
+            hue: 0.5,
+            saturation: 0.0,
+            brightness: 1.0,
+            // The cloud pair, which is the mode a loaded scan is shown in
+            // and the one whose slot mapping the bug was in.
+            shape: 7.0,
+            morph: 0.0,
+            twist: 0.0,
+            palette: 0.0,
+            color_spread: 0.0,
+            color_drive: 0.0,
+            cloud_a: 2.0,
+            cloud_b: 2.0,
+            cloud_morph: 0.0,
+            room: Default::default(),
+            lamp: Uniforms::UNLIT.lamp,
+            lamp_tint: Uniforms::UNLIT.lamp_tint,
+            // Almost no ambient, so what is measured is the sun.
+            light: [0.05, 1.0, 0.0, 0.0],
+            sun_dir: Uniforms::UNLIT.sun_dir,
+            sun_tint: Uniforms::UNLIT.sun_tint,
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
+            video: [0.0, 1.0, 0.0, 0.0],
+        };
+
+        // The camera looks down -z from +z, so the sheet's normal points
+        // at it. A sun from the camera's side lights the sheet; a sun
+        // from behind it does not.
+        let toward = mean_luma(&ctx, &scene, &Uniforms { sun_dir: [0.0, 0.0, 1.0, 2.0], ..base });
+        let away = mean_luma(&ctx, &scene, &Uniforms { sun_dir: [0.0, 0.0, -1.0, 2.0], ..base });
+        let dark = mean_luma(&ctx, &scene, &Uniforms { sun_dir: [0.0, 0.0, 1.0, 0.0], ..base });
+
+        assert!(
+            toward > away * 1.5,
+            "the sun does not depend on direction: facing it {toward:.2}, backing it {away:.2}"
+        );
+        assert!(
+            toward > dark * 1.5,
+            "the sun adds nothing at all: lit {toward:.2}, unlit {dark:.2}"
+        );
+    }
+
+    /// And with the lighting left alone, the picture is the one this
+    /// renderer drew before there was any: the property every preset ever
+    /// saved depends on.
+    #[test]
+    fn unlit_is_exactly_the_old_picture() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, FORMAT);
+        let cam = crate::camera::Camera { aspect: 1.0, ..Default::default() };
+        let cu = cam.uniforms();
+        let base = Uniforms {
+            view_proj: cu.view_proj,
+            cam_right: cu.right,
+            focus: 3.5,
+            cam_up: cu.up,
+            defocus: 0.0,
+            cam_position: cu.position,
+            _pad_cam: 0.0,
+            time: 0.0,
+            aspect: 1.0,
+            size: 0.02,
+            spread: 1.0,
+            hue: 0.5,
+            saturation: 0.8,
+            brightness: 1.0,
+            shape: 0.0,
+            morph: 0.0,
+            twist: 0.0,
+            palette: 0.0,
+            color_spread: 0.12,
+            color_drive: 0.0,
+            cloud_a: 0.0,
+            cloud_b: 1.0,
+            cloud_morph: 0.0,
+            room: Default::default(),
+            lamp: Uniforms::UNLIT.lamp,
+            lamp_tint: Uniforms::UNLIT.lamp_tint,
+            light: Uniforms::UNLIT.light,
+            sun_dir: Uniforms::UNLIT.sun_dir,
+            sun_tint: Uniforms::UNLIT.sun_tint,
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
+            video: [0.0, 1.0, 0.0, 0.0],
+        };
+        let unlit = mean_luma(&ctx, &scene, &base);
+        // Ambient at one and no lamps is the neutral multiplier; raising
+        // a lamp from there can only add.
+        let lamped = mean_luma(
+            &ctx,
+            &scene,
+            &Uniforms {
+                lamp: [[0.0, 0.0, 0.0, 1.5], [0.0; 4]],
+                lamp_tint: [[1.0, 1.0, 1.0, 1.0]; LAMPS],
+                ..base
+            },
+        );
+        assert!(unlit > 0.5, "the unlit scene rendered nothing at all: {unlit}");
+        assert!(
+            lamped > unlit,
+            "a lamp at the origin did not brighten anything: {unlit:.2} → {lamped:.2}"
+        );
+    }
+
     /// The uniform block has to stay 16-byte aligned where WGSL says it
     /// is.
     ///
@@ -689,6 +973,20 @@ mod tests {
             0,
             "gravity radii are misaligned"
         );
+        // The lighting arrays, for the same reason. These were appended
+        // after `video`, which is a vec4 and therefore leaves the block
+        // aligned — but that is a fact about today's field order, not a
+        // guarantee, and the failure it protects against is a scene that
+        // renders and is quietly wrong.
+        assert_eq!(offset_of!(Uniforms, lamp) % 16, 0, "the lamps are misaligned");
+        assert_eq!(
+            offset_of!(Uniforms, lamp_tint) % 16,
+            0,
+            "the lamp colours are misaligned"
+        );
+        assert_eq!(offset_of!(Uniforms, light) % 16, 0, "the light block is misaligned");
+        assert_eq!(offset_of!(Uniforms, sun_dir) % 16, 0, "the sun is misaligned");
+        assert_eq!(offset_of!(Uniforms, sun_tint) % 16, 0, "the sun colour is misaligned");
         assert_eq!(size_of::<Uniforms>() % 16, 0, "the block is not a whole number of vec4s");
         assert!(align_of::<Uniforms>() <= 16);
     }
@@ -1050,6 +1348,11 @@ mod tests {
             cloud_b: 1.0,
             cloud_morph: 0.0,
             room: Default::default(),
+            lamp: Uniforms::UNLIT.lamp,
+            lamp_tint: Uniforms::UNLIT.lamp_tint,
+            light: Uniforms::UNLIT.light,
+            sun_dir: Uniforms::UNLIT.sun_dir,
+            sun_tint: Uniforms::UNLIT.sun_tint,
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),

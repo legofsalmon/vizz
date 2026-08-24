@@ -66,6 +66,13 @@ pub struct FrameEngine {
     /// Keep the gravity sequencer on the scene sequencer's settings.
     /// Set by the app from the saved preference and the deck's toggle.
     pub autopilot_lock: bool,
+    /// The canned camera move actually being applied, how far faded in it
+    /// is, and the beat it engaged on. Held here rather than read fresh
+    /// from the parameter every frame because all three of those are
+    /// state: see [`FrameEngine::camera_move`].
+    cam_move: usize,
+    cam_move_gain: f32,
+    cam_move_from: f64,
     /// The gravity layer's own grid, sequencing gravity presets on its own
     /// clock. A second instance of the same machine rather than a special
     /// case: the grid already takes its preset lookup as a parameter, so
@@ -150,6 +157,9 @@ impl FrameEngine {
             last_scene: None,
             cut_pending: false,
             autopilot_lock: false,
+            cam_move: 0,
+            cam_move_gain: 0.0,
+            cam_move_from: 0.0,
             gravity_grid: vizz_mod::scene::Grid::for_kind(vizz_mod::preset::Kind::Gravity),
             last_gravity: None,
             decks: vizz_mod::deck::Book::default(),
@@ -249,6 +259,64 @@ impl FrameEngine {
     ///
     /// Public because a page can also arrive by being created, copied or
     /// deleted, and those go through the book directly.
+    /// The camera offset this frame, faded in and out.
+    ///
+    /// Three pieces of state rather than a pure function of the
+    /// parameter, and each earns its keep:
+    ///
+    /// **The gain** is why switching a move on is not a cut. Several
+    /// moves do not begin at home — a walkthrough starts already inside
+    /// the space and a drift starts wherever its curve does — so without
+    /// a fade the picture jumps the moment the fader passes a step.
+    ///
+    /// **Fading out before adopting the new index** is what makes
+    /// changing move a hand-off instead of two cuts. Crossfading the two
+    /// paths against each other was the alternative and is worse: the
+    /// midpoint of two unrelated camera moves is a third position that
+    /// belongs to neither, and it reads as a glitch rather than a move.
+    ///
+    /// **The engagement beat** is why the phase starts at zero. Locking
+    /// the phase to absolute bar count instead sounds tidier and means
+    /// engaging an orbit halfway through its cycle asks for half a turn
+    /// of offset immediately, which the fade then whips through in half a
+    /// second. Starting from where you pressed it is smooth from any
+    /// moment, and lands phrase-locked anyway if you press it on the one
+    /// — which is how you would press any other button here.
+    fn camera_move(&mut self, dt: f32) -> vizz_render::cameramove::Move {
+        let p = &self.params;
+        let want = self
+            .snapshot
+            .get(p.cam_move)
+            .round()
+            .clamp(0.0, (vizz_render::cameramove::MOVES.len() - 1) as f32)
+            as usize;
+        // Half a second either way. Long enough to read as a camera
+        // rather than a switch, short enough to be a cue.
+        const FADE_SECS: f32 = 0.5;
+        let step = dt / FADE_SECS;
+        if want != self.cam_move {
+            self.cam_move_gain -= step;
+            if self.cam_move_gain <= 0.0 {
+                self.cam_move_gain = 0.0;
+                self.cam_move = want;
+                self.cam_move_from = self.modulation.clock.beats;
+            }
+        } else if self.cam_move != 0 {
+            self.cam_move_gain = (self.cam_move_gain + step).min(1.0);
+        }
+        if self.cam_move == 0 || self.cam_move_gain <= 0.0 {
+            return Default::default();
+        }
+        let beats = (self.modulation.clock.beats - self.cam_move_from).max(0.0);
+        vizz_render::cameramove::offset(
+            self.cam_move,
+            beats,
+            self.snapshot.get(p.cam_move_bars),
+            self.snapshot.get(p.cam_move_size),
+        )
+        .scaled(self.cam_move_gain)
+    }
+
     pub fn after_deck_change(&mut self) {
         // Both fire parameters back to rest, latches with them.
         //
@@ -637,16 +705,30 @@ impl FrameEngine {
         let dim = self.snapshot.get(p.dim);
         let brightness = self.snapshot.get(p.brightness) * dim;
 
+        let mv = self.camera_move(dt_s);
         let camera = Camera {
-            distance: self.snapshot.get(p.cam_dist),
-            orbit: self.snapshot.get(p.cam_orbit),
-            elevation: self.snapshot.get(p.cam_elev),
+            // Clamped above zero rather than at the parameter's own floor:
+            // a push subtracts, and a negative distance puts the eye on
+            // the far side looking back — a silent 180° flip mid-move.
+            distance: (self.snapshot.get(p.cam_dist) + mv.distance).max(0.05),
+            orbit: self.snapshot.get(p.cam_orbit) + mv.orbit,
+            // Re-clamped, and this one is not cosmetic. `Camera::basis`
+            // crosses the view direction with world up and documents that
+            // elevation is held inside ±1.4 upstream; a crane added on top
+            // of an already-raised camera walks straight past that, the
+            // cross product degenerates, and the whole frame goes to NaN.
+            elevation: (self.snapshot.get(p.cam_elev) + mv.elevation).clamp(-1.4, 1.4),
             fov: self.snapshot.get(p.cam_fov),
             aspect,
             focus: self.snapshot.get(p.cam_focus),
             defocus: self.snapshot.get(p.cam_defocus),
             pan_x: self.snapshot.get(p.cam_pan_x),
             pan_y: self.snapshot.get(p.cam_pan_y),
+            at: vizz_render::glam::Vec3::new(
+                self.snapshot.get(p.cam_at_x),
+                self.snapshot.get(p.cam_at_y),
+                self.snapshot.get(p.cam_at_z),
+            ) + mv.at,
         };
         let cam = camera.uniforms();
         let room_brightness = self.snapshot.get(p.room) * dim;
@@ -789,6 +871,54 @@ impl FrameEngine {
                 cloud_b: self.snapshot.get(p.cloud_b).round(),
                 cloud_morph: self.snapshot.get(p.cloud_morph),
                 room: placement,
+                lamp: std::array::from_fn(|i| {
+                    let l = &p.lamps[i];
+                    let mut at = vizz_render::glam::Vec3::new(
+                        self.snapshot.get(l.x),
+                        self.snapshot.get(l.y),
+                        self.snapshot.get(l.z),
+                    );
+                    // Lamp 1 rides the camera as the torch comes up.
+                    // Blended rather than switched, so the lamp travels
+                    // from wherever it was placed to the eye instead of
+                    // teleporting — and so the torch itself is a fader
+                    // you can ride rather than a state you are in.
+                    if i == 0 {
+                        let torch = self.snapshot.get(p.light_torch);
+                        at = at.lerp(camera.eye(), torch);
+                    }
+                    // Master dim reaches the lamps too. Anything it does
+                    // not reach is a thing still lit when black has been
+                    // asked for, which is exactly what the room used to
+                    // be — see the comment on `dim` above.
+                    [at.x, at.y, at.z, self.snapshot.get(l.level) * dim]
+                }),
+                lamp_tint: std::array::from_fn(|i| {
+                    let l = &p.lamps[i];
+                    let c = lamp_colour(self.snapshot.get(l.hue), self.snapshot.get(l.tint));
+                    [c[0], c[1], c[2], self.snapshot.get(l.radius)]
+                }),
+                light: [
+                    self.snapshot.get(p.light_ambient),
+                    self.snapshot.get(p.light_shape),
+                    0.0,
+                    0.0,
+                ],
+                sun_dir: {
+                    let az = self.snapshot.get(p.sun_az);
+                    let el = self.snapshot.get(p.sun_el);
+                    let (sa, ca) = az.sin_cos();
+                    let (se, ce) = el.sin_cos();
+                    // Pointing *towards* the sun, which is the direction
+                    // `N · L` wants — the other way round lights every
+                    // surface that faces away from it, which looks like a
+                    // bug in the normals rather than in the sign.
+                    [ce * sa, se, ce * ca, self.snapshot.get(p.sun_level) * dim]
+                },
+                sun_tint: {
+                    let c = lamp_colour(self.snapshot.get(p.sun_hue), self.snapshot.get(p.sun_tint));
+                    [c[0], c[1], c[2], 0.0]
+                },
             },
             post: PostUniforms {
                 // At trail 1.0 the feedback lerp passes history through
@@ -1737,5 +1867,113 @@ mod set_contact_sheet {
             out.extend_from_slice(&data[start..start + unpadded as usize]);
         }
         out
+    }
+}
+
+/// A lamp's colour from its hue and how much of it to use.
+///
+/// White at tint 0, fully saturated at 1. Two controls rather than one
+/// because hue has no value meaning "no colour": every hue is some
+/// colour, and 0 is red, so a lamp described by hue alone turns the whole
+/// scan red the instant somebody raises its level to see what it does.
+fn lamp_colour(hue: f32, tint: f32) -> [f32; 3] {
+    let h = (hue.fract() + 1.0).fract() * 6.0;
+    let i = h.floor();
+    let f = h - i;
+    // Full value, full saturation: `tint` does the desaturating, below.
+    let (r, g, b) = match i as i32 % 6 {
+        0 => (1.0, f, 0.0),
+        1 => (1.0 - f, 1.0, 0.0),
+        2 => (0.0, 1.0, f),
+        3 => (0.0, 1.0 - f, 1.0),
+        4 => (f, 0.0, 1.0),
+        _ => (1.0, 0.0, 1.0 - f),
+    };
+    let t = tint.clamp(0.0, 1.0);
+    [
+        1.0 + (r - 1.0) * t,
+        1.0 + (g - 1.0) * t,
+        1.0 + (b - 1.0) * t,
+    ]
+}
+
+#[cfg(test)]
+mod lighting_tests {
+    use super::*;
+
+    /// A lamp is white until somebody asks for a colour.
+    ///
+    /// Hue alone cannot express "no colour" — every hue is some colour,
+    /// and hue 0 is red — so a lamp defined by hue alone turns the scan
+    /// red the moment its level comes up, which is not a thing anybody
+    /// asked for by raising a light.
+    #[test]
+    fn a_lamp_with_no_tint_is_white_at_every_hue() {
+        for step in 0..24 {
+            let hue = step as f32 / 24.0;
+            let c = lamp_colour(hue, 0.0);
+            assert_eq!(c, [1.0, 1.0, 1.0], "hue {hue} is not white at tint 0");
+        }
+    }
+
+    /// And fully coloured at the top, or the control has no travel.
+    #[test]
+    fn full_tint_is_a_saturated_colour() {
+        for step in 0..24 {
+            let hue = step as f32 / 24.0;
+            let c = lamp_colour(hue, 1.0);
+            let lo = c.iter().copied().fold(f32::MAX, f32::min);
+            let hi = c.iter().copied().fold(f32::MIN, f32::max);
+            assert!(lo < 0.01 && hi > 0.99, "hue {hue} gave {c:?}, not saturated");
+        }
+    }
+
+    /// The property every existing preset depends on: with the lighting
+    /// parameters left alone, the uniforms carry exactly the neutral
+    /// values, and the shader's `light_at` returns exactly one.
+    ///
+    /// Held against `Uniforms::UNLIT` rather than against three literals,
+    /// so the defaults and the constant the shader's identity is written
+    /// against cannot drift apart. A lamp default of 0.001 instead of 0
+    /// would dim every look ever saved by a hair, on every machine, and
+    /// nothing else here would notice.
+    #[test]
+    fn the_lighting_defaults_are_the_unlit_picture() {
+        let p = crate::params::AppParams::build();
+        let unlit = vizz_render::particles::Uniforms::UNLIT;
+        let def = |id: vizz_params::ParamId| p.registry.defs()[id.index()].default;
+
+        assert_eq!(
+            def(p.light_ambient),
+            unlit.light[0],
+            "ambient does not default to the neutral value the shader is written against"
+        );
+        assert_eq!(def(p.light_shape), unlit.light[1], "shape default drifted");
+        assert_eq!(def(p.light_torch), 0.0, "the torch is on by default");
+        for (i, lamp) in p.lamps.iter().enumerate() {
+            assert_eq!(def(lamp.level), unlit.lamp[i][3], "lamp {i} is lit by default");
+            assert_eq!(def(lamp.tint), 0.0, "lamp {i} is coloured by default");
+        }
+        assert_eq!(def(p.sun_level), unlit.sun_dir[3], "the sun is up by default");
+        assert_eq!(def(p.sun_tint), 0.0, "the sun is coloured by default");
+    }
+
+    /// Lighting is preset-scoped, so a look carries its own rig. It would
+    /// be easy for these to land in the excluded list by accident — they
+    /// sit next to the camera, and the camera is deliberately global on
+    /// some addresses — and a lamp that did not travel with its look
+    /// would come up wrong on the pad after the one you built it on.
+    #[test]
+    fn a_look_carries_its_own_lighting() {
+        let p = crate::params::AppParams::build();
+        for (_, d) in p.registry.iter() {
+            if d.addr.starts_with("/light/") || d.addr.starts_with("/sun/") {
+                assert!(
+                    !vizz_mod::preset::EXCLUDED.contains(&d.addr.as_str()),
+                    "{} is excluded from presets, so a look cannot carry its own lighting",
+                    d.addr
+                );
+            }
+        }
     }
 }

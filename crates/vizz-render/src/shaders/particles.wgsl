@@ -42,6 +42,16 @@ struct Uniforms {
     palette_rows: vec4<f32>,
     // x present, y aspect, z depth, w relief mode
     video: vec4<f32>,
+    // Lamps: xyz where it is, w how bright.
+    lamp: array<vec4<f32>, 2>,
+    // rgb the lamp's colour, w its radius.
+    lamp_tint: array<vec4<f32>, 2>,
+    // x ambient, y how much surface orientation counts, zw spare.
+    light: vec4<f32>,
+    // xyz towards the sun, w its level.
+    sun_dir: vec4<f32>,
+    // rgb the sun's colour.
+    sun_tint: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -97,6 +107,10 @@ const PALETTE_W: u32 = 256u;
 const PALETTE_ROWS: u32 = 16u;
 @group(0) @binding(2) var t_palette: texture_2d<f32>;
 @group(0) @binding(3) var t_video: texture_2d<f32>;
+/// Which way each point's surface faces, in the same texel layout as the
+/// positions. All-zero where the cloud has no idea — a procedural shape,
+/// a video frame, a scan whose file carried none.
+@group(0) @binding(4) var t_normal: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -224,6 +238,22 @@ fn video_texel(h: f32) -> vec4<f32> {
 }
 
 /// Raw texel for a slot, so callers can use the packed colour too.
+/// The normal for the same texel `cloud_texel` would read.
+///
+/// Split out rather than folded into `cloud_texel`, because the position
+/// read has three callers that do not want a second texture fetch, and a
+/// vertex shader that samples twice as many textures as it needs is a
+/// cost paid on every particle of every frame.
+fn cloud_normal(which: u32, h: f32, t: f32) -> vec3<f32> {
+    if (which == VIDEO_SLOT && u.video.x > 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let flow = u32(max(t, 0.0) * 260.0);
+    let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
+    let row = (which % CLOUD_SLOTS) * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
+    return textureLoad(t_normal, vec2<u32>(idx % ATTRACTOR_W, row), 0).xyz;
+}
+
 fn cloud_texel(which: u32, h: f32, t: f32) -> vec4<f32> {
     // Video is a slot like any other from here on, which is what gets it
     // the morph pair, the palette tint and the spread normalisation
@@ -352,6 +382,34 @@ fn cloud_tint(mode_a: u32, mode_b: u32, blend: f32, h: f32, t: f32) -> vec3<f32>
     let ca = slot_tint(mode_a, h, t);
     let cb = slot_tint(mode_b, h, t);
     return mix(ca, cb, blend);
+}
+
+/// The normal for a shape mode, mapped to a slot exactly as `slot_tint`
+/// maps colour.
+///
+/// A shape mode is not a slot index, which is the whole reason this
+/// function exists: mode 7 means "the cloud pair" and the slots come from
+/// `/cloud/a` and `/cloud/b`, while modes 5 and 6 are the two procedural
+/// attractors at slots 0 and 1. Reading the mode as a slot — which is
+/// what the first version of this did — asks for slot 7, which is empty,
+/// so every normal came back zero and the sun did nothing at all. Nothing
+/// in the shader complains about that; it renders a perfectly good
+/// picture with the feature silently absent.
+///
+/// The pair picks a side rather than blending the two, because normals
+/// are directions and the average of two opposed directions is zero: a
+/// point mid-morph between surfaces facing opposite ways would light as
+/// though it faced nowhere.
+fn slot_normal(mode: u32, h: f32, t: f32) -> vec3<f32> {
+    if (mode == 7u) {
+        let which = select(u32(u.cloud_a), u32(u.cloud_b), u.cloud_morph > 0.5);
+        return cloud_normal(which, h, t);
+    }
+    if (mode >= 5u) {
+        return cloud_normal(mode - 5u, h, t);
+    }
+    // A parametric shape is a formula, not a surface anybody measured.
+    return vec3<f32>(0.0);
 }
 
 fn slot_tint(mode: u32, h: f32, t: f32) -> vec3<f32> {
@@ -553,7 +611,21 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // replacing it, so the palette still works as a tint and a white
     // procedural cloud is unaffected.
     let tint = cloud_tint(mode_a, mode_b, smoothstep(0.0, 1.0, blend), h1, u.time);
-    let col = palette_color(u.palette, t, u.saturation, u.hue) * tint * u.brightness * fade;
+    // The surface's own direction, where the cloud knows it. Taken from
+    // whichever of the morph pair is contributing more — see `slot_normal`.
+    var normal = slot_normal(select(mode_a, mode_b, blend > 0.5), h1, u.time);
+    // Two-sided. A plane fit cannot tell a normal from its opposite, and
+    // resolving that across a whole cloud is a global problem that still
+    // comes out backwards for a scan of a room, where the surfaces you
+    // want lit face inwards. Flipping towards the eye makes every surface
+    // face the viewer, which with no shadows in the picture is not
+    // inconsistent with anything — and the alternative is half of every
+    // scan rendering black for a reason nobody could diagnose from the
+    // front of a stage.
+    let to_eye = u.cam_position - p;
+    normal = normal * select(-1.0, 1.0, dot(normal, to_eye) >= 0.0);
+    let col = palette_color(u.palette, t, u.saturation, u.hue)
+        * tint * u.brightness * fade * light_at(p, normal);
 
     var out: VsOut;
     out.pos = clip4;
@@ -604,6 +676,58 @@ fn apply_gravity(p: vec3<f32>) -> vec3<f32> {
         out = out - dir * travel;
     }
     return out;
+}
+
+/// How much light reaches a point, as a multiplier on its own colour.
+///
+/// A multiplier rather than a replacement: everything upstream — the
+/// palette, the scan's own RGB, the depth fade — is still what the point
+/// *is*, and light is what happens to it. Replacing would throw the
+/// palette away the moment a lamp came up, which is the one thing this
+/// must not do to an existing look.
+///
+/// With ambient at 1 and every level at 0 this returns exactly
+/// `vec3(1.0)`, so an unlit scene is bit-for-bit the picture this shader
+/// drew before lighting existed. That is the property the defaults are
+/// chosen for and the one the tests pin.
+///
+/// `n` is the surface normal, or the zero vector where the cloud has
+/// none — procedural shapes, live video, and any scan whose file carried
+/// none and whose estimate has not finished. Zero means "no orientation
+/// to speak of", and every directional term stands down rather than
+/// guessing: a made-up normal lights a wall the wrong way round, which is
+/// worse than not lighting it.
+fn light_at(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var acc = vec3<f32>(u.light.x);
+    let oriented = dot(n, n) > 0.25;
+    // How much orientation counts, and only where there is any.
+    let shape = select(0.0, u.light.y, oriented);
+    for (var i = 0u; i < 2u; i = i + 1u) {
+        let level = u.lamp[i].w;
+        if (level <= 0.001) {
+            continue;
+        }
+        let d = p - u.lamp[i].xyz;
+        let r = max(u.lamp_tint[i].w, 0.01);
+        let d2 = dot(d, d);
+        // The same `r^2 / (d^2 + r^2)` the gravity wells use: one at the
+        // centre, a half at the radius, asymptotically nothing beyond,
+        // and no singularity to divide by. A lamp and a well reaching
+        // the same distance should reach the same distance.
+        let falloff = (r * r) / (d2 + r * r);
+        // Facing the lamp, where the cloud knows which way it faces.
+        // Normalised by the distance rather than with `normalize` so a
+        // point sitting exactly on the lamp cannot produce a NaN and take
+        // the whole draw with it.
+        let toward = -d / sqrt(max(d2, 1e-6));
+        let ndotl = max(dot(n, toward), 0.0);
+        acc += u.lamp_tint[i].rgb * (level * falloff * mix(1.0, ndotl, shape));
+    }
+    let sun = u.sun_dir.w;
+    if (sun > 0.001 && oriented) {
+        acc += u.sun_tint.rgb * (sun * max(dot(n, u.sun_dir.xyz), 0.0));
+    }
+    return acc;
 }
 
 @fragment

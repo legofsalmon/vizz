@@ -983,6 +983,121 @@ Upgrading from a build without shows moves what was in `~/.config/vizz/`
 into `projects/Show 1/` on first launch; nothing is copied and nothing is
 left behind.
 
+## Light
+
+```
+/light/ambient      how much light there is everywhere (1 = the unlit picture)
+/light/N/level      lamp N, 0 = off
+/light/torch        lamp 1 rides the camera
+/sun/level          a directional key, for clouds that know which way they face
+```
+
+Nothing in the renderer knew where a light was until this. A point's
+colour was its palette entry times the scan's own RGB times a distance
+fade, and "relighting a scan" was not a thing you could ask for.
+
+**Two movable lamps.** Each has a position, a reach, a level and a
+colour. A lamp falls off as `r² / (d² + r²)` — full at its centre, half
+at its radius, asymptotically nothing beyond — which is the same curve a
+gravity well uses, so a lamp and a well set to the same reach reach the
+same distance. Walk one through a scan and it reveals the scan.
+
+**A sun, for surfaces.** Falloff alone lights a *volume*: points near the
+lamp are bright wherever they are and whichever way they face. That is
+the right model for a particle field and the wrong one for a scanned
+room, where what you want is the wall facing the light to come up and the
+wall facing away to go down. That needs to know which way each point
+faces, and `/light/shape` is the dial between the two readings.
+
+**Lamps are white until you colour them.** Hue *and* tint, because hue
+alone has no value meaning "no colour" — every hue is some colour, and
+hue 0 is red, so a lamp described by hue alone turns the scan red the
+moment you raise it to see what it does.
+
+**Off by default, and off means unchanged.** Ambient is 1.0 and every
+level is 0, which multiplies the picture by exactly one. Every preset
+ever saved and the whole shipped set render identically to before this
+existed — pinned by a test that holds the defaults against the constant
+the shader's identity is written against, and by a GPU test that renders
+both.
+
+`/light/torch` puts lamp 1 on the camera. It is the partner to a
+walkthrough: light arriving from where you are is what makes moving
+through a scan read as moving, rather than as the scan fading up.
+
+### Normals, and where they come from
+
+A point cloud is points. Whether it also knows which way its surface
+faces depends entirely on whoever exported it, and most exports leave the
+field empty.
+
+- **From the file.** `nx`/`ny`/`nz` are read when a PLY carries them.
+- **Estimated otherwise.** Each point's nearest neighbours are fitted
+  with a plane, and the plane's normal is the surface's — about a tenth
+  of a second for a full slot, done at load beside a file read that costs
+  more.
+- **Never invented.** A cloud with no normals — a procedural shape, a
+  video frame — reports the zero vector, and every directional term
+  stands down rather than guessing. A made-up normal lights a wall the
+  wrong way round, which is worse than not lighting it.
+
+Shading is **two-sided**: a plane fit cannot tell `n` from `-n`, and
+resolving that across a whole cloud is a global problem that still comes
+out backwards for a scan of a room, where the surfaces you want lit face
+inwards. The normal is flipped towards the eye instead. There are no
+shadows here for that to be inconsistent with, and the alternative is
+half of every scan rendering black for a reason nobody could diagnose
+from the front of a stage.
+
+## Camera moves
+
+```
+/camera/at_x /at_y /at_z    where in the world the camera is aimed
+/camera/move                off, orbit, sway, push, pull, crane, spiral,
+                            look around, fly through, walkthrough, drift
+/camera/move_bars           bars per cycle
+/camera/move_size           how far it travels
+```
+
+A camera move is the one gesture you cannot make by hand. Orbiting
+smoothly for eight bars while also firing pads is two jobs and one pair
+of hands, and an LFO on `/camera/orbit` drives one parameter where a
+crane is elevation and distance moving together on a shape neither of
+them knows about.
+
+`/camera/at_*` is the piece that had been missing. Pan moves the target
+in the camera's *own screen plane*, which keeps the subject centred by
+construction — right for framing, and it makes travelling impossible.
+This is the world-space one, so a path through a space is a path through
+a space at any orbit.
+
+| move | what it is for |
+| --- | --- |
+| `orbit` | a full turn per cycle. The one that can run all night |
+| `sway` | handheld: a partial turn back and forth, horizon breathing |
+| `push` | in and back out — the build |
+| `pull` | out and back in — the reveal |
+| `crane` | rising over the top, looking down by the end |
+| `spiral` | a helix: turn, rise and close together. The drop |
+| `look around` | the camera holds still and its *aim* sweeps |
+| `fly through` | in through the front, out the back, and round again |
+| `walkthrough` | four legs and four corners of a square, at eye level, inside |
+| `drift` | very slow, never repeating in a song, always moving |
+
+**Everything is an offset.** A move is added to the camera the faders
+already describe, never written back into it. Switching one off returns
+you exactly to your framing, and a move running is never a reason you
+cannot still steer. Rate is in bars, so a move locks to the same clock
+the sequencer and the LFOs are on.
+
+**Switching is a hand-off.** A move fades in over half a second, fades
+out before the next one is adopted, and starts its phase from the moment
+you engage it. Several moves do not begin at home — a walkthrough starts
+already inside the space — so without the fade the picture jumps the
+moment a fader passes a step.
+
+The full design note is in `docs/light-and-camera.md`.
+
 ## Point clouds
 
 ```sh
@@ -1359,6 +1474,12 @@ control input can never crash the renderer.
 | `/camera/defocus` | 0 – 1 | 0 | depth-of-field blur amount |
 | `/camera/pan_x` | -4 – 4 | 0 | sideways pan of the view |
 | `/camera/pan_y` | -4 – 4 | 0 | vertical pan of the view |
+| `/camera/at_x` | -8 – 8 | 0 | where in the world the camera is aimed, X |
+| `/camera/at_y` | -8 – 8 | 0 | where in the world the camera is aimed, Y |
+| `/camera/at_z` | -8 – 8 | 0 | where in the world the camera is aimed, Z |
+| `/camera/move` | 0 – 10 | 0 | canned path: off, orbit, sway, push, pull, crane, spiral, look around, fly through, walkthrough, drift |
+| `/camera/move_bars` | 1 – 64 | 8 | bars per cycle of the move |
+| `/camera/move_size` | 0 – 1 | 0.5 | how far the move travels |
 | `/room/brightness` | 0 – 1 | 0 | wireframe room visibility |
 | `/room/depth` | 1 – 20 | 7 | how deep the room extends |
 | `/room/fade` | 0 – 1 | 0.75 | distance fade of the room lines |
@@ -1367,6 +1488,21 @@ control input can never crash the renderer.
 | `/room/vanish_y` | -1 – 1 | 0 | vanishing point, vertical |
 | `/room/anchor` | 0 – 1 | 0.35 | where the cloud sits between front and back |
 | `/room/embed` | 0 – 1 | 0 | how much the room's perspective bends the cloud |
+| `/light/ambient` | 0 – 1 | 1 | how much light there is everywhere; 1 is the unlit picture |
+| `/light/shape` | 0 – 1 | 1 | how much a surface's own orientation counts (needs normals) |
+| `/light/torch` | 0 – 1 | 0 | lamp 1 rides the camera |
+| `/light/N/x` (N = 1–2) | -6 – 6 | 0 | lamp N position, X |
+| `/light/N/y` (N = 1–2) | -6 – 6 | 0 | lamp N position, Y |
+| `/light/N/z` (N = 1–2) | -6 – 6 | 0 | lamp N position, Z |
+| `/light/N/radius` (N = 1–2) | 0.05 – 8 | 1.5 | lamp N reach |
+| `/light/N/level` (N = 1–2) | 0 – 2 | 0 | lamp N brightness |
+| `/light/N/hue` (N = 1–2) | 0 – 1 | 0 | lamp N colour |
+| `/light/N/tint` (N = 1–2) | 0 – 1 | 0 | how much of lamp N's colour to use; 0 is white |
+| `/sun/level` | 0 – 2 | 0 | directional key brightness (needs normals) |
+| `/sun/azimuth` | -3.15 – 3.15 | 0.8 | which way the sun is, around |
+| `/sun/elevation` | -1.57 – 1.57 | 0.6 | which way the sun is, up |
+| `/sun/hue` | 0 – 1 | 0.12 | sun colour |
+| `/sun/tint` | 0 – 1 | 0 | how much of the sun's colour to use; 0 is white |
 | `/gravity/amount` | 0 – 1 | 0 | master depth of the gravity layer |
 | `/gravity/N/x` (N = 0–3) | -3 – 3 | 0 | well N position, X |
 | `/gravity/N/y` (N = 0–3) | -3 – 3 | 0 | well N position, Y |

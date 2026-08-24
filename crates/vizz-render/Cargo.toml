@@ -12,5 +12,6 @@ anyhow.workspace = true
 log.workspace = true
 
 [dev-dependencies]
+naga.workspace = true
 pollster.workspace = true
 image.workspace = true
