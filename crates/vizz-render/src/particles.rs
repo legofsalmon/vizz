@@ -493,7 +493,8 @@ impl ParticleScene {
             .unwrap_or("cloud")
             .to_string();
         log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
-        self.attractors.load_slot(ctx, slot, &points, &name);
+        self.attractors
+            .load_slot(ctx, slot, &points, &name, crate::attractor::Normals::Estimate);
         Ok(name)
     }
 
@@ -515,7 +516,8 @@ impl ParticleScene {
         }
         let mut owned = points.to_vec();
         crate::pointcloud::normalize(&mut owned);
-        self.attractors.load_slot(ctx, slot, &owned, name);
+        self.attractors
+            .load_slot(ctx, slot, &owned, name, crate::attractor::Normals::Estimate);
     }
 
     /// Upload a frame of a live stream.
@@ -539,7 +541,10 @@ impl ParticleScene {
         }
         let mut owned = points.to_vec();
         self.stream_fit.apply(&mut owned);
-        self.attractors.load_slot(ctx, slot, &owned, name);
+        // Never estimated here. See `Normals` — it is 80 ms a frame, and
+        // a normal fitted to this frame is stale by the next one.
+        self.attractors
+            .load_slot(ctx, slot, &owned, name, crate::attractor::Normals::AsGiven);
     }
 
     /// Forget the streaming fit, so the next stream measures itself
@@ -953,6 +958,48 @@ mod tests {
         assert!(
             lamped > unlit,
             "a lamp at the origin did not brighten anything: {unlit:.2} → {lamped:.2}"
+        );
+    }
+
+    /// A stream frame must not pay for normal estimation.
+    ///
+    /// This is a regression test with a number in it, which is unusual
+    /// here and earned. 0.23.0 added normal fitting to the single cloud
+    /// upload path; the live-stream caller goes through that same path,
+    /// so every arriving frame fitted normals to sixty-five thousand
+    /// points — **80 ms in release**, capping the stream at about twelve
+    /// frames a second. Nothing failed. The picture was correct. It was
+    /// just slow, in a way that looks like a network problem and gets
+    /// diagnosed as one.
+    ///
+    /// The threshold is deliberately loose: this is not a benchmark, it
+    /// is a guard against the estimator reappearing on this path, and the
+    /// gap between "uploads a texture" and "fits sixty-five thousand
+    /// planes" is two orders of magnitude wide.
+    #[test]
+    fn streaming_a_frame_does_not_fit_normals() {
+        let Some(ctx) = gpu() else { return };
+        let mut scene = ParticleScene::new(&ctx, FORMAT);
+        // No normals, so anything willing to estimate would.
+        let mut seed = 9876u32;
+        let mut rng = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 16_777_216.0 - 0.5
+        };
+        let frame: Vec<crate::pointcloud::Point> = (0..crate::attractor::POINTS)
+            .map(|_| crate::pointcloud::Point::new(rng(), rng(), rng()))
+            .collect();
+
+        // One frame first, so the streaming fit has settled and this
+        // measures the steady state rather than the first arrival.
+        scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
+        let t = std::time::Instant::now();
+        scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
+        let took = t.elapsed();
+        assert!(
+            took.as_millis() < 25,
+            "a stream frame took {took:?} — normal estimation is back on the \
+             streaming path, which caps the stream at around twelve fps"
         );
     }
 

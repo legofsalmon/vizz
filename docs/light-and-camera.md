@@ -129,6 +129,36 @@ real pipeline with the sun in front of it and behind it, and fails if the
 two agree. Probed against the old code, it reports exactly the symptom:
 *facing it 5.57, backing it 5.57*.
 
+## The regression this shipped with
+
+`Attractors::load_slot` is the single path a cloud takes to the GPU, and
+adding normal estimation to it added it for *every* caller — including
+`set_cloud_streaming`, which runs once per arriving frame of a live PLY
+stream.
+
+Fitting normals to a full slot measures **80 ms in release**. On a stream
+that is 80 ms of CPU per frame before anything is drawn, capping the whole
+thing at around twelve frames a second. Nothing failed, nothing logged,
+and the picture was correct — it was just slow, in the way that looks like
+a network problem and gets diagnosed as one.
+
+`Normals::Estimate` versus `Normals::AsGiven` now splits it at the call
+site, because the two callers genuinely want different answers: 80 ms is
+nothing beside the file read it accompanies and unaffordable sixty times a
+second. And a normal fitted to a streamed frame is stale by the next one,
+so the expensive answer was not even the right one.
+
+`streaming_a_frame_does_not_fit_normals` pins it with a number, which is
+unusual in this codebase and earned here: the gap between "uploads a
+texture" and "fits sixty-five thousand planes" is two orders of magnitude,
+so the threshold can be loose and still catch it. Probed by putting the
+estimator back: *a stream frame took 85.9ms*.
+
+The general lesson is about the shape rather than the numbers. A single
+chokepoint every caller shares is exactly what you want for correctness
+and exactly how a cost meant for one caller reaches all of them, silently,
+because the expensive path and the cheap path are the same line of code.
+
 ## A pre-existing bug found on the way
 
 `Attractors::load_slot` took `points[i % points.len()]` for each of the

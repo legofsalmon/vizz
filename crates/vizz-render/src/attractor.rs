@@ -151,6 +151,24 @@ fn trace(step: fn([f64; 3], f64) -> [f64; 3], start: [f64; 3], dt: f64) -> Vec<[
         .collect()
 }
 
+/// Whether a slot's normals are worth working out on the way in.
+///
+/// Two callers, two answers, and the difference is the whole point:
+/// [`Normals::Estimate`] costs about 80 ms for a full slot, which is
+/// nothing beside the file read it accompanies and unaffordable sixty
+/// times a second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Normals {
+    /// Fit them from each point's neighbours when the points did not
+    /// carry any. For a cloud that arrives once.
+    Estimate,
+    /// Take whatever came with the points and no more. For a live
+    /// stream, where the cost is paid on every frame — and where a
+    /// normal fitted to frame N is stale by frame N+1 anyway, so the
+    /// expensive answer is not even the right one.
+    AsGiven,
+}
+
 impl Attractors {
     pub fn new(ctx: &GpuContext) -> Self {
         let mut data = trace(lorenz_step, [0.1, 0.0, 20.0], 0.005);
@@ -243,12 +261,13 @@ impl Attractors {
         slot: usize,
         points: &[crate::pointcloud::Point],
         name: &str,
+        normals: Normals,
     ) {
         if slot >= SLOTS || points.is_empty() {
             return;
         }
         let mut data = Vec::with_capacity(POINTS);
-        let mut normals: Vec<[f32; 4]> = Vec::with_capacity(POINTS);
+        let mut normal_data: Vec<[f32; 4]> = Vec::with_capacity(POINTS);
         // Deterministic jitter, so reloading the same file gives the same
         // cloud rather than a subtly different one each run.
         let mut seed = 0x9E37_79B9u32;
@@ -285,11 +304,16 @@ impl Attractors {
         // are not.
         let mut chosen: Vec<crate::pointcloud::Point> =
             (0..POINTS).map(|i| points[pick(i)]).collect();
-        // Only if the file did not bring its own. Cheap enough at this
-        // size to do inline: measured at about a tenth of a second for a
-        // full slot in a debug build, next to a file read and a parse
-        // that already cost more.
-        if !chosen.iter().any(|p| p.oriented()) {
+        // Only if it was asked for, and only if the points did not bring
+        // their own.
+        //
+        // The policy is not decoration. Fitting normals to a full slot
+        // measures **80 ms in release**, which is fine once when a file
+        // loads and ruinous every frame of a live stream — it caps the
+        // stream at about twelve frames a second all by itself, and it
+        // shipped that way in 0.23.0 because this function is the single
+        // upload path and the streaming caller went through it too.
+        if matches!(normals, Normals::Estimate) && !chosen.iter().any(|p| p.oriented()) {
             crate::pointcloud::estimate_normals(&mut chosen);
         }
         for (i, p) in chosen.iter().enumerate() {
@@ -302,7 +326,7 @@ impl Attractors {
                 p.pos[2] + rng() * j,
                 pack_color(p.color),
             ]);
-            normals.push([p.normal[0], p.normal[1], p.normal[2], 0.0]);
+            normal_data.push([p.normal[0], p.normal[1], p.normal[2], 0.0]);
         }
 
         ctx.queue.write_texture(
@@ -330,7 +354,7 @@ impl Attractors {
         );
         // Half-floats, packed by hand: `f32::to_bits` down to 16 is a
         // handful of lines and avoids a dependency for one conversion.
-        let half: Vec<u16> = normals
+        let half: Vec<u16> = normal_data
             .iter()
             .flat_map(|n| n.iter().map(|v| f32_to_f16(*v)))
             .collect();
