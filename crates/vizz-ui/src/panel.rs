@@ -589,6 +589,24 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                     // already carries it.
                     ui.small("waiting — point the sender here");
                 }
+                // Letting go of the sender in hand is a thing to ask
+                // for, not a thing to wait for. The newest sender takes
+                // over on its own, so this is for the case that leaves
+                // no trace to react to: a sender that is attached and
+                // silent, where nothing new is arriving to displace it
+                // and the address to listen on has not changed. Doing it
+                // as stop-then-receive works and always has; it is two
+                // clicks and a re-typed address in a dark room.
+                if ui
+                    .small_button("rescan")
+                    .on_hover_text(
+                        "drop the sender in hand and listen again, on the same \
+                         address — for one that is attached but has gone quiet",
+                    )
+                    .clicked()
+                {
+                    actions.live_cloud = Some(Some(addr.clone()));
+                }
                 if ui
                     .small_button("stop")
                     .on_hover_text("stop receiving; loaded clouds are unaffected")

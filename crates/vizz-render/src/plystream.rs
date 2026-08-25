@@ -699,7 +699,32 @@ fn stream_from_connect(
 ) -> Result<()> {
     let stream = std::net::TcpStream::connect(addr)?;
     log::info!("live cloud: connected to {addr}");
-    pump(stream, slot, stop)
+    // Dialling out there is only ever the one sender, so nothing can
+    // relieve it.
+    pump(stream, slot, stop, &|| false)
+}
+
+/// The most recent sender waiting on the listener, if any.
+///
+/// The backlog is drained rather than taken one connection at a time: if
+/// several senders queued up while another was being read, the newest is
+/// the one wanted, and serving the rest in turn would hand each of them
+/// the stream for a moment while already stale. Dropping them closes
+/// them, so a sender that lost the race is told rather than left hanging.
+fn newest_waiting(
+    listener: &std::net::TcpListener,
+) -> Result<Option<std::net::TcpStream>> {
+    let mut newest = None;
+    loop {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                log::info!("live cloud: {peer} connected");
+                newest = Some(stream);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(newest),
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 fn stream_from_listen(
@@ -720,57 +745,102 @@ fn stream_from_listen(
     // — left the process alive after the window closed, still holding the
     // port so the next launch could not bind it.
     listener.set_nonblocking(true)?;
-    let stream = loop {
+
+    // The newest sender is the one being read, and the listener goes on
+    // accepting for as long as it is bound.
+    //
+    // Taking the first sender and holding it until the connection ended
+    // was the whole failure mode of a socket that goes silent without
+    // closing — a phone that slept, an app sent to the background. Such a
+    // socket is open, quiet, and from in here identical to a live sender
+    // sitting between frames, so it cannot be timed out without also
+    // cutting off a slow scan. It kept the one reading slot for the life
+    // of the app: every later connection, the sender restarting included,
+    // sat unaccepted in the backlog delivering nothing, and the only fix
+    // from outside was to restart vizz. Letting the newest connection
+    // take over needs no timeout and no guess about what silence means.
+    let mut current = None;
+    loop {
         if stop.load(Ordering::Relaxed) {
             return Ok(());
         }
-        match listener.accept() {
-            Ok((stream, peer)) => {
-                log::info!("live cloud: {peer} connected");
-                break stream;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return Err(e.into()),
+        if let Some(next) = newest_waiting(&listener)? {
+            // Assigning drops whatever was here, which closes it.
+            current = Some(next);
         }
-    };
-    // Back to blocking for the transfer itself; `pump` sets its own read
-    // timeout, which is what lets it notice `stop`.
-    stream.set_nonblocking(false)?;
-    pump(stream, slot, stop)
+        let Some(stream) = current.take() else {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        };
+        // Back to blocking for the transfer itself; `pump` sets its own
+        // read timeout, which is what lets it notice `stop`.
+        stream.set_nonblocking(false)?;
+        // A sender that arrives mid-transfer is parked here by the
+        // closure below and picked up on the next turn of the loop.
+        let waiting = std::cell::RefCell::new(None);
+        let relieved = || match newest_waiting(&listener) {
+            Ok(Some(next)) => {
+                log::info!("live cloud: a newer sender takes over");
+                *waiting.borrow_mut() = Some(next);
+                true
+            }
+            Ok(None) => false,
+            // Reported properly by the `?` at the top of the loop; here
+            // it only decides whether to give up the stream in hand.
+            Err(e) => {
+                log::warn!("live cloud: accepting while reading: {e:#}");
+                false
+            }
+        };
+        let outcome = pump(stream, slot, stop, &relieved);
+        slot.connected.store(false, Ordering::Relaxed);
+        current = waiting.into_inner();
+        // One sender's broken frame is not a reason to give up the port.
+        // The listener outlives any single connection — another sender
+        // may be waiting on it already — where returning the error meant
+        // rebinding, and a rebind is the moment a sender cannot connect.
+        if let Err(e) = outcome {
+            log::warn!("live cloud: {e:#}");
+        }
+    }
 }
 
 fn pump(
     stream: std::net::TcpStream,
     slot: &std::sync::Arc<Slot>,
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    relieved: &dyn Fn() -> bool,
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
     // Without a timeout, a sender that goes quiet without closing leaves
     // this thread blocked in read forever and the app unable to shut down.
     stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))?;
     let reader = std::io::BufReader::new(stream);
+    // Two reasons to give up the stream: the app is quitting, or a newer
+    // sender has arrived and this one is no longer the live one. Both are
+    // asked only where a read has already timed out or a frame has just
+    // ended, so the stream is never dropped mid-frame with bytes eaten.
+    let done = || stop.load(Ordering::Relaxed) || relieved();
     // Settle the format before the first frame, not per frame: a slow
     // first packet cannot be sniffed by peeking, and the answer cannot
     // change while the connection lasts.
-    let Some((wire, mut reader)) =
-        sniff_connection(reader, &|| stop.load(Ordering::Relaxed))?
-    else {
+    let Some((wire, mut reader)) = sniff_connection(reader, &done)? else {
         return Ok(());
     };
     log::info!("live cloud: reading {wire:?} frames");
     slot.connected.store(true, Ordering::Relaxed);
-    while !stop.load(Ordering::Relaxed) {
+    loop {
+        if done() {
+            return Ok(());
+        }
         // Timeouts are ridden out *inside* the read, holding position.
         // They used to be caught here by restarting `read_frame`, which
         // between frames was an idle sender and mid-frame threw away the
         // bytes already consumed — the next attempt parsed a header out
         // of the middle of a body, and the stream never recovered.
-        let stopping = || stop.load(Ordering::Relaxed);
         let got = match wire {
-            Wire::Ply => read_ply_patient(&mut reader, &stopping),
-            Wire::Packed => read_packed_patient(&mut reader, &stopping),
+            Wire::Ply => read_ply_patient(&mut reader, &done),
+            Wire::Packed => read_packed_patient(&mut reader, &done),
         };
         match got {
             Ok(Some(points)) => publish(slot, points),
@@ -779,9 +849,7 @@ fn pump(
             Err(e) => return Err(e),
         }
     }
-    Ok(())
 }
-
 fn watch_file(
     path: &std::path::Path,
     slot: &std::sync::Arc<Slot>,
@@ -1210,6 +1278,56 @@ mod tests {
         sender.join().unwrap();
         assert!(live.revision() >= 3, "only {} frames arrived", live.revision());
         assert_eq!(seen, vec![4, 9, 2], "frames arrived wrong or out of order");
+    }
+
+    /// A sender that connects and then says nothing must not lock out the
+    /// next one.
+    ///
+    /// This is the shape of a phone that slept or an app sent to the
+    /// background: the socket stays open and silent, which from the
+    /// reading end is indistinguishable from a live sender between
+    /// frames. Taking the first sender and keeping it meant that socket
+    /// held the only reading slot for the life of the app — the sender
+    /// restarting simply queued up behind itself and delivered nothing.
+    #[test]
+    fn a_newer_sender_takes_over_from_a_silent_one() {
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+
+        // `Listen` binds inside the thread, so the port has to be known
+        // before it starts rather than read back off the listener.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap().to_string();
+        drop(probe);
+
+        let live = LiveCloud::start(Source::Listen(addr.clone())).unwrap();
+        // Let the listener bind before anyone knocks.
+        std::thread::sleep(Duration::from_millis(200));
+
+        // The dead sender: connected, never says a word, never closes.
+        let _silent = std::net::TcpStream::connect(&addr).unwrap();
+        // Long enough for the 50 ms accept poll to have taken it, so the
+        // reader is genuinely holding this connection and not merely
+        // finding it in the backlog alongside the next one.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let mut live_sender = std::net::TcpStream::connect(&addr).unwrap();
+        live_sender.write_all(&binary_frame(7)).unwrap();
+        live_sender.flush().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while live.revision() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            live.revision() >= 1,
+            "the silent sender kept the slot; nothing from the live one arrived"
+        );
+        assert_eq!(
+            live.with_latest(|p| p.len()),
+            Some(7),
+            "the frame that arrived was not the live sender's"
+        );
     }
 
     /// A file rewritten in place must be picked up. This is the transport

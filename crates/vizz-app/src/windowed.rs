@@ -1358,15 +1358,28 @@ impl App {
                 // thing to retry rather than a thing to be stopped by.
                 match actions.live_cloud.clone() {
                     Some(Some(addr)) => match addr.parse::<vizz_render::plystream::Source>() {
-                        Ok(source) => match vizz_render::plystream::LiveCloud::start(source) {
-                            Ok(live) => {
-                                state.gui.notify_info(format!("receiving from {}", live.label()));
-                                state.scene.reset_stream_fit();
-                                self.live_shown = false;
-                                self.live = Some(live);
+                        Ok(source) => {
+                            // Let the old receiver go before the new one
+                            // starts. Assigning over it would build the
+                            // replacement first, and a listening source
+                            // cannot bind a port its predecessor is still
+                            // holding — which is every rescan, since a
+                            // rescan is the same address twice.
+                            self.live = None;
+                            match vizz_render::plystream::LiveCloud::start(source) {
+                                Ok(live) => {
+                                    state
+                                        .gui
+                                        .notify_info(format!("receiving from {}", live.label()));
+                                    state.scene.reset_stream_fit();
+                                    self.live_shown = false;
+                                    self.live = Some(live);
+                                }
+                                Err(e) => {
+                                    state.gui.notify_error(format!("live cloud: {e:#}"))
+                                }
                             }
-                            Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),
-                        },
+                        }
                         Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),
                     },
                     Some(None) => {

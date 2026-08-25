@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.24.0/vizz-0.24.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.25.0/vizz-0.25.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,37 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.25.0">0.25.0</a></div>
+      <ul>
+        <li><strong>A silent sender no longer holds the stream shut.</strong>
+          The receiver took the first connection that arrived and read it
+          until it closed or broke — and a sender that goes quiet without
+          closing, which is what a phone that slept or an app sent to the
+          background leaves behind, does neither. It kept the only reading
+          slot for the life of the app while every later connection,
+          including the sender restarting, queued behind it delivering
+          nothing. Found with 408,952 bytes sitting unread in a socket.
+          The listener now stays bound and the <strong>most recently
+          arrived sender is the one being read</strong>, which needs no
+          guess about how long a slow scan is allowed to think. A
+          <strong>rescan</strong> button covers the case with nothing to
+          react to: a sender attached and quiet, on an address that has
+          not changed.</li>
+        <li><strong>Crossing between clouds is what a scene change
+          does.</strong> The cloud pair used to be three sliders in the
+          parameter list — pick two slots by index, then ride the blend
+          between them by hand. That was one control too many and one idea
+          too many: the pair only exists in order to cross from one cloud
+          to another, and the app already knows when a crossing is
+          happening because it is the one running it. <strong>Choosing a
+          cloud is now clicking its name</strong>, where the names are; a
+          scene transition does the morph, and nothing else can reach it.
+          A slot is an index, and an index is unreadable once anything has
+          been loaded.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.24.0">0.24.0</a></div>
