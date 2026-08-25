@@ -68,6 +68,12 @@ pub struct Attractors {
     /// half what the position bank does.
     pub normals: wgpu::Texture,
     pub normals_view: wgpu::TextureView,
+    /// Whether each slot's normals are currently anything but zero.
+    ///
+    /// So a cloud that has none does not spend a megabyte building zeros,
+    /// half a megabyte converting them, and an upload sending them — per
+    /// frame, on a live stream, to overwrite zeros with zeros.
+    has_normals: [bool; SLOTS],
     pub view: wgpu::TextureView,
     /// A label per slot for the UI, so a loaded cloud is identifiable.
     pub names: [String; SLOTS],
@@ -151,6 +157,24 @@ fn trace(step: fn([f64; 3], f64) -> [f64; 3], start: [f64; 3], dt: f64) -> Vec<[
         .collect()
 }
 
+/// Whether a slot's normals are worth working out on the way in.
+///
+/// Two callers, two answers, and the difference is the whole point:
+/// [`Normals::Estimate`] costs about 80 ms for a full slot, which is
+/// nothing beside the file read it accompanies and unaffordable sixty
+/// times a second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Normals {
+    /// Fit them from each point's neighbours when the points did not
+    /// carry any. For a cloud that arrives once.
+    Estimate,
+    /// Take whatever came with the points and no more. For a live
+    /// stream, where the cost is paid on every frame — and where a
+    /// normal fitted to frame N is stale by frame N+1 anyway, so the
+    /// expensive answer is not even the right one.
+    AsGiven,
+}
+
 impl Attractors {
     pub fn new(ctx: &GpuContext) -> Self {
         let mut data = trace(lorenz_step, [0.1, 0.0, 20.0], 0.005);
@@ -221,6 +245,8 @@ impl Attractors {
             texture,
             normals,
             normals_view,
+            // The bank starts zeroed, so nothing is written yet.
+            has_normals: [false; SLOTS],
             view,
             names: std::array::from_fn(|i| match i {
                 0 => "Lorenz".into(),
@@ -243,12 +269,13 @@ impl Attractors {
         slot: usize,
         points: &[crate::pointcloud::Point],
         name: &str,
+        normals: Normals,
     ) {
         if slot >= SLOTS || points.is_empty() {
             return;
         }
         let mut data = Vec::with_capacity(POINTS);
-        let mut normals: Vec<[f32; 4]> = Vec::with_capacity(POINTS);
+        let mut normal_data: Vec<[f32; 4]> = Vec::with_capacity(POINTS);
         // Deterministic jitter, so reloading the same file gives the same
         // cloud rather than a subtly different one each run.
         let mut seed = 0x9E37_79B9u32;
@@ -258,40 +285,13 @@ impl Attractors {
             seed ^= seed << 5;
             (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
         };
-        // Which point of the cloud lands in slot texel `i`.
-        //
-        // A stride across the whole cloud, not the first `POINTS` of it.
-        // The original took `points[i % len]`, which for any cloud bigger
-        // than the slot is exactly `points[i]` — the first sixty-five
-        // thousand points and nothing else. Scanners write in scan order,
-        // so on a five-million-point room that is one corner of it, and
-        // the rest of the scan had simply never been on screen.
-        //
-        // Below the slot size the expression is the old one: `i % len`
-        // wraps and each point repeats with a jitter.
         let n = points.len();
-        let pick = |i: usize| -> usize {
-            if n >= POINTS {
-                // Rounded rather than truncated so the last texel reaches
-                // the end of the cloud instead of stopping short of it.
-                ((i as u64 * n as u64 + POINTS as u64 / 2) / POINTS as u64).min(n as u64 - 1)
-                    as usize
-            } else {
-                i % n
-            }
-        };
-        // Which points are actually going to be drawn — so a normal is
-        // estimated for the ones on screen rather than for millions that
-        // are not.
-        let mut chosen: Vec<crate::pointcloud::Point> =
-            (0..POINTS).map(|i| points[pick(i)]).collect();
-        // Only if the file did not bring its own. Cheap enough at this
-        // size to do inline: measured at about a tenth of a second for a
-        // full slot in a debug build, next to a file read and a parse
-        // that already cost more.
-        if !chosen.iter().any(|p| p.oriented()) {
-            crate::pointcloud::estimate_normals(&mut chosen);
-        }
+        let chosen = slot_points(points, normals);
+        // Whether this slot has anything to say about which way its
+        // surfaces face — and, with the flag below, whether the normal
+        // bank needs touching at all.
+        let any_normals = chosen.iter().any(|p| p.oriented());
+        let write_normals = any_normals || self.has_normals[slot];
         for (i, p) in chosen.iter().enumerate() {
             // Only jitter the repeats; the first pass through the cloud is
             // exact, so a cloud that already fills the slot is untouched.
@@ -302,7 +302,9 @@ impl Attractors {
                 p.pos[2] + rng() * j,
                 pack_color(p.color),
             ]);
-            normals.push([p.normal[0], p.normal[1], p.normal[2], 0.0]);
+            if write_normals {
+                normal_data.push([p.normal[0], p.normal[1], p.normal[2], 0.0]);
+            }
         }
 
         ctx.queue.write_texture(
@@ -328,9 +330,19 @@ impl Attractors {
                 depth_or_array_layers: 1,
             },
         );
+        self.has_normals[slot] = any_normals;
         // Half-floats, packed by hand: `f32::to_bits` down to 16 is a
         // handful of lines and avoids a dependency for one conversion.
-        let half: Vec<u16> = normals
+        //
+        // Skipped entirely for a cloud with no normals landing in a slot
+        // that already has none — which is every frame of a live stream,
+        // and was a megabyte built and half a megabyte uploaded each time
+        // to replace zeros with zeros.
+        if !write_normals {
+            self.names[slot] = name.to_string();
+            return;
+        }
+        let half: Vec<u16> = normal_data
             .iter()
             .flat_map(|n| n.iter().map(|v| f32_to_f16(*v)))
             .collect();
@@ -361,6 +373,82 @@ impl Attractors {
     }
 }
 
+
+/// The `POINTS` points a slot draws, with normals worked out.
+///
+/// Pulled out of [`Attractors::load_slot`] so it can be checked without a
+/// GPU: everything interesting about filling a slot is arithmetic, and
+/// the part that needed a device was only the upload.
+pub(crate) fn slot_points(
+    points: &[crate::pointcloud::Point],
+    normals: Normals,
+) -> Vec<crate::pointcloud::Point> {
+    // Which point of the cloud lands in slot texel `i`.
+    //
+    // A stride across the whole cloud, not the first `POINTS` of it.
+    // The original took `points[i % len]`, which for any cloud bigger
+    // than the slot is exactly `points[i]` — the first sixty-five
+    // thousand points and nothing else. Scanners write in scan order,
+    // so on a five-million-point room that is one corner of it, and
+    // the rest of the scan had simply never been on screen.
+    //
+    // Below the slot size the expression is the old one: `i % len`
+    // wraps and each point repeats with a jitter.
+    let n = points.len();
+    let pick = |i: usize| -> usize {
+        if n >= POINTS {
+            // Rounded rather than truncated so the last texel reaches
+            // the end of the cloud instead of stopping short of it.
+            ((i as u64 * n as u64 + POINTS as u64 / 2) / POINTS as u64).min(n as u64 - 1)
+                as usize
+        } else {
+            i % n
+        }
+    };
+    // Which points are actually going to be drawn — so a normal is
+    // estimated for the ones on screen rather than for millions that
+    // are not.
+    let mut chosen: Vec<crate::pointcloud::Point> =
+        (0..POINTS).map(|i| points[pick(i)]).collect();
+    // Only if it was asked for, and only if the points did not bring
+    // their own.
+    //
+    // The policy is not decoration. Fitting normals to a full slot
+    // measures **80 ms in release**, which is fine once when a file
+    // loads and ruinous every frame of a live stream — it caps the
+    // stream at about twelve frames a second all by itself, and it
+    // shipped that way in 0.23.0 because this function is the single
+    // upload path and the streaming caller went through it too.
+    if matches!(normals, Normals::Estimate) && !chosen.iter().any(|p| p.oriented()) {
+        if n >= POINTS {
+            // Every texel holds a different point, so fit them where
+            // they are.
+            crate::pointcloud::estimate_normals(&mut chosen);
+        } else {
+            // Fewer points than texels, so `chosen` holds each point
+            // several times over — `pick` wraps.
+            //
+            // Fitting *that* hands the estimator neighbourhoods of
+            // exact duplicates: every distance is zero, the
+            // covariance is degenerate, and the plane it returns is
+            // an arbitrary axis. Measured on a perfectly flat sheet,
+            // barely half the normals came out facing off the sheet;
+            // the rest were sideways or nothing at all. The jitter
+            // that would have separated them is applied *after* this,
+            // when the texels are written, so it cannot help.
+            //
+            // So fit the distinct points and copy the answers across.
+            // Cheaper as well as correct — there are fewer of them.
+            let mut distinct = points.to_vec();
+            crate::pointcloud::estimate_normals(&mut distinct);
+            for (i, p) in chosen.iter_mut().enumerate() {
+                p.normal = distinct[pick(i)].normal;
+            }
+        }
+    }
+    chosen
+}
+
 /// An IEEE half, from a float.
 ///
 /// Only ever fed unit-vector components and zero, so the interesting
@@ -382,6 +470,84 @@ fn f32_to_f16(v: f32) -> u16 {
         return sign | 0x7bff;
     }
     sign | ((exp as u16) << 10) | mantissa as u16
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+    use crate::pointcloud::Point;
+
+    fn sheet(side: usize) -> Vec<Point> {
+        (0..side)
+            .flat_map(|i| {
+                (0..side).map(move |j| Point::new(i as f32 / side as f32, 0.0, j as f32 / side as f32))
+            })
+            .collect()
+    }
+
+    /// A cloud smaller than a slot still comes out correctly oriented.
+    ///
+    /// The slot is filled by wrapping — each point repeated several times
+    /// over — and fitting *that* hands the estimator neighbourhoods of
+    /// exact duplicates, where every distance is zero, the covariance is
+    /// degenerate, and the plane it returns is an arbitrary axis. On a
+    /// perfectly flat sheet barely half the normals came out facing off
+    /// it. The jitter that would have separated the copies is applied
+    /// afterwards, when the texels are written, so it cannot help.
+    ///
+    /// Most clouds are smaller than a slot, so this was most clouds.
+    #[test]
+    fn a_cloud_smaller_than_a_slot_is_still_oriented() {
+        let points = sheet(60);
+        assert!(points.len() < POINTS, "the premise needs a small cloud");
+        let filled = slot_points(&points, Normals::Estimate);
+        assert_eq!(filled.len(), POINTS);
+
+        // Interior only: the rim of a sheet has a one-sided
+        // neighbourhood and is legitimately less certain there.
+        let interior = |p: &Point| {
+            (0.15..0.85).contains(&p.pos[0]) && (0.15..0.85).contains(&p.pos[2])
+        };
+        let (mut right, mut total) = (0, 0);
+        for p in filled.iter().filter(|p| interior(p)) {
+            total += 1;
+            if p.oriented() && p.normal[1].abs() > 0.9 {
+                right += 1;
+            }
+        }
+        assert!(total > 1000, "not enough interior texels to judge: {total}");
+        let share = right as f32 / total as f32;
+        assert!(
+            share > 0.98,
+            "only {right} of {total} texels ({:.0}%) face off the sheet — the fit is \
+             seeing duplicated points",
+            share * 100.0
+        );
+    }
+
+    /// And a cloud bigger than a slot is sampled across the whole of
+    /// itself rather than truncated to its first texels' worth.
+    #[test]
+    fn a_big_cloud_is_sampled_across_all_of_it() {
+        let n = POINTS * 4;
+        let line: Vec<Point> = (0..n).map(|i| Point::new(i as f32 / n as f32, 0.0, 0.0)).collect();
+        let filled = slot_points(&line, Normals::AsGiven);
+        let last = filled.last().expect("a filled slot").pos[0];
+        assert!(
+            last > 0.99,
+            "the last texel is at {last}, so the tail of the cloud never made it"
+        );
+    }
+
+    /// `AsGiven` does no fitting, whatever the points look like.
+    #[test]
+    fn as_given_leaves_normals_alone() {
+        let filled = slot_points(&sheet(60), Normals::AsGiven);
+        assert!(
+            filled.iter().all(|p| !p.oriented()),
+            "normals were fitted on the path that must not pay for them"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -977,11 +977,45 @@ impl Grid {
                 hi[a] = hi[a].max(p.pos[a]);
             }
         }
-        let extent = (0..3).map(|a| hi[a] - lo[a]).fold(0.0f32, f32::max);
-        // Aim at a handful of points per cell, so the 27-cell scan around
-        // a point covers a few hundred candidates rather than the cloud.
-        let target = (points.len() as f32 / 4.0).cbrt().max(1.0);
-        let cell = (extent / target).max(1e-6);
+        // Cell size, from the shape the cloud actually has.
+        //
+        // The obvious version divides the bounding box by the cube root
+        // of the count, which assumes the points fill a volume. Almost
+        // nothing here does. A depth sensor sends a 2.5D sheet and a scan
+        // of a wall is a plane, and for those the box is mostly empty:
+        // sizing for a volume gives cells far too large in the two axes
+        // that matter, points pile into a fraction of them, and the
+        // 27-cell scan walks hundreds of candidates per point instead of
+        // a handful. Measured on a live sensor frame that was 851
+        // candidates against an intended 108, and three times the
+        // running time — while a test on a uniform random cube, which is
+        // the one shape this assumption holds for, reported it fine.
+        //
+        // So count the axes the cloud actually extends along and take the
+        // root that matches: a cube gets a cube root, a sheet a square
+        // root, a line a straight division.
+        let mut extents = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        for e in &mut extents {
+            if !e.is_finite() || *e < 0.0 {
+                *e = 0.0;
+            }
+        }
+        let widest = extents.iter().copied().fold(0.0f32, f32::max).max(1e-6);
+        // An axis is "real" if the cloud has meaningful thickness along
+        // it. A twentieth of the widest is well below anything that reads
+        // as depth and well above the noise on a flat scan.
+        let real: Vec<f32> = extents
+            .iter()
+            .copied()
+            .filter(|e| *e > widest * 0.05)
+            .collect();
+        let dims = real.len().max(1);
+        let measure: f32 = real.iter().copied().fold(1.0, |a, b| a * b).max(1e-12);
+        // A handful of points per cell, so the 27-cell scan around a
+        // point covers a few hundred candidates rather than the cloud.
+        let per_cell = 4.0;
+        let cells_wanted = (points.len() as f32 / per_cell).max(1.0);
+        let cell = (measure / cells_wanted).powf(1.0 / dims as f32).max(1e-6);
         let dim = std::array::from_fn(|a| (((hi[a] - lo[a]) / cell).ceil() as i32 + 1).max(1));
         let cells = (dim[0] as usize) * (dim[1] as usize) * (dim[2] as usize);
         // Counting sort into buckets: two passes, no per-cell Vec.
@@ -1127,6 +1161,44 @@ mod normal_tests {
         assert_eq!(unit([f32::NAN, 1.0, 0.0]), [0.0; 3]);
         let p = Point::new(0.0, 0.0, 0.0);
         assert!(!p.oriented(), "a fresh point claims to know which way it faces");
+    }
+
+    /// A sheet is the real case, and the one a cube-shaped test hides.
+    ///
+    /// The first version of this suite measured a uniform random cube,
+    /// which is the one shape a volume-filling grid assumption holds for.
+    /// A depth sensor sends a 2.5D sheet and a scan of a wall is a plane;
+    /// on those the bounding box is mostly empty, points pile into a
+    /// fraction of the cells, and the neighbour scan walks hundreds of
+    /// candidates per point. It measured three times slower than the cube
+    /// while the cube test reported everything fine.
+    #[test]
+    fn a_sheet_is_not_dramatically_slower_than_a_cube() {
+        let n = crate::attractor::POINTS;
+        let mut seed = 24680u32;
+        let mut rng = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 16_777_216.0 - 0.5
+        };
+        let mut cube: Vec<Point> = (0..n).map(|_| Point::new(rng(), rng(), rng())).collect();
+        // A sheet: full extent in two axes, sensor-noise thickness in the
+        // third. This is what a frame off a depth camera looks like.
+        let mut sheet: Vec<Point> =
+            (0..n).map(|_| Point::new(rng(), rng(), rng() * 0.01)).collect();
+
+        let t = std::time::Instant::now();
+        estimate_normals(&mut cube);
+        let cube_took = t.elapsed();
+        let t = std::time::Instant::now();
+        estimate_normals(&mut sheet);
+        let sheet_took = t.elapsed();
+
+        eprintln!("cube {cube_took:?}, sheet {sheet_took:?}");
+        assert!(
+            sheet_took < cube_took * 3,
+            "a sheet took {sheet_took:?} against a cube's {cube_took:?} — the grid is \
+             sizing cells for a volume the points do not fill"
+        );
     }
 
     /// The estimate runs on what the GPU slot actually holds, so this is

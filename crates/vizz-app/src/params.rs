@@ -1074,6 +1074,87 @@ mod reference_tests {
         Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
     }
 
+    /// How many rows the list opens with, against how many it holds.
+    ///
+    /// The claim the instance-splitting makes, measured rather than
+    /// asserted. Not a threshold — a number to look at when the panel
+    /// grows again.
+    #[test]
+    #[ignore = "inspection, not a check: run with --nocapture"]
+    fn print_how_many_rows_open_by_default() {
+        let p = super::AppParams::build();
+        let (visible, open) = vizz_ui::panel::default_row_count(&p.registry);
+        eprintln!(
+            "{open} rows open by default, of {visible} in the list ({:.0}% shown)",
+            open as f32 / visible as f32 * 100.0
+        );
+    }
+
+    /// Print the panel's parameter list as data. Not a check — a way to
+    /// look at the shape of the thing without a screenshot.
+    #[test]
+    #[ignore = "inspection, not a check: run with --nocapture"]
+    fn print_the_parameter_list_shape() {
+        let p = super::AppParams::build();
+        let mut by_prefix: Vec<(String, Vec<String>)> = Vec::new();
+        let mut transport = 0;
+        for (_, d) in p.registry.iter() {
+            if d.transport {
+                transport += 1;
+                continue;
+            }
+            let prefix = d.addr.trim_start_matches('/').split('/').next().unwrap_or("").to_string();
+            let rest = d.addr.trim_start_matches('/')[prefix.len()..].trim_start_matches('/').to_string();
+            match by_prefix.iter_mut().find(|(k, _)| *k == prefix) {
+                Some((_, v)) => v.push(rest),
+                None => by_prefix.push((prefix, vec![rest])),
+            }
+        }
+        let total: usize = by_prefix.iter().map(|(_, v)| v.len()).sum();
+        eprintln!("{total} visible parameters in {} groups ({transport} transport, hidden)\n", by_prefix.len());
+        for (prefix, names) in &by_prefix {
+            eprintln!("  {prefix:<10} {:>3}  {}", names.len(), names.join(" "));
+        }
+    }
+
+    /// Every parameter group has a home in the panel's section table.
+    ///
+    /// Anything the table does not mention still appears — under a bare
+    /// prefix, in a section called MORE, labelled "not yet placed in a
+    /// section — see SECTIONS in panel.rs". That note is written for
+    /// whoever is editing the panel, and the user reads it too.
+    ///
+    /// Which is exactly what shipped in 0.23.0: lighting arrived as
+    /// `/light/*` and `/sun/*`, nothing placed them, and the controls
+    /// landed at the bottom of the list under a developer's to-do. They
+    /// worked. Nobody could find them. A feature nobody can find is the
+    /// feature not existing, and the fallback that was supposed to keep a
+    /// new parameter visible is what hid this one.
+    #[test]
+    fn every_parameter_group_has_a_home_in_the_panel() {
+        let placed: std::collections::BTreeSet<&str> =
+            vizz_ui::panel::placed_groups().collect();
+        let p = super::AppParams::build();
+        let mut orphans = std::collections::BTreeSet::new();
+        for (_, d) in p.registry.iter() {
+            // Transport parameters are deliberately kept out of this
+            // list; they have their own controls on the performance
+            // layout. See `panel::is_transport`.
+            if d.transport {
+                continue;
+            }
+            let prefix = d.addr.trim_start_matches('/').split('/').next().unwrap_or("");
+            if !placed.contains(prefix) {
+                orphans.insert(prefix.to_string());
+            }
+        }
+        assert!(
+            orphans.is_empty(),
+            "these groups have no section, so they land in MORE under a developer note: {orphans:?}\n\
+             add them to SECTIONS in crates/vizz-ui/src/panel.rs"
+        );
+    }
+
     /// The README's OSC reference used to claim completeness while
     /// documenting 21 of 76 addresses, with ranges two releases stale.
     /// This parses the table back out of the README and holds it against

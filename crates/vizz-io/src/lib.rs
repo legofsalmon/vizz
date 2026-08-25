@@ -55,6 +55,7 @@ pub(crate) mod test_env {
 }
 
 pub mod ndi;
+pub mod net;
 pub mod ndi_recv;
 pub mod readback;
 pub mod recorder;

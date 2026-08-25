@@ -616,6 +616,12 @@ arriving as a rectangle.</p>
 vizz --live-cloud listen://0.0.0.0:9000     # wait for one to connect here
 vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten</code></pre>
 
+<p>While it is listening, the panel prints the address to send to —
+<code>send to 192.168.1.42:9848</code> — with a button to copy it. Point your
+sender at that. It is only shown for a <code>listen://</code> address: if you
+are dialling out to <code>host:port</code> instead, the address that matters is
+the other machine's.</p>
+
 <h3>Showing and morphing them</h3>
 
 <p><strong>A cloud you load is shown.</strong> Dropping a file, typing a word,

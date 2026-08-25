@@ -334,6 +334,7 @@ mod tests {
             param: "/particles/hue".into(),
             depth: 0.3,
             enabled: true,
+            span: None,
         });
         engine.clock.bpm = 138.0;
         engine.lfos[0].rate = crate::Rate::Beats(8.0);

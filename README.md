@@ -221,6 +221,14 @@ vizz --live-cloud listen://0.0.0.0:9000     # wait for one to connect here
 vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten
 ```
 
+While it is listening, the panel prints the address to send to —
+`send to 192.168.1.42:9848`, with a copy button. Telling somebody to point
+their sender at "this Mac's address" and not saying what that address is
+leaves the one setup step the feature needs to a trip through System
+Settings, at a venue, in the dark. It is only shown for a `listen://`
+address: dialling out to `host:port` means the address that matters is the
+*other* machine's.
+
 Frames land in their own cloud slot, which is shown when the first frame
 arrives — a stream nobody can see is indistinguishable from one that never
 connected. Only the first: re-pointing the shape every frame would take
@@ -991,6 +999,12 @@ left behind.
 /light/torch        lamp 1 rides the camera
 /sun/level          a directional key, for clouds that know which way they face
 ```
+
+The controls are in the panel under **STAGE ▸ light** and **STAGE ▸ sun**,
+beside the camera. (In 0.23.0 they were not: nothing placed them in the
+panel's section table, so they landed at the bottom of the parameter list
+under a developer's to-do. They worked and nobody could find them. A test
+now fails if any parameter group has no section.)
 
 Nothing in the renderer knew where a light was until this. A point's
 colour was its palette entry times the scan's own RGB times a distance

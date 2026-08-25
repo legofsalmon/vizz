@@ -168,6 +168,9 @@ pub struct PanelState {
     /// health belongs on the strip like audio's does — before this, the
     /// only sign a feed had died was the cloud freezing.
     pub video: Option<VideoStatus>,
+    /// This machine's address on the network, for the stream field to
+    /// show. `None` when it is not on one — see `vizz_io::net`.
+    pub local_address: Option<String>,
     /// The live point-cloud stream: `None` when nothing is running.
     pub live_cloud: Option<LiveCloudStatus>,
     /// Current analysis settings, mirrored here so the widgets have
@@ -228,6 +231,52 @@ pub struct PanelState {
     /// is one click away is still asserting on content that exists.
     pub expand_sections: bool,
 }
+
+/// `Default` so a test can name the two or three fields it cares about
+/// rather than the forty it does not.
+///
+/// Written out rather than derived because one field has no sensible
+/// zero: a `Band` of all zeroes matches no frequencies and never rises,
+/// so `default_bands()` is what "no particular bands" actually means.
+impl Default for PanelState {
+    fn default() -> Self {
+        Self {
+            update_available: Default::default(),
+            update: Default::default(),
+            health: Default::default(),
+            outputs: Default::default(),
+            frame_times_ms: Default::default(),
+            frame_budget_ms: 16.67,
+            midi: Default::default(),
+            audio: Default::default(),
+            record: Default::default(),
+            video_sources: Default::default(),
+            video: Default::default(),
+            local_address: Default::default(),
+            live_cloud: Default::default(),
+            audio_bands: vizz_audio::default_bands(),
+            audio_auto_bpm: Default::default(),
+            modulated: Default::default(),
+            clouds: Default::default(),
+            output: Default::default(),
+            palettes: Default::default(),
+            bpm: 120.0,
+            bar_phase: Default::default(),
+            presets: Default::default(),
+            preset_current: Default::default(),
+            grid: Default::default(),
+            gravity_grid: Default::default(),
+            project: Default::default(),
+            decks: Default::default(),
+            active_deck: Default::default(),
+            follow_columns: Default::default(),
+            focus_filter: Default::default(),
+            recording: Default::default(),
+            expand_sections: Default::default(),
+        }
+    }
+}
+
 
 /// How the next take is written, and what it will cost.
 ///
@@ -576,6 +625,60 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
             });
         }
     }
+    send_here(ui, state, &addr);
+}
+
+/// Where to point the sender: this machine's address, and the port the
+/// field is actually listening on.
+///
+/// The hover text has always said to set the sender to "this Mac's
+/// address on port 9848" without saying what that address is, which
+/// leaves the one setup step this feature needs to a trip through System
+/// Settings — at a venue, on a laptop, usually in the dark.
+///
+/// Only while listening. Dialling *out* to `host:port` means the address
+/// is the other machine's and this one's is beside the point, and a line
+/// offering it then would be answering a question nobody asked.
+fn send_here(ui: &mut egui::Ui, state: &PanelState, addr: &str) {
+    let Some(ip) = &state.local_address else { return };
+    let typed = if addr.trim().is_empty() { DEFAULT_LIVE_CLOUD } else { addr.trim() };
+    let Some(port) = listening_port(typed) else { return };
+    let full = format!("{ip}:{port}");
+    ui.horizontal(|ui| {
+        ui.small("send to");
+        // Selectable, so it can be read off the screen *and* dragged out
+        // with a mouse — the copy button beside it is faster, and one of
+        // the two works when the other is inconvenient.
+        ui.add(
+            egui::Label::new(egui::RichText::new(&full).small().strong().color(GOOD))
+                .selectable(true),
+        )
+        .on_hover_text(
+            "this machine's address on the network — type it into the sender. \
+             One line rather than two: the row below this one used to carry \
+             the explanation, and the height it cost pushed the preset list \
+             off the bottom of a thousand-point panel.",
+        );
+        if ui
+            .small_button("copy")
+            .on_hover_text("copy this address to the clipboard")
+            .clicked()
+        {
+            ui.ctx().copy_text(full.clone());
+        }
+    });
+}
+
+/// The port a stream address is listening on, or `None` if it is dialling
+/// out rather than listening.
+///
+/// `listen://host:port` and a bare `host:port` mean opposite things here:
+/// the first waits for a sender to arrive, the second goes looking for
+/// one. Only the first has an address worth showing.
+fn listening_port(addr: &str) -> Option<&str> {
+    let rest = addr.strip_prefix("listen://")?;
+    let port = rest.rsplit(':').next()?;
+    (!port.is_empty() && port.chars().all(|c| c.is_ascii_digit())).then_some(port)
 }
 
 /// Where a live cloud comes from unless told otherwise: waiting on
@@ -1252,7 +1355,15 @@ fn modulation_section(
         }
     });
 
+    // The rack is the *shared* LFOs. A modulator a parameter owns is
+    // shaped on that parameter's own row, and listing it here as well
+    // would put one control in two places — and fill a list meant for the
+    // handful you route by hand with one entry per modulated parameter.
+    let owned = m.lfos.iter().filter(|l| l.owner.is_some()).count();
     for (i, lfo) in m.lfos.iter_mut().enumerate() {
+        if lfo.owner.is_some() {
+            continue;
+        }
         ui.horizontal(|ui| {
             // "LFO 1", capitalised, because that is how the routes list
             // and the canvas both name it — one object, one name.
@@ -1317,8 +1428,19 @@ fn modulation_section(
     if let Some(i) = remove {
         m.routes.remove(i);
     }
+    // Said out loud rather than left as a discrepancy between the number
+    // of things moving and the number of LFOs listed.
+    if owned > 0 {
+        ui.small(
+            egui::RichText::new(format!(
+                "{owned} more modulator{} shaped on their own rows",
+                if owned == 1 { "" } else { "s" }
+            ))
+            .color(vizz_design::ink::FAINT),
+        );
+    }
     if m.routes.is_empty() {
-        ui.small("no routes — use “LFO 1” next to a parameter, or wire nodes on the canvas");
+        ui.small("no routes — press ~ next to a parameter, or wire nodes on the canvas");
     }
     // The canvas is this section's bigger sibling — envelopes, gates,
     // beat-synced patterns — and `G` was its only door. A section about
@@ -2050,6 +2172,11 @@ const WARN_COLOR: egui::Color32 = crate::theme::WARN;
 const PRESET_LIST_H: f32 = 112.0;
 
 #[allow(clippy::too_many_arguments)]
+/// Where the "changed only" toggle lives between frames.
+fn changed_id() -> egui::Id {
+    egui::Id::new("param-changed-only")
+}
+
 fn params_section(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
@@ -2094,12 +2221,30 @@ fn params_section(
         if !filter.is_empty() && ui.small_button("x").clicked() {
             filter.clear();
         }
+        // "What have I actually touched?"
+        //
+        // The name filter answers a question you can only ask if you
+        // already know the name — recall, where a list this long wants
+        // recognition. This is the other question, and for building a
+        // look it is the more common one: what is away from its default,
+        // which is to say what this look *is* as opposed to what it
+        // inherited. Also the fastest way to find a value you changed by
+        // accident and cannot see.
+        let changed = ui.ctx().data_mut(|d| *d.get_temp_mut_or(changed_id(), false));
+        if ui
+            .selectable_label(changed, egui::RichText::new("changed").size(vizz_design::text::CAPTION))
+            .on_hover_text("show only parameters away from their default")
+            .clicked()
+        {
+            ui.ctx().data_mut(|d| d.insert_temp(changed_id(), !changed));
+        }
         if scrolls && filter.is_empty() {
             ui.small(format!("{total} params"))
                 .on_hover_text("the list scrolls — or type here to jump");
         }
     });
     let needle = filter.trim().to_ascii_lowercase();
+    let changed_only = ui.ctx().data_mut(|d| *d.get_temp_mut_or(changed_id(), false));
     ui.memory_mut(|m| m.data.insert_temp(filter_id, filter));
 
     // As tall as the display allows, floored so a cramped window still
@@ -2111,6 +2256,25 @@ fn params_section(
         .max_height(height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            if changed_only {
+                // Flattened, like the name filter and for the same
+                // reason: you are asking a question about the whole
+                // list, not browsing it.
+                let mut hits = 0;
+                for (id, def) in registry.iter() {
+                    if is_transport(def) {
+                        continue;
+                    }
+                    if (registry.target(id) - def.default).abs() > 1e-6 {
+                        hits += 1;
+                        param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                    }
+                }
+                if hits == 0 {
+                    ui.small("everything is at its default");
+                }
+                return;
+            }
             if !needle.is_empty() {
                 // Filtering flattens: groups are for browsing, and when
                 // you have typed a name you already know what you want.
@@ -2173,8 +2337,32 @@ fn params_section(
                             // title alone is only self-explanatory to
                             // whoever chose it.
                             ui.small(egui::RichText::new(about).color(vizz_design::ink::FAINT));
-                            for (id, def) in group.params {
+                            let (loose, instances) = split_instances(&group);
+                            for (id, def) in loose {
                                 param_row(ui, registry, id, def, state, modulation, ranges, actions);
+                            }
+                            for (key, params) in instances {
+                                let in_use = instance_in_use(registry, &params);
+                                // Lit when it is doing something, so the
+                                // closed row still says which of the four
+                                // you are actually looking at.
+                                let label = egui::RichText::new(instance_label(&key))
+                                    .color(if in_use {
+                                        vizz_design::ink::PRIMARY
+                                    } else {
+                                        vizz_design::ink::TERTIARY
+                                    });
+                                egui::CollapsingHeader::new(label)
+                                    .id_salt(&key)
+                                    .default_open(in_use)
+                                    .show(ui, |ui| {
+                                        for (id, def) in params {
+                                            param_row(
+                                                ui, registry, id, def, state, modulation, ranges,
+                                                actions,
+                                            );
+                                        }
+                                    });
                             }
                             if name == "camera" {
                                 camera_buttons(ui, registry);
@@ -2195,12 +2383,98 @@ fn params_section(
     ui.small("? shows every shortcut");
 }
 
+/// A run of parameter rows, as the list hands them around.
+type Rows<'a> = Vec<(vizz_params::ParamId, &'a vizz_params::ParamDef)>;
+
+/// Split a group's parameters into the ones that stand alone and the
+/// repeated instances underneath — the four vector layers, the four
+/// gravity wells, the two lamps, the four inks.
+///
+/// Two thirds of this list is repeated structure: sixteen identical
+/// parameter names four times over for the layers alone. Presented flat
+/// it reads as a hundred and fourteen unrelated rows, and reaching the
+/// camera means scrolling past four identical blocks. Presented as
+/// instances the names are stated once and an instance you are not using
+/// costs one row.
+///
+/// An instance is recognised two ways: a numeric segment after the
+/// prefix (`/gravity/2/x`, `/light/1/level`), or the prefix itself where
+/// a group claims several (`l1`…`l4`).
+fn split_instances<'a>(group: &Group<'a>) -> (Rows<'a>, Vec<(String, Rows<'a>)>) {
+    let mut loose: Rows<'a> = Vec::new();
+    let mut instances: Vec<(String, Rows<'a>)> = Vec::new();
+    // A group claiming more than one prefix has the prefixes *as* its
+    // instances — `l1/kind`, `l2/kind` and so on, with nothing numeric to
+    // key on. Written first as "does this differ from the group's name",
+    // which quietly left layer one loose and the other three nested: the
+    // same sixteen parameters presented two different ways in one group.
+    let by_prefix = group.prefixes.len() > 1;
+    for (id, def) in &group.params {
+        let rest = def.addr.trim_start_matches('/');
+        let (head, tail) = rest.split_once('/').unwrap_or((rest, ""));
+        let key = if by_prefix {
+            head.to_string()
+        } else {
+            match tail.split_once('/') {
+                // `gravity/2/x` — the instance is `2`.
+                Some((n, _)) if n.chars().all(|c| c.is_ascii_digit()) => n.to_string(),
+                _ => String::new(),
+            }
+        };
+        if key.is_empty() {
+            loose.push((*id, *def));
+            continue;
+        }
+        match instances.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, v)) => v.push((*id, *def)),
+            None => instances.push((key, vec![(*id, *def)])),
+        }
+    }
+    (loose, instances)
+}
+
+/// Whether anything in this instance has been moved off its default.
+///
+/// What decides whether it opens on first sight. "Everything you have
+/// touched is open, everything you have not is one row" needs no
+/// per-group knowledge and is the answer to the question somebody
+/// opening this list is actually asking. egui remembers the state once
+/// it has been toggled, so this settles rather than reopening things
+/// underneath you as values change.
+fn instance_in_use(registry: &ParamRegistry, params: &[(vizz_params::ParamId, &vizz_params::ParamDef)]) -> bool {
+    params
+        .iter()
+        .any(|(id, def)| (registry.target(*id) - def.default).abs() > 1e-6)
+}
+
+/// What an instance is called on its row.
+///
+/// `l3` is the third vector layer and `2` is the third of something —
+/// neither reads as anything on its own, and the group header above
+/// already says which family it belongs to.
+fn instance_label(key: &str) -> String {
+    if let Some(n) = key.strip_prefix('l')
+        && n.chars().all(|c| c.is_ascii_digit())
+    {
+        return format!("layer {n}");
+    }
+    match key.parse::<u32>() {
+        // Addresses count from zero; people do not.
+        Ok(n) => format!("{}", n + 1),
+        Err(_) => key.to_string(),
+    }
+}
+
 /// One group of parameters, named for what it does.
 struct Group<'a> {
     /// The address prefix this group collects, e.g. `particles`. Kept
     /// because the camera and room buttons attach by it, and because a
     /// stable id_salt must not change when a title is reworded.
     name: &'a str,
+    /// Every prefix this group claims. More than one means the group's
+    /// instances *are* the prefixes — the four vector layers — rather
+    /// than a numbered segment inside one.
+    prefixes: &'static [&'static str],
     /// What a person calls it. `pal` is a namespace; "palette" is the
     /// thing on screen.
     title: &'static str,
@@ -2253,7 +2527,12 @@ impl Group<'_> {
 struct SectionSpec {
     title: &'static str,
     /// Address prefixes, in the order they should read.
-    groups: &'static [(&'static str, &'static str, &'static str)],
+    ///
+    /// A slice per group rather than one prefix, so the four vector
+    /// layers — sixteen identically-named parameters each, thirty-six
+    /// per cent of the whole list — read as one thing with four of them
+    /// rather than as four unrelated groups you scroll past.
+    groups: &'static [(&'static [&'static str], &'static str, &'static str)],
 }
 
 const SECTIONS: &[SectionSpec] = &[
@@ -2261,22 +2540,22 @@ const SECTIONS: &[SectionSpec] = &[
         title: "SHAPE",
         groups: &[
             (
-                "particles",
+                &["particles"],
                 "particles",
                 "how many points there are, how big and how bright",
             ),
             (
-                "shape",
+                &["shape"],
                 "form",
                 "which shape the points take, and the morph between two of them",
             ),
             (
-                "cloud",
+                &["cloud"],
                 "clouds",
                 "which of the eight loaded clouds the morph runs between",
             ),
             (
-                "gravity",
+                &["gravity"],
                 "gravity",
                 "the attract / repel layer that pulls points off their shape",
             ),
@@ -2285,38 +2564,31 @@ const SECTIONS: &[SectionSpec] = &[
     SectionSpec {
         title: "LOOK",
         groups: &[
-            ("color", "colour", "palette choice, hue spread and saturation"),
-            ("pal", "vector palette", "the four inks the vector layers print with"),
-            ("bg", "background", "paper colour behind everything, and its alpha"),
-            ("fx", "effects", "the feedback chain: trails, zoom, spin, mirror, glow"),
+            (&["color"], "colour", "palette choice, hue spread and saturation"),
+            (&["bg"], "background", "paper colour behind everything, and its alpha"),
+            (&["fx"], "effects", "the feedback chain: trails, zoom, spin, mirror, glow"),
         ],
     },
     SectionSpec {
         title: "PRINT",
         groups: &[
+            // One group, four layers. Sixteen identical parameter names
+            // repeated four times was the largest single block in the
+            // list and read as four unrelated things; as instances of
+            // one group the names are stated once and a layer you are
+            // not using is a closed row rather than sixteen open ones.
             (
-                "l1",
-                "vector layer 1",
-                "hard-edged pattern: generator, blend mode, frequency and ink",
+                &["l1", "l2", "l3", "l4"],
+                "vector layers",
+                "hard-edged pattern over the point field — near frequencies interfere into moiré",
             ),
+            // The inks belong with the layers that print in them. They
+            // were under LOOK, one section away from the only thing that
+            // uses them, next to the *other* colour system.
+            (&["pal"], "inks", "the four colours the vector layers print with"),
             (
-                "l2",
-                "vector layer 2",
-                "a second layer — near frequencies interfere into moiré",
-            ),
-            (
-                "l3",
-                "vector layer 3",
-                "a third layer — off by default, like the fourth",
-            ),
-            (
-                "l4",
-                "vector layer 4",
-                "the fourth and last layer of the print stack",
-            ),
-            (
-                "vec",
-                "vector placement",
+                &["vec"],
+                "placement",
                 "whether the stack lives inside the feedback chain or prints clean over it",
             ),
         ],
@@ -2324,19 +2596,65 @@ const SECTIONS: &[SectionSpec] = &[
     SectionSpec {
         title: "STAGE",
         groups: &[
-            ("camera", "camera", "where you are standing: orbit, distance, lens and pan"),
-            ("room", "room", "the box around the field, and its wireframe"),
-            ("video", "live video", "how an incoming picture becomes relief"),
+            (&["camera"], "camera", "where you are standing: orbit, distance, lens and pan"),
+            (
+                &["light"],
+                "light",
+                "lamps you can move through the field, and how much light there is everywhere",
+            ),
+            (
+                &["sun"],
+                "sun",
+                "a directional key — only bites on a cloud that knows which way it faces",
+            ),
+            (&["room"], "room", "the box around the field, and its wireframe"),
+            (&["video"], "live video", "how an incoming picture becomes relief"),
         ],
     },
     SectionSpec {
         title: "OUTPUT",
         groups: &[
-            ("master", "master", "the last thing before the output — dim, and the panic fader"),
-            ("punch", "punch", "the hold-to-engage gestures, also on the performance row"),
+            (&["master"], "master", "the last thing before the output — dim, and the panic fader"),
+            (&["punch"], "punch", "the hold-to-engage gestures, also on the performance row"),
         ],
     },
 ];
+
+/// How many parameter rows the list opens with, and how many it holds.
+///
+/// Public so the app can measure it against the real registry — this
+/// crate's tests build a cut-down one. Two thirds of the list is repeated
+/// structure, and the whole point of splitting it into instances is that
+/// what you are not using costs a row rather than sixteen.
+pub fn default_row_count(registry: &ParamRegistry) -> (usize, usize) {
+    let mut visible = 0;
+    let mut open = 0;
+    for section in sections(registry) {
+        for group in section.groups {
+            let (loose, instances) = split_instances(&group);
+            visible += loose.len();
+            open += loose.len();
+            for (_, params) in instances {
+                visible += params.len();
+                if instance_in_use(registry, &params) {
+                    open += params.len();
+                }
+            }
+        }
+    }
+    (visible, open)
+}
+
+/// Every address prefix [`SECTIONS`] gives a home to.
+///
+/// Public so the app can hold it against the real registry — see the test
+/// that does. This crate's own tests build a cut-down registry, so the
+/// check has to live where the whole parameter table does.
+pub fn placed_groups() -> impl Iterator<Item = &'static str> {
+    SECTIONS
+        .iter()
+        .flat_map(|s| s.groups.iter().flat_map(|(prefixes, _, _)| prefixes.iter().copied()))
+}
 
 /// Split the registry by the first path segment, preserving registry order
 /// both within and between groups.
@@ -2392,14 +2710,24 @@ fn sections(registry: &ParamRegistry) -> Vec<Section<'_>> {
     let mut out = Vec::new();
     for spec in SECTIONS {
         let mut groups = Vec::new();
-        for (prefix, title, about) in spec.groups {
+        for (prefixes, title, about) in spec.groups {
             // `swap_remove`-by-search rather than a lookup: what is left
             // over at the end is exactly the set nothing claimed, which
             // is how the "more" section stays correct without a second
             // list to keep in step.
-            if let Some(i) = by_prefix.iter().position(|(p, _)| p == prefix) {
-                let (name, params) = by_prefix.remove(i);
-                groups.push(Group { name, title, about, params });
+            let mut params = Vec::new();
+            let mut name = "";
+            for prefix in prefixes.iter() {
+                if let Some(i) = by_prefix.iter().position(|(p, _)| p == prefix) {
+                    let (found, mut got) = by_prefix.remove(i);
+                    if name.is_empty() {
+                        name = found;
+                    }
+                    params.append(&mut got);
+                }
+            }
+            if !params.is_empty() {
+                groups.push(Group { name, prefixes, title, about, params });
             }
         }
         if !groups.is_empty() {
@@ -2414,6 +2742,7 @@ fn sections(registry: &ParamRegistry) -> Vec<Section<'_>> {
             .into_iter()
             .map(|(name, params)| Group {
                 name,
+                prefixes: &[],
                 title: "",
                 about: "not yet placed in a section — see SECTIONS in panel.rs",
                 params,
@@ -2725,33 +3054,46 @@ fn param_row(
             }
         }
 
-        // A toggle, and drawn as one. Routing the first LFO here is a
-        // starting point; which LFO and how deep are adjustable above.
-        let lfo1 = vizz_mod::Source::Lfo(0);
-        let routed = modulation.has_route(lfo1, &def.addr);
-        let hint = if routed {
-            "LFO 1 is routed here — click to remove"
-        } else {
-            "route LFO 1 to this parameter"
-        };
-    // Modulation cannot reach transport: the engine reads fire, blend time,
-    // curve and autopilot from `target()`, which modulation never touches,
-    // so a route there is inert. Offering the button and then drawing the
-    // "modulated" marker beside it was the app claiming to do something it
-    // had no path to do.
-    // Labelled with what it actually routes. As "mod" it contradicted
-    // the ~ marker: a parameter driven by an audio band showed ~ while
-    // the button sat unlit, which read as the panel disagreeing with
-    // itself about whether the row was modulated.
-    if show_setup
-        && !is_transport(def)
-        && ui
-            .add(egui::Button::new("LFO 1").small().selected(routed))
-            .on_hover_text(hint)
-            .clicked()
-    {
-        modulation.toggle_route(lfo1, &def.addr, 0.25);
-    }
+        // The row's own modulation control.
+        //
+        // This used to be a button labelled "LFO 1" that routed the first
+        // rack LFO at a fixed quarter depth. Everything you modulated got
+        // the same LFO, and shaping it meant leaving the row, finding
+        // that LFO in the rack, and remembering which of the parameters
+        // sharing it you were trying to change. One modulator, many
+        // parameters, by default — which is backwards: sharing a
+        // modulator is the special case, not the ordinary one.
+        //
+        // Now it opens this parameter's own modulator, and the source
+        // picker inside is where you point it at a shared one instead.
+        //
+        // Modulation cannot reach transport: the engine reads fire, blend
+        // time, curve and autopilot from `target()`, which modulation
+        // never touches, so a route there is inert. Offering the button
+        // and then drawing the "modulated" marker beside it was the app
+        // claiming to do something it had no path to do.
+        if show_setup && !is_transport(def) {
+            let driven = modulation.routes.iter().any(|r| r.param == def.addr);
+            let open = open_modulator(ui) == Some(def.addr.clone());
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("~").monospace())
+                        .small()
+                        .selected(driven || open),
+                )
+                .on_hover_text(if driven {
+                    "this parameter is being modulated — click to shape it"
+                } else {
+                    "give this parameter a modulator"
+                })
+                .clicked()
+            {
+                if !driven {
+                    modulation.attach_modulator(&def.addr, 0.25);
+                }
+                set_open_modulator(ui, (!open).then(|| def.addr.clone()));
+            }
+        }
 
         if !state.midi.available || !show_setup {
             return;
@@ -2780,6 +3122,229 @@ fn param_row(
             }
         }
     });
+    if open_modulator(ui).as_deref() == Some(def.addr.as_str()) {
+        modulator_editor(ui, modulation, def);
+    }
+}
+
+/// Which row's modulator is open, if any.
+///
+/// One at a time. Several open at once turns the list back into the thing
+/// this is meant to fix — and the question a modulator answers is about
+/// one parameter, so there is nothing to compare against.
+fn open_modulator(ui: &egui::Ui) -> Option<String> {
+    ui.ctx()
+        .data(|d| d.get_temp::<String>(egui::Id::new("open-modulator")))
+}
+
+fn set_open_modulator(ui: &egui::Ui, addr: Option<String>) {
+    ui.ctx().data_mut(|d| {
+        let key = egui::Id::new("open-modulator");
+        match addr {
+            Some(a) => {
+                d.insert_temp(key, a);
+            }
+            None => {
+                d.remove_temp::<String>(key);
+            }
+        }
+    });
+}
+
+/// What is moving this parameter, and how — on the parameter's own row.
+///
+/// The shape a Resolume user expects: the modulator belongs to the
+/// control it drives, and you set it where you are already looking. The
+/// shared rack has not gone anywhere — the source picker is how you point
+/// several parameters at one LFO, which is the case worth the extra step.
+fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, def: &vizz_params::ParamDef) {
+    let addr: &str = &def.addr;
+    ui.indent(("modulator", addr), |ui| {
+        // What is driving it now. Several routes onto one parameter sum,
+        // so this reads the first and says so if there are more.
+        let sources: Vec<vizz_mod::Source> = modulation
+            .routes
+            .iter()
+            .filter(|r| r.param == addr)
+            .map(|r| r.source)
+            .collect();
+        let own = modulation.own_modulator(addr);
+        let current = sources.first().copied();
+
+        ui.horizontal(|ui| {
+            ui.small("from");
+            let label = match current {
+                Some(s) if Some(s) == own.map(vizz_mod::Source::Lfo) => "its own".to_string(),
+                Some(s) => s.label(),
+                None => "nothing".to_string(),
+            };
+            egui::ComboBox::from_id_salt(("mod-source", addr))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(own.is_some(), "its own").clicked() {
+                        clear_routes(modulation, addr);
+                        modulation.attach_modulator(addr, 0.25);
+                    }
+                    // The rack, for the case this whole change exists to
+                    // keep possible: several parameters moving together.
+                    let shared: Vec<usize> =
+                        modulation.shared_lfos().map(|(i, _)| i).collect();
+                    for i in shared {
+                        let src = vizz_mod::Source::Lfo(i);
+                        if ui.selectable_label(current == Some(src), src.label()).clicked() {
+                            clear_routes(modulation, addr);
+                            modulation.add_route(src, addr, 0.25);
+                        }
+                    }
+                    for i in 0..4 {
+                        let src = vizz_mod::Source::Audio(i);
+                        if ui.selectable_label(current == Some(src), src.label()).clicked() {
+                            clear_routes(modulation, addr);
+                            modulation.add_route(src, addr, 0.25);
+                        }
+                    }
+                    let level = vizz_mod::Source::Level;
+                    if ui.selectable_label(current == Some(level), level.label()).clicked() {
+                        clear_routes(modulation, addr);
+                        modulation.add_route(level, addr, 0.25);
+                    }
+                });
+            if sources.len() > 1 {
+                ui.small(format!("+{} more", sources.len() - 1))
+                    .on_hover_text("several routes drive this parameter; their offsets sum");
+            }
+            if ui
+                .small_button("remove")
+                .on_hover_text("stop modulating this parameter")
+                .clicked()
+            {
+                clear_routes(modulation, addr);
+                set_open_modulator(ui, None);
+            }
+        });
+
+        // Shape and rate, but only for a modulator this parameter owns.
+        // Editing a shared LFO from one of the rows it drives would change
+        // it for every other row without saying so.
+        if let Some(i) = own
+            && let Some(lfo) = modulation.lfos.get_mut(i)
+        {
+            ui.horizontal(|ui| {
+                ui.small("shape");
+                egui::ComboBox::from_id_salt(("mod-shape", addr))
+                    .selected_text(lfo.shape.label())
+                    .show_ui(ui, |ui| {
+                        for shape in vizz_mod::Shape::ALL {
+                            ui.selectable_value(&mut lfo.shape, shape, shape.label());
+                        }
+                    });
+                ui.small("every");
+                let mut beats = match lfo.rate {
+                    vizz_mod::Rate::Beats(b) => b,
+                    vizz_mod::Rate::Hz(hz) => 1.0 / hz.max(0.01),
+                };
+                if ui
+                    .add(egui::DragValue::new(&mut beats).speed(0.1).range(0.25..=64.0))
+                    .on_hover_text("cycle length in beats, so it stays with the track")
+                    .changed()
+                {
+                    lfo.rate = vizz_mod::Rate::Beats(beats);
+                }
+                ui.small("beats");
+            });
+        } else if current.is_some() {
+            ui.small(
+                egui::RichText::new("shared — shape it in the modulation rack")
+                    .color(vizz_design::ink::FAINT),
+            );
+        }
+
+        // How far, or between what and what. Both belong to the route
+        // rather than the source, so they are per-parameter even when the
+        // source is shared — which is the whole point of sharing one: the
+        // same shape, different amounts, in different places.
+        let width = def.max - def.min;
+        if let Some(route) = modulation.routes.iter_mut().find(|r| r.param == addr) {
+            match route.span {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.small("depth");
+                        ui.add(
+                            egui::Slider::new(&mut route.depth, -1.0..=1.0)
+                                .fixed_decimals(2)
+                                .show_value(true),
+                        )
+                        .on_hover_text(
+                            "how much of the parameter's range it swings, either side of \
+                             wherever the fader is — negative inverts",
+                        );
+                        if ui
+                            .small_button("range…")
+                            .on_hover_text(
+                                "set an explicit low and high instead, so the value goes where \
+                                 you say rather than where the fader plus the swing lands",
+                            )
+                            .clicked()
+                        {
+                            // Opened on what it is already doing, so the
+                            // switch shows the same movement rather than
+                            // jumping to something arbitrary and making
+                            // you find your way back.
+                            let d = route.depth.abs().max(0.05) * 0.5;
+                            route.span = Some([(0.5 - d).max(0.0), (0.5 + d).min(1.0)]);
+                        }
+                    });
+                }
+                Some(mut span) => {
+                    ui.horizontal(|ui| {
+                        // In the parameter's own units. A fraction of a
+                        // range is a number you have to convert in your
+                        // head every time, and the whole reason to want
+                        // endpoints is to say a value you have in mind.
+                        let mut low = def.min + span[0] * width;
+                        let mut high = def.min + span[1] * width;
+                        ui.small("in");
+                        let a = ui.add(
+                            egui::DragValue::new(&mut low)
+                                .speed(width / 200.0)
+                                .range(def.min..=def.max),
+                        );
+                        ui.small("out");
+                        let b = ui.add(
+                            egui::DragValue::new(&mut high)
+                                .speed(width / 200.0)
+                                .range(def.min..=def.max),
+                        );
+                        if a.changed() || b.changed() {
+                            // Not sorted. Crossing them over is how you
+                            // invert the movement, which `depth` does with
+                            // a negative — taking that away here would
+                            // lose a gesture the other mode has.
+                            span = [(low - def.min) / width, (high - def.min) / width];
+                            route.span = Some(span);
+                        }
+                        if ui
+                            .small_button("depth…")
+                            .on_hover_text("go back to swinging either side of the fader")
+                            .clicked()
+                        {
+                            route.span = None;
+                        }
+                    });
+                    ui.small(
+                        egui::RichText::new("the fader no longer moves this parameter")
+                            .color(vizz_design::ink::FAINT),
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// Every route into this parameter, gone.
+fn clear_routes(modulation: &mut ModEngine, addr: &str) {
+    modulation.detach_modulator(addr);
+    modulation.routes.retain(|r| r.param != addr);
 }
 
 /// Marks a modulated parameter. Warm against the panel's blues so it reads
@@ -2906,7 +3471,15 @@ mod layout_tests {
             .iter()
             .flat_map(|s| s.groups.iter().map(|g| g.title))
             .collect();
-        assert!(titles.contains(&"palette") || titles.contains(&"vector palette"));
+        // `pal` is "inks" rather than "vector palette": it used to sit
+        // in LOOK, one section away from the only thing that prints in
+        // it and immediately beside the *point field's* palette, which
+        // is a different system with a similar name. It now lives with
+        // the layers, called what it is.
+        assert!(
+            titles.contains(&"inks"),
+            "the vector inks lost their name: {titles:?}"
+        );
         assert!(!titles.contains(&"pal"), "a raw namespace reached the screen");
         assert!(!titles.contains(&"l1"), "a raw namespace reached the screen");
     }
@@ -2930,6 +3503,276 @@ mod layout_tests {
         );
     }
 
+    /// Pressing `~` on a row gives that parameter its own modulator and
+    /// opens it, in one click.
+    ///
+    /// Driven through real pointer events, because "the button is
+    /// painted" and "the button attaches a modulator" are different
+    /// claims and only the second one is the feature. The row's control
+    /// used to route the first rack LFO at a fixed depth, so the shape of
+    /// this test is the shape of what changed.
+    #[test]
+    fn pressing_the_row_control_attaches_a_modulator() {
+        let reg = registry_with(&["/particles/size"]);
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut modulation = vizz_mod::ModEngine::with_defaults();
+
+        let frame = |events: Vec<egui::Event>,
+                         m: &mut vizz_mod::ModEngine|
+         -> Vec<(String, egui::Pos2)> {
+            let state = PanelState { expand_sections: true, ..Default::default() };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(900.0, 1400.0),
+                )),
+                events,
+                ..Default::default()
+            });
+            let _ = draw(&ctx, &reg, &state, m, &mut Default::default());
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push((
+                        t.galley.text().to_string(),
+                        egui::Rect::from_min_size(t.pos, t.galley.rect.size()).center(),
+                    )),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        let mut painted = Vec::new();
+        for _ in 0..8 {
+            painted = frame(Vec::new(), &mut modulation);
+        }
+        // The row's setup controls appear on hover — the same restraint
+        // the range and MIDI-learn controls use, so a row you are not
+        // working on stays a name and a value. Nothing is reachable
+        // without a pointer on the row, which is worth a test knowing.
+        // To the right of the value, which is where the row's controls
+        // live: hover is measured from the cursor *after* the slider, so
+        // the label's own position is outside it.
+        let value = painted
+            .iter()
+            .find(|(t, _)| t.trim() == "0.50")
+            .map(|(_, p)| *p)
+            .expect("the parameter's value");
+        let row = value + egui::vec2(60.0, 0.0);
+        for _ in 0..3 {
+            painted = frame(vec![egui::Event::PointerMoved(row)], &mut modulation);
+        }
+        let at = painted
+            .iter()
+            .find(|(t, _)| t.trim() == "~")
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no modulation control on the row: {:?}",
+                    painted.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+
+        assert!(
+            modulation.own_modulator("/particles/size").is_none(),
+            "the premise needs a parameter with no modulator"
+        );
+        frame(
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut modulation,
+        );
+        assert!(
+            modulation.own_modulator("/particles/size").is_some(),
+            "the click did not give the parameter a modulator"
+        );
+
+        // And the editor is on screen, so it can be shaped without going
+        // anywhere — which is the whole point.
+        let mut after = Vec::new();
+        for _ in 0..3 {
+            after = frame(vec![egui::Event::PointerMoved(at)], &mut modulation);
+        }
+        let text: Vec<&str> = after.iter().map(|(t, _)| t.trim()).collect();
+        assert!(
+            text.contains(&"its own") && text.contains(&"depth"),
+            "the modulator did not open on the row: {text:?}"
+        );
+    }
+
+    /// A route with a span shows its endpoints, and says what that costs.
+    ///
+    /// The two modes are genuinely different — depth rides on top of the
+    /// fader, a span replaces what the fader was doing — so the row has
+    /// to say which one it is in and what changed.
+    #[test]
+    fn a_span_shows_its_endpoints_and_the_trade() {
+        let reg = registry_with(&["/particles/size"]);
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut modulation = vizz_mod::ModEngine::with_defaults();
+        modulation.attach_modulator("/particles/size", 0.4);
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("open-modulator"), "/particles/size".to_string())
+        });
+
+        let draw_once = |m: &mut vizz_mod::ModEngine| -> Vec<String> {
+            let state = PanelState { expand_sections: true, ..Default::default() };
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(900.0, 1400.0),
+                )),
+                ..Default::default()
+            });
+            let _ = draw(&ctx, &reg, &state, m, &mut Default::default());
+            let out = ctx.end_pass();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => out.push(t.galley.text().trim().to_string()),
+                    _ => {}
+                }
+            }
+            for p in &out.shapes {
+                walk(&p.shape, &mut found);
+            }
+            found
+        };
+
+        let mut text = Vec::new();
+        for _ in 0..4 {
+            text = draw_once(&mut modulation);
+        }
+        assert!(text.iter().any(|t| t == "depth"), "no depth control: {text:?}");
+        assert!(!text.iter().any(|t| t == "in"), "endpoints shown without a span");
+
+        if let Some(r) = modulation.routes.iter_mut().find(|r| r.param == "/particles/size") {
+            r.span = Some([0.25, 0.75]);
+        }
+        for _ in 0..4 {
+            text = draw_once(&mut modulation);
+        }
+        assert!(
+            text.iter().any(|t| t == "in") && text.iter().any(|t| t == "out"),
+            "a span does not show its endpoints: {text:?}"
+        );
+        assert!(
+            text.iter().any(|t| t.contains("fader no longer moves")),
+            "the row does not say the fader stopped working: {text:?}"
+        );
+    }
+
+    /// The four vector layers are four instances of one group, and all
+    /// four the same way.
+    ///
+    /// Keyed at first on "does this prefix differ from the group's
+    /// name", which left layer one loose and the other three nested —
+    /// the same sixteen parameters presented two ways inside one group,
+    /// which is worse than either way on its own.
+    #[test]
+    fn every_vector_layer_is_an_instance() {
+        let addrs: Vec<String> = (1..=4)
+            .flat_map(|l| ["kind", "freq", "opacity"].map(move |f| format!("/l{l}/{f}")))
+            .collect();
+        let refs: Vec<&str> = addrs.iter().map(String::as_str).collect();
+        let reg = registry_with(&refs);
+        let built = sections(&reg);
+        let group = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .find(|g| g.title == "vector layers")
+            .expect("the layers group");
+        let (loose, instances) = split_instances(group);
+        assert!(loose.is_empty(), "{} parameters were left loose", loose.len());
+        let keys: Vec<&str> = instances.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["l1", "l2", "l3", "l4"]);
+        for (key, params) in &instances {
+            assert_eq!(params.len(), 3, "{key} has the wrong count");
+        }
+    }
+
+    /// A numbered family splits on its number, and the loose parameters
+    /// above it stay loose.
+    #[test]
+    fn a_numbered_family_splits_on_its_number() {
+        let reg = registry_with(&[
+            "/gravity/amount",
+            "/gravity/0/x",
+            "/gravity/0/strength",
+            "/gravity/1/x",
+            "/gravity/1/strength",
+        ]);
+        let built = sections(&reg);
+        let group = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .find(|g| g.title == "gravity")
+            .expect("the gravity group");
+        let (loose, instances) = split_instances(group);
+        assert_eq!(loose.len(), 1, "the master amount should stand alone");
+        assert_eq!(instances.len(), 2, "two wells");
+        // Counted from one on screen. Addresses count from zero; nobody
+        // reading a panel does.
+        assert_eq!(instance_label("0"), "1");
+        assert_eq!(instance_label("3"), "4");
+        assert_eq!(instance_label("l2"), "layer 2");
+    }
+
+    /// An instance opens on first sight when something in it is away
+    /// from its default, and stays shut when nothing is.
+    ///
+    /// This is what makes the list short: two thirds of it is repeated
+    /// structure, and a layer you are not using should cost one row
+    /// rather than sixteen.
+    #[test]
+    fn an_unused_instance_starts_closed() {
+        let reg = registry_with(&["/gravity/0/strength", "/gravity/1/strength"]);
+        let built = sections(&reg);
+        let group = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .find(|g| g.title == "gravity")
+            .expect("the gravity group");
+        let (_, instances) = split_instances(group);
+        assert!(
+            instances.iter().all(|(_, p)| !instance_in_use(&reg, p)),
+            "everything is at its default, so nothing should be open"
+        );
+        // Move one, and only that one opens.
+        let id = reg.id("/gravity/1/strength").expect("the address");
+        reg.set(id, reg.defs()[id.index()].max);
+        let (_, instances) = split_instances(group);
+        let open: Vec<&str> = instances
+            .iter()
+            .filter(|(_, p)| instance_in_use(&reg, p))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(open, ["1"], "the wrong instances opened");
+    }
+
     /// Sections read in the order a look gets built, and every group
     /// carries a line saying what it is for.
     #[test]
@@ -2937,11 +3780,12 @@ mod layout_tests {
         let order: Vec<&str> = SECTIONS.iter().map(|s| s.title).collect();
         assert_eq!(order, ["SHAPE", "LOOK", "PRINT", "STAGE", "OUTPUT"]);
         for spec in SECTIONS {
-            for (prefix, title, about) in spec.groups {
-                assert!(!title.is_empty(), "{prefix} has no human title");
+            for (prefixes, title, about) in spec.groups {
+                assert!(!prefixes.is_empty(), "a group claims no prefixes at all");
+                assert!(!title.is_empty(), "{prefixes:?} has no human title");
                 assert!(
                     about.len() > 20,
-                    "{prefix}'s caption is too short to say anything useful"
+                    "{prefixes:?}'s caption is too short to say anything useful"
                 );
             }
         }

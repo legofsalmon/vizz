@@ -311,6 +311,7 @@ fn main() {
 
     let state = PanelState {
         project: "Show 1".into(),
+        local_address: Some("192.168.1.42".into()),
         decks: Vec::new(),
         active_deck: 0,
         follow_columns: None,
@@ -424,6 +425,14 @@ fn main() {
     let mut modulation = vizz_mod::ModEngine::with_defaults();
     modulation.add_route(vizz_mod::Source::Lfo(0), "/particles/hue", 0.3);
     modulation.add_route(vizz_mod::Source::Audio(0), "/particles/size", 0.4);
+    // A parameter with a modulator of its own, which is the ordinary case
+    // now and the one a preview should show. `/particles/hue` above keeps
+    // the shared-LFO case in the same shot.
+    modulation.attach_modulator("/particles/speed", 0.35);
+    // With an explicit range, which is the mode worth a look.
+    if let Some(r) = modulation.routes.iter_mut().find(|r| r.param == "/particles/speed") {
+        r.span = Some([0.2, 0.75]);
+    }
     let ctx = egui::Context::default();
     ctx.set_visuals(egui::Visuals::dark());
     let input = egui::RawInput {
@@ -439,14 +448,46 @@ fn main() {
     // Several passes with advancing time: egui sizes a fresh window on the
     // first pass, and fades new windows in over ~0.1s. Rendering at t=0
     // captures the panel mid-fade — nearly invisible.
+    // How far down the parameter list to scroll before the shot.
+    //
+    // The panel's window tops out around a thousand points however tall
+    // the display is, and the parameter list scrolls inside it — so
+    // everything past the first two dozen rows is unreachable to a static
+    // render, which is most of the list and all of the interesting part.
+    // Driven with real wheel events over the list rather than by reaching
+    // into the scroll area, so what is captured is what a hand would get.
+    let scroll: f32 = std::env::args()
+        .find_map(|a| a.strip_prefix("scroll=").and_then(|v| v.parse().ok()))
+        .unwrap_or(0.0);
     for i in 0..12 {
         let mut input = input.clone();
         input.time = Some(i as f64 * 0.05);
+        // Once the layout has settled, and in one go: a wheel event per
+        // pass would be smoothed into an animation and the last frame
+        // would catch it mid-glide.
+        if scroll > 0.0 && i == 8 {
+            let over = egui::pos2(w as f32 * 0.5, h as f32 * 0.5);
+            input.events.push(egui::Event::PointerMoved(over));
+            input.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -scroll),
+                modifiers: Default::default(),
+                phase: egui::TouchPhase::Move,
+            });
+        }
         ctx.begin_pass(input);
         // A name already in use, typed into the save field. Saving used to
         // replace a preset in silence, and the warning that now says so is
         // only reviewable if the preview renders the state it appears in —
         // an empty field draws the one case where there is nothing to say.
+        // A row's modulator, opened for review. The editor only exists
+        // while a row is open, so a shot of the panel cannot otherwise
+        // contain the thing most worth looking at.
+        if let Some(addr) = std::env::args().find_map(|a| {
+            a.strip_prefix("modulator=").map(str::to_string)
+        }) {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open-modulator"), addr));
+        }
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::new("preset-save-name"), "Warehouse 2".to_string())
         });

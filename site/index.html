@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.23.0/vizz-0.23.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.24.0/vizz-0.24.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz/releases">All releases</a>
@@ -247,6 +247,48 @@
   <div class="wrap">
     <h2>Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.24.0">0.24.0</a></div>
+      <ul>
+        <li><strong>A modulator belongs to the parameter it drives.</strong>
+          The row's control used to be a button labelled “LFO 1” that
+          routed the first LFO in the rack at a fixed depth — so
+          everything you modulated got the same LFO, and shaping it meant
+          leaving the row to go and find it. Press <strong>~</strong> and
+          the parameter gets a modulator of its own, opened underneath:
+          source, shape, cycle length in beats, depth. Pointing several
+          parameters at one shared LFO is still there, one step further in
+          — where it belongs, since sharing is the special case.</li>
+        <li><strong>Modulators can be given an in and an out point.</strong>
+          Depth swings a parameter either side of wherever the fader is.
+          An explicit range says where the value actually goes — set in
+          the parameter's own units, not as a fraction of anything. The
+          trade is that the fader stops moving that parameter, and the row
+          says so rather than leaving you to wonder.</li>
+        <li><strong>The parameter list is a third of the length.</strong>
+          Two thirds of it was repeated structure: four identical copies
+          of the sixteen vector-layer parameters, four gravity wells, two
+          lamps, four inks. Those are now instances that open when
+          something in them is off its default, so what you are not using
+          costs one row instead of sixteen — 66 rows on opening instead of
+          176, with nothing removed. There is also a
+          <strong>changed</strong> filter, for the question the name
+          filter cannot answer.</li>
+        <li><strong>The lighting controls were unfindable.</strong> 0.23.0
+          shipped them into a section headed MORE with a note meant for
+          whoever was editing the panel. They are under STAGE, where they
+          belong.</li>
+        <li><strong>A live point-cloud stream ran at about twelve frames a
+          second.</strong> 0.23.0 added normal fitting to the single path
+          a cloud takes to the GPU — and a stream goes through that path
+          once per arriving frame, so every frame fitted normals to
+          sixty-five thousand points. That was 180 ms a frame; it is now
+          under three. Three further faults found in the same area are
+          fixed with it, including normals coming out wrong on any cloud
+          smaller than a slot, which is most of them.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.23.0">0.23.0</a></div>
