@@ -62,6 +62,36 @@ pub struct ParamDef {
     /// transport is that no preset may capture it: recalling a look must
     /// never replay somebody's blackout.
     pub gesture: bool,
+    /// Whether the parameter list gives this a row of its own.
+    ///
+    /// True for almost everything. False says the control has a *better*
+    /// home elsewhere in the panel — not that it is hidden, which is a
+    /// different and much worse thing. `/cloud/a` is the case this
+    /// exists for: it is chosen by clicking a cloud's name in the CLOUDS
+    /// section, where the names are, rather than by dragging a slider
+    /// whose value is a slot index nobody can read.
+    ///
+    /// Unlike [`ParamDef::transport`] this says nothing about presets: an
+    /// unlisted parameter is still part of the look, still captured, and
+    /// still restored.
+    pub listed: bool,
+    /// Moved by the machinery, never offered as a control.
+    ///
+    /// The cloud morph is the case this exists for. A transition between
+    /// two scenes pins `/cloud/a` to the outgoing cloud and `/cloud/b` to
+    /// the incoming one and sweeps `/cloud/morph` across — that is the
+    /// geometry blend, and it is the only thing that should ever move
+    /// those two. A hand on the morph fader mid-transition is fighting
+    /// the transition for the same three values.
+    ///
+    /// So: no row in the parameter list, and refused by modulation, MIDI
+    /// and OSC. Still captured by presets, because *which* cloud a scene
+    /// shows is part of that scene — and the transition reads it back out
+    /// to know what to blend from.
+    ///
+    /// Implies [`ParamDef::listed`] is false. One flag rather than a
+    /// second list, for the reason [`ParamDef::transport`] gives.
+    pub driven: bool,
 }
 
 impl ParamDef {
@@ -81,6 +111,8 @@ impl ParamDef {
             labels: None,
             transport: false,
             gesture: false,
+            listed: true,
+            driven: false,
         }
     }
 
@@ -110,6 +142,22 @@ impl ParamDef {
     /// failure the second list existed to prevent.
     pub fn transport(mut self) -> Self {
         self.transport = true;
+        self
+    }
+
+    /// Keep this out of the parameter list; it is reached somewhere
+    /// better. See [`ParamDef::listed`].
+    pub fn unlisted(mut self) -> Self {
+        self.listed = false;
+        self
+    }
+
+    /// Mark this as driven by the machinery rather than by hand: no row,
+    /// and no route in from modulation, MIDI or OSC. See
+    /// [`ParamDef::driven`].
+    pub fn driven(mut self) -> Self {
+        self.driven = true;
+        self.listed = false;
         self
     }
 

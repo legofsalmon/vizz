@@ -758,15 +758,20 @@ impl App {
             .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
     }
 
-    /// Put a cloud slot on screen: select it as the `a` end of the morph
-    /// pair, take the morph to that end, and point `/shape/mode` at the
-    /// cloud pair.
+    /// Put a cloud slot on screen: point `/cloud/a` at it, park the morph
+    /// at that end, and point `/shape/mode` at the cloud.
     ///
     /// The last of those was missing, and it is the one that decides
-    /// whether anything appears: `/cloud/a` only chooses which cloud the
-    /// pair would show, so with the shape sitting on `sphere` — where it
+    /// whether anything appears: `/cloud/a` only chooses which cloud
+    /// would show, so with the shape sitting on `sphere` — where it
     /// rests on a fresh launch — dragging in a scan or typing a word
     /// changed nothing on screen while the notice said "and shown".
+    ///
+    /// Parking the morph matters more than it used to. It is the only
+    /// thing that resets it now that no control does, so a preset saved
+    /// by an older build holding `/cloud/morph` half way is undone by
+    /// clicking a cloud — which is exactly where someone would go on
+    /// seeing a look stuck between two scans.
     ///
     /// The shape *glides* there rather than cutting, because that is what
     /// every other value change in the app does, and the sweep blends
@@ -1344,15 +1349,8 @@ impl App {
                 // Show a cloud the panel asked for: the same call the
                 // drop path makes, so there is one way a cloud gets on
                 // screen rather than two that can disagree.
-                if let Some((slot, as_b)) = actions.cloud_show {
-                    if as_b {
-                        self.params.registry.set(self.params.cloud_b, slot as f32);
-                        self.params
-                            .registry
-                            .set(self.params.shape, crate::params::SHAPE_CLOUD_PAIR);
-                    } else {
-                        Self::show_cloud_slot(&self.params, slot);
-                    }
+                if let Some(slot) = actions.cloud_show {
+                    Self::show_cloud_slot(&self.params, slot);
                 }
                 // Start or stop receiving a live cloud. Failing to
                 // connect is a notice, not a crash: the usual cause is

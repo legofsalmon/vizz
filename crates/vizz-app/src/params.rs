@@ -303,16 +303,33 @@ impl AppParams {
             ParamDef::new("/color/drive", 0.0, 3.0, 0.0)
                 .labels(&["index", "radius", "depth", "height"]),
         );
-        // Point-cloud pair. Slot choice is stepped — half a slot is not a
-        // cloud — while the morph between them is the swept, modulatable
-        // control, which is what makes it worth having separately from the
-        // shape sweep (that one only reaches *adjacent* modes).
-        // The ceiling is the bank's, derived rather than retyped, so
-        // growing the bank cannot leave the top slots unreachable.
+        // The point-cloud pair, and the blend across it.
+        //
+        // These used to be three sliders in the parameter list: pick a
+        // slot for `a`, pick a slot for `b`, then ride the morph between
+        // them by hand. That was one control too many and one idea too
+        // many — the pair only ever exists in order to *cross* from one
+        // cloud to another, and the app already knows when a crossing is
+        // happening, because it is the one running it.
+        //
+        // So the pair is machinery now. A scene transition pins `a` to
+        // the cloud it is leaving and `b` to the cloud it is arriving at
+        // and sweeps the morph across (see `Transition::write_cloud`);
+        // nothing else moves them. `a` stays a real, settable parameter
+        // because it is *which cloud this look shows* — chosen by
+        // clicking a name in the panel's CLOUDS section, captured by
+        // every preset, and read back by the next transition to know what
+        // it is blending from. It is unlisted rather than driven for
+        // exactly that reason.
+        //
+        // Slot choice is stepped — half a slot is not a cloud. The
+        // ceiling is the bank's, derived rather than retyped, so growing
+        // the bank cannot leave the top slots unreachable.
         let cloud_max = (vizz_render::attractor::SLOTS - 1) as f32;
-        let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, cloud_max, 0.0));
-        let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, cloud_max, 1.0));
-        let cloud_morph = b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).smooth(0.5));
+        let cloud_a = b.add(ParamDef::new("/cloud/a", 0.0, cloud_max, 0.0).unlisted());
+        let cloud_b = b.add(ParamDef::new("/cloud/b", 0.0, cloud_max, 1.0).driven());
+        let cloud_morph =
+            b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).smooth(0.5).driven());
         // Live video, which arrives as a cloud in its own slot. Depth is
         // signed so the relief can be pushed either way from the plane —
         // a picture standing proud of it or sunk into it are different
@@ -918,6 +935,78 @@ mod tests {
         }
     }
 
+    /// A driven parameter must still be captured by presets.
+    ///
+    /// This is the trap in the flag, and it is worth a test of its own
+    /// because the wrong fix is the obvious one. `driven` and `transport`
+    /// both mean "not yours to drag", so folding one into the other looks
+    /// like tidying. It is not: transport is excluded from presets, and
+    /// the moment `/cloud/a` stops being captured, a scene no longer
+    /// records which cloud it shows — so the next transition has nothing
+    /// to blend from, and the geometry morph this whole change exists to
+    /// protect silently stops happening.
+    ///
+    /// Driven says *who moves it*. Transport says *whether it is part of
+    /// the look*. The cloud pair is emphatically part of the look.
+    #[test]
+    fn a_driven_parameter_is_still_part_of_the_look() {
+        let p = AppParams::build();
+        let mut seen = 0;
+        for (_, def) in p.registry.iter() {
+            if !def.driven && def.listed {
+                continue;
+            }
+            seen += 1;
+            assert!(
+                !def.transport,
+                "{} is driven or unlisted *and* transport, so presets drop it",
+                def.addr
+            );
+            assert!(
+                !vizz_mod::preset::EXCLUDED.contains(&def.addr.as_str()),
+                "{} is excluded from presets, so a scene cannot record it",
+                def.addr
+            );
+            assert!(
+                vizz_mod::preset::Kind::Look.owns_def(def),
+                "{} is not owned by the look layer, so a look preset skips it",
+                def.addr
+            );
+        }
+        assert!(seen >= 3, "the cloud pair is not flagged at all, so this tested nothing");
+    }
+
+    /// The cloud controls are off the parameter list, and the way onto
+    /// the screen is the CLOUDS section instead.
+    ///
+    /// Pinned against the real registry because the panel crate's own
+    /// tests build a cut-down one — the same reason the section-table
+    /// check lives here.
+    #[test]
+    fn the_cloud_pair_has_no_rows_in_the_parameter_list() {
+        let p = AppParams::build();
+        for addr in ["/cloud/a", "/cloud/b", "/cloud/morph"] {
+            let id = p.registry.id(addr).expect("the cloud pair still exists");
+            let def = &p.registry.defs()[id.index()];
+            assert!(!def.listed, "{addr} is back in the parameter list");
+        }
+        // And the two the transition owns are refused everywhere else.
+        for addr in ["/cloud/b", "/cloud/morph"] {
+            let id = p.registry.id(addr).unwrap();
+            assert!(
+                p.registry.defs()[id.index()].driven,
+                "{addr} is reachable by hand again"
+            );
+        }
+        // `/cloud/a` is not driven: it is *which cloud this look shows*,
+        // set by clicking a name and restored by every preset recall.
+        let a = p.registry.id("/cloud/a").unwrap();
+        assert!(
+            !p.registry.defs()[a.index()].driven,
+            "the cloud selection became unsettable, so nothing can choose a cloud"
+        );
+    }
+
     /// Every transport parameter must be excluded from presets, and every
     /// excluded parameter except the panic fader must be transport.
     ///
@@ -1140,7 +1229,11 @@ mod reference_tests {
             // Transport parameters are deliberately kept out of this
             // list; they have their own controls on the performance
             // layout. See `panel::is_transport`.
-            if d.transport {
+            //
+            // So are unlisted ones, for the neighbouring reason: they
+            // have a better home than a row. `/cloud/*` is reached by
+            // clicking a cloud's name in CLOUDS, where the names are.
+            if d.transport || !d.listed {
                 continue;
             }
             let prefix = d.addr.trim_start_matches('/').split('/').next().unwrap_or("");

@@ -492,6 +492,11 @@ fn handle_message(
 
     if let Some((param, update)) = resolved
         && let Some(id) = registry.id(&param)
+        // A binding left over from when the cloud morph was a fader must
+        // not still drive it: the morph belongs to whichever transition
+        // is running. Refused here rather than at learn time, because a
+        // map saved by an older build is already on disk.
+        && !registry.defs()[id.index()].driven
     {
         match update {
             Update::Range(t) => registry.set_normalized(id, t),
@@ -630,7 +635,36 @@ mod tests {
         b.add(ParamDef::new("/particles/hue", 0.0, 1.0, 0.5));
         // A slot parameter, to stand in for the real `/scene/fire`.
         b.add(ParamDef::new("/scene/fire", 0.0, 16.0, 0.0));
+        // Driven by the app, never by a controller — the cloud morph,
+        // which belongs to whichever transition is running.
+        b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).driven());
         Arc::new(b.build())
+    }
+
+    /// A mapping saved before the morph became the transition's must not
+    /// still drive it.
+    ///
+    /// The refusal is at the write rather than at learn time on purpose:
+    /// the learn button is gone with the row, but a `midi.json` written
+    /// by an older build is already on people's disks, and it would
+    /// otherwise fight every scene change with a fader nothing explains.
+    #[test]
+    fn a_stale_binding_cannot_drive_a_driven_parameter() {
+        let reg = registry();
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        shared
+            .lock()
+            .unwrap()
+            .map
+            .bind(Source::ControlChange { channel: 0, controller: 7 }, "/cloud/morph");
+        let mut d = Dispatcher::default();
+
+        handle_message(&[0xB0, 7, 127], &reg, &shared, &mut d);
+        assert_eq!(
+            reg.target(reg.id("/cloud/morph").unwrap()),
+            0.0,
+            "a stale MIDI binding moved the cloud morph"
+        );
     }
 
     /// The estimator reads the wire tempo through realistic per-tick

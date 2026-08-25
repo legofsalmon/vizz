@@ -531,7 +531,11 @@ impl NodeGraph {
                     node.state
                 }
                 NodeKind::Param { addr, depth } => {
-                    if let Some(id) = registry.id(addr) {
+                    if let Some(id) = registry.id(addr)
+                        // Same refusal as the flat routes: what a
+                        // transition drives, a patch may not.
+                        && !registry.defs()[id.index()].driven
+                    {
                         // Several Param nodes may target one parameter; they
                         // sum, and the snapshot clamps the total.
                         offsets[id.index()] += input[0] * *depth;

@@ -622,22 +622,38 @@ sender at that. It is only shown for a <code>listen://</code> address: if you
 are dialling out to <code>host:port</code> instead, the address that matters is
 the other machine's.</p>
 
-<h3>Showing and morphing them</h3>
+<h3>Showing and crossing between them</h3>
 
 <p><strong>A cloud you load is shown.</strong> Dropping a file, typing a word,
 naming one with <code>--cloud</code>, or the first frame of a live stream all
 select the new slot as <code>/cloud/a</code> and point
-<code>/shape/mode</code> at the cloud pair. The shape glides there rather than
+<code>/shape/mode</code> at the cloud. The shape glides there rather than
 cutting, so the field turns into the cloud over about a second.</p>
 
 <p>The one case that does not move the shape is the bank coming back at
 startup: the clouds you loaded in earlier sessions are restored to their
 slots, but the look you left behind is left alone.</p>
 
-<p><code>/cloud/a</code> and <code>/cloud/b</code> pick the two slots and
-<code>/cloud/morph</code> blends between them. Slot choice is stepped — half a
-slot is not a cloud — while the morph is swept and modulatable, so it can be
-driven from an LFO, the beat clock or an audio band.</p>
+<p><strong>To choose a cloud, click its name</strong> in the panel's clouds
+section. A slot is an index, and an index is unreadable once anything has been
+loaded — “2” says nothing about whether that is the torso scan or the room —
+so the names are the control and there is no slider anywhere that says
+<code>2</code>.</p>
+
+<p><strong>Crossing from one cloud to another is what a scene change
+does.</strong> The pair — <code>/cloud/a</code>, <code>/cloud/b</code> and
+<code>/cloud/morph</code> — is machinery rather than a control: a transition
+pins <code>a</code> to the cloud it is leaving, <code>b</code> to the cloud it
+is arriving at, and sweeps the morph across. It used to be three sliders in
+the parameter list, which was one control too many and one idea too many; the
+pair only ever exists in order to make that crossing, and the app already
+knows when a crossing is happening because it is the one running it.
+<code>/cloud/b</code> and <code>/cloud/morph</code> are accordingly refused
+from OSC, MIDI and modulation — a second hand on those values fights the
+transition and lands the blend somewhere other than the scene it was fired at.
+<code>/cloud/a</code> stays settable, because it is <em>which cloud this look
+shows</em>: captured by every preset and read back by the next transition to
+know what it is blending from.</p>
 
 <p>Particles keep their index across the blend, so the same point travels from
 one cloud to the other rather than the field being re-scattered. A blend
@@ -658,10 +674,9 @@ vizz --video-source "OBS"     # an NDI source, matched as a substring
 vizz --list-ndi               # what is on the network</code></pre>
 
 <p>A video input <strong>arrives as a cloud in its own slot</strong>. That is
-the whole design: <code>/cloud/a</code>, <code>/cloud/b</code> and
-<code>/cloud/morph</code> select and blend it, the palette tints it, the
-spread scales it, and it morphs against a scan or an attractor with nothing
-else needing to know it is live. The first frame points the shape at it, the
+the whole design: <code>/cloud/a</code> selects it, the palette tints it, the
+spread scales it, and a scene change crosses it into a scan or an attractor
+with nothing else needing to know it is live. The first frame points the shape at it, the
 way a dropped file does.</p>
 
 <p>Each particle takes a fixed cell of the picture and stays there, so the
@@ -1164,9 +1179,9 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/color/palette</code></td><td>0 – 15</td><td>0</td><td>palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes</td></tr>
     <tr><td><code>/color/spread</code></td><td>0 – 1</td><td>0.12</td><td>how much of the palette the field spans</td></tr>
     <tr><td><code>/color/drive</code></td><td>0 – 3</td><td>0</td><td>what picks the colour: 0 index · 1 radius · 2 depth · 3 height</td></tr>
-    <tr><td><code>/cloud/a</code></td><td>0 – 8</td><td>0</td><td>first slot of the cloud morph pair</td></tr>
-    <tr><td><code>/cloud/b</code></td><td>0 – 8</td><td>1</td><td>second slot of the cloud morph pair</td></tr>
-    <tr><td><code>/cloud/morph</code></td><td>0 – 1</td><td>0</td><td>blend position between the pair</td></tr>
+    <tr><td><code>/cloud/a</code></td><td>0 – 8</td><td>0</td><td>which cloud this look shows; set by clicking a name, not listed as a row</td></tr>
+    <tr><td><code>/cloud/b</code></td><td>0 – 8</td><td>1</td><td>the cloud a transition is crossing <em>to</em> — driven by the transition, refused from OSC/MIDI/modulation</td></tr>
+    <tr><td><code>/cloud/morph</code></td><td>0 – 1</td><td>0</td><td>where that crossing has got to — driven by the transition, refused from OSC/MIDI/modulation</td></tr>
     <tr><td><code>/video/depth</code></td><td>-2 – 2</td><td>0.6</td><td>how far the picture's relief pushes along z; 0 is flat</td></tr>
     <tr><td><code>/video/relief</code></td><td>0 – 3</td><td>0</td><td>what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma</td></tr>
     <tr><td><code>/lN/kind</code> (N = 1–4)</td><td>0 – 7</td><td>0</td><td>layer generator: off · rings · stripes · checker · polygon · star · rays · dots</td></tr>

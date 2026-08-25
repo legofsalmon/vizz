@@ -1759,7 +1759,8 @@ mod tests {
         assert!(text.contains("runtime not installed"), "the note is not shown: {text}");
     }
 
-    /// A loaded cloud must offer a way onto the screen.
+    /// A loaded cloud must offer a way onto the screen — and it must be
+    /// the *only* way, now that the morph pair belongs to transitions.
     ///
     /// The mechanism existed and was three parameters apart: /shape/mode
     /// set to 'cloud', /cloud/a pointed at the slot, /cloud/morph taken
@@ -1767,6 +1768,11 @@ mod tests {
     /// at the moment of the drop, so a cloud restored on the next launch,
     /// or one displaced by a preset recall, sat in the list looking
     /// inert with nothing to click.
+    ///
+    /// The second half of this is what the section must no longer say. A
+    /// "b" button and a caption about the two ends of a morph described a
+    /// control that is not the user's any more, and a caption describing
+    /// a control nobody has is worse than no caption.
     #[test]
     fn a_cloud_row_offers_a_way_onto_the_screen() {
         let reg = registry();
@@ -1807,13 +1813,21 @@ mod tests {
         };
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("torso-scan"), "the cloud is not listed: {text}");
-        // The pair is explained rather than left as two mystery numbers.
+        // Clicking a name is the gesture, and it is stated: an affordance
+        // nobody can see is an affordance nobody uses.
         assert!(
-            text.contains("both ends") || text.contains("two ends"),
-            "nothing says what a and b are: {text}"
+            text.contains("click a cloud"),
+            "nothing says how to put a cloud up: {text}"
         );
-        // And there is a control for the far end, not only the near one.
-        assert!(text.contains('b'), "no way to set the far end: {text}");
+        // And the morph is gone from here. It is the transition's.
+        assert!(
+            !text.contains("two ends") && !text.contains("both ends"),
+            "the panel still explains a morph pair the user no longer has: {text}"
+        );
+        assert!(
+            !text.contains("far end"),
+            "the far-end control outlived the morph pair: {text}"
+        );
     }
 
     /// Receiving a stream must be reachable from the panel, and must

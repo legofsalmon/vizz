@@ -410,6 +410,12 @@ impl ModEngine {
                 Source::Level => audio.level,
             };
             let Some(id) = registry.id(&route.param) else { continue };
+            // A driven parameter has an owner already. An LFO summed on
+            // top of a transition's morph would make the crossing wobble
+            // and land somewhere other than the scene it was aimed at.
+            if registry.defs()[id.index()].driven {
+                continue;
+            }
             // Several routes may target one parameter; they sum, and the
             // snapshot clamps the total.
             match route.span {
@@ -592,7 +598,55 @@ mod tests {
         let mut b = ParamRegistry::builder();
         b.add(ParamDef::new("/a", 0.0, 10.0, 5.0));
         b.add(ParamDef::new("/b", -1.0, 1.0, 0.0));
+        b.add(ParamDef::new("/driven", 0.0, 1.0, 0.0).driven());
         b.build()
+    }
+
+    /// Modulation may not reach what a transition owns.
+    ///
+    /// An LFO summed on top of the cloud morph would make a scene change
+    /// wobble on its way across and land somewhere other than the scene
+    /// it was fired at — and it would do it invisibly, because the route
+    /// and the transition are configured a screen apart. Refused in the
+    /// tick rather than only in the UI, since a patch saved before the
+    /// morph became the transition's is already on disk.
+    #[test]
+    fn a_route_onto_a_driven_parameter_is_ignored() {
+        let reg = registry();
+        let mut m = ModEngine::with_defaults();
+        m.lfos = vec![Lfo { shape: Shape::Sine, rate: Rate::Hz(1.0), ..Default::default() }];
+        m.add_route(Source::Lfo(0), "/driven", 1.0);
+        m.add_route(Source::Lfo(0), "/a", 1.0);
+        // A quarter of a cycle in, the sine is at its peak, so an
+        // honoured route is unmistakable.
+        let offsets = m.tick(0.25, &reg, AudioLevels::default());
+        let driven = reg.id("/driven").unwrap().index();
+        let ordinary = reg.id("/a").unwrap().index();
+        assert_eq!(offsets[driven], 0.0, "modulation reached a driven parameter");
+        assert!(
+            offsets[ordinary].abs() > 0.5,
+            "the control route did not land either, so this proves nothing: {}",
+            offsets[ordinary]
+        );
+    }
+
+    /// The same refusal on the node canvas, which is a second way to the
+    /// same place and would otherwise be the way round it.
+    #[test]
+    fn a_patched_node_cannot_reach_a_driven_parameter_either() {
+        let reg = registry();
+        let mut m = ModEngine::default();
+        let src = m.graph.add(graph::NodeKind::Constant(1.0), [0.0, 0.0]);
+        let sink = m
+            .graph
+            .add(graph::NodeKind::Param { addr: "/driven".into(), depth: 1.0 }, [2.0, 0.0]);
+        m.graph.connect(src, sink, 0);
+        let offsets = m.tick(0.1, &reg, AudioLevels::default());
+        assert_eq!(
+            offsets[reg.id("/driven").unwrap().index()],
+            0.0,
+            "the canvas reached a driven parameter the routes refuse"
+        );
     }
 
     #[test]

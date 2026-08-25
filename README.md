@@ -1131,19 +1131,31 @@ into a cloud, morphable against any other slot like any shape. Typed
 clouds come back after a restart — they persist as `text:WORD` entries
 in the settings and re-rasterize deterministically on launch.
 
-`/shape/mode 7` shows the **cloud pair**: `/cloud/a` and `/cloud/b` choose
-slots, `/cloud/morph` blends between them. **Loading a cloud points the
+`/shape/mode 7` shows a **cloud**. Which one is chosen by clicking its
+name in the panel's clouds section — the names are there, and a slot
+index is not something anyone can read. **Loading a cloud points the
 shape there for you** — dropping a file, typing a word or naming one with
-`--cloud` all select the new slot and glide `/shape/mode` onto the pair,
+`--cloud` all select the new slot and glide `/shape/mode` onto the cloud,
 because a cloud that arrives while the shape is still on `sphere` is
 invisible and the load reads as having done nothing. Restoring the saved
 bank at startup deliberately does not, or every launch would open on
-whatever was dropped last. That is separate from the shape
-sweep because the sweep only reaches *adjacent* modes — morphing an
-imported scan into Lorenz needs its own control. Slot choice is stepped
-(half a slot is not a cloud); the morph is swept and modulatable, so it
-can be driven from an LFO, the beat clock or an audio band like anything
-else.
+whatever was dropped last.
+
+**Crossing from one cloud to another is what a scene change does.** The
+pair — `/cloud/a`, `/cloud/b` and `/cloud/morph` — is machinery rather
+than a control: a transition pins `a` to the cloud it is leaving, `b` to
+the cloud it is arriving at, and sweeps the morph across, so every
+particle travels from where it sat in one scan to where it sits in the
+other. It used to be three sliders in the parameter list, which was one
+control too many and one idea too many; the pair only ever exists in
+order to make that crossing, and the app already knows when a crossing is
+happening because it is the one running it. `/cloud/b` and `/cloud/morph`
+are accordingly refused from OSC, MIDI and modulation — a second hand on
+those values fights the transition and lands the blend somewhere other
+than the scene it was fired at. `/cloud/a` stays settable, because it is
+*which cloud this look shows*: captured by every preset, restored on
+recall, and read back by the next transition to know what it is blending
+from.
 
 Particles keep their index across the blend, so the same point travels
 from one cloud to the other rather than the field being re-scattered. Be
@@ -1178,7 +1190,7 @@ vizz --list-ndi                   # what is on the network
 ```
 
 A video input **arrives as a cloud in its own slot**, which is the whole
-design: `/cloud/a`, `/cloud/b` and `/cloud/morph` select and blend it,
+design: `/cloud/a` selects it and a scene change blends it,
 the palette tints it, the spread scales it, and it can be morphed against
 a scan or an attractor with nothing else knowing it is live. The first
 frame points the shape at it, the way a dropped file does.
@@ -1446,9 +1458,9 @@ control input can never crash the renderer.
 | `/color/palette` | 0 – 15 | 0 | palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes |
 | `/color/spread` | 0 – 1 | 0.12 | how much of the palette the field spans |
 | `/color/drive` | 0 – 3 | 0 | what picks the colour: 0 index · 1 radius · 2 depth · 3 height |
-| `/cloud/a` | 0 – 8 | 0 | first slot of the cloud morph pair |
-| `/cloud/b` | 0 – 8 | 1 | second slot of the cloud morph pair |
-| `/cloud/morph` | 0 – 1 | 0 | blend position between the pair |
+| `/cloud/a` | 0 – 8 | 0 | which cloud this look shows; set by clicking a name, not listed as a row |
+| `/cloud/b` | 0 – 8 | 1 | the cloud a transition is crossing *to* — driven by the transition, refused from OSC/MIDI/modulation |
+| `/cloud/morph` | 0 – 1 | 0 | where that crossing has got to — driven by the transition, refused from OSC/MIDI/modulation |
 | `/video/depth` | -2 – 2 | 0.6 | how far the picture's relief pushes along z; 0 is flat |
 | `/video/relief` | 0 – 3 | 0 | what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma |
 | `/lN/kind` (N = 1–4) | 0 – 7 | 0 | layer generator: off · rings · stripes · checker · polygon · star · rays · dots |

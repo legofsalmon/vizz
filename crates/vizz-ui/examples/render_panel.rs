@@ -72,9 +72,6 @@ fn main() {
         "/color/palette",
         "/color/spread",
         "/color/drive",
-        "/cloud/a",
-        "/cloud/b",
-        "/cloud/morph",
         "/camera/distance",
         "/camera/orbit",
         "/camera/elevation",
@@ -297,6 +294,14 @@ fn main() {
             _ => def,
         });
     }
+    // The cloud pair, flagged the way the app flags it: `a` is unlisted
+    // because it is chosen by clicking a name in CLOUDS, and the other
+    // two are the transition's. Added here rather than in the list above
+    // so the preview shows what the panel really draws — which is no
+    // cloud rows at all.
+    b.add(ParamDef::new("/cloud/a", 0.0, 8.0, 0.0).unlisted());
+    b.add(ParamDef::new("/cloud/b", 0.0, 8.0, 1.0).driven());
+    b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).driven());
     let registry = b.build();
 
     // Plausible live numbers, including one spike so the sparkline and

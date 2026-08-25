@@ -116,7 +116,8 @@ existed:
 
 The shader looked a normal up by **shape mode** where the mapping wanted a
 **cloud slot**. Mode 7 means "the cloud pair" and the slots come from
-`/cloud/a` and `/cloud/b`; reading 7 as a slot index asks for slot 7,
+`/cloud/a` and `/cloud/b`  — the pair a transition drives; reading 7 as a
+slot index asks for slot 7,
 which is empty. So every normal came back zero, every directional term
 stood down, and the sun did nothing at all.
 
