@@ -1085,9 +1085,12 @@ mod tests {
         let mirror =
             b.add(ParamDef::new("/fx/mirror", 0.0, 3.0, 0.0).labels(&["off", "x", "y", "quad"]));
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
-        b.add(ParamDef::new(CLOUD_A, 0.0, 3.0, 0.0));
-        b.add(ParamDef::new(CLOUD_B, 0.0, 3.0, 1.0));
-        b.add(ParamDef::new(CLOUD_MORPH, 0.0, 1.0, 0.0).smooth(0.5));
+        // Flagged as the app flags them, so every cloud test below is
+        // also a test that `driven` does not stand between a transition
+        // and the three values it exists to sweep.
+        b.add(ParamDef::new(CLOUD_A, 0.0, 3.0, 0.0).unlisted());
+        b.add(ParamDef::new(CLOUD_B, 0.0, 3.0, 1.0).driven());
+        b.add(ParamDef::new(CLOUD_MORPH, 0.0, 1.0, 0.0).smooth(0.5).driven());
         b.add(ParamDef::new("/gravity/0/strength", -2.0, 2.0, 0.0).smooth(0.4));
         (b.build(), hue, mirror, dim)
     }

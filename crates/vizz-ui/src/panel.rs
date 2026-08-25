@@ -91,9 +91,11 @@ pub struct PanelActions {
     /// because a page spans both grids and grid actions are applied once
     /// per grid — a deck field there would be acted on twice.
     pub decks: crate::performance::DeckActions,
-    /// Put this cloud slot on screen. `true` sets it as the far end of
-    /// the morph (b) rather than the near end (a).
-    pub cloud_show: Option<(usize, bool)>,
+    /// Put this cloud slot on screen.
+    ///
+    /// One slot, no far end: the morph pair is the transition's now, so
+    /// there is nothing here to set the other half of.
+    pub cloud_show: Option<usize>,
     /// Recording settings the user changed this frame.
     pub record_setup: Option<RecordSetup>,
     /// Connect the video input to this spec, or `Some(None)` to stop
@@ -184,9 +186,9 @@ pub struct PanelState {
     /// Empty when nothing is reporting, in which case controls fall back
     /// to drawing only what the user set.
     pub modulated: Vec<f32>,
-    /// Name of the cloud in each slot, in slot order. Lets the panel say
-    /// what `/cloud/a` and `/cloud/b` are actually selecting — the numbers
-    /// alone are meaningless once anything has been loaded.
+    /// Name of the cloud in each slot, in slot order. This is how a cloud
+    /// is chosen at all — the slot numbers alone are meaningless once
+    /// anything has been loaded, so the names are the control.
     pub clouds: Vec<String>,
     /// Current output size, render scale and precision.
     pub output: OutputSetup,
@@ -832,9 +834,11 @@ pub struct LiveCloudStatus {
 
 /// What is in each cloud slot, and how to put something there.
 ///
-/// `/cloud/a` and `/cloud/b` are indices, and an index is unreadable once
-/// anything has been loaded — "2" says nothing about whether that is the
-/// torso scan or the room. This is the legend for those two sliders.
+/// This *is* the cloud control now, not a legend beside one. The slot is
+/// an index, and an index is unreadable once anything has been loaded —
+/// "2" says nothing about whether that is the torso scan or the room —
+/// so choosing a cloud is clicking its name, and there is no slider
+/// anywhere that says `2`.
 ///
 /// The drop hint is here rather than nowhere because a gesture with no
 /// visible affordance is a gesture nobody discovers. That was the whole
@@ -848,49 +852,29 @@ fn clouds_section(
     let slot = |addr: &str| {
         registry.id(addr).map(|id| registry.target(id).round().max(0.0) as usize)
     };
-    let (a, b) = (slot("/cloud/a"), slot("/cloud/b"));
-    // What the pair actually is, said once. "a" and "b" are the two ends
-    // of a morph, not a playlist — and they are set with number sliders
-    // whose value is a slot index, which is the least guessable control
-    // in the app. The buttons below do the setting; this says why there
-    // are two.
-    ui.small("“a” and “b” are the two ends of the morph — show one, or set both and blend");
+    let showing = slot("/cloud/a");
+    ui.small("click a cloud to show it — crossing to another is what a scene change does");
     for (i, name) in state.clouds.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
             // Click the name to put this cloud on screen: sets the shape
-            // to cloud, points a at this slot and takes the morph fully
-            // to it. Exactly what dropping a file does — which was the
-            // only way to reach it, and only at the moment of the drop.
+            // to cloud and points the look at this slot. Exactly what
+            // dropping a file does — which was the only way to reach it,
+            // and only at the moment of the drop.
             if ui
                 .add(egui::Label::new(name).sense(egui::Sense::click()))
-                .on_hover_text("show this cloud — click “b” to make it the far end of the morph instead")
+                .on_hover_text("show this cloud")
                 .clicked()
             {
-                actions.cloud_show = Some((i, false));
+                actions.cloud_show = Some(i);
             }
-            if ui
-                .small_button("b")
-                .on_hover_text("make this the far end of the morph, and leave “a” where it is")
-                .clicked()
-            {
-                actions.cloud_show = Some((i, true));
-            }
-            // Say which rows the morph pair is showing right now. The
-            // legend explained what the numbers meant but not which of
-            // them was on screen — the one question a legend is for.
-            let mut live = Vec::new();
-            if a == Some(i) {
-                live.push("a");
-            }
-            if b == Some(i) {
-                live.push("b");
-            }
-            if !live.is_empty() {
-                ui.label(
-                    egui::RichText::new(live.join(" ")).small().color(LIVE_MARK),
-                )
-                .on_hover_text("on screen — this end of the cloud morph pair");
+            // Which one is up. One mark rather than the old "a"/"b"
+            // pair: there is one cloud on screen between transitions,
+            // and during one the grid is already saying what is crossing
+            // to what.
+            if showing == Some(i) {
+                ui.label(egui::RichText::new("on").small().color(LIVE_MARK))
+                    .on_hover_text("on screen");
             }
         });
     }
@@ -1541,7 +1525,7 @@ fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         // appear. Said plainly rather than left as an absence.
         ui.small(egui::RichText::new(note).color(WARN));
     }
-    ui.small("the picture arrives as a point cloud — select its slot with /cloud/a");
+    ui.small("the picture arrives as a point cloud — click “live” in clouds to show it");
 }
 
 /// How the next take is written, and what it will cost.
@@ -2195,7 +2179,7 @@ fn params_section(
     // whole fits rather than the list merely being bounded — a window
     // that runs past the bottom edge hides its own footer too.
     let screen_h = ui.ctx().input(|i| i.raw.screen_rect).map_or(720.0, |r| r.height());
-    let total = registry.iter().filter(|(_, d)| !is_transport(d)).count();
+    let total = registry.iter().filter(|(_, d)| !is_transport(d) && d.listed).count();
     // Provisional, only to decide whether to say "scroll for more"; the
     // binding measurement happens below, once the header has been laid
     // out and the cursor is where the list will actually start.
@@ -2262,7 +2246,7 @@ fn params_section(
                 // list, not browsing it.
                 let mut hits = 0;
                 for (id, def) in registry.iter() {
-                    if is_transport(def) {
+                    if is_transport(def) || !def.listed {
                         continue;
                     }
                     if (registry.target(id) - def.default).abs() > 1e-6 {
@@ -2284,8 +2268,19 @@ fn params_section(
                 // putting them in misleading company; refusing to show one
                 // whose name has just been typed would be hiding it, which
                 // is a different and worse thing.
+                //
+                // Driven ones are the exception, and for the opposite
+                // reason: there is nothing to offer. A transition owns
+                // `/cloud/morph` for the length of the blend, so a fader
+                // here would be a control that fights the app and loses,
+                // which is worse than not finding it. `/cloud/a` is
+                // merely unlisted — it has a better home in CLOUDS — and
+                // stays searchable.
                 let mut hits = 0;
                 for (id, def) in registry.iter() {
+                    if def.driven {
+                        continue;
+                    }
                     if def.addr.to_ascii_lowercase().contains(&needle) {
                         hits += 1;
                         param_row(ui, registry, id, def, state, modulation, ranges, actions);
@@ -2550,11 +2545,6 @@ const SECTIONS: &[SectionSpec] = &[
                 "which shape the points take, and the morph between two of them",
             ),
             (
-                &["cloud"],
-                "clouds",
-                "which of the eight loaded clouds the morph runs between",
-            ),
-            (
                 &["gravity"],
                 "gravity",
                 "the attract / repel layer that pulls points off their shape",
@@ -2692,7 +2682,7 @@ fn sections(registry: &ParamRegistry) -> Vec<Section<'_>> {
     let mut by_prefix: Vec<(&str, Vec<(vizz_params::ParamId, &vizz_params::ParamDef)>)> =
         Vec::new();
     for (id, def) in registry.iter() {
-        if is_transport(def) {
+        if is_transport(def) || !def.listed {
             continue;
         }
         let name = def
@@ -3454,7 +3444,7 @@ mod layout_tests {
     fn every_named_section_group_matches_a_real_prefix() {
         // The app's real address surface, as the panel will see it.
         let addrs = [
-            "/particles/count", "/shape/mode", "/cloud/a", "/gravity/mode",
+            "/particles/count", "/shape/mode", "/gravity/mode",
             "/color/palette", "/pal/0/r", "/bg/red", "/fx/glow",
             "/l1/kind", "/l2/kind", "/l3/kind", "/l4/kind", "/vec/place",
             "/camera/orbit", "/room/size", "/video/depth",
@@ -3482,6 +3472,40 @@ mod layout_tests {
         );
         assert!(!titles.contains(&"pal"), "a raw namespace reached the screen");
         assert!(!titles.contains(&"l1"), "a raw namespace reached the screen");
+    }
+
+    /// An unlisted parameter gets no row, and does not fall through to
+    /// MORE either.
+    ///
+    /// Both halves matter. The fallback exists so a parameter nobody
+    /// placed is still visible, which is right — but an unlisted one has
+    /// been placed, somewhere better, and landing in MORE under a
+    /// developer's note would be the fallback undoing the decision. The
+    /// cloud pair is the case: `/cloud/a` is clicked by name in CLOUDS,
+    /// and the other two belong to whichever transition is running.
+    #[test]
+    fn an_unlisted_parameter_gets_no_row_anywhere() {
+        let mut b = ParamRegistry::builder();
+        b.add(ParamDef::new("/particles/count", 0.0, 1.0, 0.5));
+        b.add(ParamDef::new("/cloud/a", 0.0, 8.0, 0.0).unlisted());
+        b.add(ParamDef::new("/cloud/b", 0.0, 8.0, 1.0).driven());
+        b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).driven());
+        let reg = b.build();
+        let built = sections(&reg);
+        let rows: Vec<&str> = built
+            .iter()
+            .flat_map(|s| s.groups.iter())
+            .flat_map(|g| g.params.iter().map(|(_, d)| d.addr.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec!["/particles/count"],
+            "an unlisted parameter still drew a row"
+        );
+        assert!(
+            !built.iter().any(|s| s.title == "MORE"),
+            "the unlisted cloud pair fell through to MORE"
+        );
     }
 
     /// A parameter under a prefix nobody placed must still be drawn.

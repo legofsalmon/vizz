@@ -169,6 +169,18 @@ fn apply_packet(registry: &ParamRegistry, columns: &ColumnSync, packet: OscPacke
                 log::debug!("OSC message {} had no numeric argument", msg.addr);
                 return;
             };
+            // A driven parameter is the transition's, not the wire's:
+            // `/cloud/morph` is swept by whichever scene change is in
+            // flight, and an OSC write landing in the middle of that is
+            // two things steering one value. Dropped with a note rather
+            // than silently, so a script that still sends one can be
+            // found.
+            if let Some(id) = registry.id(&msg.addr)
+                && registry.defs()[id.index()].driven
+            {
+                log::debug!("OSC message {} is driven by the app, not by hand", msg.addr);
+                return;
+            }
             registry.set_by_addr(&msg.addr, value);
         }
         OscPacket::Bundle(bundle) => {
@@ -303,7 +315,46 @@ mod tests {
         b.add(ParamDef::new(COLUMN_FIRE, 0.0, 16.0, 0.0));
         // Twenty-four pages, matching the deck book's ceiling.
         b.add(ParamDef::new(DECK_SELECT, 0.0, 24.0, 0.0));
+        // Driven by the app rather than the wire: the cloud morph.
+        b.add(ParamDef::new("/cloud/morph", 0.0, 1.0, 0.0).driven());
         Arc::new(b.build())
+    }
+
+    /// A driven parameter is refused over OSC.
+    ///
+    /// `/cloud/morph` is swept by whichever scene transition is running.
+    /// A script still sending it would be a second hand on the same
+    /// value, and the visible result — a crossfade that stutters or
+    /// lands short — looks like a bug in transitions rather than like
+    /// two writers.
+    #[test]
+    fn the_wire_cannot_move_a_driven_parameter() {
+        let reg = registry();
+        let columns = ColumnSync::default();
+        apply_packet(
+            &reg,
+            &columns,
+            OscPacket::Message(OscMessage {
+                addr: "/cloud/morph".into(),
+                args: vec![OscType::Float(1.0)],
+            }),
+        );
+        assert_eq!(
+            reg.target(reg.id("/cloud/morph").unwrap()),
+            0.0,
+            "OSC moved a parameter the app drives"
+        );
+        // And an ordinary parameter in the same breath still lands, so
+        // this is a rule about one flag and not a broken ingest.
+        apply_packet(
+            &reg,
+            &columns,
+            OscPacket::Message(OscMessage {
+                addr: "/test/b".into(),
+                args: vec![OscType::Float(1.0)],
+            }),
+        );
+        assert_eq!(reg.target(reg.id("/test/b").unwrap()), 1.0);
     }
 
     fn select(deck: u32, args: Vec<OscType>) -> OscPacket {
