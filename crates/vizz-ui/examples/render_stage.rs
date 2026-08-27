@@ -129,11 +129,20 @@ fn main() {
             }
         })
         .collect();
+    // Sources as well as names, because the row groups and colours by
+    // what each look was built on — a screenshot of four unsorted looks
+    // would show none of what the page beside it describes.
+    let look = |name: &str, source: &str| vizz_ui::PresetEntry {
+        name: name.to_string(),
+        builtin: false,
+        about: None,
+        source: Some(source.to_string()),
+    };
     let presets = [
-        "Slow bloom".to_string(),
-        "Butterfly".to_string(),
-        "Warehouse 2".to_string(),
-        "Ribbon".to_string(),
+        look("Slow bloom", "sphere"),
+        look("Butterfly", "Aizawa"),
+        look("Warehouse 2", "warehouse.ply"),
+        look("Ribbon", "torso-scan.ply"),
     ];
     // A believable set list. The docs describe a row of chips above the
     // pads, so the picture the docs show has to have one — a screenshot
@@ -170,6 +179,7 @@ fn main() {
         bpm: 128.0,
         bar_phase: 0.12,
         presets: &presets,
+        thumb_revision: 0,
         grid: &grid,
         gravity: gravity.as_ref(),
         midi: &midi,
