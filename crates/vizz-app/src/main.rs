@@ -4,6 +4,7 @@ mod outputs;
 mod params;
 mod settings;
 mod textcloud;
+mod thumbshot;
 mod videoin;
 mod windowed;
 

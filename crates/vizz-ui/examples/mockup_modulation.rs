@@ -482,6 +482,7 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
             "Confetti".into(),
             "Ribbon".into(),
         ],
+        thumb_revision: 0,
     };
     vizz_ui::performance::draw(ctx, &reg, &state, &mut macros);
 }

@@ -1290,6 +1290,30 @@ mod reference_tests {
         );
     }
 
+    /// Every shape the app can draw sorts into a preset family.
+    ///
+    /// A saved look records what it was built on as a *name*, and the
+    /// preset lists group and colour by the family that name falls into.
+    /// vizz-mod owns the families and cannot see this list, so the two
+    /// are pinned here: adding a shape without giving it a family files
+    /// it under "clouds", which is a look grouped with the scans and
+    /// nothing anywhere failing to say so.
+    #[test]
+    fn every_shape_mode_sorts_into_a_preset_family() {
+        use vizz_mod::preset::Family;
+        let p = super::AppParams::build();
+        let (_, def) = p.registry.iter().find(|(id, _)| *id == p.shape).expect("/shape/mode");
+        let labels = def.labels.expect("/shape/mode has labels");
+        for label in labels {
+            let want = if label.contains("cloud") { Family::Cloud } else { Family::Shape };
+            let got = vizz_mod::preset::family(Some(label));
+            // An attractor is a shape the app generates too — the split
+            // is about what it looks like, not where it comes from.
+            let ok = got == want || (want == Family::Shape && got == Family::Attractor);
+            assert!(ok, "the shape '{label}' sorts as {got:?}, not as a shape");
+        }
+    }
+
     /// The docs site carries the same OSC reference as the README, and a
     /// second copy is a second thing that can go stale — the exact
     /// failure the README test exists for. Held against the registry the

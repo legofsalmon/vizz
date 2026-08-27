@@ -58,6 +58,9 @@ pub struct FrameEngine {
     /// than in the UI because it writes parameter targets every frame and
     /// has to keep doing so with the panel hidden.
     pub grid: vizz_mod::scene::Grid,
+    /// The look recalled on the last tick, waiting to be collected. See
+    /// [`Engine::take_recalled`].
+    recalled: Option<String>,
     /// Last `/scene/fire` slot acted on, edge-triggered like recall.
     last_scene: Option<usize>,
     /// A zero-second scene change landed this frame and the smoothing
@@ -153,6 +156,7 @@ impl FrameEngine {
             last_frame: None,
             last_log: Instant::now(),
             last_preset: None,
+            recalled: None,
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
             cut_pending: false,
@@ -586,10 +590,22 @@ impl FrameEngine {
                 // The recall is edge-triggered, so reaching here means it
                 // is the thing most recently touched; it wins.
                 self.grid.halt();
+                self.recalled = Some(name.clone());
                 log::info!("recalled preset {slot}: {name} ({applied} parameters)");
             }
             None => log::debug!("no preset in slot {slot}"),
         }
+    }
+
+    /// The look recalled since this was last asked, if any.
+    ///
+    /// A one-shot rather than a flag on `current_preset`: the app
+    /// photographs a look the first time it is fired, and "which slot is
+    /// showing" is true every frame while "a recall just happened" is
+    /// true on one. Reading them off the same value meant re-shooting the
+    /// picture sixty times a second.
+    pub fn take_recalled(&mut self) -> Option<String> {
+        self.recalled.take()
     }
 
     /// Forget the last recall edge, so the next tick re-applies whatever

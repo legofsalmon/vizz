@@ -79,6 +79,9 @@ pub struct PanelActions {
     pub update_install: bool,
     /// Delete this user preset.
     pub preset_delete: Option<String>,
+    /// Take a fresh picture of this preset from what is on the output
+    /// now. See [`crate::thumbs`].
+    pub preset_rephoto: Option<String>,
     /// Slider working ranges changed and should be persisted.
     pub ranges_changed: bool,
     /// What the scene grid asks for this frame.
@@ -143,6 +146,15 @@ pub struct PresetEntry {
     pub source: Option<String>,
 }
 
+/// The plainest entry there is: a user look with nothing recorded about
+/// it. Mockups and tests name a library by its names; the app builds
+/// entries properly in `preset_entries`.
+impl From<&str> for PresetEntry {
+    fn from(name: &str) -> Self {
+        Self { name: name.to_string(), builtin: false, about: None, source: None }
+    }
+}
+
 /// Everything the panel displays that it cannot read from the registry.
 pub struct PanelState {
     /// Newer version string, if the background check found one.
@@ -199,6 +211,10 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// Bumped whenever the app writes a preset picture, so a look
+    /// re-photographed mid-set redraws rather than keeping the texture
+    /// egui already had. See [`crate::thumbs`].
+    pub thumb_revision: u64,
     /// The recalled slot (1-based), so the preset rows can show where the
     /// look on screen came from.
     pub preset_current: Option<usize>,
@@ -243,6 +259,7 @@ impl Default for PanelState {
         Self {
             update_available: Default::default(),
             update: Default::default(),
+            thumb_revision: 0,
             health: Default::default(),
             outputs: Default::default(),
             frame_times_ms: Default::default(),
@@ -2016,11 +2033,24 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                     if button.clicked() {
                         actions.preset_load = Some(p.name.clone());
                     }
-                    // The same learn menu as the stage row: the two lists
+                    // The same menu as the stage row: the two lists
                     // address the same `/preset/recall` slots, so a
-                    // binding must be reachable from either.
-                    if state.midi.available {
-                        button.context_menu(|ui| match (&bound, waiting) {
+                    // binding must be reachable from either — and so must
+                    // a look's picture, which is the other thing you set
+                    // once and want from wherever you noticed it.
+                    button.context_menu(|ui| {
+                        if ui
+                            .button("update picture")
+                            .on_hover_text("photograph what is on the output now")
+                            .clicked()
+                        {
+                            actions.preset_rephoto = Some(p.name.clone());
+                            ui.close();
+                        }
+                        if !state.midi.available {
+                            return;
+                        }
+                        match (&bound, waiting) {
                             (Some(s), _) => {
                                 if ui.button(format!("unmap {}", s.label())).clicked() {
                                     actions.clear_slot_binding = Some((
@@ -2047,8 +2077,8 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                                     ui.close();
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                     if p.builtin {
                         return;
                     }

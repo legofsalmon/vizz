@@ -13,6 +13,7 @@ pub mod panel;
 pub mod theme;
 pub mod performance;
 pub mod project_bar;
+pub mod thumbs;
 mod renderer;
 
 /// Exposed for the offscreen panel-preview example; the app uses [`Gui`].
@@ -742,7 +743,6 @@ impl Gui {
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
         let health = state.health.as_ref();
-        let preset_names: Vec<String> = state.presets.iter().map(|p| p.name.clone()).collect();
         let perf_state = performance::PerformanceState {
             recording: state.recording,
             outputs: &state.outputs,
@@ -751,7 +751,8 @@ impl Gui {
             over_budget: health.map(|h| h.over_budget_window_pct > 1.0).unwrap_or(false),
             bpm: state.bpm,
             bar_phase: state.bar_phase,
-            presets: &preset_names,
+            presets: &state.presets,
+            thumb_revision: state.thumb_revision,
             preset_current: state.preset_current,
             grid: &state.grid,
             // Only shown when the layer is in use.
@@ -844,6 +845,9 @@ impl Gui {
         actions.set_learn_target = perf.set_learn_target;
         actions.clear_binding = perf.clear_binding;
         actions.clear_slot_binding = perf.clear_slot_binding;
+        // Photographing a look is the same job wherever it is asked for,
+        // so it takes the panel's path rather than growing a second one.
+        actions.preset_rephoto = perf.preset_rephoto;
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -1014,6 +1018,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1069,6 +1074,7 @@ mod tests {
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
+        thumb_revision: 0,
         presets: vec![
                 PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) , source: None},
                 PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
@@ -1129,6 +1135,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1184,6 +1191,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1243,6 +1251,7 @@ mod tests {
             output: Default::default(),
             bpm: 128.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1341,6 +1350,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1388,6 +1398,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1553,6 +1564,7 @@ mod tests {
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
+            thumb_revision: 0,
             presets: vec![
                 PresetEntry { name: "Slow bloom".into(), builtin: true, about: None , source: None},
                 PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
@@ -1605,6 +1617,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         }
     }
@@ -1685,6 +1698,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: false,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         let without = run_panel(&ctx, &reg, &state);
@@ -1747,6 +1761,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -1803,6 +1818,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -1860,6 +1876,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         // Idle: there is a way in, and the default address is offered
@@ -1979,6 +1996,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,

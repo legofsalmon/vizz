@@ -56,6 +56,7 @@ pub mod ranges;
 pub mod scene;
 pub mod sets;
 pub mod shapes;
+pub mod thumb;
 
 use serde::{Deserialize, Serialize};
 use vizz_params::ParamRegistry;

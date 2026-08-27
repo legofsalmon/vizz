@@ -214,6 +214,8 @@ struct App {
     /// A recording in flight. Present exactly while /record/active is up;
     /// the reconcile in `redraw` keeps the two honest with each other.
     recorder: Option<vizz_io::recorder::Recorder>,
+    /// Takes the pictures the preset tiles wear. See [`crate::thumbshot`].
+    thumbs: crate::thumbshot::Shutter,
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -932,6 +934,14 @@ impl App {
             }
         }
         let inputs = self.engine.begin_frame(state.output.aspect(), None);
+        // A look fired from anywhere — a tile, a number key, a MIDI
+        // button, OSC — gets its picture taken the first time, once the
+        // morph has settled. That is what gives the built-ins and every
+        // look saved before pictures existed a tile worth looking at,
+        // without a migration and without asking.
+        if let Some(name) = self.engine.take_recalled() {
+            self.thumbs.if_missing(&name);
+        }
         let mut encoder = state
             .ctx
             .device
@@ -1261,6 +1271,7 @@ impl App {
                     .map(|(id, _)| self.engine.snapshot.get(id))
                     .collect(),
                 presets: preset_entries(&self.library),
+                thumb_revision: self.thumbs.revision,
             preset_current: self.engine.current_preset(),
                 grid: {
                     let mut v = grid_view(
@@ -1473,6 +1484,7 @@ impl App {
                     &mut self.library,
                     &mut notes,
                     &self.clouds,
+                    &mut self.thumbs,
                 );
                 // Before the grids: a page turn and a pad press landing on
                 // the same frame have to happen in that order, or the pad
@@ -1586,6 +1598,10 @@ impl App {
         state
             .outputs
             .publish(&state.ctx.device, &state.ctx.queue, publish);
+        // The preset tiles' pictures come off the same eight-bit master,
+        // after it has been published rather than before: a photograph is
+        // a convenience and the feed is not.
+        self.thumbs.tick(&state.ctx.device, &state.ctx.queue, publish);
         // Recording rides the same eight-bit master the senders get. The
         // parameter is the source of truth: up with no recorder running
         // starts one, down with one running stops it — which is what lets
@@ -2888,6 +2904,8 @@ fn apply_preset_actions(
     // What each cloud slot currently holds, so a saved look can record
     // what it was built on.
     clouds: &[String],
+    // Takes the picture that goes on the look's tile.
+    thumbs: &mut crate::thumbshot::Shutter,
 ) {
     use vizz_mod::preset;
     if let Some(name) = &actions.preset_load {
@@ -2912,6 +2930,10 @@ fn apply_preset_actions(
                 // at the moment of the click: the name box cleared either
                 // way and a full disk silently ate the look.
                 notes.push((false, format!("saved '{saved}'")));
+                // Photographed under the name that was actually written,
+                // not the one that was typed: `save` sanitises, and a
+                // picture filed under the raw name would never be found.
+                thumbs.now(&saved);
                 library.refresh();
             }
             Err(e) => {
@@ -2921,6 +2943,13 @@ fn apply_preset_actions(
                 notes.push((true, format!("could NOT save '{name}': {e}")));
             }
         }
+    }
+    // Asked for from a tile's menu. The only way a look saved before
+    // pictures existed, or one whose picture no longer resembles it, can
+    // get a new one.
+    if let Some(name) = &actions.preset_rephoto {
+        thumbs.now(name);
+        notes.push((false, format!("photographing '{name}'")));
     }
     if let Some(name) = &actions.preset_delete {
         match preset::delete(name) {
@@ -3178,6 +3207,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         render_scale: crate::settings::load().scale(),
         clock_source: crate::settings::load().clock_source,
         recorder: None,
+        thumbs: Default::default(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),

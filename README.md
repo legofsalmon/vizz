@@ -581,10 +581,11 @@ mid-set.
 Eight is a deliberate limit — enough for the things worth reaching for,
 few enough that each stays large and unambiguous under stage lighting.
 
-The preset row sits above the faders, numbered to match the number keys,
-so it doubles as the legend for them. Presets were the largest thing
-missing from this layout: without them, changing look meant leaving it,
-which is the one thing the layout exists to avoid.
+The preset block sits above the faders as a grid of tiles, numbered to
+match the number keys, so it doubles as the legend for them. Presets were
+the largest thing missing from this layout: without them, changing look
+meant leaving it, which is the one thing the layout exists to avoid. See
+[Pictures and families](#pictures-and-families) for what is on a tile.
 
 ## Camera and room
 
@@ -767,6 +768,53 @@ because a preset containing it would fire another preset on load.
 Each preset sets only the parameters that matter to its look, so recalling
 one changes the thing you asked for and leaves everything else where you
 left it.
+
+### Pictures and families
+
+Every look on the performance layout wears a **picture of itself**: the
+master output as it was when the look was saved, shrunk to a 128-point
+thumbnail and kept beside the presets in `presets/thumbs/*.png`.
+
+A preset is a list of numbers under a name somebody typed at 2am, and by
+the next gig the name is a guess. Recognition beats recall, and the only
+thing that reliably says what a look is, is the look.
+
+Pictures are taken without being asked for:
+
+- **on save** — what is on screen is the thing being saved, so it is
+  photographed on the next frame;
+- **the first time a look is fired** — a second or so after, so the morph
+  has finished. That is what gives the built-ins, and every look saved
+  before this existed, a tile worth looking at with no migration.
+
+A look that has a picture keeps it; recalling it again does not replace
+it. **update picture** on a tile's right-click menu takes a new one from
+whatever is on the output now — the same item is on the panel's preset
+list. Deleting a preset deletes its picture with it.
+
+They are a cache, not part of the preset: throw the `thumbs` folder away
+and the app carries on, filling it back in as you play.
+
+Looks are also **grouped by what they were built on**, which each preset
+records when it is saved — the cloud slot's own name for a cloud look, the
+shape's name otherwise. Those sort into four families, each with its own
+colour on the tile's leading edge and as the heading in front of its
+group:
+
+| family | what is in it |
+| --- | --- |
+| clouds | a loaded scan, mesh or live stream |
+| shapes | sphere, torus, knot, grid, shell |
+| attractors | Lorenz, Aizawa |
+| built in | the looks that ship with the app |
+
+Anything saved before looks recorded a source lands in **unsorted**. The
+heading is dropped when a library has only one family, since a heading
+over the whole list says nothing.
+
+Grouping changes where a look sits on screen and never what fires it: the
+slot number stays on every tile, because that is what `/preset/recall`,
+the number keys and every MIDI binding address.
 
 ### Firing them from a controller
 

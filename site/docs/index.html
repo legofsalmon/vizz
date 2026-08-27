@@ -389,6 +389,36 @@ resting at zero cannot fire anything on startup. Recall is edge-triggered: it
 fires when the slot changes, so a button parked on a slot does not re-apply
 its preset every frame and pin the controls you are trying to adjust.</p>
 
+<h3>Pictures and families</h3>
+
+<p>On the performance layout every look wears <strong>a picture of
+itself</strong>: the master output as it was when the look was saved, kept
+beside the presets in <code>presets/thumbs/*.png</code>. A preset is a list of
+numbers under a name somebody typed at 2am, and by the next gig the name is a
+guess — the only thing that reliably says what a look is, is the look.</p>
+
+<p>Pictures are taken without being asked for: <strong>on save</strong>, because
+what is on screen is the thing being saved; and <strong>the first time a look
+is fired</strong>, a second or so after so the morph has finished — which is
+what gives the built-ins, and everything saved before this existed, a tile
+worth looking at. A look that has a picture keeps it. <em>update picture</em>
+on a tile's right-click menu takes a new one from whatever is on the output
+now. They are a cache: throw the folder away and the app fills it back in as
+you play.</p>
+
+<p>Looks are also grouped by <strong>what they were built on</strong>, which
+each preset records when it is saved. Those sort into four families, each with
+its own colour on the tile's leading edge and as the heading in front of its
+group: <strong>clouds</strong> (a loaded scan, mesh or live stream),
+<strong>shapes</strong> (sphere, torus, knot, grid, shell),
+<strong>attractors</strong> (Lorenz, Aizawa) and <strong>built in</strong>.
+Anything saved before looks recorded a source lands in <em>unsorted</em>, and
+the heading is dropped when a library has only one family.</p>
+
+<p>Grouping changes where a look sits on screen and never what fires it: the
+slot number stays on every tile, because that is what <code>/preset/recall</code>,
+the number keys and every MIDI binding address.</p>
+
 <h2 id="scenes">Scenes and transitions</h2>
 
 <p>A preset recalled by number is a cut. A <strong>scene</strong> is the other

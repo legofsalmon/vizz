@@ -381,6 +381,7 @@ fn main() {
         grid: preview_grid(),
         gravity_grid: None,
         expand_sections: expand,
+        thumb_revision: 0,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None , source: None},
             PresetEntry { name: "Butterfly".into(), builtin: true, about: None , source: None},
