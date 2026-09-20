@@ -494,7 +494,11 @@ what you are looking at.</p>
 <p><code>/deck/select</code> is an ordinary parameter, so a chip, a controller
 button and an OSC message are one gesture. Bindings name the <em>deck
 number</em>, exactly as the pads and preset slots do, so sixteen buttons address
-sixteen pages. Right-click a chip to learn one.</p>
+sixteen pages. Right-click a chip to learn one. Two buttons do instead of
+twenty-four: <code>/deck/next</code> and <code>/deck/prev</code> turn one page
+per press and stop at the ends, so a controller with a spare pair of pads leafs
+through a set list without a button per song. The <code>‹</code> <code>›</code>
+beside the set list are the same two.</p>
 
 <h3>Following Resolume's columns</h3>
 
@@ -1313,6 +1317,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/scene/auto</code></td><td>0 – 1</td><td>0</td><td>scene autopilot on/off</td></tr>
     <tr><td><code>/scene/bars</code></td><td>0.25 – 16</td><td>4</td><td>bars between scene autopilot steps</td></tr>
     <tr><td><code>/deck/select</code></td><td>0 – 24</td><td>0</td><td>turn to page 1–24 on change; 0 = none</td></tr>
+    <tr><td><code>/deck/next</code></td><td>0 – 1</td><td>0</td><td>turn to the next page on a rise; stops at the last</td></tr>
+    <tr><td><code>/deck/prev</code></td><td>0 – 1</td><td>0</td><td>turn to the previous page on a rise; stops at the first</td></tr>
     <tr><td><code>/column/fire</code></td><td>0 – 16</td><td>0</td><td>fire column 1–16 — the scene pad and the gravity pad of that number, together</td></tr>
     <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to an image sequence; 1 starts, 0 stops</td></tr>
     <tr><td><code>/tempo/tap</code></td><td>0 – 1</td><td>0</td><td>tap the beat: each rise is one tap, and three set the tempo</td></tr>

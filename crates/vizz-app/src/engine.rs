@@ -102,6 +102,10 @@ pub struct FrameEngine {
     /// 0 while deck 3 is live, and anything asking it "which deck am I on"
     /// gets the wrong answer the moment a finger comes off a button.
     last_deck: Option<usize>,
+    /// Whether `/deck/next` and `/deck/prev` were up last frame. Each
+    /// turns one page per rise, so a button held through a bar does not
+    /// leaf through the whole set.
+    deck_step_up: [bool; 2],
     /// What Resolume's column launches arrive through. Shared with the
     /// OSC listener; see [`vizz_osc::ColumnSync`].
     columns: Arc<vizz_osc::ColumnSync>,
@@ -174,6 +178,7 @@ impl FrameEngine {
             last_gravity: None,
             decks: vizz_mod::deck::Book::default(),
             last_deck: None,
+            deck_step_up: [false; 2],
             columns: Arc::new(vizz_osc::ColumnSync::default()),
             last_column: None,
             last_column_fires: 0,
@@ -448,6 +453,23 @@ impl FrameEngine {
             }
         }
 
+        // A page at a time, on a rise, and the ends are walls rather than
+        // a wrap — a wrap is a surprise in the dark, and a set list is
+        // not a loop. `switch_deck` re-arms the select parameter and its
+        // latch on the way through, so a step and a numbered select never
+        // disagree about which page is live.
+        for (i, (id, step)) in [(p.deck_next, 1isize), (p.deck_prev, -1)].into_iter().enumerate() {
+            let up = reg.target(id) >= 0.5;
+            let rose = up && !self.deck_step_up[i];
+            self.deck_step_up[i] = up;
+            if rose {
+                let want = self.decks.active() as isize + step;
+                if want >= 0 && (want as usize) < self.decks.len() {
+                    turned |= self.switch_deck(want as usize);
+                }
+            }
+        }
+
         // A column launch is a scene pad and a gravity pad of the same
         // number, fired together — which is what a column *is* in the
         // program this follows.
@@ -642,6 +664,16 @@ impl FrameEngine {
     /// look was on screen or not.
     pub fn current_preset(&self) -> Option<usize> {
         self.last_preset.filter(|s| *s > 0)
+    }
+
+    /// Move the mark on the current look to `slot` without recalling
+    /// it: the list re-sorted under a rename and the look on screen did
+    /// not change, only its number. Both halves, as a page turn does for
+    /// the deck, so the next frame does not read the new number as a
+    /// recall and stamp the saved values over the edits since.
+    pub fn mark_preset(&mut self, slot: usize) {
+        self.params.registry.set(self.params.preset_recall, slot as f32);
+        self.last_preset = Some(slot);
     }
 
     /// Advance time and parameters; returns everything the scene needs.
@@ -1686,6 +1718,39 @@ mod tests {
             17,
             "the listener is still following the page that was left"
         );
+    }
+
+    /// Two buttons in place of twenty-four: a rise on `/deck/next` turns
+    /// one page, holding it turns no more, and the ends are walls.
+    #[test]
+    fn next_and_prev_turn_one_page_per_rise_and_stop_at_the_ends() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let dt = Some(Duration::from_millis(16));
+        assert_eq!(e.decks.active(), 0);
+        e.params.registry.set(e.params.deck_next, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 1, "a rise turns the page");
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 1, "held, it turns no further");
+        assert_eq!(
+            e.params.registry.target(e.params.deck_select),
+            2.0,
+            "the select parameter names the page that is live"
+        );
+        e.params.registry.set(e.params.deck_next, 0.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        e.params.registry.set(e.params.deck_next, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 1, "the last page is a wall, not a wrap");
+        e.params.registry.set(e.params.deck_prev, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 0, "and one back");
+        e.params.registry.set(e.params.deck_prev, 0.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        e.params.registry.set(e.params.deck_prev, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 0, "the first page is a wall too");
     }
 
     /// A page turn is worth writing to disk, and being asked clears the

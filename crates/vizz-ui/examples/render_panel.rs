@@ -155,6 +155,8 @@ fn main() {
         // is: the harness mirrors the registry outright, so a transport
         // parameter costs a line here and nothing on screen.
         "/deck/select",
+        "/deck/next",
+        "/deck/prev",
         "/column/fire",
         // Transport, and hidden from the parameter list — but the
         // outputs section draws a record button only when this exists,

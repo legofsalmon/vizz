@@ -195,6 +195,9 @@ pub struct PerformanceActions {
     pub decks: DeckActions,
     /// Take a fresh picture of this preset from what is on screen now.
     pub preset_rephoto: Option<String>,
+    /// Begin renaming this preset. A tile cannot hold a text field, so
+    /// the stage hands the name to the panel's field and the panel opens.
+    pub preset_rename_start: Option<String>,
 }
 
 /// What the deck row asks the app to do.
@@ -1005,6 +1008,24 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
         )
         .on_hover_text("one page of pads per song — right-click a chip to rename, duplicate or delete it");
         ui.add_space(6.0);
+        // A page either way, for a set list longer than the chips are
+        // legible: the two buttons a controller with a spare pair of
+        // pads gets, on screen as well. Walls at the ends, not a wrap.
+        if state.decks.len() > 1 {
+            let last = state.decks.len() - 1;
+            let prev = ui
+                .add_enabled(state.active_deck > 0, egui::Button::new("‹").min_size(vec2(22.0, 26.0)))
+                .on_hover_text("previous page  ·  /deck/prev");
+            if prev.clicked() {
+                actions.decks.select = Some(state.active_deck - 1);
+            }
+            let next = ui
+                .add_enabled(state.active_deck < last, egui::Button::new("›").min_size(vec2(22.0, 26.0)))
+                .on_hover_text("next page  ·  /deck/next");
+            if next.clicked() {
+                actions.decks.select = Some(state.active_deck + 1);
+            }
+        }
         for (i, deck) in state.decks.iter().enumerate() {
             let live = i == state.active_deck;
             let (text, size) = fit_label(ui, &deck.name, CHIP_NAME_W);
@@ -1635,6 +1656,15 @@ fn preset_tile(
             .clicked()
         {
             actions.preset_rephoto = Some(name.clone());
+            ui.close();
+        }
+        if !entry.builtin
+            && ui
+                .button("rename…")
+                .on_hover_text("give this look a new name — pads that use it follow")
+                .clicked()
+        {
+            actions.preset_rename_start = Some(name.clone());
             ui.close();
         }
         if !state.midi.available {

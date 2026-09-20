@@ -1036,6 +1036,13 @@ impl Gui {
         // Photographing a look is the same job wherever it is asked for,
         // so it takes the panel's path rather than growing a second one.
         actions.preset_rephoto = perf.preset_rephoto;
+        // A rename needs a text field, which a tile cannot hold: the
+        // stage hands the name to the panel's field and shows the panel.
+        if let Some(name) = perf.preset_rename_start {
+            self.performance = false;
+            self.face_changed = true;
+            panel::begin_rename(&self.ctx, name);
+        }
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.

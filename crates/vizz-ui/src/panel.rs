@@ -82,6 +82,9 @@ pub struct PanelActions {
     /// Take a fresh picture of this preset from what is on the output
     /// now. See [`crate::thumbs`].
     pub preset_rephoto: Option<String>,
+    /// Rename a user preset: `(old name, new name)`. The app moves the
+    /// file and re-points every pad that named it.
+    pub preset_rename: Option<(String, String)>,
     /// Slider working ranges changed and should be persisted.
     pub ranges_changed: bool,
     /// What the scene grid asks for this frame.
@@ -2196,6 +2199,19 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                             actions.preset_rephoto = Some(p.name.clone());
                             ui.close();
                         }
+                        // A user look can be renamed from where it is
+                        // listed. Before this the only way was save-as
+                        // and delete, which left the pads naming a file
+                        // that was gone.
+                        if !p.builtin
+                            && ui
+                                .button("rename…")
+                                .on_hover_text("give this look a new name — pads that use it follow")
+                                .clicked()
+                        {
+                            begin_rename(ui.ctx(), p.name.clone());
+                            ui.close();
+                        }
                         if !state.midi.available {
                             return;
                         }
@@ -2263,6 +2279,11 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
 
     let id = egui::Id::new("preset-save-name");
     let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+    // While a rename is in progress this is the rename field: it holds
+    // the old name to edit and the button says so. One field rather than
+    // a second one, because the two are never wanted at once and the
+    // list above is already tall.
+    let renaming: Option<String> = ui.data(|d| d.get_temp(rename_from_id()));
     // The look on screen is the one you are most likely editing, so its
     // name is offered in the field the moment it is recalled — and only
     // then, so a cleared field stays cleared. With it there the button
@@ -2270,7 +2291,7 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
     // retyping a name from memory under a list that has scrolled away.
     let offered = egui::Id::new("preset-save-offered");
     let last_offered: Option<usize> = ui.memory(|m| m.data.get_temp(offered));
-    if last_offered != state.preset_current {
+    if renaming.is_none() && last_offered != state.preset_current {
         if let Some(entry) = state
             .preset_current
             .and_then(|slot| state.presets.get(slot.wrapping_sub(1)))
@@ -2282,11 +2303,21 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
     }
     let clash = name_clash(&name, &state.presets);
     ui.horizontal(|ui| {
+        if let Some(from) = &renaming {
+            ui.small(format!("rename {from} to"));
+        }
         let editing = ui.add(
             egui::TextEdit::singleline(&mut name)
                 .hint_text("name")
                 .desired_width(140.0),
         );
+        // A rename begun from a menu lands in the field ready to type:
+        // the menu was on the row, and the field is a scroll away.
+        let focus = egui::Id::new("preset-rename-focus");
+        if ui.data(|d| d.get_temp::<bool>(focus)).unwrap_or(false) {
+            editing.request_focus();
+            ui.data_mut(|d| d.remove_temp::<bool>(focus));
+        }
         // Enter saves, so the whole thing is type-and-go rather than
         // type-then-aim.
         let entered = editing.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -2295,38 +2326,86 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         // the failure this is here to prevent, and a confirmation dialog
         // is the wrong shape for it — this screen is used with one hand
         // while something is on the projector.
-        let (label, hover) = match clash {
-            Some(Clash::Builtin(n)) => (
-                "save",
-                format!("{n} is a built-in and cannot be replaced — choose another name"),
-            ),
-            Some(Clash::User(n)) => ("replace", format!("overwrite the saved look {n}")),
-            None => ("save", "store the current look".to_string()),
-        };
         // Blocked rather than warned when it would be useless: a preset
         // saved under a built-in's name is written to disk successfully
         // and can then never be recalled, because `by_name` prefers the
         // built-in. Succeeding and doing nothing is worse than refusing.
-        let blocked = matches!(clash, Some(Clash::Builtin(_)));
+        // A rename is blocked one case further: it never replaces, so an
+        // existing look's name is a wall rather than a warning.
+        let (label, hover, blocked) = match (&renaming, &clash) {
+            (_, Some(Clash::Builtin(n))) => (
+                if renaming.is_some() { "rename" } else { "save" },
+                format!("{n} is a built-in and cannot be replaced — choose another name"),
+                true,
+            ),
+            (Some(from), Some(Clash::User(n))) if n != from => (
+                "rename",
+                format!("a look called {n} already exists — a rename does not replace"),
+                true,
+            ),
+            (Some(from), _) => (
+                "rename",
+                format!("rename {from} — the pads that use it follow"),
+                name.trim() == from,
+            ),
+            (None, Some(Clash::User(n))) => {
+                ("replace", format!("overwrite the saved look {n}"), false)
+            }
+            (None, None) => ("save", "store the current look".to_string(), false),
+        };
         let button = ui.add_enabled(!blocked, egui::Button::new(label)).on_hover_text(hover);
         // The name stays after a save. Cleared, the edit-and-save-again
         // loop meant retyping it exactly each time, and a typo made a
         // near-duplicate instead of a replacement.
         if (entered || button.clicked()) && !blocked && !name.trim().is_empty() {
-            actions.preset_save = Some(name.clone());
+            match &renaming {
+                Some(from) => {
+                    actions.preset_rename = Some((from.clone(), name.clone()));
+                    ui.data_mut(|d| d.remove_temp::<String>(rename_from_id()));
+                }
+                None => actions.preset_save = Some(name.clone()),
+            }
+        }
+        if renaming.is_some()
+            && (ui.small_button("cancel").on_hover_text("leave the name as it is").clicked()
+                || ui.input(|i| i.key_pressed(egui::Key::Escape)))
+        {
+            ui.data_mut(|d| d.remove_temp::<String>(rename_from_id()));
+            name.clear();
         }
     });
-    match clash {
-        Some(Clash::Builtin(n)) => ui.colored_label(
+    match (&renaming, &clash) {
+        (_, Some(Clash::Builtin(n))) => ui.colored_label(
             WARN_COLOR,
             format!("{n} is a built-in — saving over it would hide your look, not replace it"),
         ),
-        Some(Clash::User(n)) => {
+        (Some(from), Some(Clash::User(n))) if n != from => {
+            ui.colored_label(WARN_COLOR, format!("a look called {n} already exists"))
+        }
+        (Some(_), _) => ui.small("Enter renames; the pads that use it follow"),
+        (None, Some(Clash::User(n))) => {
             ui.colored_label(WARN_COLOR, format!("this replaces the saved look {n}"))
         }
-        None => ui.small("names are tidied for the filesystem, so \"a/b\" becomes \"a_b\""),
+        (None, None) => ui.small("names are tidied for the filesystem, so \"a/b\" becomes \"a_b\""),
     };
     ui.memory_mut(|m| m.data.insert_temp(id, name));
+}
+
+/// The look a rename is in progress on, if any. Set from either list's
+/// menu; the save field is the rename field while it is set.
+fn rename_from_id() -> egui::Id {
+    egui::Id::new("preset-rename-from")
+}
+
+/// Start renaming `name`: the save field takes the old name, becomes the
+/// rename field and takes focus. Called from either list's menu, and by
+/// the stage, whose tiles cannot hold a text field.
+pub(crate) fn begin_rename(ctx: &egui::Context, name: String) {
+    ctx.data_mut(|d| {
+        d.insert_temp(rename_from_id(), name.clone());
+        d.insert_temp(egui::Id::new("preset-save-name"), name);
+        d.insert_temp(egui::Id::new("preset-rename-focus"), true);
+    });
 }
 
 /// What an existing preset of the same name is.
@@ -3498,6 +3577,15 @@ fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, def: &vizz_pa
                             "how much of the parameter's range it swings, either side of \
                              wherever the fader is — negative inverts",
                         );
+                        // And the same swing in the parameter's own
+                        // units, beside it. "0.33 of the range" is a
+                        // sum, and the number you had in mind was never
+                        // a fraction.
+                        ui.small(
+                            egui::RichText::new(swing_text(&route.source, route.depth, width))
+                                .color(vizz_design::ink::FAINT),
+                        )
+                        .on_hover_text("the same swing in the parameter's own units");
                         if ui
                             .small_button("range…")
                             .on_hover_text(
@@ -4043,5 +4131,41 @@ mod layout_tests {
                 );
             }
         }
+    }
+}
+
+/// A depth as the swing it amounts to in the parameter's own units. A
+/// bipolar source (an LFO) swings either side of the fader; a unipolar
+/// one (an audio band, the level) only ever adds, or with a negative
+/// depth only ever takes away, and the text says which.
+fn swing_text(source: &vizz_mod::Source, depth: f32, width: f32) -> String {
+    let swing = depth.abs() * width;
+    let amount = if swing >= 10.0 {
+        format!("{swing:.0}")
+    } else if swing >= 1.0 {
+        format!("{swing:.1}")
+    } else {
+        format!("{swing:.2}")
+    };
+    match (source.is_bipolar(), depth < 0.0) {
+        (true, _) => format!("±{amount}"),
+        (false, false) => format!("up to +{amount}"),
+        (false, true) => format!("down to −{amount}"),
+    }
+}
+
+#[cfg(test)]
+mod swing_tests {
+    use super::*;
+    use vizz_mod::Source;
+
+    /// The number beside the depth slider is in the parameter's units,
+    /// signed the way the source moves.
+    #[test]
+    fn a_depth_reads_as_a_swing_in_the_parameters_units() {
+        assert_eq!(swing_text(&Source::Lfo(0), 0.25, 36.0), "±9.0");
+        assert_eq!(swing_text(&Source::Lfo(0), -0.5, 200.0), "±100");
+        assert_eq!(swing_text(&Source::Audio(0), 0.5, 1.0), "up to +0.50");
+        assert_eq!(swing_text(&Source::Level, -0.1, 12.0), "down to −1.2");
     }
 }

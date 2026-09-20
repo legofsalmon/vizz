@@ -311,6 +311,19 @@ impl Grid {
         self.kind
     }
 
+    /// Every pad that names `from` now names `to` — the live grid's half
+    /// of a rename; the book holds the other pages. Returns how many.
+    pub fn repoint(&mut self, from: &str, to: &str) -> usize {
+        let mut n = 0;
+        for cell in self.cells.iter_mut().flatten() {
+            if cell.preset == from {
+                cell.preset = to.to_string();
+                n += 1;
+            }
+        }
+        n
+    }
+
     pub fn cells(&self) -> &[Option<Cell>] {
         &self.cells
     }

@@ -904,6 +904,8 @@ gravity layer's own grid in `gravity-grid.json` next to it.
 
 ```
 /deck/select       0 = none, 1..24 = the pages
+/deck/next         a rise turns to the next page
+/deck/prev         a rise turns to the previous page
 /column/fire       0 = none, 1..16 = the columns
 ```
 
@@ -932,7 +934,10 @@ looking at.
 an OSC message are one gesture. Bindings name the *deck number* rather than
 the address, exactly as the pads and the preset slots do, so sixteen
 buttons address sixteen pages rather than one button sweeping the lot.
-Right-click a chip to learn one.
+Right-click a chip to learn one. Two buttons do instead of twenty-four:
+`/deck/next` and `/deck/prev` turn one page per press and stop at the ends,
+so a controller with a spare pair of pads leafs through a set list without
+a button per song. The `‹` `›` beside the set list are the same two.
 
 Pages are saved to `decks.json` inside the open show, with the live page still
 mirrored into `grid.json` and `gravity-grid.json` — so losing that file
@@ -1613,6 +1618,8 @@ control input can never crash the renderer.
 | `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
 | `/deck/select` | 0 – 24 | 0 | turn to page 1–24 on change; 0 = none |
+| `/deck/next` | 0 – 1 | 0 | turn to the next page on a rise; stops at the last |
+| `/deck/prev` | 0 – 1 | 0 | turn to the previous page on a rise; stops at the first |
 | `/column/fire` | 0 – 16 | 0 | fire column 1–16 — the scene pad and the gravity pad of that number, together |
 | `/record/active` | 0 – 1 | 0 | record the master to an image sequence; 1 starts, 0 stops |
 | `/tempo/tap` | 0 – 1 | 0 | tap the beat: each rise is one tap, and three set the tempo |

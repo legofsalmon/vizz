@@ -160,6 +160,8 @@ pub struct AppParams {
     pub scene_auto: ParamId,
     pub scene_bars: ParamId,
     pub deck_select: ParamId,
+    pub deck_next: ParamId,
+    pub deck_prev: ParamId,
     pub column_fire: ParamId,
 }
 
@@ -290,6 +292,8 @@ const HELP: &[(&str, &str)] = &[
     ("/scene/auto", "scene autopilot on/off"),
     ("/scene/bars", "bars between scene autopilot steps"),
     ("/deck/select", "turn to page 1–24 on change; 0 = none"),
+    ("/deck/next", "turn to the next page on a rise; stops at the last"),
+    ("/deck/prev", "turn to the previous page on a rise; stops at the first"),
     ("/column/fire", "fire column 1–16 — the scene pad and the gravity pad of that number, together"),
     ("/record/active", "record the master to an image sequence; 1 starts, 0 stops"),
     ("/tempo/tap", "tap the beat: each rise is one tap, and three set the tempo"),
@@ -829,6 +833,11 @@ impl AppParams {
         // there into each other. That is not a wrong picture, it is a lost
         // set list.
         let deck_select = b.add(ParamDef::new("/deck/select", 0.0, MAX_DECKS, 0.0).transport());
+        // Two buttons instead of twenty-four: a controller with a spare
+        // pair of pads turns pages one at a time, either way, and stops
+        // at the ends rather than wrapping.
+        let deck_next = b.add(ParamDef::new("/deck/next", 0.0, 1.0, 0.0).transport());
+        let deck_prev = b.add(ParamDef::new("/deck/prev", 0.0, 1.0, 0.0).transport());
         // A column: the scene pad and the gravity pad of the same number,
         // fired together. This is what a Resolume column launch lands on,
         // and it is an ordinary address so anything else that speaks OSC —
@@ -926,6 +935,8 @@ impl AppParams {
             scene_auto,
             scene_bars,
             deck_select,
+            deck_next,
+            deck_prev,
             column_fire,
         }
     }
@@ -1004,6 +1015,8 @@ mod tests {
                 // The deck transport. A captured deck select would turn
                 // the page out from under the pad that was just pressed.
                 "/deck/select",
+                "/deck/next",
+                "/deck/prev",
                 "/column/fire",
             ]
         );

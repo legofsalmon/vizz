@@ -1661,6 +1661,9 @@ impl App {
                     &self.clouds,
                     &mut self.thumbs,
                 );
+                if let Some((from, to)) = &actions.preset_rename {
+                    apply_preset_rename(from, to, &mut self.engine, &mut self.library, &mut notes);
+                }
                 // Before the grids: a page turn and a pad press landing on
                 // the same frame have to happen in that order, or the pad
                 // is applied to the deck being left.
@@ -3225,6 +3228,57 @@ fn apply_preset_actions(
             }
         }
     }
+}
+
+/// A look renamed from either list. The file moves, every pad on every
+/// page that named it follows, and the mark on the current look stays
+/// on the same look — the list re-sorts under a rename, so the slot
+/// number that marked it moves.
+fn apply_preset_rename(
+    from: &str,
+    to: &str,
+    engine: &mut crate::engine::FrameEngine,
+    library: &mut vizz_mod::preset::Library,
+    notes: &mut Notes,
+) {
+    // Which look is marked current, by name, before the numbers move.
+    let current = engine
+        .current_preset()
+        .and_then(|slot| preset_entries(library).into_iter().nth(slot - 1))
+        .map(|e| e.name);
+    let saved = match vizz_mod::preset::rename(from, to) {
+        Ok(saved) => saved,
+        Err(e) => {
+            log::error!("could not rename preset {from}: {e:#}");
+            notes.push((true, format!("could NOT rename '{from}': {e}")));
+            return;
+        }
+    };
+    log::info!("renamed preset {from} to {saved}");
+    // The live grids are the truth for the page that is open, and the
+    // book holds every other page; the book's copy of the open page is
+    // only as fresh as the last turn. Stored first, so the count is of
+    // pads rather than of pads plus a stale copy of some of them.
+    engine.decks.store(&engine.grid, &engine.gravity_grid);
+    let followed = engine.decks.repoint(from, &saved);
+    engine.grid.repoint(from, &saved);
+    engine.gravity_grid.repoint(from, &saved);
+    if followed > 0 {
+        save_deck_state(engine, notes);
+    }
+    library.refresh();
+    if let Some(current) = current {
+        let current = if current == from { saved.clone() } else { current };
+        if let Some(i) = preset_entries(library).iter().position(|e| e.name == current) {
+            engine.mark_preset(i + 1);
+        }
+    }
+    let pads = match followed {
+        0 => String::new(),
+        1 => "  ·  one pad follows".to_string(),
+        n => format!("  ·  {n} pads follow"),
+    };
+    notes.push((false, format!("renamed '{from}' to '{saved}'{pads}")));
 }
 
 fn apply_panel_actions(

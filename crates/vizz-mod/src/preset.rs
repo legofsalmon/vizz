@@ -70,6 +70,8 @@ pub const EXCLUDED: &[&str] = &[
     // out from under the pad that was just pressed, so the look would
     // arrive and the grid it came from would be gone.
     "/deck/select",
+    "/deck/next",
+    "/deck/prev",
     "/column/fire",
 ];
 
@@ -520,6 +522,37 @@ pub fn load_kind(kind: Kind, name: &str) -> Result<Preset> {
     let bytes =
         std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Rename a user preset on disk, picture included. Returns the name as
+/// written, which is the tidied one. Refuses a built-in's name (it could
+/// never be recalled) and a name already in use (a rename is not a way
+/// to overwrite). The pads that name the old look are the caller's to
+/// re-point — see `deck::Book::repoint` — because a preset does not know
+/// who plays it.
+pub fn rename(from: &str, to: &str) -> Result<String> {
+    let to = crate::library::sanitize(to);
+    anyhow::ensure!(!to.is_empty(), "a look needs a name");
+    anyhow::ensure!(
+        !BUILTINS.iter().any(|b| b.name == to),
+        "{to} is a built-in's name, and a look under it could never be recalled"
+    );
+    let (src, dst) = (path_for(from), path_for(&to));
+    if src == dst {
+        return Ok(to);
+    }
+    anyhow::ensure!(!dst.exists(), "a look called {to} already exists");
+    std::fs::rename(&src, &dst)
+        .with_context(|| format!("renaming {} to {}", src.display(), dst.display()))?;
+    // The picture follows, as a copy under the new name; a stale one
+    // under the old would be inherited by the next look saved there.
+    if let Some(thumb) = crate::thumb::read(from) {
+        if let Err(e) = crate::thumb::save(&to, &thumb) {
+            log::warn!("the picture of {from} did not follow its rename: {e:#}");
+        }
+        crate::thumb::remove(from);
+    }
+    Ok(to)
 }
 
 pub fn delete(name: &str) -> Result<()> {
@@ -1549,5 +1582,34 @@ mod thumb_lifecycle_tests {
         assert!(crate::thumb::exists(name));
         delete(name).unwrap();
         assert!(!crate::thumb::exists(name), "the picture outlived the look");
+    }
+
+    /// A rename moves the file and its picture, tidies the new name the
+    /// way a save would, and refuses the two names it must: a built-in's
+    /// (never recallable) and one already in use (a rename is not a way
+    /// to replace).
+    #[test]
+    fn a_rename_moves_the_look_and_its_picture_and_refuses_to_replace() {
+        let (_guard, _tmp) = crate::test_env::scoped("preset-rename");
+        let empty = Preset { values: Default::default(), source: None };
+        save("night bus", &empty).unwrap();
+        save("taken", &empty).unwrap();
+        crate::thumb::save(
+            "night bus",
+            &crate::thumb::Thumb { width: 2, height: 2, rgba: vec![255; 16] },
+        )
+        .unwrap();
+
+        let err = rename("night bus", BUILTINS[0].name).unwrap_err().to_string();
+        assert!(err.contains("built-in"), "{err}");
+        let err = rename("night bus", "taken").unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(by_name("night bus").is_some(), "a refused rename must change nothing");
+
+        assert_eq!(rename("night bus", "last/bus").unwrap(), "last_bus");
+        assert!(by_name("night bus").is_none(), "the old name still recalls");
+        assert!(by_name("last_bus").is_some(), "the new name does not recall");
+        assert!(!crate::thumb::exists("night bus"), "the picture stayed behind");
+        assert!(crate::thumb::exists("last_bus"), "the picture did not follow");
     }
 }
