@@ -620,7 +620,10 @@ you reached for.</p>
 
 <p>The range wraps, so the top morphs the Aizawa attractor back into the sphere.
 <code>/shape/morph</code> adds an extra blend into the next form and
-<code>/shape/twist</code> shears the whole field.</p>
+<code>/shape/twist</code> shears the whole field. <code>/shape/wind</code> blows
+through it — an ABC flow, divergence-free and chaotic, read as a displacement
+so it works on a scan as on a sphere — and <code>/shape/wind_rate</code> is how
+fast it changes.</p>
 
 <p><strong>Lorenz and Aizawa are real strange attractors</strong>, integrated per
 particle rather than drawn as a static curve — the field genuinely flows along
@@ -1258,6 +1261,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>
+    <tr><td><code>/shape/wind</code></td><td>0 – 1</td><td>0</td><td>a wind through the field — an ABC flow, divergence-free, blowing every form</td></tr>
+    <tr><td><code>/shape/wind_rate</code></td><td>0 – 2</td><td>0.3</td><td>how fast the wind changes</td></tr>
     <tr><td><code>/fx/trail</code></td><td>0 – 0.98</td><td>0</td><td>feedback: how much of last frame survives</td></tr>
     <tr><td><code>/fx/zoom</code></td><td>0.9 – 1.1</td><td>1</td><td>per-frame zoom of the feedback (tunnels)</td></tr>
     <tr><td><code>/fx/spin</code></td><td>-0.1 – 0.1</td><td>0</td><td>per-frame rotation of the feedback</td></tr>

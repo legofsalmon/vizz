@@ -86,6 +86,8 @@ pub struct AppParams {
     pub shape: ParamId,
     pub morph: ParamId,
     pub twist: ParamId,
+    pub wind: ParamId,
+    pub wind_rate: ParamId,
     pub trail: ParamId,
     pub zoom: ParamId,
     pub spin: ParamId,
@@ -184,6 +186,8 @@ const HELP: &[(&str, &str)] = &[
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
+    ("/shape/wind", "a wind through the field — an ABC flow, divergence-free, blowing every form"),
+    ("/shape/wind_rate", "how fast the wind changes"),
     ("/fx/trail", "feedback: how much of last frame survives"),
     ("/fx/zoom", "per-frame zoom of the feedback (tunnels)"),
     ("/fx/spin", "per-frame rotation of the feedback"),
@@ -393,6 +397,15 @@ impl AppParams {
         );
         let morph = b.add(ParamDef::new("/shape/morph", 0.0, 1.0, 0.0).smooth(0.3));
         let twist = b.add(ParamDef::new("/shape/twist", 0.0, 2.0, 0.0).smooth(0.25));
+        // Wind: an Arnold–Beltrami–Childress flow read as a displacement —
+        // a steady solution of Euler's equations, divergence-free by
+        // construction, chaotic in its streamlines — so every form, the
+        // scans included, can be blown through without a particle state
+        // to keep. Stateless like the rest of the shader: the field
+        // drifts with time at its own rate. Zero by default, so every
+        // look saved before it existed draws exactly as it did.
+        let wind = b.add(ParamDef::new("/shape/wind", 0.0, 1.0, 0.0).smooth(0.3));
+        let wind_rate = b.add(ParamDef::new("/shape/wind_rate", 0.0, 2.0, 0.3).smooth(0.3));
         // Feedback: the effect that turns a particle field into VJ
         // material. Capped below 1.0 because at 1.0 nothing ever decays
         // and the frame saturates to white within seconds.
@@ -861,6 +874,8 @@ impl AppParams {
             shape,
             morph,
             twist,
+            wind,
+            wind_rate,
             trail,
             punch_flash,
             punch_black,
@@ -1709,5 +1724,22 @@ mod reference_tests {
                 d.addr
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod wind_tests {
+    use super::*;
+
+    /// No wind by default: every look saved before the wind existed, and
+    /// the whole shipped set, must draw exactly as before. The rate may
+    /// be anything — at zero amount it moves nothing.
+    #[test]
+    fn the_wind_is_still_by_default() {
+        let p = AppParams::build();
+        let defs = p.registry.defs();
+        assert_eq!(defs[p.wind.index()].default, 0.0);
+        assert_eq!(defs[p.wind.index()].addr, "/shape/wind");
+        assert!(defs[p.wind_rate.index()].default > 0.0, "a rate of zero would freeze the field the moment wind was turned up");
     }
 }

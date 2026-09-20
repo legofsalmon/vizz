@@ -546,6 +546,15 @@ flows from one shape into the next rather than being re-scattered. A
 swept knob is playable; a stepped one is not. The range wraps, so the top
 morphs the Aizawa attractor back into the sphere.
 
+`/shape/wind` blows through the field: an Arnold–Beltrami–Childress flow
+— a steady solution of Euler's equations, divergence-free by
+construction, chaotic in its streamlines — read as a displacement of
+where each point already is, so it costs no particle state and works on
+a scan exactly as on a sphere. Six trigonometric terms per octave, two
+octaves drifting at their own paces, which is why it can run per vertex
+where a noise curl could not. `/shape/wind_rate` is how fast it changes.
+Zero by default, so every look saved before it existed draws as it did.
+
 `/shape/twist` adds shear plus a height-dependent twist, and pairs well
 with a slow LFO.
 
@@ -1625,6 +1634,8 @@ and the aliases are read on the way in only.
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |
+| `/shape/wind` | 0 – 1 | 0 | a wind through the field — an ABC flow, divergence-free, blowing every form |
+| `/shape/wind_rate` | 0 – 2 | 0.3 | how fast the wind changes |
 | `/fx/trail` | 0 – 0.98 | 0 | feedback: how much of last frame survives |
 | `/fx/zoom` | 0.9 – 1.1 | 1 | per-frame zoom of the feedback (tunnels) |
 | `/fx/spin` | -0.1 – 0.1 | 0 | per-frame rotation of the feedback |

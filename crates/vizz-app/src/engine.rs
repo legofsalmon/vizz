@@ -964,11 +964,13 @@ impl FrameEngine {
                     let c = lamp_colour(self.snapshot.get(l.hue), self.snapshot.get(l.tint));
                     [c[0], c[1], c[2], self.snapshot.get(l.radius)]
                 }),
+                // The wind rides in the light block's spare lanes: a new
+                // field would move every one after it.
                 light: [
                     self.snapshot.get(p.light_ambient),
                     self.snapshot.get(p.light_shape),
-                    0.0,
-                    0.0,
+                    self.snapshot.get(p.wind),
+                    self.snapshot.get(p.wind_rate),
                 ],
                 sun_dir: {
                     let az = self.snapshot.get(p.sun_az);

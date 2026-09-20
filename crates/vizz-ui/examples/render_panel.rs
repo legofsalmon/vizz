@@ -58,6 +58,8 @@ fn main() {
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",
+        "/shape/wind",
+        "/shape/wind_rate",
         "/fx/trail",
         "/fx/zoom",
         "/fx/spin",
