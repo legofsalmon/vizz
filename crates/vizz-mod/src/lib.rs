@@ -48,6 +48,7 @@ pub(crate) mod test_env {
     }
 }
 pub mod deck;
+pub mod generators;
 pub mod library;
 pub mod perform;
 pub mod preset;

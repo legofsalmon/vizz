@@ -114,10 +114,12 @@ struct Args {
     syphon_flip: bool,
 
     /// Load a point cloud (.ply, .xyz, .csv, .pts) or an image
-    /// (.png, .jpg) into a cloud slot. Repeat to fill more of the six
-    /// loadable slots: `--cloud a.ply --cloud b.ply`. The last one loaded
-    /// is shown; `/cloud/a` and `/cloud/b` choose the morph pair and
-    /// `/cloud/morph` blends between them.
+    /// (.png, .jpg) into a cloud slot, or make one from an equation with
+    /// `gen:<name>` — `gen:thomas`, `gen:hopf`, `gen:mandelbulb`; the
+    /// panel's clouds section lists them all. Repeat to fill more of the
+    /// six loadable slots: `--cloud a.ply --cloud gen:menger`. The last
+    /// one loaded is shown; `/cloud/a` and `/cloud/b` choose the morph
+    /// pair and `/cloud/morph` blends between them.
     #[arg(long)]
     cloud: Vec<PathBuf>,
 

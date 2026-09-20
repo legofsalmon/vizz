@@ -1211,6 +1211,22 @@ into a cloud, morphable against any other slot like any shape. Typed
 clouds come back after a restart — they persist as `text:WORD` entries
 in the settings and re-rasterize deterministically on launch.
 
+**Or make one from an equation.** The clouds section's *generate…* menu,
+or `--cloud gen:<name>`, fills the next slot from a formula rather than a
+file: strange attractors (Thomas, Halvorsen, Dadras, Rössler, four-wing,
+Chen), the Clifford and de Jong maps lifted into depth by delay
+embedding, a Gielis supershape, a harmonic-rippled sphere, a 3:4:7
+Lissajous knot, a (3,7) torus knot, the Hopf fibration as nested tori of
+linked circles, Chladni sand on a vibrating plate, the Sierpinski
+tetrahedron, the Menger sponge and the power-eight Mandelbulb's surface.
+Each is made once on the CPU — flows in time order, so the cloud crawls
+along itself; surfaces in scan order; fractals by the chaos game or by
+marching rays — and then it is a cloud like any other: chosen by name,
+crossed to with a scene change, recorded as a look's source and filed
+under *attractors* or *shapes*. A generated cloud persists as `gen:<name>`
+and is remade deterministically on launch, on the loader thread, so a
+fractal's search never delays the first frame.
+
 `/shape/mode 7` shows a **cloud**. Which one is chosen by clicking its
 name in the panel's clouds section — the names are there, and a slot
 index is not something anyone can read. **Loading a cloud points the

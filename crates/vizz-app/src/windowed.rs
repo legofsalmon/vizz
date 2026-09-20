@@ -242,6 +242,16 @@ struct App {
 struct PendingCloud {
     path: std::path::PathBuf,
     rx: std::sync::mpsc::Receiver<anyhow::Result<Vec<vizz_render::pointcloud::Point>>>,
+    /// What the slot will be called.
+    name: String,
+    /// What the saved cloud list records: a path for a file, `gen:<id>`
+    /// for a generated one.
+    stored: String,
+    /// Put the result straight into this slot rather than adopting it
+    /// into the next free one — the restore of a saved `gen:` entry,
+    /// which already has its position and must not be shown, re-saved
+    /// or moved.
+    restore: Option<usize>,
 }
 
 /// The file's own name, for a notice — the full path is for the log.
@@ -464,6 +474,22 @@ impl App {
                     scene.set_cloud(&ctx, slot, &cloud.points, word);
                 }
             }
+        }
+        // Generated clouds restore the same way, deterministically — but
+        // on the loader thread, because a fractal's search is a good
+        // fraction of a second and launch must not wait on it. They land
+        // in their slots a few frames in.
+        let generated: Vec<(usize, String)> = self
+            .clouds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                let id = entry.strip_prefix("gen:")?;
+                ParticleScene::loadable_slot(i).map(|slot| (slot, id.to_string()))
+            })
+            .collect();
+        for (slot, id) in generated {
+            self.make_generated_cloud(&id, Some(slot));
         }
         // Palettes come back in the order they were dropped, so the
         // indices a preset saved still point at the same colours.
@@ -796,7 +822,14 @@ impl App {
                 let _ = tx.send(result);
             });
         match spawned {
-            Ok(_) => self.pending_clouds.push(PendingCloud { path, rx }),
+            Ok(_) => {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "cloud".into());
+                let stored = path.display().to_string();
+                self.pending_clouds.push(PendingCloud { path, rx, name, stored, restore: None });
+            }
             Err(e) => {
                 log::error!("could not start the cloud loader: {e}");
                 if let Some(state) = &mut self.state {
@@ -897,32 +930,79 @@ impl App {
             return;
         }
         let mut done = Vec::new();
-        self.pending_clouds.retain(|p| match p.rx.try_recv() {
-            Ok(result) => {
-                done.push((p.path.clone(), result));
-                false
-            }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => {
-                done.push((p.path.clone(), Err(anyhow::anyhow!("the loader thread died"))));
-                false
-            }
-        });
-        for (path, result) in done {
-            match result {
-                Ok(points) => {
-                    let name = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "cloud".into());
-                    self.adopt_cloud(&points, &name, path.display().to_string());
+        let pending = std::mem::take(&mut self.pending_clouds);
+        for p in pending {
+            match p.rx.try_recv() {
+                Ok(result) => done.push((p, result)),
+                Err(TryRecvError::Empty) => self.pending_clouds.push(p),
+                Err(TryRecvError::Disconnected) => {
+                    done.push((p, Err(anyhow::anyhow!("the loader thread died"))));
                 }
+            }
+        }
+        for (pending, result) in done {
+            match result {
+                Ok(points) => match pending.restore {
+                    // A saved entry coming back: into its own slot,
+                    // quietly, the way a file's restore is.
+                    Some(slot) => {
+                        if let Some(state) = &mut self.state {
+                            state.scene.set_cloud(&state.ctx, slot, &points, &pending.name);
+                        }
+                        log::info!("restored {} into cloud slot {slot}", pending.name);
+                    }
+                    None => self.adopt_cloud(&points, &pending.name, pending.stored),
+                },
                 Err(e) => {
-                    log::warn!("could not load {}: {e:#}", path.display());
+                    log::warn!("could not load {}: {e:#}", pending.path.display());
                     let Some(state) = &mut self.state else { return };
                     state
                         .gui
-                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&pending.path)));
+                }
+            }
+        }
+    }
+
+    /// Make a cloud from an equation, on the loader thread — a fractal
+    /// takes a good fraction of a second to search, and that is exactly
+    /// the frame stall the thread exists to avoid. `restore` names the
+    /// slot a saved `gen:` entry goes back into; `None` adopts the result
+    /// as a drop would.
+    fn make_generated_cloud(&mut self, id: &str, restore: Option<usize>) {
+        let Some(generator) = vizz_mod::generators::by_id(id) else {
+            log::warn!("no generator called {id}");
+            if let Some(state) = &mut self.state {
+                state.gui.notify_error(format!("no generator called '{id}'"));
+            }
+            return;
+        };
+        if restore.is_none()
+            && let Some(state) = &mut self.state
+        {
+            state.gui.notify_info(format!("making {}…", generator.name));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id_owned = id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("vizz-cloud-generate".into())
+            .spawn(move || {
+                let result = vizz_render::generate::generate(&id_owned)
+                    .ok_or_else(|| anyhow::anyhow!("no generator called {id_owned}"));
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => self.pending_clouds.push(PendingCloud {
+                path: std::path::PathBuf::from(format!("gen:{id}")),
+                rx,
+                name: generator.name.to_string(),
+                stored: format!("gen:{id}"),
+                restore,
+            }),
+            Err(e) => {
+                log::error!("could not start the cloud generator: {e}");
+                if let Some(state) = &mut self.state {
+                    state.gui.notify_error(format!("could NOT make {}: {e}", generator.name));
                 }
             }
         }
@@ -1494,6 +1574,7 @@ impl App {
         let mut pending_output = None;
         let mut pending_device = None;
         let mut pending_text_cloud = None;
+        let mut pending_generate = None;
         match actions {
             Ok(actions) => {
                 apply_audio_actions(
@@ -1752,6 +1833,7 @@ impl App {
                 // references.
                 pending_output = actions.output_setup;
                 pending_text_cloud = actions.text_cloud.clone();
+                pending_generate = actions.generate_cloud.clone();
                 // Same deferral, for the same reason: see the bottom of
                 // this function.
                 pending_device = actions.audio.device.clone();
@@ -2016,6 +2098,9 @@ impl App {
         }
         if let Some(text) = pending_text_cloud {
             self.make_text_cloud(&text);
+        }
+        if let Some(id) = pending_generate {
+            self.make_generated_cloud(&id, None);
         }
         // Deferred for a different reason, to the same place. Closing one
         // audio device and opening another is not a fast call — CoreAudio
@@ -3686,7 +3771,11 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // honest empty slot.
     let hold_places = |mut paths: Vec<String>, what: &str| {
         for p in &mut paths {
-            if !p.is_empty() && !p.starts_with("text:") && !std::path::Path::new(p).exists() {
+            if !p.is_empty()
+                && !p.starts_with("text:")
+                && !p.starts_with("gen:")
+                && !std::path::Path::new(p).exists()
+            {
                 log::warn!("{what} {p} is gone — its position is kept so the others stay put");
                 p.clear();
             }
@@ -3708,9 +3797,9 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     opts.clouds = cloud_paths
         .iter()
         .map(|p| {
-            // Text entries hold their slot as holes here; init
-            // re-rasterizes them after the files have loaded.
-            if p.starts_with("text:") {
+            // Text and generated entries hold their slot as holes here;
+            // init re-makes them after the files have loaded.
+            if p.starts_with("text:") || p.starts_with("gen:") {
                 std::path::PathBuf::new()
             } else {
                 std::path::PathBuf::from(p)
@@ -3908,5 +3997,28 @@ mod cloud_note_tests {
         assert_eq!(thousands(4_190_233), "4,190,233");
         assert_eq!(cloud_size_note(12_000), "12,000 points");
         assert_eq!(cloud_size_note(4_190_233), "4,190,233 points, sampled to 65,536");
+    }
+}
+
+#[cfg(test)]
+mod generator_catalogue_tests {
+    /// The catalogue the panel lists and the maths the renderer holds are
+    /// two lists in two crates that cannot see each other. This is the
+    /// one place that sees both.
+    #[test]
+    fn every_catalogued_generator_generates_and_vice_versa() {
+        for g in vizz_mod::generators::CATALOGUE {
+            assert!(
+                vizz_render::generate::generate(g.id).is_some(),
+                "the catalogue lists '{}' but nothing makes it",
+                g.id
+            );
+        }
+        for id in vizz_render::generate::IDS {
+            assert!(
+                vizz_mod::generators::by_id(id).is_some(),
+                "'{id}' can be made but the catalogue does not list it"
+            );
+        }
     }
 }

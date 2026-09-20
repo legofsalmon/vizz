@@ -52,7 +52,26 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     let vector_print =
         vizz_render::vector::VectorScene::new(&ctx, vizz_render::output::OUTPUT_FORMAT);
     let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
-    scene.load_clouds(&ctx, &opts.clouds);
+    // `gen:<id>` entries are made, not read: blanked for the file loader
+    // so they hold their slot, then generated into it. Synchronously —
+    // there is no frame to keep here, and a benchmark wants the cloud in
+    // place before it starts counting.
+    let files: Vec<PathBuf> = opts
+        .clouds
+        .iter()
+        .map(|p| if generator_id(p).is_some() { PathBuf::new() } else { p.clone() })
+        .collect();
+    scene.load_clouds(&ctx, &files);
+    for (i, path) in opts.clouds.iter().enumerate() {
+        if let Some(id) = generator_id(path)
+            && let Some(slot) = ParticleScene::loadable_slot(i)
+        {
+            match vizz_render::generate::generate(id) {
+                Some(points) => scene.set_cloud(&ctx, slot, &points, id),
+                None => log::warn!("no generator called {id}"),
+            }
+        }
+    }
     let params_for_video = Arc::clone(&params);
     let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
@@ -258,4 +277,10 @@ fn dump_png(ctx: &GpuContext, texture: &wgpu::Texture, width: u32, height: u32, 
         .context("readback size mismatch")?
         .save(path)?;
     Ok(())
+}
+
+/// The generator a `--cloud gen:<id>` argument names, if that is what
+/// the path is.
+fn generator_id(path: &std::path::Path) -> Option<&str> {
+    path.to_str()?.strip_prefix("gen:")
 }

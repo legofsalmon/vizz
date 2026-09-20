@@ -351,7 +351,12 @@ pub fn family(source: Option<&str>) -> Family {
         _ if is(GENERATED) => Family::Shape,
         // "electronic set", and whatever set ships next.
         _ if s.to_ascii_lowercase().ends_with(" set") => Family::Set,
-        _ => Family::Cloud,
+        // A cloud made from an equation files under what the equation is;
+        // anything else is a file somebody loaded.
+        _ => match crate::generators::by_name(s) {
+            Some(g) => g.family,
+            None => Family::Cloud,
+        },
     }
 }
 

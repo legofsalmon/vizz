@@ -69,6 +69,9 @@ pub struct PanelActions {
     pub clear_all_bindings: bool,
     /// A word typed in the clouds section, to become a point cloud.
     pub text_cloud: Option<String>,
+    /// A generator picked in the clouds section, by its catalogue id, to
+    /// become a point cloud.
+    pub generate_cloud: Option<String>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
     /// Recall this preset by name.
@@ -1014,6 +1017,31 @@ fn clouds_section(
             draft.clear();
         }
         ui.memory_mut(|m| m.data.insert_temp(id, draft));
+    });
+    // Or make one from an equation. The catalogue is vizz-mod's so the
+    // panel can list it without the renderer; the mathematics is the
+    // renderer's, and a test in the app holds the two together.
+    ui.horizontal(|ui| {
+        ui.small("or from an equation:");
+        ui.menu_button("generate…", |ui| {
+            use vizz_mod::preset::Family;
+            for family in [Family::Attractor, Family::Shape] {
+                ui.label(
+                    egui::RichText::new(family.label())
+                        .size(10.0)
+                        .color(vizz_design::ink::TERTIARY)
+                        .monospace(),
+                );
+                for g in vizz_mod::generators::CATALOGUE.iter().filter(|g| g.family == family) {
+                    if ui.button(g.name).on_hover_text(g.about).clicked() {
+                        actions.generate_cloud = Some(g.id.to_string());
+                        ui.close();
+                    }
+                }
+            }
+        })
+        .response
+        .on_hover_text("a cloud from an equation — attractors, knots, fractals; it takes the next free slot");
     });
 }
 
