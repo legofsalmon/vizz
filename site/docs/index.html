@@ -671,6 +671,20 @@ sender at that. It is only shown for a <code>listen://</code> address: if you
 are dialling out to <code>host:port</code> instead, the address that matters is
 the other machine's.</p>
 
+<h3>From a simulation</h3>
+<pre><code>vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
+vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion</code></pre>
+
+<p>A simulation is a live cloud that needs no sender: it runs on its own thread
+at the frame rate and publishes through the stream's path. The panel's
+<em>simulate…</em> button beside <em>receive</em> starts one, and the one running
+is remembered across launches. <strong>fluid</strong> is Stam's stable solver for
+the Navier–Stokes equations on an endless sheet, with vorticity confinement and
+sixty-five thousand tracers as the cloud — the loudness stirs it, the kick
+bursts it, the snare spins it, the highs roughen it. <strong>reaction</strong> is
+Gray–Scott reaction–diffusion, one cell per point, where spots grow, split and
+heal; the kick plants new ones.</p>
+
 <h3>Showing and crossing between them</h3>
 
 <p><strong>A cloud you load is shown.</strong> Dropping a file, typing a word,

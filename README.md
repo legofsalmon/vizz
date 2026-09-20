@@ -301,6 +301,41 @@ thing between a header change and silent memory corruption.
 **Not wired to the renderer yet.** Discovery, connection and frame capture
 work and are tested; drawing the received frame is the next step.
 
+### Simulations
+
+```sh
+vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
+vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
+```
+
+A simulation is a live cloud that needs no sender: it runs on its own
+thread, at the frame rate, and publishes through exactly the path a
+network stream does — the same slot, the same `try_lock`, the same
+first-frame show. The panel's *simulate…* button beside *receive* starts
+one, and the one running is remembered across launches (a network stream
+is not — its sender is another machine's business).
+
+**fluid** is Jos Stam's stable solver for the incompressible
+Navier–Stokes equations — semi-Lagrangian advection and a pressure
+projection, unconditionally stable at any frame rate — on a 128² periodic
+grid, with Fedkiw's vorticity confinement to keep the swirls alive and
+sixty-five thousand tracers riding the field as the cloud. The vorticity
+stands up as relief and brightens the point, so eddies read as eddies.
+Two stirrers orbit on their own, so it moves with no audio at all; with
+audio the loudness sets their reach, a kick bursts from the middle, a
+snare spins a vortex somewhere and the highs roughen the field.
+
+**reaction** is the Gray–Scott system in Pearson's parameterisation, one
+cell per point on a 256² grid, in the corner of the feed/kill map where
+spots divide like cells. Eight unit steps a frame is a division every few
+seconds. A kick plants a seed; left alone it re-seeds itself while it is
+sparse, so it never goes blank.
+
+What a simulation gets from the app is deliberately narrow — the four
+bands, the loudness, where the bar is — because it is meant to be a
+*cloud*, chosen, crossed to, captured and lit like the others, that
+happens to be alive.
+
 ## Releasing
 
 ```sh

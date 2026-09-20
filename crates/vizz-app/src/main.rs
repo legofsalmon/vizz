@@ -124,9 +124,10 @@ struct Args {
     cloud: Vec<PathBuf>,
 
     /// Live point-cloud stream: `tcp://host:port`, `listen://host:port`,
-    /// a bare `host:port`, or a path to a `.ply` file that is rewritten in
-    /// place. Frames land in their own slot, which is shown when the
-    /// first frame arrives.
+    /// a bare `host:port`, a path to a `.ply` file that is rewritten in
+    /// place, or a simulation — `sim:fluid`, `sim:reaction` — run here
+    /// and driven by the audio. Frames land in their own slot, which is
+    /// shown when the first frame arrives.
     #[arg(long)]
     live_cloud: Option<String>,
 

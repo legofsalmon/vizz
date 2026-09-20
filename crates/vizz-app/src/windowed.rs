@@ -519,7 +519,14 @@ impl App {
                 Err(e) => log::warn!("could not open the video input: {e:#}"),
             }
         }
-        if let Some(source) = self.opts.live_cloud.clone() {
+        // A remembered simulation comes back unless the command line
+        // named a stream: the stream is the explicit ask.
+        let live_source = self.opts.live_cloud.clone().or_else(|| {
+            crate::settings::load()
+                .simulation
+                .map(vizz_render::plystream::Source::Simulate)
+        });
+        if let Some(source) = live_source {
             match vizz_render::plystream::LiveCloud::start(source) {
                 Ok(live) => {
                     log::info!("live cloud: {}", live.label());
@@ -1047,6 +1054,15 @@ impl App {
         // revision moved: re-uploading an unchanged cloud every frame
         // would cost a texture write for nothing.
         if let Some(live) = &self.live {
+            // What the room sounds like, for a simulation; a stream
+            // ignores it.
+            let st = &self.engine.audio.state;
+            live.drive(vizz_render::simulate::Drive {
+                bands: std::array::from_fn(|i| st.band(i)),
+                level: st.level(),
+                bar: self.engine.modulation.clock.bar_phase(4.0),
+                audio: st.connected(),
+            });
             let revision = live.revision();
             if revision != self.live_revision {
                 // Taken out of the slot rather than borrowed in place.
@@ -1620,14 +1636,23 @@ impl App {
                             // holding — which is every rescan, since a
                             // rescan is the same address twice.
                             self.live = None;
+                            let simulation = match &source {
+                                vizz_render::plystream::Source::Simulate(id) => Some(id.clone()),
+                                _ => None,
+                            };
                             match vizz_render::plystream::LiveCloud::start(source) {
                                 Ok(live) => {
-                                    state
-                                        .gui
-                                        .notify_info(format!("receiving from {}", live.label()));
+                                    state.gui.notify_info(match &simulation {
+                                        Some(id) => format!("simulating {id} — the bands drive it"),
+                                        None => format!("receiving from {}", live.label()),
+                                    });
                                     state.scene.reset_stream_fit();
                                     self.live_shown = false;
                                     self.live = Some(live);
+                                    // Remembered, so a set built on it comes back alive.
+                                    if let Err(e) = crate::settings::save_simulation(simulation.as_deref()) {
+                                        log::warn!("could not remember the simulation: {e:#}");
+                                    }
                                 }
                                 Err(e) => {
                                     state.gui.notify_error(format!("live cloud: {e:#}"))
@@ -1639,6 +1664,9 @@ impl App {
                     Some(None) => {
                         self.live = None;
                         state.gui.notify_info("live cloud stopped");
+                        if let Err(e) = crate::settings::save_simulation(None) {
+                            log::warn!("could not forget the simulation: {e:#}");
+                        }
                     }
                     None => {}
                 }
@@ -4018,6 +4046,19 @@ mod generator_catalogue_tests {
             assert!(
                 vizz_mod::generators::by_id(id).is_some(),
                 "'{id}' can be made but the catalogue does not list it"
+            );
+        }
+        for g in vizz_mod::generators::SIMULATIONS {
+            assert!(
+                vizz_render::simulate::start(g.id).is_some(),
+                "the catalogue lists the simulation '{}' but nothing runs it",
+                g.id
+            );
+        }
+        for id in vizz_render::simulate::IDS {
+            assert!(
+                vizz_mod::generators::simulation_by_id(id).is_some(),
+                "the simulation '{id}' runs but the catalogue does not list it"
             );
         }
     }

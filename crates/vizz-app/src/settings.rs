@@ -101,6 +101,11 @@ pub struct Settings {
     /// app was last quit. A set that lives on the stage should not start
     /// on the panel every night.
     pub start_on_stage: bool,
+    /// The simulation running as the live cloud when the app was last
+    /// quit — `fluid`, `reaction` — so a set built on one comes back
+    /// alive. A network stream is not remembered: its sender is another
+    /// machine's business.
+    pub simulation: Option<String>,
 }
 
 /// How a take is written. A mirror of the recorder's settings that can be
@@ -386,6 +391,13 @@ pub fn save_start_on_stage(on_stage: bool) -> Result<()> {
     save(&s)
 }
 
+/// Which simulation is running as the live cloud, or none.
+pub fn save_simulation(id: Option<&str>) -> Result<()> {
+    let mut s = load();
+    s.simulation = id.map(str::to_string);
+    save(&s)
+}
+
 /// The first-launch card has done its job.
 pub fn save_welcomed() -> Result<()> {
     let mut s = load();
@@ -641,6 +653,7 @@ mod persistence_tests {
             audio_bands: Some(bands),
             audio_auto_bpm: Some(true),
             start_on_stage: true,
+            simulation: Some("fluid".into()),
             ..Default::default()
         };
         let json = serde_json::to_string(&s).unwrap();
@@ -651,6 +664,7 @@ mod persistence_tests {
         assert_eq!(old.record, None);
         assert_eq!(old.audio_bands, None);
         assert!(!old.start_on_stage);
+        assert_eq!(old.simulation, None);
         assert_eq!(RecordPrefs::default().quality, 92);
     }
 }

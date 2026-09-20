@@ -132,14 +132,37 @@ pub const CATALOGUE: &[Generator] = &[
     },
 ];
 
+/// The clouds that keep moving: run as a live source, `sim:<id>`, and
+/// driven by the audio. Same shape as a generator for the menu's sake;
+/// the difference is that these are made sixty times a second.
+pub const SIMULATIONS: &[Generator] = &[
+    Generator {
+        id: "fluid",
+        name: "fluid",
+        about: "Stam's stable fluids — the Navier–Stokes equations on an endless sheet; the loudness stirs it, the kick bursts it, the snare spins it, the highs roughen it",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "reaction",
+        name: "reaction",
+        about: "Gray–Scott reaction–diffusion — spots that grow, split and heal; the kick plants new ones",
+        family: Family::Shape,
+    },
+];
+
 /// The generator saved or asked for as `gen:<id>`.
 pub fn by_id(id: &str) -> Option<&'static Generator> {
     CATALOGUE.iter().find(|g| g.id == id)
 }
 
-/// The generator a slot or a look's source names.
+/// The simulation asked for as `sim:<id>`.
+pub fn simulation_by_id(id: &str) -> Option<&'static Generator> {
+    SIMULATIONS.iter().find(|g| g.id == id)
+}
+
+/// The generator or simulation a slot or a look's source names.
 pub fn by_name(name: &str) -> Option<&'static Generator> {
-    CATALOGUE.iter().find(|g| g.name == name)
+    CATALOGUE.iter().chain(SIMULATIONS).find(|g| g.name == name)
 }
 
 #[cfg(test)]
@@ -178,5 +201,7 @@ mod tests {
         assert_eq!(crate::preset::family(Some("torso-scan.ply")), Family::Cloud);
         assert!(by_id("no such thing").is_none());
         assert!(by_name("Thomas").is_some());
+        assert_eq!(crate::preset::family(Some("fluid")), Family::Shape);
+        assert!(simulation_by_id("fluid").is_some() && simulation_by_id("thomas").is_none());
     }
 }

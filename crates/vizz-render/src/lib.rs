@@ -25,6 +25,7 @@ pub mod plystream;
 pub mod pointcloud;
 pub mod post;
 pub mod room;
+pub mod simulate;
 pub mod vector;
 pub mod video;
 

@@ -723,6 +723,18 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                     };
                     actions.live_cloud = Some(Some(want));
                 }
+                // Or run one here: a simulation is a live source that
+                // needs no sender, and the bands drive it.
+                ui.menu_button("simulate…", |ui| {
+                    for g in vizz_mod::generators::SIMULATIONS {
+                        if ui.button(g.name).on_hover_text(g.about).clicked() {
+                            actions.live_cloud = Some(Some(format!("sim:{}", g.id)));
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("a cloud that moves on its own, in the live slot, driven by the audio");
             });
         }
     }
