@@ -3092,7 +3092,13 @@ fn param_row(
             egui::FontId::proportional(12.5),
             ui.visuals().text_color(),
         );
-        name_resp.on_hover_text(&def.addr);
+        // The address and what it does: the address alone was the only
+        // hover on every row, and it taught nothing a newcomer could use.
+        name_resp.on_hover_text(if def.help.is_empty() {
+            def.addr.clone()
+        } else {
+            format!("{}  —  {}", def.addr, def.help)
+        });
         let mut slider =
             egui::Slider::new(&mut value, lo..=hi).clamping(egui::SliderClamping::Always);
         if def.labels.is_some() {
