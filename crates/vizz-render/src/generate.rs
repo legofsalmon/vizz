@@ -56,6 +56,18 @@ pub const IDS: &[&str] = &[
     "sierpinski",
     "menger",
     "mandelbulb",
+    "sprott-b",
+    "nose-hoover",
+    "arneodo",
+    "burke-shaw",
+    "chua",
+    "hadley",
+    "rucklidge",
+    "three-scroll",
+    "rabinovich",
+    "plant",
+    "mandelbrot",
+    "julia",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
@@ -71,6 +83,15 @@ pub fn generate(id: &str) -> Option<Vec<Point>> {
         "rossler" => flow(rossler, [1.0, 1.0, 1.0], 0.02, Frame::ZUp),
         "four-wing" => flow(four_wing, [1.3, -0.18, 0.01], 0.01, Frame::ZUp),
         "chen" => flow(chen, [-0.1, 0.5, -0.6], 0.002, Frame::ZUp),
+        "sprott-b" => flow(sprott_b, [0.1, 0.1, 0.1], 0.01, Frame::ZUp),
+        "nose-hoover" => flow(nose_hoover, [1.0, 0.0, 0.0], 0.01, Frame::ZUp),
+        "arneodo" => flow(arneodo, [0.1, 0.2, 0.3], 0.01, Frame::ZUp),
+        "burke-shaw" => flow(burke_shaw, [1.0, 1.0, 1.0], 0.003, Frame::ZUp),
+        "chua" => flow(chua, [0.1, 0.0, 0.0], 0.005, Frame::ZUp),
+        "hadley" => flow(hadley, [0.1, 0.0, 0.0], 0.01, Frame::ZUp),
+        "rucklidge" => flow(rucklidge, [1.0, 0.0, 4.5], 0.01, Frame::ZUp),
+        "three-scroll" => flow(three_scroll, [1.0, 1.0, 1.0], 0.001, Frame::ZUp),
+        "rabinovich" => flow(rabinovich, [-1.0, 0.0, 0.5], 0.002, Frame::ZUp),
         // Maps: iterated, and lifted into depth by delay embedding.
         "clifford" => map(clifford, [0.1, 0.0]),
         "dejong" => map(dejong, [0.1, 0.1]),
@@ -83,6 +104,9 @@ pub fn generate(id: &str) -> Option<Vec<Point>> {
         "hopf" => hopf(),
         // The rest: sampled.
         "chladni" => chladni(),
+        "plant" => plant(),
+        "mandelbrot" => escape_relief([-2.1, 0.7], [-1.4, 1.4], |x, y| escape(x, y, x, y)),
+        "julia" => escape_relief([-1.6, 1.6], [-1.6, 1.6], |x, y| escape(x, y, -0.8, 0.156)),
         "sierpinski" => sierpinski(),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
@@ -145,6 +169,67 @@ fn chen([x, y, z]: [f64; 3]) -> [f64; 3] {
     const B: f64 = 3.0;
     const C: f64 = 28.0;
     [A * (y - x), (C - A) * x - x * z + C * y, x * y - B * z]
+}
+
+/// Sprott's case B (1994): two quadratic terms, and chaos.
+fn sprott_b([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [y * z, x - y, 1.0 - x * y]
+}
+
+/// The Nosé–Hoover oscillator at a = 1.5: a thermostatted particle, and
+/// a conservative system rather than an attractor — the trajectory
+/// wanders a sea of tori and chaos instead of settling on a sheet.
+fn nose_hoover([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [y, -x + y * z, 1.5 - y * y]
+}
+
+/// Arneodo's attractor, a = -5.5, b = 3.5, d = -1: a jerk system, one
+/// cubic term.
+fn arneodo([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [y, z, 5.5 * x - 3.5 * y - z - x * x * x]
+}
+
+/// Burke–Shaw, s = 10, v = 4.272: two scrolls with the symmetry of a
+/// propeller.
+fn burke_shaw([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [-10.0 * (x + y), -y - 10.0 * x * z, 10.0 * x * y + 4.272]
+}
+
+/// Chua's circuit, the double scroll: α = 15.6, β = 28, and the
+/// piecewise-linear diode with slopes m0 = -1.143, m1 = -0.714.
+fn chua([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const M0: f64 = -1.143;
+    const M1: f64 = -0.714;
+    let diode = M1 * x + 0.5 * (M0 - M1) * ((x + 1.0).abs() - (x - 1.0).abs());
+    [15.6 * (y - x - diode), x - y + z, -28.0 * y]
+}
+
+/// The Hadley circulation (Lorenz, 1984): a = 0.2, b = 4, F = 8, G = 1.
+/// The general circulation of an atmosphere in three variables.
+fn hadley([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [-y * y - z * z - 0.2 * x + 1.6, x * y - 4.0 * x * z - y + 1.0, 4.0 * x * y + x * z - z]
+}
+
+/// Rucklidge's model of convection, κ = 2, λ = 6.7.
+fn rucklidge([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [-2.0 * x + 6.7 * y - y * z, x, -z + y * y]
+}
+
+/// The three-scroll unified system (TSUCS-1): a = 40, b = 55, c = 1.833,
+/// d = 0.16, e = 0.65, f = 20. Fast, so the finest step here.
+fn three_scroll([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [40.0 * (y - x) + 0.16 * x * z, 55.0 * x - x * z + 20.0 * y, 1.833 * z + x * y - 0.65 * x * x]
+}
+
+/// Rabinovich–Fabrikant, α = 0.14, γ = 0.10: leaves and ribbons. Some
+/// parameter sets of this system escape; this one does not from its
+/// classic start, and the integrator's guard holds if a step ever does.
+fn rabinovich([x, y, z]: [f64; 3]) -> [f64; 3] {
+    [
+        y * (z - 1.0 + x * x) + 0.1 * x,
+        x * (3.0 * z + 1.0 - x * x) + 0.1 * y,
+        -2.0 * z * (0.14 + x * y),
+    ]
 }
 
 /// Which way is up, per system. The flows are written with z as their
@@ -387,6 +472,131 @@ fn hopf() -> Vec<[f64; 3]> {
     out
 }
 
+// --- Grown --------------------------------------------------------------
+
+/// A plant grown by an L-system: Lindenmayer's rewriting, read by a
+/// turtle that turns in three dimensions. Five generations of
+///
+/// ```text
+/// X → F[+&X][-^X]/F[\X]X      F → FF
+/// ```
+///
+/// at 25°, so every node throws four branches and the older wood is
+/// longer. Points are strewn along the segments in drawing order — the
+/// crawl runs up the trunk and out along the twigs — inside a tube that
+/// thins with depth, so the trunk is wood and the tips are twigs.
+fn plant() -> Vec<[f64; 3]> {
+    let mut s = String::from("X");
+    for _ in 0..5 {
+        let mut next = String::with_capacity(s.len() * 4);
+        for c in s.chars() {
+            match c {
+                'X' => next.push_str("F[+&X][-^X]/F[\\X]X"),
+                'F' => next.push_str("FF"),
+                c => next.push(c),
+            }
+        }
+        s = next;
+    }
+    let delta = 25f64.to_radians();
+    // The turtle: position, heading, left, up.
+    let mut p = [0.0, 0.0, 0.0];
+    let (mut h, mut l, mut u) = ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+    // Position, heading, left, up — what a bracket saves.
+    type Turtle = ([f64; 3], [f64; 3], [f64; 3], [f64; 3]);
+    let mut stack: Vec<Turtle> = Vec::new();
+    // (from, to, depth)
+    let mut segments: Vec<([f64; 3], [f64; 3], usize)> = Vec::new();
+    let rot = |a: [f64; 3], b: [f64; 3], t: f64| -> ([f64; 3], [f64; 3]) {
+        let (c, s) = (t.cos(), t.sin());
+        (
+            [a[0] * c + b[0] * s, a[1] * c + b[1] * s, a[2] * c + b[2] * s],
+            [b[0] * c - a[0] * s, b[1] * c - a[1] * s, b[2] * c - a[2] * s],
+        )
+    };
+    for c in s.chars() {
+        match c {
+            'F' => {
+                let q = [p[0] + h[0], p[1] + h[1], p[2] + h[2]];
+                segments.push((p, q, stack.len()));
+                p = q;
+            }
+            '+' => (h, l) = rot(h, l, delta),
+            '-' => (h, l) = rot(h, l, -delta),
+            '&' => (h, u) = rot(h, u, delta),
+            '^' => (h, u) = rot(h, u, -delta),
+            '\\' => (l, u) = rot(l, u, delta),
+            '/' => (l, u) = rot(l, u, -delta),
+            '[' => stack.push((p, h, l, u)),
+            ']' => {
+                if let Some(saved) = stack.pop() {
+                    (p, h, l, u) = saved;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Strewn along the total length, stratified, so a point count that
+    // does not divide by the segment count still lands evenly.
+    let total: f64 = segments.len() as f64;
+    let mut rng = Rng::new(0x9A5F_B0A1);
+    let mut out = Vec::with_capacity(POINTS);
+    let mut seg = 0usize;
+    for i in 0..POINTS {
+        let along = (i as f64 + 0.5) / POINTS as f64 * total;
+        while seg + 1 < segments.len() && along >= (seg + 1) as f64 {
+            seg += 1;
+        }
+        let (a, b, depth) = segments[seg];
+        let t = along - seg as f64;
+        let radius = 0.42 * 0.72f64.powi(depth as i32);
+        let j = rng.in_ball(radius);
+        out.push([
+            a[0] + (b[0] - a[0]) * t + j[0],
+            a[1] + (b[1] - a[1]) * t + j[1],
+            a[2] + (b[2] - a[2]) * t + j[2],
+        ]);
+    }
+    out
+}
+
+/// Smooth escape time of z ← z² + c from `z0`, as a fraction of the
+/// iteration budget: 1 inside the set, falling towards 0 far outside.
+fn escape(zx: f64, zy: f64, cx: f64, cy: f64) -> f64 {
+    const LIMIT: usize = 60;
+    let (mut x, mut y) = (zx, zy);
+    for n in 0..LIMIT {
+        let r2 = x * x + y * y;
+        if r2 > 64.0 {
+            // Douady–Hubbard smoothing: the fractional iteration count.
+            let smooth = n as f64 + 1.0 - (r2.sqrt().ln().max(1e-12)).log2();
+            return (smooth / LIMIT as f64).clamp(0.0, 1.0);
+        }
+        let nx = x * x - y * y + cx;
+        y = 2.0 * x * y + cy;
+        x = nx;
+    }
+    1.0
+}
+
+/// A plane fractal as a relief: the set itself is a plateau, the
+/// escape time is the height of the country round it.
+fn escape_relief(xr: [f64; 2], yr: [f64; 2], f: impl Fn(f64, f64) -> f64) -> Vec<[f64; 3]> {
+    const SIDE: usize = 256;
+    debug_assert_eq!(SIDE * SIDE, POINTS);
+    let mut out = Vec::with_capacity(POINTS);
+    for row in 0..SIDE {
+        let y = yr[0] + (yr[1] - yr[0]) * (row as f64 + 0.5) / SIDE as f64;
+        for col in 0..SIDE {
+            let x = xr[0] + (xr[1] - xr[0]) * (col as f64 + 0.5) / SIDE as f64;
+            let h = f(x, y);
+            // Height on a curve: the country rises steeply at the coast.
+            out.push([x, h.powf(2.5) * 1.1, y]);
+        }
+    }
+    out
+}
+
 // --- Sampled ----------------------------------------------------------
 
 /// Chladni's sand: a plate vibrating in its (5, 2) mode, points kept
@@ -622,7 +832,11 @@ mod tests {
     /// step would fail this before it failed the eye.
     #[test]
     fn flows_are_paths_not_scatter() {
-        for id in ["thomas", "halvorsen", "dadras", "rossler", "four-wing", "chen"] {
+        for id in [
+            "thomas", "halvorsen", "dadras", "rossler", "four-wing", "chen", "sprott-b",
+            "nose-hoover", "arneodo", "burke-shaw", "chua", "hadley", "rucklidge",
+            "three-scroll", "rabinovich",
+        ] {
             let pts = generate(id).unwrap();
             let longest = pts
                 .windows(2)

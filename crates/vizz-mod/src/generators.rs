@@ -130,6 +130,78 @@ pub const CATALOGUE: &[Generator] = &[
         about: "the power-eight Mandelbulb's surface, found by marching rays inward",
         family: Family::Shape,
     },
+    Generator {
+        id: "sprott-b",
+        name: "Sprott B",
+        about: "Sprott's case B — two quadratic terms, and chaos",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "nose-hoover",
+        name: "Nosé–Hoover",
+        about: "the Nosé–Hoover oscillator — a thermostatted particle wandering a sea of tori and chaos",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "arneodo",
+        name: "Arneodo",
+        about: "Arneodo's attractor — a jerk system with one cubic term",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "burke-shaw",
+        name: "Burke–Shaw",
+        about: "Burke–Shaw — two scrolls with the symmetry of a propeller",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "chua",
+        name: "Chua",
+        about: "Chua's circuit — the double scroll, from a real circuit with a nonlinear diode",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "hadley",
+        name: "Hadley",
+        about: "the Hadley circulation — Lorenz's 1984 atmosphere in three variables",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "rucklidge",
+        name: "Rucklidge",
+        about: "Rucklidge's convection model — a tall, folded ribbon",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "three-scroll",
+        name: "three-scroll",
+        about: "the three-scroll unified system — three scrolls in one fast flow",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "rabinovich",
+        name: "Rabinovich–Fabrikant",
+        about: "Rabinovich–Fabrikant — leaves and ribbons, from plasma physics",
+        family: Family::Attractor,
+    },
+    Generator {
+        id: "plant",
+        name: "plant",
+        about: "a plant grown by an L-system — five generations of branching, thick wood to thin twigs",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "mandelbrot",
+        name: "Mandelbrot",
+        about: "the Mandelbrot set as a relief — the set a plateau, the escape time the country round it",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "julia",
+        name: "Julia",
+        about: "a Julia set as a relief, c = −0.8 + 0.156i",
+        family: Family::Shape,
+    },
 ];
 
 /// The clouds that keep moving: run as a live source, `sim:<id>`, and
@@ -146,6 +218,30 @@ pub const SIMULATIONS: &[Generator] = &[
         id: "reaction",
         name: "reaction",
         about: "Gray–Scott reaction–diffusion — spots that grow, split and heal; the kick plants new ones",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "flock",
+        name: "flock",
+        about: "Reynolds' boids — four thousand of them drawing streaks; the loudness is their pace, the kick a predator, the snare a scatter",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "wind",
+        name: "wind",
+        about: "curl noise — tracers in a divergence-free noise field, a fluid with no solve; the kick is a gust, the highs roughen it",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "kuramoto",
+        name: "kuramoto",
+        about: "Kuramoto's coupled oscillators on a torus — a loud passage locks them into a ribbon, quiet frees them; the kick scatters half",
+        family: Family::Shape,
+    },
+    Generator {
+        id: "life",
+        name: "life",
+        about: "a three-dimensional cellular automaton in the Clouds rule — slow masses that keep reshaping; the kick drops a seed",
         family: Family::Shape,
     },
 ];

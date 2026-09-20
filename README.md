@@ -331,6 +331,35 @@ spots divide like cells. Eight unit steps a frame is a division every few
 seconds. A kick plants a seed; left alone it re-seeds itself while it is
 sparse, so it never goes blank.
 
+**flock** is Reynolds' boids — four thousand of them in a periodic cube,
+separation, alignment and cohesion on a neighbour grid, each drawing its
+last sixteen positions as a fading streak. The loudness is their pace, a
+kick is a predator bursting through a random point, a snare scatters
+their headings.
+
+**wind** is curl noise (Bridson, Hourihan & Nordenstam, 2007): the curl of
+a smooth noise field is divergence-free, so tracers carried by it flow
+like a fluid with no solve at all. The field is sampled onto a 24³ grid
+every few frames and trilinearly interpolated, because sixty-five thousand
+tracers evaluating six noise gradients each would not make the frame. A
+kick is a gust — the field jumps to a new moment and the tracers run —
+and the highs roughen it with a finer octave.
+
+**kuramoto** is Kuramoto's coupled oscillators: every oscillator has its
+own pace, every one pulls every other towards the crowd's phase, and
+above a critical coupling they lock. Drawn as a torus — the ring is which
+oscillator, the tube is its phase, the trail is its recent past — so a
+locked crowd is a thin ribbon and a free one is the whole tube. The
+loudness is the coupling: a loud passage locks them; a kick scatters half.
+With no audio the coupling breathes across the threshold on its own.
+
+**life** is a three-dimensional cellular automaton on a 48³ lattice in the
+"Clouds" rule (survive on 13–26 neighbours, born on 13, 14 or 17–19): a
+seed grows into slow, cloud-like masses that keep reshaping, a generation
+every three frames. A kick drops a new seed; an automaton that dies out or
+floods the lattice is reseeded, because a dead automaton is a blank slot
+with a name on it.
+
 What a simulation gets from the app is deliberately narrow — the four
 bands, the loudness, where the bar is — because it is meant to be a
 *cloud*, chosen, crossed to, captured and lit like the others, that
@@ -1248,12 +1277,15 @@ in the settings and re-rasterize deterministically on launch.
 
 **Or make one from an equation.** The clouds section's *generate…* menu,
 or `--cloud gen:<name>`, fills the next slot from a formula rather than a
-file: strange attractors (Thomas, Halvorsen, Dadras, Rössler, four-wing,
-Chen), the Clifford and de Jong maps lifted into depth by delay
-embedding, a Gielis supershape, a harmonic-rippled sphere, a 3:4:7
+file: fifteen strange attractors (Thomas, Halvorsen, Dadras, Rössler,
+four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's
+circuit, the Hadley circulation, Rucklidge, the three-scroll system,
+Rabinovich–Fabrikant), the Clifford and de Jong maps lifted into depth by
+delay embedding, a Gielis supershape, a harmonic-rippled sphere, a 3:4:7
 Lissajous knot, a (3,7) torus knot, the Hopf fibration as nested tori of
-linked circles, Chladni sand on a vibrating plate, the Sierpinski
-tetrahedron, the Menger sponge and the power-eight Mandelbulb's surface.
+linked circles, Chladni sand on a vibrating plate, an L-system plant, the
+Sierpinski tetrahedron, the Menger sponge, the power-eight Mandelbulb's
+surface, and the Mandelbrot and a Julia set as reliefs.
 Each is made once on the CPU — flows in time order, so the cloud crawls
 along itself; surfaces in scan order; fractals by the chaos game or by
 marching rays — and then it is a cloud like any other: chosen by name,

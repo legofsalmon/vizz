@@ -61,7 +61,7 @@ pub trait Simulation: Send {
 /// Every simulation this crate can run, by the id `sim:<id>` names it.
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
-pub const IDS: &[&str] = &["fluid", "reaction"];
+pub const IDS: &[&str] = &["fluid", "reaction", "flock", "wind", "kuramoto", "life"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -69,6 +69,10 @@ pub fn start(id: &str) -> Option<Box<dyn Simulation>> {
     match id {
         "fluid" => Some(Box::new(Fluid::new())),
         "reaction" => Some(Box::new(Reaction::new())),
+        "flock" => Some(Box::new(Flock::new())),
+        "wind" => Some(Box::new(Wind::new())),
+        "kuramoto" => Some(Box::new(Kuramoto::new())),
+        "life" => Some(Box::new(Life::new())),
         _ => None,
     }
 }
@@ -497,6 +501,686 @@ impl Simulation for Reaction {
     }
 }
 
+// --- Flock ------------------------------------------------------------
+
+/// Boids in the flock, and the length of the streak each one draws.
+/// Their product is a slot.
+const BOIDS: usize = 4096;
+const TRAIL: usize = 16;
+/// Cells along each side of the neighbour grid: a boid sees a radius
+/// under one cell, so a neighbour is always in the 27 cells around it.
+const FG: usize = 10;
+
+/// Reynolds' boids (1987) in a periodic cube: separation, alignment,
+/// cohesion, and nothing else. Each boid draws its last sixteen
+/// positions, fading, so the flock reads as streaks rather than dust —
+/// which is what a flock looks like from a distance.
+pub struct Flock {
+    pos: Vec<[f32; 3]>,
+    vel: Vec<[f32; 3]>,
+    acc: Vec<[f32; 3]>,
+    trail: Vec<[f32; 3]>,
+    head: usize,
+    cells: Vec<Vec<u32>>,
+    time: f32,
+    since_kick: f32,
+    since_snare: f32,
+    rng: Rng,
+}
+
+impl Flock {
+    const SEE: f32 = 0.08;
+    const TOO_CLOSE: f32 = 0.03;
+
+    pub fn new() -> Self {
+        debug_assert_eq!(BOIDS * TRAIL, POINTS);
+        let mut rng = Rng::new(0xF10C_1A5E);
+        let mut pos = Vec::with_capacity(BOIDS);
+        let mut vel = Vec::with_capacity(BOIDS);
+        for _ in 0..BOIDS {
+            pos.push([rng.f32(), rng.f32(), rng.f32()]);
+            let d = rng.on_sphere();
+            vel.push([d[0] * 0.2, d[1] * 0.2, d[2] * 0.2]);
+        }
+        let trail = pos.iter().flat_map(|p| std::iter::repeat_n(*p, TRAIL)).collect();
+        Self {
+            pos,
+            vel,
+            acc: vec![[0.0; 3]; BOIDS],
+            trail,
+            head: 0,
+            cells: vec![Vec::new(); FG * FG * FG],
+            time: 0.0,
+            since_kick: 10.0,
+            since_snare: 10.0,
+            rng,
+        }
+    }
+
+    fn cell_of(p: [f32; 3]) -> [usize; 3] {
+        [0, 1, 2].map(|i| ((p[i] * FG as f32) as usize).min(FG - 1))
+    }
+}
+
+impl Default for Flock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn wrap3(d: [f32; 3]) -> [f32; 3] {
+    [wrap(d[0]), wrap(d[1]), wrap(d[2])]
+}
+
+impl Simulation for Flock {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        self.since_snare += dt;
+        for c in &mut self.cells {
+            c.clear();
+        }
+        for (i, p) in self.pos.iter().enumerate() {
+            let [cx, cy, cz] = Self::cell_of(*p);
+            self.cells[cx + cy * FG + cz * FG * FG].push(i as u32);
+        }
+        let see2 = Self::SEE * Self::SEE;
+        let close2 = Self::TOO_CLOSE * Self::TOO_CLOSE;
+        for i in 0..BOIDS {
+            let p = self.pos[i];
+            let [cx, cy, cz] = Self::cell_of(p);
+            let (mut centre, mut align, mut apart) = ([0.0f32; 3], [0.0f32; 3], [0.0f32; 3]);
+            let mut n = 0.0f32;
+            for dz in 0..3 {
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let cell = &self.cells[(cx + dx + FG - 1) % FG
+                            + ((cy + dy + FG - 1) % FG) * FG
+                            + ((cz + dz + FG - 1) % FG) * FG * FG];
+                        for &j in cell {
+                            let j = j as usize;
+                            if j == i {
+                                continue;
+                            }
+                            let d = wrap3([
+                                self.pos[j][0] - p[0],
+                                self.pos[j][1] - p[1],
+                                self.pos[j][2] - p[2],
+                            ]);
+                            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                            if r2 > see2 {
+                                continue;
+                            }
+                            n += 1.0;
+                            for k in 0..3 {
+                                centre[k] += d[k];
+                                align[k] += self.vel[j][k];
+                            }
+                            if r2 < close2 {
+                                let push = 1.0 / (r2 + 1e-4);
+                                for k in 0..3 {
+                                    apart[k] -= d[k] * push;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mut a = [0.0f32; 3];
+            if n > 0.0 {
+                for k in 0..3 {
+                    a[k] += centre[k] / n * 4.0;
+                    a[k] += (align[k] / n - self.vel[i][k]) * 3.0;
+                    a[k] += apart[k] * 0.002;
+                }
+            }
+            self.acc[i] = a;
+        }
+        // The room: a kick is a predator bursting through a random point,
+        // a snare scatters headings, the loudness is the flock's pace.
+        let kick = drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.3;
+        let snare = drive.audio && drive.bands[2] > 0.5 && self.since_snare > 0.3;
+        if kick {
+            self.since_kick = 0.0;
+            let at = [self.rng.f32(), self.rng.f32(), self.rng.f32()];
+            for i in 0..BOIDS {
+                let d = wrap3([self.pos[i][0] - at[0], self.pos[i][1] - at[1], self.pos[i][2] - at[2]]);
+                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                if r2 < 0.06 {
+                    let g = (1.0 - r2 / 0.06) * 12.0 / (r2.sqrt() + 1e-3);
+                    for (a, d) in self.acc[i].iter_mut().zip(d) {
+                        *a += d * g;
+                    }
+                }
+            }
+        }
+        if snare {
+            self.since_snare = 0.0;
+            for i in 0..BOIDS {
+                let d = self.rng.on_sphere();
+                for (a, d) in self.acc[i].iter_mut().zip(d) {
+                    *a += d * 3.0;
+                }
+            }
+        }
+        let pace = if drive.audio { 0.18 + 0.32 * drive.level } else { 0.3 };
+        for ((v, a), p) in self.vel.iter_mut().zip(&self.acc).zip(self.pos.iter_mut()) {
+            for (v, a) in v.iter_mut().zip(a) {
+                *v += a * dt;
+            }
+            let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            let want = speed.clamp(pace * 0.5, pace);
+            if speed > 1e-6 {
+                for v in v.iter_mut() {
+                    *v *= want / speed;
+                }
+            }
+            for (p, v) in p.iter_mut().zip(v.iter()) {
+                *p = (*p + v * dt).rem_euclid(1.0);
+            }
+        }
+        self.head = (self.head + 1) % TRAIL;
+        for i in 0..BOIDS {
+            self.trail[i * TRAIL + self.head] = self.pos[i];
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for i in 0..BOIDS {
+            for age in 0..TRAIL {
+                let slot = (self.head + TRAIL - age) % TRAIL;
+                let p = self.trail[i * TRAIL + slot];
+                let fade = 1.0 - age as f32 / TRAIL as f32 * 0.85;
+                let c = (255.0 * fade) as u8;
+                out.push(Point {
+                    pos: [(p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, (p[2] - 0.5) * 2.0],
+                    normal: [0.0; 3],
+                    color: [c, c, c],
+                });
+            }
+        }
+    }
+}
+
+// --- Wind -------------------------------------------------------------
+
+/// Cells along each side of the curl-noise field.
+const WG: usize = 24;
+
+/// Curl noise (Bridson, Hourihan & Nordenstam, 2007): the curl of a
+/// smooth noise field is divergence-free, so tracers carried by it
+/// flow like a fluid with no solve at all. Sampled onto a grid every
+/// few frames and trilinearly interpolated, because sixty-five thousand
+/// tracers evaluating six noise gradients each would not make the frame.
+pub struct Wind {
+    field: Vec<[f32; 3]>,
+    tracers: Vec<[f32; 3]>,
+    noise: Noise,
+    time: f32,
+    frame: u32,
+    gust: f32,
+    since_kick: f32,
+}
+
+impl Wind {
+    pub fn new() -> Self {
+        let mut rng = Rng::new(0x1D_A11E);
+        let tracers = (0..POINTS).map(|_| [rng.f32(), rng.f32(), rng.f32()]).collect();
+        let mut w = Self {
+            field: vec![[0.0; 3]; WG * WG * WG],
+            tracers,
+            noise: Noise::new(0x5EED),
+            time: 0.0,
+            frame: 0,
+            gust: 0.0,
+            since_kick: 10.0,
+        };
+        w.resample(0.0);
+        w
+    }
+
+    /// The potential: three noise fields, offset from each other.
+    fn potential(&self, p: [f32; 3], t: f32, rough: f32) -> [f32; 3] {
+        let f = 2.0;
+        let mut out = [0.0f32; 3];
+        for (k, offset) in [0.0f32, 31.7, 67.3].into_iter().enumerate() {
+            let base = self.noise.at(p[0] * f + offset, p[1] * f + offset, p[2] * f + t);
+            let fine = self.noise.at(p[0] * f * 2.7 + offset, p[1] * f * 2.7, p[2] * f * 2.7 + t * 1.6);
+            out[k] = base + rough * 0.5 * fine;
+        }
+        out
+    }
+
+    fn resample(&mut self, rough: f32) {
+        let t = self.time * 0.15;
+        let eps = 0.01;
+        for k in 0..WG {
+            for j in 0..WG {
+                for i in 0..WG {
+                    let p = [(i as f32 + 0.5) / WG as f32, (j as f32 + 0.5) / WG as f32, (k as f32 + 0.5) / WG as f32];
+                    let d = |axis: usize| {
+                        let mut a = p;
+                        let mut b = p;
+                        a[axis] += eps;
+                        b[axis] -= eps;
+                        let (pa, pb) = (self.potential(a, t, rough), self.potential(b, t, rough));
+                        [(pa[0] - pb[0]) / (2.0 * eps), (pa[1] - pb[1]) / (2.0 * eps), (pa[2] - pb[2]) / (2.0 * eps)]
+                    };
+                    let (dx, dy, dz) = (d(0), d(1), d(2));
+                    // curl ψ = (∂ψz/∂y − ∂ψy/∂z, ∂ψx/∂z − ∂ψz/∂x, ∂ψy/∂x − ∂ψx/∂y)
+                    self.field[i + j * WG + k * WG * WG] =
+                        [dy[2] - dz[1], dz[0] - dx[2], dx[1] - dy[0]];
+                }
+            }
+        }
+    }
+
+    fn velocity_at(&self, p: [f32; 3]) -> [f32; 3] {
+        let g = WG as f32;
+        let (x, y, z) = (p[0] * g - 0.5, p[1] * g - 0.5, p[2] * g - 0.5);
+        let (i0, j0, k0) = (x.floor(), y.floor(), z.floor());
+        let (fx, fy, fz) = (x - i0, y - j0, z - k0);
+        let idx = |i: f32, j: f32, k: f32| {
+            (i.rem_euclid(g) as usize) + (j.rem_euclid(g) as usize) * WG + (k.rem_euclid(g) as usize) * WG * WG
+        };
+        let mut out = [0.0f32; 3];
+        for (di, wx) in [(0.0, 1.0 - fx), (1.0, fx)] {
+            for (dj, wy) in [(0.0, 1.0 - fy), (1.0, fy)] {
+                for (dk, wz) in [(0.0, 1.0 - fz), (1.0, fz)] {
+                    let v = self.field[idx(i0 + di, j0 + dj, k0 + dk)];
+                    let w = wx * wy * wz;
+                    for c in 0..3 {
+                        out[c] += v[c] * w;
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+impl Default for Wind {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Wind {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.frame += 1;
+        self.since_kick += dt;
+        self.gust *= (-dt * 2.5).exp();
+        // A kick is a gust: the field jumps to a new moment and the
+        // tracers run for half a second.
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.3 {
+            self.since_kick = 0.0;
+            self.time += 3.0;
+            self.gust = 1.0;
+        }
+        let rough = if drive.audio { drive.bands[3] } else { 0.0 };
+        if self.frame % 3 == 1 {
+            self.resample(rough);
+        }
+        let pace = (if drive.audio { 0.05 + 0.12 * drive.level } else { 0.09 }) + 0.25 * self.gust;
+        for i in 0..self.tracers.len() {
+            let p = self.tracers[i];
+            let v = self.velocity_at(p);
+            self.tracers[i] = [
+                (p[0] + v[0] * pace * dt).rem_euclid(1.0),
+                (p[1] + v[1] * pace * dt).rem_euclid(1.0),
+                (p[2] + v[2] * pace * dt).rem_euclid(1.0),
+            ];
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for p in &self.tracers {
+            let v = self.velocity_at(*p);
+            let s = ((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() / 6.0).min(1.0);
+            let c = (255.0 * (0.35 + 0.65 * s)) as u8;
+            out.push(Point {
+                pos: [(p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, (p[2] - 0.5) * 2.0],
+                normal: [0.0; 3],
+                color: [c, c, c],
+            });
+        }
+    }
+}
+
+/// Perlin's improved gradient noise (2002), seeded, in [-1, 1].
+struct Noise {
+    perm: [u8; 512],
+}
+
+impl Noise {
+    fn new(seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
+        let mut p: [u8; 256] = std::array::from_fn(|i| i as u8);
+        for i in (1..256).rev() {
+            let j = (rng.next() % (i as u64 + 1)) as usize;
+            p.swap(i, j);
+        }
+        let mut perm = [0u8; 512];
+        for i in 0..512 {
+            perm[i] = p[i & 255];
+        }
+        Self { perm }
+    }
+
+    fn at(&self, x: f32, y: f32, z: f32) -> f32 {
+        let fade = |t: f32| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+        let lerp = |a: f32, b: f32, t: f32| a + t * (b - a);
+        let grad = |h: u8, x: f32, y: f32, z: f32| {
+            let h = h & 15;
+            let u = if h < 8 { x } else { y };
+            let v = if h < 4 {
+                y
+            } else if h == 12 || h == 14 {
+                x
+            } else {
+                z
+            };
+            (if h & 1 == 0 { u } else { -u }) + (if h & 2 == 0 { v } else { -v })
+        };
+        let (xi, yi, zi) = (x.floor(), y.floor(), z.floor());
+        let (xf, yf, zf) = (x - xi, y - yi, z - zi);
+        let (xi, yi, zi) = (xi as i32 as usize & 255, yi as i32 as usize & 255, zi as i32 as usize & 255);
+        let (u, v, w) = (fade(xf), fade(yf), fade(zf));
+        let p = &self.perm;
+        let a = p[xi] as usize + yi;
+        let aa = p[a] as usize + zi;
+        let ab = p[a + 1] as usize + zi;
+        let b = p[xi + 1] as usize + yi;
+        let ba = p[b] as usize + zi;
+        let bb = p[b + 1] as usize + zi;
+        lerp(
+            lerp(
+                lerp(grad(p[aa], xf, yf, zf), grad(p[ba], xf - 1.0, yf, zf), u),
+                lerp(grad(p[ab], xf, yf - 1.0, zf), grad(p[bb], xf - 1.0, yf - 1.0, zf), u),
+                v,
+            ),
+            lerp(
+                lerp(grad(p[aa + 1], xf, yf, zf - 1.0), grad(p[ba + 1], xf - 1.0, yf, zf - 1.0), u),
+                lerp(
+                    grad(p[ab + 1], xf, yf - 1.0, zf - 1.0),
+                    grad(p[bb + 1], xf - 1.0, yf - 1.0, zf - 1.0),
+                    u,
+                ),
+                v,
+            ),
+            w,
+        )
+    }
+}
+
+// --- Kuramoto ---------------------------------------------------------
+
+/// Oscillators on the ring, and how many past phases each one draws.
+/// Their product is a slot.
+const OSC: usize = 256;
+const HIST: usize = 256;
+
+/// Kuramoto's coupled oscillators (1975): every oscillator has its own
+/// pace, every one pulls every other towards the crowd's phase, and
+/// above a critical coupling they lock. Drawn as a torus — the ring is
+/// which oscillator, the tube is its phase, the trail is its recent
+/// past — so a locked crowd is a thin ribbon and a free one is the
+/// whole tube. The loudness is the coupling: a loud passage locks them.
+pub struct Kuramoto {
+    theta: Vec<f32>,
+    omega: Vec<f32>,
+    hist: Vec<f32>,
+    head: usize,
+    time: f32,
+    order: f32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Kuramoto {
+    pub fn new() -> Self {
+        debug_assert_eq!(OSC * HIST, POINTS);
+        let mut rng = Rng::new(0xC0_A11E);
+        let theta: Vec<f32> = (0..OSC).map(|_| rng.f32() * std::f32::consts::TAU).collect();
+        // Paces drawn from a Cauchy distribution, the textbook choice:
+        // it has the heavy tails that keep a few oscillators free
+        // however hard the crowd pulls.
+        let omega = (0..OSC)
+            .map(|_| 1.6 + 0.4 * ((rng.f32() - 0.5) * std::f32::consts::PI).tan().clamp(-6.0, 6.0))
+            .collect();
+        let hist = theta.iter().flat_map(|t| std::iter::repeat_n(*t, HIST)).collect();
+        Self { theta, omega, hist, head: 0, time: 0.0, order: 0.0, since_kick: 10.0, rng }
+    }
+
+    /// The order parameter: how locked the crowd is, 0 to 1, and where
+    /// it is.
+    fn mean_field(&self) -> (f32, f32) {
+        let (mut c, mut s) = (0.0f32, 0.0f32);
+        for t in &self.theta {
+            c += t.cos();
+            s += t.sin();
+        }
+        let n = OSC as f32;
+        ((c * c + s * s).sqrt() / n, s.atan2(c))
+    }
+}
+
+impl Default for Kuramoto {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Kuramoto {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        // Without audio the coupling breathes across the threshold on
+        // its own, so the crowd locks and frees over a minute or so.
+        let coupling = if drive.audio {
+            0.3 + 4.0 * drive.level
+        } else {
+            1.2 + 1.2 * (self.time * 0.1).sin()
+        };
+        // A kick scatters half the crowd.
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
+            self.since_kick = 0.0;
+            for i in 0..OSC {
+                if self.rng.f32() < 0.5 {
+                    self.theta[i] += (self.rng.f32() - 0.5) * 2.0;
+                }
+            }
+        }
+        let (r, psi) = self.mean_field();
+        self.order = r;
+        for i in 0..OSC {
+            let d = self.omega[i] + coupling * r * (psi - self.theta[i]).sin();
+            self.theta[i] = (self.theta[i] + d * dt).rem_euclid(std::f32::consts::TAU);
+        }
+        self.head = (self.head + 1) % HIST;
+        for i in 0..OSC {
+            self.hist[i * HIST + self.head] = self.theta[i];
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        const R: f32 = 0.62;
+        let bright = 0.4 + 0.6 * self.order;
+        for i in 0..OSC {
+            let phi = i as f32 / OSC as f32 * std::f32::consts::TAU;
+            for age in 0..HIST {
+                let slot = (self.head + HIST - age) % HIST;
+                let theta = self.hist[i * HIST + slot];
+                let fade = 1.0 - age as f32 / HIST as f32;
+                let r = 0.32 * (0.25 + 0.75 * fade);
+                let ring = R + r * theta.cos();
+                let c = (255.0 * bright * (0.3 + 0.7 * fade)) as u8;
+                out.push(Point {
+                    pos: [ring * phi.cos(), r * theta.sin(), ring * phi.sin()],
+                    normal: [0.0; 3],
+                    color: [c, c, c],
+                });
+            }
+        }
+    }
+}
+
+// --- Life -------------------------------------------------------------
+
+/// Cells along each side of the automaton's lattice.
+const LG: usize = 48;
+
+/// A three-dimensional cellular automaton — Bays' generalisation of
+/// Life to a cubic lattice with the twenty-six-cell neighbourhood, in
+/// the "Clouds" rule (survive on 13–26 neighbours, born on 13, 14 or
+/// 17–19): a seed grows into slow, cloud-like masses that keep
+/// reshaping. A generation every three frames; the kick drops a new
+/// seed.
+pub struct Life {
+    cells: Vec<u8>,
+    next: Vec<u8>,
+    frame: u32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Life {
+    pub fn new() -> Self {
+        let mut l = Self {
+            cells: vec![0; LG * LG * LG],
+            next: vec![0; LG * LG * LG],
+            frame: 0,
+            since_kick: 10.0,
+            rng: Rng::new(0x11FE),
+        };
+        l.seed(LG / 2, LG / 2, LG / 2, 14);
+        l
+    }
+
+    /// A random block, about half full, centred on a cell.
+    fn seed(&mut self, cx: usize, cy: usize, cz: usize, side: usize) {
+        for dz in 0..side {
+            for dy in 0..side {
+                for dx in 0..side {
+                    let (x, y, z) = (
+                        (cx + dx + LG - side / 2) % LG,
+                        (cy + dy + LG - side / 2) % LG,
+                        (cz + dz + LG - side / 2) % LG,
+                    );
+                    if self.rng.f32() < 0.55 {
+                        self.cells[x + y * LG + z * LG * LG] = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    fn generation(&mut self) {
+        let at = |x: usize, y: usize, z: usize| (x % LG) + (y % LG) * LG + (z % LG) * LG * LG;
+        for z in 0..LG {
+            for y in 0..LG {
+                for x in 0..LG {
+                    let mut n = 0u8;
+                    for dz in 0..3 {
+                        for dy in 0..3 {
+                            for dx in 0..3 {
+                                if dx == 1 && dy == 1 && dz == 1 {
+                                    continue;
+                                }
+                                n += self.cells[at(x + dx + LG - 1, y + dy + LG - 1, z + dz + LG - 1)];
+                            }
+                        }
+                    }
+                    let alive = self.cells[at(x, y, z)] == 1;
+                    let born = matches!(n, 13 | 14 | 17..=19);
+                    let survives = n >= 13;
+                    self.next[at(x, y, z)] = u8::from(if alive { survives } else { born });
+                }
+            }
+        }
+        std::mem::swap(&mut self.cells, &mut self.next);
+    }
+
+    fn alive(&self) -> usize {
+        self.cells.iter().filter(|c| **c == 1).count()
+    }
+}
+
+impl Default for Life {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Life {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        self.frame += 1;
+        self.since_kick += dt;
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.5 {
+            self.since_kick = 0.0;
+            let (x, y, z) = (
+                (self.rng.f32() * LG as f32) as usize,
+                (self.rng.f32() * LG as f32) as usize,
+                (self.rng.f32() * LG as f32) as usize,
+            );
+            self.seed(x, y, z, 8);
+        }
+        if self.frame.is_multiple_of(3) {
+            self.generation();
+            // Died out, or filled the lattice: start again from a seed.
+            // A dead automaton is a blank slot with a name on it.
+            let alive = self.alive();
+            if !(64..=LG * LG * LG * 9 / 10).contains(&alive) {
+                self.cells.iter_mut().for_each(|c| *c = 0);
+                let (x, y, z) = (
+                    (self.rng.f32() * LG as f32) as usize,
+                    (self.rng.f32() * LG as f32) as usize,
+                    (self.rng.f32() * LG as f32) as usize,
+                );
+                self.seed(x, y, z, 14);
+            }
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let alive: Vec<usize> = (0..self.cells.len()).filter(|i| self.cells[*i] == 1).collect();
+        if alive.is_empty() {
+            return;
+        }
+        // A slot's worth, however many are alive: a stride across them
+        // when there are more, a jittered repeat when there are fewer —
+        // the loader's own policy, applied here so the count is right
+        // before the fit sees it.
+        let mut rng = Rng::new(0x11FE_5EED);
+        for i in 0..POINTS {
+            let pick = if alive.len() >= POINTS {
+                alive[(i as u64 * alive.len() as u64 / POINTS as u64) as usize]
+            } else {
+                alive[i % alive.len()]
+            };
+            let (x, y, z) = (pick % LG, (pick / LG) % LG, pick / (LG * LG));
+            let j = if alive.len() >= POINTS { [0.0; 3] } else { [rng.f32() - 0.5, rng.f32() - 0.5, rng.f32() - 0.5] };
+            out.push(Point {
+                pos: [
+                    ((x as f32 + 0.5 + j[0] * 0.8) / LG as f32 - 0.5) * 2.0,
+                    ((y as f32 + 0.5 + j[1] * 0.8) / LG as f32 - 0.5) * 2.0,
+                    ((z as f32 + 0.5 + j[2] * 0.8) / LG as f32 - 0.5) * 2.0,
+                ],
+                normal: [0.0; 3],
+                color: [255, 255, 255],
+            });
+        }
+    }
+}
+
 /// A small deterministic generator (xorshift64), so a simulation's
 /// self-driven behaviour is the same on every machine.
 struct Rng(u64);
@@ -517,6 +1201,13 @@ impl Rng {
 
     fn f32(&mut self) -> f32 {
         (self.next() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    fn on_sphere(&mut self) -> [f32; 3] {
+        let u = self.f32() * 2.0 - 1.0;
+        let a = self.f32() * std::f32::consts::TAU;
+        let s = (1.0 - u * u).sqrt();
+        [s * a.cos(), s * a.sin(), u]
     }
 }
 
@@ -607,7 +1298,87 @@ mod tests {
         box_ok(&pts);
     }
 
-    /// Both are reachable by id, and nothing else is.
+    /// The flock stays in its cube, keeps moving at its pace, and draws a
+    /// full slot of streaks.
+    #[test]
+    fn the_flock_stays_in_the_cube_and_moves() {
+        let mut f = Flock::new();
+        let before = f.pos.clone();
+        let loud = Drive { bands: [1.0, 0.0, 1.0, 0.0], level: 1.0, bar: 0.0, audio: true };
+        let quiet = Drive::default();
+        for i in 0..120 {
+            f.step(1.0 / 60.0, if i % 30 == 0 { &loud } else { &quiet });
+        }
+        for (p, v) in f.pos.iter().zip(&f.vel) {
+            assert!(p.iter().all(|c| (0.0..1.0).contains(c)), "{p:?}");
+            assert!(v.iter().all(|c| c.is_finite()), "{v:?}");
+        }
+        let moved = f.pos.iter().zip(&before).filter(|(a, b)| a != b).count();
+        assert_eq!(moved, BOIDS, "some boids never moved");
+        let mut pts = Vec::new();
+        f.points(&mut pts);
+        box_ok(&pts);
+    }
+
+    /// The wind carries every tracer and keeps it in the cube.
+    #[test]
+    fn the_wind_carries_the_tracers() {
+        let mut w = Wind::new();
+        let before = w.tracers.clone();
+        for _ in 0..60 {
+            w.step(1.0 / 60.0, &Drive::default());
+        }
+        let moved = w.tracers.iter().zip(&before).filter(|(a, b)| a != b).count();
+        assert!(moved > POINTS * 9 / 10, "only {moved} tracers moved");
+        assert!(w.tracers.iter().all(|p| p.iter().all(|c| (0.0..1.0).contains(c))));
+        let mut pts = Vec::new();
+        w.points(&mut pts);
+        box_ok(&pts);
+        // And the noise is noise: bounded, and not constant.
+        let n = Noise::new(1);
+        let samples: Vec<f32> = (0..100).map(|i| n.at(i as f32 * 0.37, 0.5, i as f32 * 0.11)).collect();
+        assert!(samples.iter().all(|v| v.abs() <= 1.0));
+        assert!(samples.iter().any(|v| v.abs() > 0.1));
+    }
+
+    /// Strong coupling locks the crowd and weak coupling leaves it free —
+    /// the whole point of the model, and what the loudness plays.
+    #[test]
+    fn the_crowd_locks_under_coupling_and_not_without() {
+        let mut k = Kuramoto::new();
+        let loud = Drive { bands: [0.0; 4], level: 1.0, bar: 0.0, audio: true };
+        for _ in 0..900 {
+            k.step(1.0 / 60.0, &loud);
+        }
+        assert!(k.order > 0.8, "a loud room did not lock the crowd: r = {}", k.order);
+        let mut k = Kuramoto::new();
+        let quiet = Drive { bands: [0.0; 4], level: 0.0, bar: 0.0, audio: true };
+        for _ in 0..900 {
+            k.step(1.0 / 60.0, &quiet);
+        }
+        assert!(k.order < 0.5, "a quiet room locked the crowd: r = {}", k.order);
+        let mut pts = Vec::new();
+        k.points(&mut pts);
+        box_ok(&pts);
+    }
+
+    /// The automaton neither dies nor floods over a run, and always hands
+    /// over a full slot.
+    #[test]
+    fn life_keeps_living() {
+        let mut l = Life::new();
+        for _ in 0..300 {
+            l.step(1.0 / 60.0, &Drive::default());
+        }
+        let alive = l.alive();
+        let cells = LG * LG * LG;
+        assert!(alive > cells / 200 && alive < cells * 9 / 10, "{alive} of {cells} alive");
+        let mut pts = Vec::new();
+        l.points(&mut pts);
+        box_ok(&pts);
+    }
+
+    /// Every simulation is reachable by id, and nothing else is.
     #[test]
     fn simulations_start_by_id() {
         for id in IDS {
