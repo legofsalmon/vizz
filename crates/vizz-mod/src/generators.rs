@@ -448,12 +448,40 @@ pub const SIMULATIONS: &[Generator] = &[
         params: &[],
     },
     Generator {
+        id: "smoke",
+        name: "smoke",
+        about: "the same solver in three dimensions, with heat — a plume that rises, shears and rolls up; the kick is a blast, the snare a shove, the highs the roughness",
+        family: Family::Shape,
+        params: &[],
+    },
+    Generator {
+        id: "liquid",
+        name: "liquid",
+        about: "four thousand particles of water in a tilting box — gravity swings round once a bar, so it pours corner to corner; the kick throws it at the ceiling",
+        family: Family::Shape,
+        params: &[],
+    },
+    Generator {
+        id: "orbits",
+        name: "orbits",
+        about: "five hundred bodies pulling on each other round a heavy centre — the loudness is the clock, the kick a shockwave, the snare knocks the disc out of its plane",
+        family: Family::Shape,
+        params: &[],
+    },
+    Generator {
+        id: "pendulum",
+        name: "pendulum",
+        about: "four thousand double pendulums hung in a sheet from neighbouring angles — it swings as one surface, creases, then tears; the loudness is gravity and the kick hangs it again",
+        family: Family::Shape,
+        params: &[],
+    },
+    Generator {
         id: "life",
         name: "life",
         about: "a three-dimensional cellular automaton in the Clouds rule — slow masses that keep reshaping; the kick drops a seed",
         family: Family::Shape,
         params: &[
-            Param { key: "rule", label: "rule", about: "survive / born, as neighbour counts: 13-26/13-14,17-19 is Clouds; 4/4 is Bays' 4-4; 5-7/6 is a slow builder", default: "13-26/13-14,17-19", kind: Kind::Text },
+            Param { key: "rule", label: "rule", about: "survive / born / states, as neighbour counts: 13-26/13-14,17-19 is Clouds; 4/4/5 is Bays' 4-4-5, a spiking crystal; 4-7/6-8/10 boils; 9-26/5-7,12-13,15/5 is Amoeba; 2,6,9/4,6,8-9/10 builds", default: "13-26/13-14,17-19", kind: Kind::Text },
         ],
     },
 ];
