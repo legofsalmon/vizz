@@ -238,12 +238,61 @@ fn apc40_mk2_bindings() -> Vec<Binding> {
             value: None,
         });
     }
+    // The transport buttons. The profile used to map forty-one controls
+    // and not one punch, page turn or tap — so the one controller the
+    // app recognises had no panic button. STOP ALL CLIPS is the blackout,
+    // held while pressed like the punch button; TAP TEMPO is the tap;
+    // the five scene-launch buttons turn to pages one to five.
+    out.push(Binding {
+        source: Source::Note { channel: APC_CH, note: APC_STOP_ALL_CLIPS },
+        param: "/punch/black".into(),
+        value: None,
+    });
+    out.push(Binding {
+        source: Source::Note { channel: APC_CH, note: APC_TAP_TEMPO },
+        param: "/tempo/tap".into(),
+        value: None,
+    });
+    for (i, note) in APC_SCENE_LAUNCH.iter().enumerate() {
+        out.push(Binding {
+            source: Source::Note { channel: APC_CH, note: *note },
+            param: "/deck/select".into(),
+            value: Some(i as f32 + 1.0),
+        });
+    }
     out
 }
+
+/// STOP ALL CLIPS, TAP TEMPO and the five SCENE LAUNCH buttons, as the
+/// mkII sends them — documented parts of its protocol, like the faders.
+const APC_STOP_ALL_CLIPS: u8 = 0x51;
+const APC_TAP_TEMPO: u8 = 0x63;
+const APC_SCENE_LAUNCH: [u8; 5] = [0x52, 0x53, 0x54, 0x55, 0x56];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The recognised controller ships a panic button, a tap and page
+    /// turns, not only pads and faders.
+    #[test]
+    fn the_apc_ships_a_blackout_a_tap_and_page_turns() {
+        let b = apc40_mk2_bindings();
+        let has = |param: &str, value: Option<f32>| {
+            b.iter().any(|x| x.param == param && x.value == value)
+        };
+        assert!(has("/punch/black", None), "no blackout");
+        assert!(has("/tempo/tap", None), "no tap");
+        for page in 1..=5 {
+            assert!(has("/deck/select", Some(page as f32)), "no button for page {page}");
+        }
+        // Nothing is bound twice: a note that turned a page and fired a
+        // pad would be two surprises for one press.
+        let mut sources: Vec<_> = b.iter().map(|x| format!("{:?}", x.source)).collect();
+        sources.sort();
+        sources.dedup();
+        assert_eq!(sources.len(), b.len(), "a control is bound more than once");
+    }
 
     /// The device is recognised however the host decorates its name.
     #[test]

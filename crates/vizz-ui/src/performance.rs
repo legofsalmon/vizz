@@ -2703,12 +2703,17 @@ fn fader(
 /// variant that loses least.
 fn fit_label(ui: &egui::Ui, name: &str, w: f32) -> (String, f32) {
     const STEPS: [f32; 4] = [13.0, 11.5, 10.0, 9.0];
+    // Measured against the button's inner width, not the column: the
+    // button pads four points a side, so a label that fit the column
+    // exactly wrapped inside it — two half-width rows that pushed the
+    // binding line under the lane's clip.
+    let inner = w - 8.0;
     let fits = |text: &str, size: f32| {
         ui.painter()
             .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), INK_2)
             .rect
             .width()
-            <= w
+            <= inner
     };
     for size in STEPS {
         if fits(name, size) {

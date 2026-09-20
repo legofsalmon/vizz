@@ -460,14 +460,14 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| {
-                    outputs_section(ui, state, registry);
+                    outputs_section(ui, state);
                     ui.separator();
                     output_setup_section(ui, state, &mut actions);
                 });
             egui::CollapsingHeader::new("recording")
                 .id_salt("recording")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| recording_section(ui, state, &mut actions));
+                .show(ui, |ui| recording_section(ui, state, registry, &mut actions));
             egui::CollapsingHeader::new("video in")
                 .id_salt("video-in")
                 .default_open(state.expand_sections)
@@ -1065,7 +1065,15 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
     // Say which state you are in rather than making it inferred from a
     // slider position — "why is my key not working" is the question this
     // line exists to answer.
-    if registry.target(a) <= 0.001 {
+    // A vector layer paints the whole frame at full alpha whatever the
+    // paper says, so with one on, "transparent" was a caption about a
+    // key that was not being sent.
+    let layer_on = (1..=8)
+        .map_while(|i| registry.id(&format!("/l{i}/kind")))
+        .any(|id| registry.target(id).round() >= 0.5);
+    if layer_on && registry.target(a) < 0.999 {
+        ui.small("opaque — a vector layer is painting the whole frame; turn the layers off for a transparent key");
+    } else if registry.target(a) <= 0.001 {
         ui.small("transparent — receivers get the field with an alpha channel");
     } else if registry.target(a) < 0.999 {
         ui.small("partly transparent");
@@ -1650,8 +1658,72 @@ fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 /// with nothing said before or during. The headline here is therefore
 /// the *rate*, not the format: the number that tells you whether the
 /// take you are about to start fits on the disk you have.
-fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+fn recording_section(
+    ui: &mut egui::Ui,
+    state: &PanelState,
+    registry: &ParamRegistry,
+    actions: &mut PanelActions,
+) {
     let mut next = state.record;
+    // The button, first, in the section that holds everything else about
+    // a take — it sat under "outputs" while its cost and its settings sat
+    // under the header named after the job. It writes /record/active
+    // exactly as OSC or a learned MIDI button would — one path.
+    if let Some(id) = registry.id("/record/active") {
+        ui.horizontal(|ui| {
+            let on = registry.target(id) >= 0.5;
+            let label = if on { "stop recording" } else { "record" };
+            let button = egui::Button::new(
+                egui::RichText::new(label).color(if on {
+                    vizz_design::feedback::ERR_TEXT
+                } else {
+                    vizz_design::ink::SECONDARY
+                }),
+            );
+            // Named by what it actually writes: the hover promised a
+            // PNG sequence for a year after JPEG became the default, on
+            // a live take that cannot be repeated.
+            let format = if state.record.lossless {
+                "PNG".to_string()
+            } else {
+                format!("JPEG q{}", state.record.quality)
+            };
+            if ui
+                .add(button)
+                .on_hover_text(format!(
+                    "{format} image sequence of the master output at {:.0} fps — \
+                     heavy resolutions drop frames rather than stall the show",
+                    state.record.fps
+                ))
+                .clicked()
+            {
+                registry.set(id, if on { 0.0 } else { 1.0 });
+            }
+            // What the take is: size, format and rate, the three facts
+            // that decide whether it is usable, in one line beside the
+            // button instead of across two collapsed sections.
+            ui.small(format!(
+                "{}×{} · {} · {:.0} fps",
+                state.output.width,
+                state.output.height,
+                format.to_lowercase(),
+                state.record.fps
+            ));
+            if let Some(rec) = &state.recording {
+                ui.small(format!(
+                    "{}:{:02} · {} frames{}",
+                    rec.secs / 60,
+                    rec.secs % 60,
+                    rec.frames,
+                    if rec.dropped > 0 {
+                        format!(" · {} dropped", rec.dropped)
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        });
+    }
 
     // Where they go, permanently on screen. The stop notice named the
     // folder for four seconds and then nothing in the app could say it;
@@ -1708,7 +1780,10 @@ fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelA
         }
         if ui
             .selectable_label(next.lossless, "png")
-            .on_hover_text("lossless and large — for compositing, not for long takes")
+            .on_hover_text(
+                "lossless and large — for compositing, not for long takes — \
+                 and the only format that keeps transparency",
+            )
             .clicked()
         {
             next.lossless = true;
@@ -1771,6 +1846,18 @@ fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelA
         .on_hover_text("time to get your hands to the controls before the first frame");
     });
 
+    // JPEG has no alpha. A take taken for a key, with the background
+    // transparent, silently records the field over the paper colour
+    // instead — discovered in the edit, which is too late.
+    if !next.lossless
+        && let Some(alpha) = registry.id("/bg/alpha")
+        && registry.target(alpha) < 0.999
+    {
+        ui.colored_label(
+            WARN,
+            "jpeg has no alpha — this take records the background as black; switch to png",
+        );
+    }
     ui.small("takes are stopped automatically if the disk gets close to full");
 
     if next != state.record {
@@ -1980,7 +2067,7 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
         // costs. Syphon and NDI are BGRA8 by definition, so this cannot
         // reach them without a conversion, and pretending otherwise would
         // be discovered as a black frame at a venue.
-        ui.small("Syphon and NDI still receive 8-bit; a conversion pass is added for them");
+        ui.small("Syphon, NDI and recordings still receive 8-bit; a conversion pass is added for them");
     }
 
     if commit {
@@ -1997,55 +2084,7 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     }
 }
 
-fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
-    // Record lives with the outputs: it is one more consumer of the
-    // master. The button writes /record/active exactly as OSC or a
-    // learned MIDI button would — one path.
-    if let Some(id) = registry.id("/record/active") {
-        ui.horizontal(|ui| {
-            let on = registry.target(id) >= 0.5;
-            let label = if on { "stop recording" } else { "record" };
-            let button = egui::Button::new(
-                egui::RichText::new(label).color(if on {
-                    vizz_design::feedback::ERR_TEXT
-                } else {
-                    vizz_design::ink::SECONDARY
-                }),
-            );
-            // Named by what it actually writes: the hover promised a
-            // PNG sequence for a year after JPEG became the default, on
-            // a live take that cannot be repeated.
-            let format = if state.record.lossless {
-                "PNG".to_string()
-            } else {
-                format!("JPEG q{}", state.record.quality)
-            };
-            if ui
-                .add(button)
-                .on_hover_text(format!(
-                    "{format} image sequence of the master output at {:.0} fps — \
-                     heavy resolutions drop frames rather than stall the show",
-                    state.record.fps
-                ))
-                .clicked()
-            {
-                registry.set(id, if on { 0.0 } else { 1.0 });
-            }
-            if let Some(rec) = &state.recording {
-                ui.small(format!(
-                    "{}:{:02} · {} frames{}",
-                    rec.secs / 60,
-                    rec.secs % 60,
-                    rec.frames,
-                    if rec.dropped > 0 {
-                        format!(" · {} dropped", rec.dropped)
-                    } else {
-                        String::new()
-                    }
-                ));
-            }
-        });
-    }
+fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
         return;
@@ -2224,6 +2263,23 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
 
     let id = egui::Id::new("preset-save-name");
     let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+    // The look on screen is the one you are most likely editing, so its
+    // name is offered in the field the moment it is recalled — and only
+    // then, so a cleared field stays cleared. With it there the button
+    // already reads "replace", and re-saving is one click rather than
+    // retyping a name from memory under a list that has scrolled away.
+    let offered = egui::Id::new("preset-save-offered");
+    let last_offered: Option<usize> = ui.memory(|m| m.data.get_temp(offered));
+    if last_offered != state.preset_current {
+        if let Some(entry) = state
+            .preset_current
+            .and_then(|slot| state.presets.get(slot.wrapping_sub(1)))
+            .filter(|e| !e.builtin)
+        {
+            name = entry.name.clone();
+        }
+        ui.memory_mut(|m| m.data.insert_temp(offered, state.preset_current));
+    }
     let clash = name_clash(&name, &state.presets);
     ui.horizontal(|ui| {
         let editing = ui.add(
@@ -2253,9 +2309,11 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         // built-in. Succeeding and doing nothing is worse than refusing.
         let blocked = matches!(clash, Some(Clash::Builtin(_)));
         let button = ui.add_enabled(!blocked, egui::Button::new(label)).on_hover_text(hover);
+        // The name stays after a save. Cleared, the edit-and-save-again
+        // loop meant retyping it exactly each time, and a typo made a
+        // near-duplicate instead of a replacement.
         if (entered || button.clicked()) && !blocked && !name.trim().is_empty() {
             actions.preset_save = Some(name.clone());
-            name.clear();
         }
     });
     match clash {
@@ -3253,11 +3311,21 @@ fn param_row(
         let learning = state.midi.learning(&def.addr);
         match state.midi.map.source_for(&def.addr) {
             Some(source) => {
-                if ui
-                    .small_button(source.label())
-                    .on_hover_text("click to clear this MIDI binding")
-                    .clicked()
-                {
+                // Armed, like every other unmap: this was the one binding
+                // in the app that a single click threw away.
+                let label = source.label();
+                if vizz_design::widgets::armed_button(
+                    ui,
+                    egui::Id::new(("panel-midi-chip", &def.addr)),
+                    0,
+                    vizz_design::widgets::Armed {
+                        idle_label: &label,
+                        armed_label: "unmap?",
+                        idle_hover: "the control bound to this — click twice to unmap it",
+                        armed_hover: "click again to unmap",
+                        small: true,
+                    },
+                ) {
                     actions.clear_binding = Some(def.addr.clone());
                 }
             }

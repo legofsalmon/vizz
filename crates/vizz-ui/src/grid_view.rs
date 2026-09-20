@@ -201,6 +201,10 @@ pub struct GridActions {
     /// Fire this slot (0-based). The app turns it into a `/scene/fire`
     /// write so a click and a MIDI pad take the same path.
     pub fire: Option<usize>,
+    /// Fire this column (0-based): the scene pad and the gravity pad of
+    /// the same number, together — alt-click. The column was a real
+    /// parameter with no hand gesture anywhere on the screen you play.
+    pub fire_column: Option<usize>,
     /// Capture the live parameters into this slot, as a new preset.
     pub store: Option<usize>,
     /// Store a blank into this slot: every preset-scoped parameter at
@@ -452,7 +456,13 @@ fn pad(
             // Firing an empty pad is a no-op in the grid itself, so this
             // does not need a guard — but offering a rename on it is the
             // useful thing to do with a click on nothing.
-            PadMode::Fire if name.is_some() => actions.fire = Some(slot),
+            PadMode::Fire if name.is_some() => {
+                if response.ctx.input(|i| i.modifiers.alt) {
+                    actions.fire_column = Some(slot);
+                } else {
+                    actions.fire = Some(slot);
+                }
+            }
             PadMode::Fire => {}
             PadMode::Store => {
                 actions.store = Some(slot);
@@ -595,8 +605,8 @@ fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
             // names the gesture is the cheapest possible fix, and the
             // double-click is the gesture people try first.
             |name| match bound {
-                Some(m) => format!("fire {name}  ·  {m}  ·  double-click to rename"),
-                None => format!("fire {name}  ·  double-click to rename"),
+                Some(m) => format!("fire {name}  ·  {m}  ·  alt-click fires the column  ·  double-click to rename"),
+                None => format!("fire {name}  ·  alt-click fires the column  ·  double-click to rename"),
             },
         ),
         PadMode::Store => format!("capture the current look into {noun} {n}"),

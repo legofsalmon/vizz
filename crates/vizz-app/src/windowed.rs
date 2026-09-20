@@ -2962,6 +2962,11 @@ fn apply_grid_actions(
     if let Some(slot) = actions.fire {
         reg.set(b.fire, fire_value(slot));
     }
+    // A column is both grids' pad of one number, the thing Arena's
+    // launches land on; alt-click is its hand gesture.
+    if let Some(slot) = actions.fire_column {
+        reg.set(params.column_fire, fire_value(slot));
+    }
     // Learning a pad rather than the parameter. A binding on `/scene/fire`
     // alone would be one button for all sixteen pads, which is what this
     // replaces — see `Binding::value`.
@@ -3181,6 +3186,16 @@ fn apply_preset_actions(
                 // picture filed under the raw name would never be found.
                 thumbs.now(&saved);
                 library.refresh();
+                // And it is the current look now, on both lists: saving
+                // used to leave nothing marked, so the edit-and-save-again
+                // loop had no anchor. Set through the recall parameter so
+                // the tile and the panel row agree with every other path.
+                if let (Some(recall), Some(i)) = (
+                    registry.id("/preset/recall"),
+                    preset_entries(library).iter().position(|e| e.name == saved),
+                ) {
+                    registry.set(recall, i as f32 + 1.0);
+                }
             }
             Err(e) => {
                 log::error!("could not save preset {name}: {e:#}");
@@ -3478,8 +3493,16 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         video_live: false,
         // Clouds named on the command line win; otherwise restore whatever
         // was last dropped, so a set survives a restart.
+        // The cursor starts at the first empty slot rather than at zero:
+        // it used to restart every launch, so the first drop after a
+        // restart landed on the first restored cloud — the one a saved
+        // look most likely names — and replaced it.
+        next_cloud: cloud_paths
+            .iter()
+            .position(String::is_empty)
+            .unwrap_or(cloud_paths.len())
+            % ParticleScene::LOADABLE,
         clouds: cloud_paths,
-        next_cloud: 0,
         palettes: palette_paths,
         quit_armed: None,
         quit_for_update: false,
