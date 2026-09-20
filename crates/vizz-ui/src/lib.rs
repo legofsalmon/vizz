@@ -91,7 +91,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
             // were harder to find: none of these appeared anywhere but the
             // README (or nowhere at all) until this block.
             for (gesture, what) in [
-                ("right-click", "reset a slider · menus on pads, presets and the canvas"),
+                ("right-click", "reset a slider · menus on pads, presets, decks, punches and the canvas"),
                 ("shift-click", "latch a punch button until the next click"),
                 ("double-click", "rename a pad"),
                 ("scroll", "zoom the modulation canvas"),
@@ -852,6 +852,13 @@ impl Gui {
         // The panel's button and the G key take the same door.
         if actions.open_canvas {
             self.graph_open = true;
+        }
+        if actions.open_performance {
+            self.performance = true;
+            self.drop_text_focus();
+        }
+        if actions.open_shortcuts {
+            self.shortcuts_open = true;
         }
         if self.graph_open {
             let mut open = true;

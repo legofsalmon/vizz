@@ -142,7 +142,7 @@ pub const SHAPES: &[ModShape] = &[
     },
     ModShape {
         name: "Snare",
-        about: "The same, on the mid band.",
+        about: "The same, on the high-mid band.",
         depth: 0.5,
         bipolar: false,
         build: |g, at| band_env(g, at, 2, 0.005, 0.14),
@@ -236,7 +236,7 @@ fn free_row(g: &NodeGraph) -> [f32; 2] {
 /// Band -> gate -> envelope: the idiom that turns a level into a hit.
 fn band_env(g: &mut NodeGraph, at: [f32; 2], band: usize, attack: f32, decay: f32) -> NodeId {
     let src = g.add(NodeKind::Band(band), at);
-    let gate = g.add(NodeKind::Gate { threshold: 0.5 }, step(at, 1));
+    let gate = g.add(NodeKind::Gate { threshold: GATE }, step(at, 1));
     let env = g.add(NodeKind::Envelope { attack, decay }, step(at, 2));
     g.connect(src, gate, 0);
     g.connect(gate, env, 0);
@@ -602,6 +602,12 @@ mod tests {
         assert_eq!(rows.len(), 3, "three shapes shared fewer than three rows: {rows:?}");
     }
 }
+
+/// Where every band-driven shape gates, as a fraction of the band's
+/// envelope. Public so the meters can draw the line: a band that never
+/// crosses it leaves its Kick or Snare inert while the fader still reads
+/// amber, and "is the kick reaching the line" should be one glance.
+pub const GATE: f32 = 0.5;
 
 /// The three ready-made modulators one press of "react" attaches, and
 /// where. The kick on the size, the loudness on the glow, the snare on

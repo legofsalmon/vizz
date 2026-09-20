@@ -991,6 +991,20 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
     let editing: Option<(usize, String)> = ui.data(|d| d.get_temp(editing_id));
 
     ui.horizontal_wrapped(|ui| {
+        // Named, like every other row on the desk — it was the one
+        // unlabelled section, and everything you can do to a page lives
+        // in a menu nothing pointed at. Inline rather than a rule above:
+        // a rule costs eighteen points, and at 1280x720 that was enough
+        // to stand the preset tiles down.
+        ui.label(
+            egui::RichText::new("SET LIST")
+                .size(10.5)
+                .strong()
+                .monospace()
+                .color(INK_3),
+        )
+        .on_hover_text("one page of pads per song — right-click a chip to rename, duplicate or delete it");
+        ui.add_space(6.0);
         for (i, deck) in state.decks.iter().enumerate() {
             let live = i == state.active_deck;
             let (text, size) = fit_label(ui, &deck.name, CHIP_NAME_W);
@@ -1022,12 +1036,15 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
                 (_, true) => "press a button on your controller".to_string(),
                 (Some(s), _) => format!("{}  ·  {s}", deck.name),
                 (None, _) => {
-                    if state.follow_columns == Some(true) {
+                    let base = if state.follow_columns == Some(true) {
                         format!("{}  ·  follows Resolume columns {}–{}", deck.name, deck.origin,
                             deck.origin + crate::grid_view::SLOTS as u32 - 1)
                     } else {
                         deck.name.clone()
-                    }
+                    };
+                    // The menu is the only door to renaming a page, and a
+                    // door nothing points at is a wall.
+                    format!("{base}  ·  right-click to rename, duplicate or delete")
                 }
             };
             let response = response.on_hover_text(hint);
@@ -2239,7 +2256,7 @@ fn audio_strip(
     actions: &mut PerformanceActions,
     width: f32,
 ) {
-    const BANDS: [&str; 4] = ["low", "lo-mid", "hi-mid", "high"];
+    const BANDS: [&str; 4] = vizz_mod::BAND_NAMES;
     ui.horizontal(|ui| {
         // One press and the picture follows the music: the kick on the
         // size, the loudness on the glow, the snare on the brightness.
@@ -2299,6 +2316,14 @@ fn audio_strip(
                 // Warm at the top of the range: a band pinned at 1.0 is
                 // clipping its modulation and should not look healthy.
                 if v > 0.97 { WARN } else { LIVE },
+            );
+            // The gate line: where Kick and Snare open. A band that never
+            // reaches it leaves its shape inert with the fader still
+            // reading amber, and this makes that one glance.
+            let gate_x = r.left() + r.width() * vizz_mod::shapes::GATE;
+            ui.painter().line_segment(
+                [egui::pos2(gate_x, r.top() + 1.0), egui::pos2(gate_x, r.bottom() - 1.0)],
+                (1.0, vizz_design::ink::TERTIARY),
             );
             ui.painter().text(
                 r.left_center() + vec2(5.0, 0.0),

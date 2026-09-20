@@ -116,6 +116,11 @@ pub struct PanelActions {
     /// Show the folder every take lands in, in the platform's file
     /// browser.
     pub reveal_takes: bool,
+    /// Go to the performance layout — the panel's own button for what
+    /// only P did, on a strip that is always on screen.
+    pub open_performance: bool,
+    /// Open the shortcut list.
+    pub open_shortcuts: bool,
 }
 
 /// How big the output is and how hard it is worked.
@@ -579,6 +584,16 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
         if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
             actions.audio.tapped = true;
+        }
+        // The way to the screen you play from, and to the list of keys,
+        // as buttons: they were a nine-point footer that scrolls away
+        // once a couple of sections are open.
+        ui.add_space(6.0);
+        if ui.small_button("play").on_hover_text("the performance layout  (P)").clicked() {
+            actions.open_performance = true;
+        }
+        if ui.small_button("?").on_hover_text("every key and gesture").clicked() {
+            actions.open_shortcuts = true;
         }
     });
 }
@@ -1112,6 +1127,12 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
         1.0,
         vizz_design::accent::METER,
     );
+    // The gate line on the envelope half — see the performance strip.
+    let gate_x = rect.left() + rect.width() * vizz_mod::shapes::GATE;
+    p.line_segment(
+        [egui::pos2(gate_x, rect.top()), egui::pos2(gate_x, rect.top() + h)],
+        (1.0, vizz_design::ink::TERTIARY),
+    );
     p.rect_filled(
         egui::Rect::from_min_size(
             rect.left_top() + egui::vec2(0.0, h),
@@ -1225,7 +1246,7 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             // Named the way every modulation source list names them, so
             // "Band 2" in a route can be found in this section without
             // counting rows.
-            ui.small(format!("band {}", i + 1));
+            ui.small(format!("band {} · {}", i + 1, vizz_mod::BAND_NAMES[i]));
             meter(ui, a.raw[i], a.bands[i]);
             ui.add(
                 egui::DragValue::new(&mut band.lo_hz)

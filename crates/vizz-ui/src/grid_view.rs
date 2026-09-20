@@ -799,7 +799,7 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
     let text = match (view.autopilot, name) {
         (true, Some(n)) => format!("{label}  >  {n}"),
         (true, None) => format!("{label}  >  (empty grid)"),
-        (false, _) => label.to_string(),
+        (false, _) => format!("{label} off"),
     };
 
     let size = vec2(ui.available_width().clamp(120.0, 210.0), 26.0);
@@ -817,17 +817,19 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
             AUTO_ON,
         );
     }
-    // A lit border as well as a fill: at phase 0 the sweep is zero pixels
-    // wide, and without this the control would blink to looking off once
-    // per cycle.
-    if view.autopilot {
-        p.rect_stroke(
-            rect,
-            4.0,
-            egui::Stroke::new(1.5, AUTO_ON),
-            egui::StrokeKind::Inside,
-        );
-    }
+    // A border in every state. Lit, so that at phase 0 — the sweep is
+    // zero pixels wide — the control does not blink to looking off once
+    // per cycle; and off, because without one it borrowed the empty pad's
+    // fill and read as dead surface rather than a switch. The rest of
+    // the desk answers hover the same way the fader wells do.
+    let rim = if view.autopilot {
+        AUTO_ON
+    } else if response.hovered() {
+        vizz_design::surface::FOCUS
+    } else {
+        vizz_design::surface::EDGE
+    };
+    p.rect_stroke(rect, 4.0, egui::Stroke::new(1.5, rim), egui::StrokeKind::Inside);
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,

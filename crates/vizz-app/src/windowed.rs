@@ -213,6 +213,15 @@ struct App {
     /// Where takes land, as the panel shows it. Asked once: the home
     /// directory does not move during a set.
     takes_root: String,
+    /// Whether the audio input was connected last frame, so its going
+    /// away is a notice and not only a hollow dot in a collapsed section.
+    /// `None` until first seen: a mic that is simply there at launch is
+    /// not news.
+    audio_live: Option<bool>,
+    /// The controllers seen last frame, so one arriving or leaving is
+    /// said on screen — the APC's forty-one chips used to appear with no
+    /// word, and a controller unplugged mid-set vanished with none.
+    midi_ports_seen: Vec<String>,
     /// The render scale in effect, mirrored from settings so the panel
     /// can show it without a settings-file read on every frame.
     render_scale: f32,
@@ -1002,6 +1011,16 @@ impl App {
         if let Some(name) = self.engine.take_recalled() {
             self.thumbs.if_missing(&name);
         }
+        // And said. A key, a tile, a note, an OSC message: every path
+        // ended in a log line and a stroke on a tile that may be off the
+        // screen or stood down, and an empty slot did nothing at all,
+        // silently — which reads as the key being broken.
+        if let Some((slot, name)) = self.engine.take_recall_announcement() {
+            state.gui.notify_info(match name {
+                Some(name) => format!("{slot} · {name}"),
+                None => format!("slot {slot} is empty — save a look to fill it"),
+            });
+        }
         let mut encoder = state
             .ctx
             .device
@@ -1202,6 +1221,25 @@ impl App {
             let mut unseen = Notes::new();
             save_deck_state(&self.engine, &mut unseen);
         }
+        // The audio input, as a transition: losing it mid-set used to be
+        // a hollow dot inside a collapsed section while the picture
+        // quietly stopped reacting. The same notice an output gets.
+        {
+            let live = self.engine.audio.state.connected();
+            if let Some(was) = self.audio_live
+                && was != live
+            {
+                let name = self.engine.audio.device_name.clone().unwrap_or_else(|| "audio input".into());
+                if live {
+                    state.gui.notify_info(format!("audio input '{name}' is back"));
+                } else {
+                    state.gui.notify_error(format!(
+                        "audio input '{name}' stopped — the picture is no longer reacting"
+                    ));
+                }
+            }
+            self.audio_live = Some(live);
+        }
         let ui_start = Instant::now();
         let actions = if let Some(preview) = &preview
             && state.gui.will_draw()
@@ -1213,6 +1251,22 @@ impl App {
             // both UIs carefully draw unreachable code.
             let outputs_status: Vec<OutputStatus> = state.outputs.status();
             refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+            // Controllers, as transitions — including the first one seen,
+            // because a controller the app recognised and mapped in
+            // silence is a set of forty-one chips with no explanation.
+            if self.midi_view.connected != self.midi_ports_seen {
+                for gone in &self.midi_ports_seen {
+                    if !self.midi_view.connected.contains(gone) {
+                        state.gui.notify_error(format!("MIDI device '{gone}' disconnected"));
+                    }
+                }
+                for came in &self.midi_view.connected {
+                    if !self.midi_ports_seen.contains(came) {
+                        state.gui.notify_info(format!("MIDI device '{came}' connected"));
+                    }
+                }
+                self.midi_ports_seen = self.midi_view.connected.clone();
+            }
             if self.midi.is_some() {
                 publish_midi_surface(
                     &self.midi_shared,
@@ -3365,6 +3419,8 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         startup_notes,
         welcome_pending: !crate::settings::load().welcomed && opts_show_gui,
         takes_root: crate::settings::takes_root().display().to_string(),
+        audio_live: None,
+        midi_ports_seen: Vec::new(),
         midi_save_backoff: None,
         modulation_save_failing: false,
         output_status: Vec::new(),

@@ -181,7 +181,7 @@ impl NodeKind {
     pub fn title(&self) -> String {
         match self {
             Self::Lfo(l) => format!("LFO · {}", l.shape.label()),
-            Self::Band(i) => format!("Band {}", i + 1),
+            Self::Band(i) => format!("Band {} · {}", i + 1, crate::BAND_NAMES.get(*i).unwrap_or(&"")),
             Self::Level => "Level".into(),
             Self::Phasor { .. } => "Phasor".into(),
             Self::Constant(_) => "Constant".into(),

@@ -274,11 +274,19 @@ pub enum Source {
     Level,
 }
 
+/// What the four audio bands are called, wherever one is named.
+///
+/// The low band was "Band 1" where you chose it, "band 1" in the audio
+/// section, "lo-mid"'s neighbour "low" on the stage strip and "the low
+/// band" in the Kick shape's hover — the thing a VJ calls the kick was
+/// never labelled the same way twice. Indexed like `Source::Audio`.
+pub const BAND_NAMES: [&str; 4] = ["low", "low-mid", "high-mid", "high"];
+
 impl Source {
     pub fn label(&self) -> String {
         match self {
             Source::Lfo(i) => format!("LFO {}", i + 1),
-            Source::Audio(i) => format!("Band {}", i + 1),
+            Source::Audio(i) => format!("Band {} · {}", i + 1, BAND_NAMES.get(*i).unwrap_or(&"")),
             Source::Level => "Level".into(),
         }
     }
