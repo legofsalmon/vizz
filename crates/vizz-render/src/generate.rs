@@ -69,6 +69,20 @@ pub const IDS: &[&str] = &[
     "mandelbrot",
     "julia",
     "quadratic",
+    "aizawa",
+    "newton-leipnik",
+    "sakarya",
+    "rikitake",
+    "shimizu-morioka",
+    "finance",
+    "coullet",
+    "genesio-tesi",
+    "quadratic-flow",
+    "orbital",
+    "fern",
+    "coral",
+    "tree",
+    "voronoi",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
@@ -92,23 +106,10 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
             .map_or(default, |(_, v)| *v)
             .to_string()
     };
+    if let Some((_, f, start, dt, frame)) = FLOWS.iter().find(|(name, ..)| *name == id) {
+        return Some(finish(flow(*f, *start, *dt, *frame)));
+    }
     let raw = match id {
-        // Flows: integrated from a point on the attractor, in time order.
-        "thomas" => flow(thomas, [0.1, 0.0, 0.0], 0.05, Frame::Diagonal),
-        "halvorsen" => flow(halvorsen, [-1.48, -1.51, 2.04], 0.005, Frame::Diagonal),
-        "dadras" => flow(dadras, [1.1, 2.1, -2.0], 0.005, Frame::ZUp),
-        "rossler" => flow(rossler, [1.0, 1.0, 1.0], 0.02, Frame::ZUp),
-        "four-wing" => flow(four_wing, [1.3, -0.18, 0.01], 0.01, Frame::ZUp),
-        "chen" => flow(chen, [-0.1, 0.5, -0.6], 0.002, Frame::ZUp),
-        "sprott-b" => flow(sprott_b, [0.1, 0.1, 0.1], 0.01, Frame::ZUp),
-        "nose-hoover" => flow(nose_hoover, [1.0, 0.0, 0.0], 0.01, Frame::ZUp),
-        "arneodo" => flow(arneodo, [0.1, 0.2, 0.3], 0.01, Frame::ZUp),
-        "burke-shaw" => flow(burke_shaw, [1.0, 1.0, 1.0], 0.003, Frame::ZUp),
-        "chua" => flow(chua, [0.1, 0.0, 0.0], 0.005, Frame::ZUp),
-        "hadley" => flow(hadley, [0.1, 0.0, 0.0], 0.01, Frame::ZUp),
-        "rucklidge" => flow(rucklidge, [1.0, 0.0, 4.5], 0.01, Frame::ZUp),
-        "three-scroll" => flow(three_scroll, [1.0, 1.0, 1.0], 0.001, Frame::ZUp),
-        "rabinovich" => flow(rabinovich, [-1.0, 0.0, 0.5], 0.002, Frame::ZUp),
         // Maps: iterated, and lifted into depth by delay embedding.
         "clifford" => map(clifford, [0.1, 0.0]),
         "dejong" => map(dejong, [0.1, 0.1]),
@@ -136,6 +137,12 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
             escape_relief([-1.6, 1.6], [-1.6, 1.6], move |x, y| escape(x, y, cr, ci))
         }
         "quadratic" => quadratic(num("seed", 1.0).abs() as u64),
+        "quadratic-flow" => quadratic_flow(num("seed", 1.0).abs() as u64),
+        "orbital" => orbital(num("l", 3.0), num("m", 2.0)),
+        "fern" => plant("F-[[X]+X]+F[+FX]-X/", num("angle", 22.0)),
+        "coral" => plant("F[&X]////[&X]////[&X]", num("angle", 30.0)),
+        "tree" => plant("FF[+&X]F[-/X][^\\X]X", num("angle", 20.0)),
+        "voronoi" => voronoi(num("cells", 24.0), num("seed", 1.0).abs() as u64),
         "sierpinski" => sierpinski(),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
@@ -154,10 +161,13 @@ fn thomas([x, y, z]: [f64; 3]) -> [f64; 3] {
     [y.sin() - B * x, z.sin() - B * y, x.sin() - B * z]
 }
 
-/// Halvorsen's attractor, a = 1.89: cyclically symmetric like Thomas,
-/// but three lobes of folded sheet rather than ribbons.
+/// Halvorsen's attractor, a = 1.4: cyclically symmetric like Thomas,
+/// but three lobes of folded sheet rather than ribbons. The constant
+/// matters — by a = 1.89 the flow has fallen onto a limit cycle, which
+/// fills the same box and looks nearly as busy while being no longer
+/// chaotic at all.
 fn halvorsen([x, y, z]: [f64; 3]) -> [f64; 3] {
-    const A: f64 = 1.89;
+    const A: f64 = 1.4;
     [
         -A * x - 4.0 * y - 4.0 * z - y * y,
         -A * y - 4.0 * z - 4.0 * x - z * z,
@@ -233,10 +243,21 @@ fn chua([x, y, z]: [f64; 3]) -> [f64; 3] {
     [15.6 * (y - x - diode), x - y + z, -28.0 * y]
 }
 
-/// The Hadley circulation (Lorenz, 1984): a = 0.2, b = 4, F = 8, G = 1.
-/// The general circulation of an atmosphere in three variables.
+/// The Hadley circulation (Lorenz, 1984): a = 0.25, b = 4, F = 8,
+/// G = 1. The general circulation of an atmosphere in three variables —
+/// a westerly current, and a wave riding it. Lorenz' own constants;
+/// a little off them, at a = 0.2 or 0.3, the wave settles into a cycle
+/// and the weather stops surprising anyone.
 fn hadley([x, y, z]: [f64; 3]) -> [f64; 3] {
-    [-y * y - z * z - 0.2 * x + 1.6, x * y - 4.0 * x * z - y + 1.0, 4.0 * x * y + x * z - z]
+    const A: f64 = 0.25;
+    const B: f64 = 4.0;
+    const F: f64 = 8.0;
+    const G: f64 = 1.0;
+    [
+        -y * y - z * z - A * (x - F),
+        x * y - B * x * z - y + G,
+        B * x * y + x * z - z,
+    ]
 }
 
 /// Rucklidge's model of convection, κ = 2, λ = 6.7.
@@ -260,6 +281,117 @@ fn rabinovich([x, y, z]: [f64; 3]) -> [f64; 3] {
         -2.0 * z * (0.14 + x * y),
     ]
 }
+
+/// Aizawa's attractor, a = 0.95, b = 0.7, c = 0.6, d = 3.5, e = 0.25,
+/// f = 0.1: a rotating sphere with a spindle driven through its poles,
+/// and the trajectory wound round both.
+fn aizawa([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.95;
+    const B: f64 = 0.7;
+    const C: f64 = 0.6;
+    const D: f64 = 3.5;
+    const E: f64 = 0.25;
+    const F: f64 = 0.1;
+    [
+        (z - B) * x - D * y,
+        D * x + (z - B) * y,
+        C + A * z - z * z * z / 3.0 - (x * x + y * y) * (1.0 + E * z) + F * z * x * x * x,
+    ]
+}
+
+/// Newton–Leipnik (1981), a = 0.4, b = 0.175: rigid-body motion with a
+/// feedback torque, and two attractors in the same system — this start
+/// finds the upper one.
+fn newton_leipnik([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.4;
+    const B: f64 = 0.175;
+    [-A * x + y + 10.0 * y * z, -x - A * y + 5.0 * x * z, B * z - 5.0 * x * y]
+}
+
+/// The Sakarya system (2010), a = 0.4, b = 0.3: two lobes crossing at
+/// an angle, like a bow tie drawn in wire.
+fn sakarya([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.4;
+    const B: f64 = 0.3;
+    [-x + y + y * z, -x - y + A * x * z, z - B * x * y]
+}
+
+/// The Rikitake dynamo (1958), μ = 2, a = 5: two coupled disc dynamos,
+/// the model that first explained why the Earth's magnetic field
+/// reverses — the trajectory hops between two lobes at no fixed
+/// interval, and each hop is a reversal.
+fn rikitake([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const MU: f64 = 2.0;
+    const A: f64 = 5.0;
+    [-MU * x + z * y, -MU * y + x * (z - A), 1.0 - x * y]
+}
+
+/// Shimizu–Morioka (1980), a = 0.75, b = 0.45: the Lorenz butterfly's
+/// simplest relative, two wings and one quadratic term.
+fn shimizu_morioka([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.75;
+    const B: f64 = 0.45;
+    [y, x - A * y - x * z, -B * z + x * x]
+}
+
+/// The finance system (Chen & Gao, after Ma & Chen, 2001), a = 0.001,
+/// b = 0.1, c = 1: interest rate, investment demand and price index,
+/// three variables that will not settle.
+fn finance([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.001;
+    const B: f64 = 0.1;
+    const C: f64 = 1.0;
+    [z + (y - A) * x, 1.0 - B * y - x * x, -x - C * z]
+}
+
+/// Coullet's jerk system, a = 0.8, b = -1.1, c = -0.45: the third
+/// derivative of one variable, with a cubic restoring term.
+fn coullet([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.8;
+    const B: f64 = -1.1;
+    const C: f64 = -0.45;
+    [y, z, A * x + B * y + C * z - x * x * x]
+}
+
+/// Genesio–Tesi (1992), a = 0.44, b = 1.1, c = 1: the other classic
+/// jerk system, square rather than cubic.
+fn genesio_tesi([x, y, z]: [f64; 3]) -> [f64; 3] {
+    const A: f64 = 0.44;
+    const B: f64 = 1.1;
+    const C: f64 = 1.0;
+    [y, z, -C * x - B * y - A * z + x * x]
+}
+
+/// Every named flow: the field, where to start, the time step and
+/// which way is up. One table rather than a run of match arms, so a
+/// test can integrate all of them and check that each one is really
+/// chaotic rather than a cycle that merely looks busy.
+#[allow(clippy::type_complexity)]
+const FLOWS: &[(&str, fn([f64; 3]) -> [f64; 3], [f64; 3], f64, Frame)] = &[
+    ("thomas", thomas, [0.1, 0.0, 0.0], 0.05, Frame::Diagonal),
+    ("halvorsen", halvorsen, [-1.48, -1.51, 2.04], 0.005, Frame::Diagonal),
+    ("dadras", dadras, [1.1, 2.1, -2.0], 0.005, Frame::ZUp),
+    ("rossler", rossler, [1.0, 1.0, 1.0], 0.02, Frame::ZUp),
+    ("four-wing", four_wing, [1.3, -0.18, 0.01], 0.01, Frame::ZUp),
+    ("chen", chen, [-0.1, 0.5, -0.6], 0.002, Frame::ZUp),
+    ("sprott-b", sprott_b, [0.1, 0.1, 0.1], 0.01, Frame::ZUp),
+    ("nose-hoover", nose_hoover, [1.0, 0.0, 0.0], 0.01, Frame::ZUp),
+    ("arneodo", arneodo, [0.1, 0.2, 0.3], 0.01, Frame::ZUp),
+    ("burke-shaw", burke_shaw, [1.0, 1.0, 1.0], 0.003, Frame::ZUp),
+    ("chua", chua, [0.1, 0.0, 0.0], 0.005, Frame::ZUp),
+    ("hadley", hadley, [0.1, 0.0, 0.0], 0.01, Frame::ZUp),
+    ("rucklidge", rucklidge, [1.0, 0.0, 4.5], 0.01, Frame::ZUp),
+    ("three-scroll", three_scroll, [1.0, 1.0, 1.0], 0.001, Frame::ZUp),
+    ("rabinovich", rabinovich, [-1.0, 0.0, 0.5], 0.002, Frame::ZUp),
+    ("aizawa", aizawa, [0.1, 0.0, 0.0], 0.01, Frame::ZUp),
+    ("newton-leipnik", newton_leipnik, [0.349, 0.0, -0.16], 0.02, Frame::ZUp),
+    ("sakarya", sakarya, [1.0, -1.0, 1.0], 0.01, Frame::ZUp),
+    ("rikitake", rikitake, [0.1, 0.0, 0.0], 0.01, Frame::ZUp),
+    ("shimizu-morioka", shimizu_morioka, [0.1, 0.0, 0.0], 0.02, Frame::ZUp),
+    ("finance", finance, [1.0, 2.0, 0.5], 0.02, Frame::ZUp),
+    ("coullet", coullet, [0.1, 0.0, 0.0], 0.02, Frame::ZUp),
+    ("genesio-tesi", genesio_tesi, [0.2, -0.3, 0.1], 0.02, Frame::ZUp),
+];
 
 /// Which way is up, per system. The flows are written with z as their
 /// axis of symmetry and the camera wants height in y; the two cyclic
@@ -301,7 +433,7 @@ fn orient([x, y, z]: [f64; 3], frame: Frame) -> [f64; 3] {
 /// built-in attractors use: some of these systems are stiff (Chen's
 /// timescale is Lorenz's), and a fourth-order step at the same cost as
 /// four Euler steps stays on the manifold where Euler drifts off it.
-fn rk4(f: fn([f64; 3]) -> [f64; 3], p: [f64; 3], dt: f64) -> [f64; 3] {
+fn rk4(f: impl Fn([f64; 3]) -> [f64; 3], p: [f64; 3], dt: f64) -> [f64; 3] {
     let add = |a: [f64; 3], b: [f64; 3], s: f64| [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
     let k1 = f(p);
     let k2 = f(add(p, k1, dt * 0.5));
@@ -863,6 +995,200 @@ fn quadratic_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
     Some(out)
 }
 
+/// The same thirty coefficients read as a *flow* rather than a map:
+/// Sprott's search again, with an integrator inside it. A quadratic
+/// vector field in three variables is the smallest thing that can be
+/// chaotic at all (Poincaré–Bendixson rules out two), and a randomly
+/// drawn one usually is not — it runs away to infinity, or falls onto a
+/// point or a cycle. Perhaps one draw in a few hundred is a strange
+/// attractor, and those are the smooth, ribboned kind rather than the
+/// dusty sheets the maps give.
+fn quadratic_flow(seed: u64) -> Vec<[f64; 3]> {
+    let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xF107_0000_0000_0001);
+    for _ in 0..40_000 {
+        let c: [f64; 30] = std::array::from_fn(|_| ((rng.next() % 25) as f64 - 12.0) * 0.1);
+        if let Some(points) = quadratic_flow_orbit(&c) {
+            return points;
+        }
+    }
+    (0..POINTS).map(|_| rng.on_sphere()).collect()
+}
+
+/// One candidate field, if it is a strange attractor. Most draws are
+/// rejected in the first few hundred steps because they escape, which
+/// is what makes the search affordable.
+fn quadratic_flow_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
+    /// The probe step. Coefficients of order one make a field of order
+    /// one, so this is a small fraction of a transit either way.
+    const DT: f64 = 0.05;
+    const SEPARATION: f64 = 1e-6;
+    const TRANSIENT: usize = 2_000;
+    const MEASURE: usize = 3_000;
+    let f = |p| quadratic_step(c, p);
+    let sane = |p: &[f64; 3]| p.iter().all(|v| v.is_finite() && v.abs() < 1e3);
+    let mut p = [0.05, 0.05, 0.05];
+    for _ in 0..TRANSIENT {
+        p = rk4(f, p, DT);
+        if !sane(&p) {
+            return None;
+        }
+    }
+    // The largest Lyapunov exponent, per unit time: follow a neighbour
+    // and renormalise the separation each step (Benettin's method).
+    let mut q = [p[0] + SEPARATION, p[1], p[2]];
+    let mut lyapunov = 0.0;
+    let mut speed = 0.0;
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for _ in 0..MEASURE {
+        p = rk4(f, p, DT);
+        q = rk4(f, q, DT);
+        if !sane(&p) || !sane(&q) {
+            return None;
+        }
+        let v = f(p);
+        speed += (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+        let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if dist == 0.0 || !dist.is_finite() {
+            return None;
+        }
+        lyapunov += (dist / SEPARATION).ln();
+        let scale = SEPARATION / dist;
+        q = [p[0] + d[0] * scale, p[1] + d[1] * scale, p[2] + d[2] * scale];
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let lyapunov = lyapunov / (MEASURE as f64 * DT);
+    let speed = speed / MEASURE as f64;
+    let extent = (0..3).fold(0.0f64, |m, k| m.max(hi[k] - lo[k]));
+    if lyapunov < 0.01 || extent < 0.05 || speed < 1e-6 {
+        return None;
+    }
+    // Draw at a step that makes one point about a hundredth of the
+    // attractor's width, whatever speed this field happens to run at:
+    // the cloud has to read as a path, and a fixed step cannot for a
+    // system whose scale was drawn at random.
+    let dt = (extent * 0.01 / speed).clamp(1e-4, 0.25);
+    let mut out = Vec::with_capacity(POINTS);
+    for _ in 0..POINTS {
+        p = rk4(f, p, dt);
+        if !sane(&p) {
+            return None;
+        }
+        out.push(orient(p, Frame::ZUp));
+    }
+    Some(out)
+}
+
+/// The associated Legendre function P_l^m(x), by the standard
+/// three-term recurrence. The normalising constant is left off: for one
+/// (l, m) it is a single factor on the whole cloud, and the cloud is
+/// fitted to the box regardless.
+fn legendre(l: i32, m: i32, x: f64) -> f64 {
+    let m = m.abs();
+    if m > l {
+        return 0.0;
+    }
+    // P_m^m = (-1)^m (2m-1)!! (1-x²)^(m/2), built up one factor at a time.
+    let mut pmm = 1.0;
+    if m > 0 {
+        let root = ((1.0 - x) * (1.0 + x)).max(0.0).sqrt();
+        let mut odd = 1.0;
+        for _ in 0..m {
+            pmm *= -odd * root;
+            odd += 2.0;
+        }
+    }
+    if l == m {
+        return pmm;
+    }
+    let mut pmm1 = x * (2 * m + 1) as f64 * pmm;
+    if l == m + 1 {
+        return pmm1;
+    }
+    let mut p = 0.0;
+    for ll in (m + 2)..=l {
+        p = (((2 * ll - 1) as f64) * x * pmm1 - ((ll + m - 1) as f64) * pmm) / ((ll - m) as f64);
+        pmm = pmm1;
+        pmm1 = p;
+    }
+    p
+}
+
+/// A real spherical harmonic drawn as a balloon: the radius in each
+/// direction is |Y_l^m|, which is the shape a textbook draws for an
+/// atomic orbital. `l` is how many nodal lines there are in total, `m`
+/// how many of them run through the poles — negative `m` is the same
+/// shape turned, the sine partner of the cosine. The lobes meet at the
+/// origin because the harmonic is zero there, and that pinch is the
+/// picture.
+fn orbital(l: f64, m: f64) -> Vec<[f64; 3]> {
+    let l = l.round().clamp(0.0, 8.0) as i32;
+    let m = m.round().clamp(-f64::from(l), f64::from(l)) as i32;
+    grid(|lon, lat| {
+        // Latitude here, colatitude in the textbook: cos θ = sin(lat).
+        let p = legendre(l, m, lat.sin());
+        let phase = match m {
+            0 => 1.0,
+            m if m > 0 => (f64::from(m) * lon).cos(),
+            m => (f64::from(-m) * lon).sin(),
+        };
+        let r = (p * phase).abs();
+        orient([r * lon.cos() * lat.cos(), r * lon.sin() * lat.cos(), r * lat.sin()], Frame::ZUp)
+    })
+}
+
+/// Voronoi foam: scatter cell centres in a cube, then keep the points
+/// that cannot tell which centre is nearest — the walls between the
+/// cells, which are flat polygons meeting three at an edge and four at
+/// a corner, exactly as soap films do. Rejection-sampled with a soft
+/// acceptance on the difference between the two nearest distances, so
+/// the walls have thickness rather than being a surface a cloud cannot
+/// show.
+fn voronoi(cells: f64, seed: u64) -> Vec<[f64; 3]> {
+    const WALL: f64 = 0.035;
+    let count = cells.round().clamp(4.0, 64.0) as usize;
+    let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x0C7A_5EED);
+    let centres: Vec<[f64; 3]> =
+        (0..count).map(|_| [rng.f64() * 2.0 - 1.0, rng.f64() * 2.0 - 1.0, rng.f64() * 2.0 - 1.0]).collect();
+    let mut out = Vec::with_capacity(POINTS);
+    // Bounded: a pathological draw must not spin a loader thread forever.
+    for _ in 0..(POINTS * 200) {
+        if out.len() == POINTS {
+            break;
+        }
+        let p = [rng.f64() * 2.0 - 1.0, rng.f64() * 2.0 - 1.0, rng.f64() * 2.0 - 1.0];
+        let (mut first, mut second) = (f64::MAX, f64::MAX);
+        for c in &centres {
+            let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+            let d = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if d < first {
+                second = first;
+                first = d;
+            } else if d < second {
+                second = d;
+            }
+        }
+        let gap = second.sqrt() - first.sqrt();
+        if rng.f64() < (-(gap / WALL).powi(2)).exp() {
+            out.push(p);
+        }
+    }
+    // Whatever was found, repeated to fill the slot. Only a draw that
+    // accepted almost nothing gets here.
+    if out.is_empty() {
+        out.push([0.0; 3]);
+    }
+    let found = out.len();
+    while out.len() < POINTS {
+        out.push(out[out.len() % found]);
+    }
+    out
+}
+
 // --- Plumbing ---------------------------------------------------------
 
 /// The id and the settings of a spec, `id?key=value;key=value`. The
@@ -973,14 +1299,13 @@ mod tests {
     }
 
     /// A flow is a path: consecutive points are close. Too coarse a time
-    /// step would fail this before it failed the eye.
+    /// step would fail this before it failed the eye. The searched flow
+    /// is here too, because its fallback — a sphere of random points —
+    /// is exactly a scatter, so this is what says the search worked.
     #[test]
     fn flows_are_paths_not_scatter() {
-        for id in [
-            "thomas", "halvorsen", "dadras", "rossler", "four-wing", "chen", "sprott-b",
-            "nose-hoover", "arneodo", "burke-shaw", "chua", "hadley", "rucklidge",
-            "three-scroll", "rabinovich",
-        ] {
+        let named = FLOWS.iter().map(|(id, ..)| *id);
+        for id in named.chain(["quadratic-flow", "quadratic-flow?seed=5"]) {
             let pts = generate(id).unwrap();
             let longest = pts
                 .windows(2)
@@ -1038,6 +1363,120 @@ mod tests {
             }
             assert!(spread.iter().filter(|s| **s > 0.15).count() >= 2, "seed {seed}: {spread:?}");
         }
+    }
+
+
+    /// Every named flow is really chaotic, not a cycle that looks busy:
+    /// the largest Lyapunov exponent, by Benettin's method — follow a
+    /// neighbour, measure how fast it is pushed away, renormalise — is
+    /// positive for all of them. This is the test that catches a
+    /// parameter typed wrong, which no amount of looking at a still
+    /// would: a wrong constant usually lands on a limit cycle, and a
+    /// limit cycle fills its box and is a path just as an attractor is.
+    #[test]
+    fn every_named_flow_is_chaotic() {
+        for (id, f, start, dt, _) in FLOWS {
+            const SEPARATION: f64 = 1e-7;
+            let mut p = *start;
+            for _ in 0..20_000 {
+                p = rk4(f, p, *dt);
+            }
+            let mut q = [p[0] + SEPARATION, p[1], p[2]];
+            let mut sum = 0.0;
+            const STEPS: usize = 60_000;
+            for _ in 0..STEPS {
+                p = rk4(f, p, *dt);
+                q = rk4(f, q, *dt);
+                let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                assert!(dist > 0.0 && dist.is_finite(), "{id} lost its neighbour");
+                sum += (dist / SEPARATION).ln();
+                let k = SEPARATION / dist;
+                q = [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k];
+            }
+            let lyapunov = sum / (STEPS as f64 * dt);
+            // A low bar on purpose: Thomas' flow runs at about 0.007 and
+            // the Nosé–Hoover oscillator, which is conservative rather
+            // than dissipative, at about 0.004. What this catches is a
+            // constant that has landed the system on a cycle, where the
+            // exponent is zero to within the arithmetic — which is how
+            // Halvorsen at a = 1.89 and the Hadley circulation at
+            // a = 0.2 were caught, both of them cycles wearing an
+            // attractor's clothes.
+            assert!(lyapunov > 0.002, "{id} is not chaotic: largest exponent {lyapunov:.4}");
+            assert!(p.iter().all(|v| v.is_finite() && v.abs() < 1e4), "{id} ran away: {p:?}");
+        }
+    }
+
+    /// The searched flow finds a different attractor per seed, and one
+    /// that is bounded and has body — not a line, and not the sphere it
+    /// falls back to.
+    #[test]
+    fn the_flow_search_finds_a_different_attractor_per_seed() {
+        assert_ne!(generate("quadratic-flow?seed=1"), generate("quadratic-flow?seed=2"));
+        for seed in 1..=4 {
+            let pts = generate(&format!("quadratic-flow?seed={seed}")).unwrap();
+            assert_eq!(pts.len(), POINTS);
+            let step = pts
+                .windows(2)
+                .map(|w| {
+                    let d = [
+                        w[1].pos[0] - w[0].pos[0],
+                        w[1].pos[1] - w[0].pos[1],
+                        w[1].pos[2] - w[0].pos[2],
+                    ];
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                })
+                .fold(0.0f32, f32::max);
+            assert!(step < 0.2, "seed {seed} is a scatter, not a path: {step}");
+        }
+    }
+
+    /// A harmonic's knobs are its shape: a different (l, m) is a
+    /// different balloon, an order past the degree is clamped rather
+    /// than blank, and l = 0 is the sphere it should be.
+    #[test]
+    fn the_orbital_is_shaped_by_its_two_numbers() {
+        assert_ne!(generate("orbital?l=4"), generate("orbital"));
+        assert_ne!(generate("orbital?m=1"), generate("orbital"));
+        assert_ne!(generate("orbital?m=-2"), generate("orbital?m=2"));
+        assert_eq!(generate("orbital?l=3;m=9"), generate("orbital?l=3;m=3"));
+        let sphere = generate("orbital?l=0;m=0").unwrap();
+        let radius: Vec<f32> = sphere
+            .iter()
+            .map(|p| (p.pos[0] * p.pos[0] + p.pos[1] * p.pos[1] + p.pos[2] * p.pos[2]).sqrt())
+            .collect();
+        let lo = radius.iter().cloned().fold(f32::MAX, f32::min);
+        let hi = radius.iter().cloned().fold(0.0f32, f32::max);
+        assert!(hi - lo < 0.01, "l = 0 is not a sphere: {lo} to {hi}");
+    }
+
+    /// The three named plants are three plants, each its own, and the
+    /// angle knob bends them.
+    #[test]
+    fn the_named_plants_are_distinct() {
+        let fern = generate("fern").unwrap();
+        let coral = generate("coral").unwrap();
+        let tree = generate("tree").unwrap();
+        assert_ne!(fern, coral);
+        assert_ne!(coral, tree);
+        assert_ne!(tree, fern);
+        assert_ne!(generate("plant"), generate("tree"));
+        assert_ne!(generate("fern?angle=40"), generate("fern"));
+    }
+
+    /// The foam is deterministic, and both knobs move it.
+    #[test]
+    fn the_foam_answers_to_its_knobs() {
+        assert_eq!(generate("voronoi"), generate("voronoi"));
+        assert_ne!(generate("voronoi?seed=2"), generate("voronoi"));
+        assert_ne!(generate("voronoi?cells=8"), generate("voronoi"));
+        // Walls, not a solid: a point in the middle of a cell is far
+        // from every wall, so the cloud should leave the cell centres
+        // empty. Measured as the share of points whose two nearest
+        // centres are within a hair of each other.
+        let pts = generate("voronoi?cells=8;seed=3").unwrap();
+        assert_eq!(pts.len(), POINTS);
     }
 
     /// The diagonal frame stands (1,1,1) upright, and only rotates.
