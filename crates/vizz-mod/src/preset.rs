@@ -296,6 +296,10 @@ pub enum Family {
     Shape,
     /// A strange attractor.
     Attractor,
+    /// One of a shipped set of looks — the demo set's hundred and sixty,
+    /// whose source ends in " set". Its own shelf: filed under clouds
+    /// they were most of that shelf and none of what the word promised.
+    Set,
     /// Shipped with the app.
     Builtin,
     /// Saved before looks recorded what they were built on, or built on
@@ -306,10 +310,11 @@ pub enum Family {
 
 impl Family {
     /// Every family, in the order a grouped list shows them.
-    pub const ALL: [Family; 5] = [
+    pub const ALL: [Family; 6] = [
         Family::Cloud,
         Family::Shape,
         Family::Attractor,
+        Family::Set,
         Family::Builtin,
         Family::Unknown,
     ];
@@ -321,6 +326,7 @@ impl Family {
             Family::Cloud => "clouds",
             Family::Shape => "shapes",
             Family::Attractor => "attractors",
+            Family::Set => "demo set",
             Family::Builtin => "built in",
             Family::Unknown => "unsorted",
         }
@@ -343,6 +349,8 @@ pub fn family(source: Option<&str>) -> Family {
         "blank" => Family::Unknown,
         _ if is(ATTRACTORS) => Family::Attractor,
         _ if is(GENERATED) => Family::Shape,
+        // "electronic set", and whatever set ships next.
+        _ if s.to_ascii_lowercase().ends_with(" set") => Family::Set,
         _ => Family::Cloud,
     }
 }
@@ -1524,6 +1532,16 @@ mod family_tests {
     fn a_look_with_nothing_recorded_is_unsorted() {
         assert_eq!(family(None), Family::Unknown);
         assert_eq!(family(Some("blank")), Family::Unknown);
+    }
+
+    /// A shipped set is its own shelf, whatever it is called, and a
+    /// scan whose name happens to end in the word is not.
+    #[test]
+    fn a_shipped_set_is_its_own_family() {
+        assert_eq!(family(Some("electronic set")), Family::Set);
+        assert_eq!(family(Some("Ambient Set")), Family::Set);
+        assert_eq!(family(Some("sunset")), Family::Cloud);
+        assert_eq!(Family::Set.label(), "demo set");
     }
 
     /// A built-in is a built-in whatever is on disk.

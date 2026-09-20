@@ -1507,6 +1507,7 @@ fn family_tint(family: vizz_mod::preset::Family) -> egui::Color32 {
         Family::Cloud => egui::Color32::from_rgb(96, 186, 158),
         Family::Shape => egui::Color32::from_rgb(150, 134, 214),
         Family::Attractor => egui::Color32::from_rgb(206, 114, 168),
+        Family::Set => egui::Color32::from_rgb(214, 164, 92),
         Family::Builtin => egui::Color32::from_rgb(126, 134, 150),
         Family::Unknown => egui::Color32::from_rgb(86, 92, 106),
     }
@@ -4352,7 +4353,7 @@ mod tests {
         ]
     }
 
-    /// The other two families, small enough to both fit.
+    /// The other three families, small enough to all fit.
     fn a_shipped_library() -> Vec<crate::PresetEntry> {
         vec![
             crate::PresetEntry {
@@ -4361,6 +4362,7 @@ mod tests {
                 about: Some("opener".into()),
                 source: Some("built in".into()),
             },
+            look("Drop", "electronic set"),
             crate::PresetEntry::from("Ancient look"),
         ]
     }
@@ -4441,7 +4443,7 @@ mod tests {
             )
         });
         let text = shipped.text();
-        for heading in ["built in", "unsorted"] {
+        for heading in ["demo set", "built in", "unsorted"] {
             assert!(text.contains(heading), "no '{heading}' heading: {text}");
         }
     }

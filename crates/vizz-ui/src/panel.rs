@@ -2997,7 +2997,7 @@ const SECTIONS: &[SectionSpec] = &[
             ),
             (
                 &["shape"],
-                "form",
+                "shape",
                 "which shape the points take, and the morph between two of them",
             ),
             (

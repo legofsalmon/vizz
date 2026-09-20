@@ -823,7 +823,7 @@ and the app carries on, filling it back in as you play.
 
 Looks are also **grouped by what they were built on**, which each preset
 records when it is saved — the cloud slot's own name for a cloud look, the
-shape's name otherwise. Those sort into four families, each with its own
+shape's name otherwise. Those sort into five families, each with its own
 colour on the tile's leading edge and as the heading in front of its
 group:
 
@@ -832,6 +832,7 @@ group:
 | clouds | a loaded scan, mesh or live stream |
 | shapes | sphere, torus, knot, grid, shell |
 | attractors | Lorenz, Aizawa |
+| demo set | the shipped set's looks, whose source ends in " set" |
 | built in | the looks that ship with the app |
 
 Anything saved before looks recorded a source lands in **unsorted**. The
