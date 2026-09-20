@@ -432,6 +432,7 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         clock_midi: false,
         clock_ticking: false,
         reacting: false,
+        tap_count: 0,
     };
     // A grid part-way through a blend, so the preview shows the pad fill
     // and the two highlights doing something rather than sixteen blanks.

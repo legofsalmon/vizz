@@ -248,6 +248,7 @@ fn main() {
         "/video/depth",
         "/video/relief",
         "/record/active",
+        "/tempo/tap",
         "/punch/strobe_div",
         "/gravity/fire",
         "/gravity/time",
@@ -611,6 +612,7 @@ fn audio_view() -> vizz_ui::AudioView {
         clock_midi: false,
         clock_ticking: false,
         reacting: false,
+        tap_count: 0,
     }
 }
 

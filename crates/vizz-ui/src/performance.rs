@@ -2146,9 +2146,11 @@ fn status_strip(
 
             if ui
                 .add(egui::Button::new(
-                    egui::RichText::new("tap").size(13.0).color(INK),
+                    egui::RichText::new(crate::panel::tap_label(state.audio.tap_count))
+                        .size(13.0)
+                        .color(INK),
                 ))
-                .on_hover_text("tap the beat — three taps set the tempo and switch auto off")
+                .on_hover_text("tap the beat — three taps set the tempo and switch auto off  ·  T on the keyboard")
                 .clicked()
             {
                 actions.tapped = true;

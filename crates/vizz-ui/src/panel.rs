@@ -399,6 +399,8 @@ pub struct AudioView {
     /// The three "react" shapes are all attached — see
     /// [`vizz_mod::shapes::reacting`].
     pub reacting: bool,
+    /// Taps in the open series, for the button to count them off.
+    pub tap_count: usize,
 }
 
 /// Edits the panel wants applied to the audio settings, collected here
@@ -527,6 +529,17 @@ pub fn draw(
     actions
 }
 
+/// What the tap button says: the count while a series is open, so the
+/// first two taps — which used to produce nothing at all — are seen to
+/// land, and plain "tap" otherwise.
+pub(crate) fn tap_label(count: usize) -> String {
+    match count {
+        1 => "tap 1/3".into(),
+        2 => "tap 2/3".into(),
+        _ => "tap".into(),
+    }
+}
+
 /// The always-visible line: health, outputs, audio, tempo.
 ///
 /// Everything here is something you would want to see without opening
@@ -582,7 +595,7 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         }
         // Same reason: 99.5 and 128.0 are different widths otherwise.
         ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
-        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
+        if ui.small_button(tap_label(state.audio.tap_count)).on_hover_text("tap the beat — three taps set the tempo and switch auto off  ·  T on the keyboard").clicked() {
             actions.audio.tapped = true;
         }
         // The way to the screen you play from, and to the list of keys,
@@ -1228,6 +1241,55 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     });
 }
 
+/// The beat clock's controls: what is detected, whether it drives the
+/// clock, whether MIDI clock does, and tap. Its own row so it is drawn
+/// with or without an audio input.
+fn tempo_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let a = &state.audio;
+    ui.horizontal(|ui| {
+        if a.connected {
+            ui.small(format!(
+                "detected {:.1} bpm ({:.0}% sure)",
+                a.detected_bpm,
+                a.confidence * 100.0
+            ));
+        }
+        let mut auto = state.audio_auto_bpm;
+        if ui
+            .checkbox(&mut auto, "auto")
+            .on_hover_text("let detected tempo drive the beat clock")
+            .changed()
+        {
+            actions.audio.auto_bpm = Some(auto);
+        }
+        let mut follow = a.clock_midi;
+        if ui
+            .checkbox(&mut follow, "midi clock")
+            .on_hover_text(
+                "follow MIDI clock from the controller — tapping or auto \
+                 switches back to the internal clock",
+            )
+            .changed()
+        {
+            actions.audio.midi_clock = Some(follow);
+        }
+        if a.clock_midi && !a.clock_ticking {
+            // Selected but silent is the state worth a word: the clock
+            // is running free on its last tempo, not following anything.
+            ui.small(
+                egui::RichText::new("no ticks")
+                    .color(WARN),
+            );
+        }
+        // Same words as the status strip's tap: three surfaces telling
+        // three different stories about one behaviour reads as three
+        // different behaviours.
+        if ui.small_button(tap_label(state.audio.tap_count)).on_hover_text("tap the beat — three taps set the tempo and switch auto off  ·  T on the keyboard").clicked() {
+            actions.audio.tapped = true;
+        }
+    });
+}
+
 fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let a = &state.audio;
     // No bold "Audio" heading — the collapsing header the user just
@@ -1235,6 +1297,11 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     // theirs. The status dot lives on the input row instead.
     device_picker(ui, state, actions);
 
+    // The clock's controls, before the bands: they used to sit under the
+    // early return below, so with no interface plugged in — or after one
+    // was unplugged — the midi clock switch and auto were undrawn, while
+    // the stage's bpm hover pointed straight at them.
+    tempo_row(ui, state, actions);
     if !a.connected {
         ui.small("pick an input above, or start with --audio-device");
         return;
@@ -1351,46 +1418,6 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         actions.audio.bands = Some(bands);
     }
 
-    ui.horizontal(|ui| {
-        ui.small(format!(
-            "detected {:.1} bpm ({:.0}% sure)",
-            a.detected_bpm,
-            a.confidence * 100.0
-        ));
-        let mut auto = state.audio_auto_bpm;
-        if ui
-            .checkbox(&mut auto, "auto")
-            .on_hover_text("let detected tempo drive the beat clock")
-            .changed()
-        {
-            actions.audio.auto_bpm = Some(auto);
-        }
-        let mut follow = a.clock_midi;
-        if ui
-            .checkbox(&mut follow, "midi clock")
-            .on_hover_text(
-                "follow MIDI clock from the controller — tapping or auto \
-                 switches back to the internal clock",
-            )
-            .changed()
-        {
-            actions.audio.midi_clock = Some(follow);
-        }
-        if a.clock_midi && !a.clock_ticking {
-            // Selected but silent is the state worth a word: the clock
-            // is running free on its last tempo, not following anything.
-            ui.small(
-                egui::RichText::new("no ticks")
-                    .color(WARN),
-            );
-        }
-        // Same words as the status strip's tap: three surfaces telling
-        // three different stories about one behaviour reads as three
-        // different behaviours.
-        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
-            actions.audio.tapped = true;
-        }
-    });
     if a.dropped > 0 {
         ui.small(format!("{} samples dropped", a.dropped));
     }

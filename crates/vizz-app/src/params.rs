@@ -99,6 +99,7 @@ pub struct AppParams {
     pub punch_strobe: ParamId,
     pub punch_strobe_div: ParamId,
     pub record_active: ParamId,
+    pub tempo_tap: ParamId,
     pub palette: ParamId,
     pub color_spread: ParamId,
     pub color_drive: ParamId,
@@ -291,6 +292,7 @@ const HELP: &[(&str, &str)] = &[
     ("/deck/select", "turn to page 1–24 on change; 0 = none"),
     ("/column/fire", "fire column 1–16 — the scene pad and the gravity pad of that number, together"),
     ("/record/active", "record the master to an image sequence; 1 starts, 0 stops"),
+    ("/tempo/tap", "tap the beat: each rise is one tap, and three set the tempo"),
     ("/master/dim", "master fader"),
 ];
 
@@ -438,6 +440,16 @@ impl AppParams {
         let record_active = b.add(
             ParamDef::new("/record/active", 0.0, 1.0, 0.0)
                 .labels(&["off", "rec"])
+                .transport(),
+        );
+        // Tap tempo as a parameter, so a MIDI note, an OSC message and
+        // the T key all tap through one door — it was the one live
+        // control with a single input route, the mouse. Transport rather
+        // than gesture: an LFO wired to it would be nonsense, and a
+        // preset must never tap.
+        let tempo_tap = b.add(
+            ParamDef::new("/tempo/tap", 0.0, 1.0, 0.0)
+                .labels(&["rest", "tap"])
                 .transport(),
         );
         // Colour. Palette 0 is the original HSV behaviour, so the defaults
@@ -848,6 +860,7 @@ impl AppParams {
             punch_strobe,
             punch_strobe_div,
             record_active,
+            tempo_tap,
             zoom,
             spin,
             mirror,
@@ -986,6 +999,8 @@ mod tests {
                 "/punch/strobe",
                 "/punch/strobe_div",
                 "/record/active",
+                // Tapping is a moment, not a look.
+                "/tempo/tap",
                 // The deck transport. A captured deck select would turn
                 // the page out from under the pad that was just pressed.
                 "/deck/select",

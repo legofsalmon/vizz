@@ -73,6 +73,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
                 ("G", "modulation canvas"),
                 ("P", "performance layout"),
                 ("V", "watch the output — the controls stand aside (performance layout)"),
+                ("T", "tap the tempo — three taps set it"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
                 ("F11", "fullscreen"),
@@ -406,6 +407,9 @@ pub struct Gui {
     /// The performance layout was just entered or left, so the app can
     /// remember which screen to open on. Taken by the app.
     pub face_changed: bool,
+    /// T was pressed: one tap of the tempo. Taken by the app, which
+    /// raises /tempo/tap exactly as a note would.
+    pub tap_key: bool,
     /// What a key is holding down, per punch, and whether shift latched
     /// it. A latched punch survives the key coming up and the window
     /// losing focus; the next plain press of its key releases it, as a
@@ -452,6 +456,7 @@ impl Gui {
             welcome: false,
             welcome_dismissed: false,
             face_changed: false,
+            tap_key: false,
             punch_held: [None; 5],
             pointer: PointerWatch::default(),
             graph_view: graph_view::GraphView::default(),
@@ -625,6 +630,10 @@ impl Gui {
                 // else — used to silently kill both.
                 winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("g") => {
                     self.graph_open = !self.graph_open;
+                    return true;
+                }
+                winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("t") => {
+                    self.tap_key = true;
                     return true;
                 }
                 winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("p") => {
@@ -1457,6 +1466,7 @@ mod tests {
                 clock_midi: false,
                 clock_ticking: false,
                 reacting: false,
+                tap_count: 0,
             },
             video: None,
             live_cloud: None,

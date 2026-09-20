@@ -1208,6 +1208,10 @@ impl App {
         {
             log::warn!("could not remember that the welcome was seen: {e:#}");
         }
+        // T taps through the parameter, like a note would.
+        if std::mem::take(&mut state.gui.tap_key) {
+            self.params.registry.set(self.params.tempo_tap, 1.0);
+        }
         // The punch keys write their parameters exactly as a MIDI note or
         // the punch button would — one parameter, however it is played.
         for (punch, engaged) in state.gui.punch_keys.drain(..) {
@@ -1358,6 +1362,7 @@ impl App {
                         connected: st.connected(),
                         device: self.engine.audio.device_name.clone(),
                         reacting: vizz_mod::shapes::reacting(&self.engine.modulation.graph),
+                        tap_count: self.tap.pending(),
                         bands: std::array::from_fn(|i| st.band(i)),
                         raw: std::array::from_fn(|i| st.raw(i)),
                         raw_peak: std::array::from_fn(|i| st.raw_peak(i)),
@@ -1776,6 +1781,26 @@ impl App {
         // parameter is the source of truth: up with no recorder running
         // starts one, down with one running stops it — which is what lets
         // OSC, MIDI and both buttons share one control.
+        // Tap tempo as a parameter: a MIDI note, an OSC message or the T
+        // key raises it, and each rise is one tap. Reset here so the next
+        // press is a fresh edge — a tap is a moment, like a punch — and
+        // applied through the same path as the buttons, so it switches
+        // auto off and saves the clock source exactly as they do.
+        if self.params.registry.target(self.params.tempo_tap) >= 0.5 {
+            self.params.registry.set(self.params.tempo_tap, 0.0);
+            let tap = vizz_ui::PanelActions {
+                audio: vizz_ui::AudioEdits { tapped: true, ..Default::default() },
+                ..Default::default()
+            };
+            apply_audio_actions(
+                &tap,
+                &mut self.engine,
+                &mut self.audio_bands,
+                &mut self.audio_auto_bpm,
+                &mut self.tap,
+                &mut self.clock_source,
+            );
+        }
         let want_recording = self.params.registry.target(self.params.record_active) >= 0.5;
         match (&mut self.recorder, want_recording) {
             (slot @ None, true) => {

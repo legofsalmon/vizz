@@ -198,6 +198,21 @@ impl TapTempo {
         (MIN_BPM..=MAX_BPM).contains(&bpm).then_some(bpm)
     }
 
+    /// Taps in the open series — the ones that will count toward the
+    /// next tempo. Zero once the series has timed out, so a button can
+    /// read "tap 2/3" while a hand is tapping and "tap" again after it
+    /// has stopped: the first two taps used to produce nothing at all.
+    pub fn pending(&self) -> usize {
+        self.pending_at(Instant::now())
+    }
+
+    pub fn pending_at(&self, now: Instant) -> usize {
+        match self.taps.last() {
+            Some(&last) if now.duration_since(last) <= TAP_TIMEOUT => self.taps.len(),
+            _ => 0,
+        }
+    }
+
     pub fn clear(&mut self) {
         self.taps.clear();
     }

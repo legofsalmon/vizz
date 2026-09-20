@@ -725,6 +725,7 @@ Tab        show or hide the control panel
 G          modulation canvas
 P          performance layout
 V          watch the output — the controls stand aside (performance layout)
+T          tap the tempo — three taps set it
 /          filter the parameter list
 ?          the shortcut list, on screen
 F11        fullscreen on the window's monitor
@@ -1614,6 +1615,7 @@ control input can never crash the renderer.
 | `/deck/select` | 0 – 24 | 0 | turn to page 1–24 on change; 0 = none |
 | `/column/fire` | 0 – 16 | 0 | fire column 1–16 — the scene pad and the gravity pad of that number, together |
 | `/record/active` | 0 – 1 | 0 | record the master to an image sequence; 1 starts, 0 stops |
+| `/tempo/tap` | 0 – 1 | 0 | tap the beat: each rise is one tap, and three set the tempo |
 | `/master/dim` | 0 – 1 | 1 | master fader |
 
 The table is checked against the parameter registry by a test
