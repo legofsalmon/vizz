@@ -311,20 +311,32 @@
           frames, <em>reveal</em> opens the folder, and a countdown can be
           cancelled from the stage. Bands, the recording setup and the
           screen you left on survive a restart.</li>
-        <li><strong>Twenty-nine clouds from equations.</strong> The clouds
+        <li><strong>Forty-four clouds from equations.</strong> The clouds
           section's <em>generate…</em> menu, or <code>--cloud gen:thomas</code>,
-          fills a slot from a formula instead of a file: fifteen strange
-          attractors — Thomas, Halvorsen, Dadras, Rössler, four-wing, Chen,
-          Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua, Hadley,
-          Rucklidge, three-scroll, Rabinovich–Fabrikant — traced in time
-          order so the cloud crawls along itself; the Clifford and de Jong
-          maps lifted into depth; a Gielis supershape; a Lissajous knot and
-          a torus knot; the Hopf fibration; Chladni sand; an L-system
-          plant; the Sierpinski tetrahedron, the Menger sponge and the
-          Mandelbulb; the Mandelbrot and a Julia set as reliefs. Each is a
-          cloud like any other once made — chosen by name, crossed to with
-          a scene change, captured as a look's source — and comes back on
-          launch.</li>
+          fills a slot from a formula instead of a file: twenty-three
+          strange attractors — Thomas, Halvorsen, Dadras, Rössler,
+          four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw,
+          Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant,
+          Aizawa, Newton–Leipnik, Sakarya, the Rikitake dynamo,
+          Shimizu–Morioka, the finance system, Coullet, Genesio–Tesi —
+          traced in time order so the cloud crawls along itself; the
+          Clifford and de Jong maps lifted into depth; a Gielis supershape;
+          a real spherical harmonic drawn as an orbital; a Lissajous knot
+          and a torus knot; the Hopf fibration; Chladni sand; four
+          L-system plants; a Voronoi foam; the Sierpinski tetrahedron, the
+          Menger sponge and the Mandelbulb; the Mandelbrot and a Julia set
+          as reliefs. Each is a cloud like any other once made — chosen by
+          name, crossed to with a scene change, captured as a look's source
+          — and comes back on launch.</li>
+        <li><strong>Two attractors that were not attractors.</strong> Every
+          named flow is now tested for chaos rather than for looks: a test
+          integrates all twenty-three and measures the largest Lyapunov
+          exponent, following a neighbour and renormalising. Two failed.
+          Halvorsen at <em>a</em> = 1.89 and the Hadley circulation at
+          <em>a</em> = 0.2 had both fallen onto limit cycles — which fill
+          the same box, crawl along themselves, and look in any still
+          frame exactly like attractors. They are back on 1.4 and Lorenz'
+          own 0.25, and both are chaotic again.</li>
         <li><strong>Wind on every form.</strong> <code>/shape/wind</code>
           blows through the field — an Arnold–Beltrami–Childress flow, a
           steady solution of Euler's equations, divergence-free and chaotic
@@ -338,8 +350,11 @@
           one and its row opens, and the spec carries what you set —
           <code>gen:torus-knot?p=2;q=5</code>. <strong>quadratic</strong> is
           Sprott's search for a chaotic quadratic map, and its one knob is
-          the seed: <em>roll</em> is an attractor nobody has seen.</li>
-        <li><strong>Six clouds that are alive.</strong> <em>simulate…</em>
+          the seed: <em>roll</em> is an attractor nobody has seen.
+          <strong>quadratic flow</strong> is the same search with an
+          integrator inside it — random quadratic vector fields rather than
+          maps, which give smooth ribbons where the maps give dust.</li>
+        <li><strong>Ten clouds that are alive.</strong> <em>simulate…</em>
           beside <em>receive</em> runs a simulation as the live cloud,
           driven by the audio: <strong>fluid</strong>, Stam's stable solver
           for the Navier–Stokes equations on an endless sheet, with
@@ -348,9 +363,25 @@
           grow, split and heal; <strong>flock</strong>, four thousand boids
           drawing streaks; <strong>wind</strong>, tracers in curl noise;
           <strong>kuramoto</strong>, coupled oscillators that a loud passage
-          locks into a ribbon; and <strong>life</strong>, a three-dimensional
-          cellular automaton. The one running is remembered across
+          locks into a ribbon; <strong>life</strong>, a three-dimensional
+          cellular automaton; <strong>orbits</strong>, five hundred bodies
+          pulling on each other round a heavy centre, each drawing its last
+          two seconds as an arc; <strong>pendulum</strong>, four thousand
+          double pendulums hung in a sheet that swings as one surface,
+          creases, then tears; <strong>smoke</strong>, the fluid solver in
+          three dimensions with heat, a plume that rises and rolls up; and
+          <strong>liquid</strong>, four thousand particles of water in a box
+          that tilts, gravity swinging round once a bar so it pours from
+          corner to corner. The one running is remembered across
           launches.</li>
+        <li><strong>The automaton grows a third field.</strong> A rule is
+          <em>survive/born/states</em> now. Past two states a cell that
+          fails to survive counts down instead of dying, one state a
+          generation, and only the top of the ramp counts as a live
+          neighbour — the ash left behind is drawn dimmer than the front,
+          and turns a flat rule into a solid that grows, hollows and
+          crusts. <code>4/4/5</code> is a spiking crystal,
+          <code>4-7/6-8/10</code> boils.</li>
       </ul>
     </div>
 

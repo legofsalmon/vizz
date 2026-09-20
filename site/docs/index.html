@@ -649,20 +649,35 @@ Typed clouds persist as <code>text:WORD</code> and come back after a restart.</p
 
 <h3>From an equation</h3>
 <p>The clouds section's <em>generate…</em> menu, or <code>--cloud gen:thomas</code>,
-fills the next slot from a formula: fifteen strange attractors (Thomas,
+fills the next slot from a formula: twenty-three strange attractors (Thomas,
 Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo,
-Burke–Shaw, Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant), the
-Clifford and de Jong maps lifted into depth, a Gielis supershape, a
-harmonic-rippled sphere, a Lissajous knot, a torus knot, the Hopf fibration,
-Chladni sand, an L-system plant, the Sierpinski tetrahedron, the Menger
-sponge, the Mandelbulb, and the Mandelbrot and a Julia set as reliefs. Flows
-are traced in time order so the cloud crawls along itself. A generated cloud
-persists as <code>gen:name</code> and is remade on launch. Some take knobs —
-the supershape's exponents, a knot's windings, the plant's rule, the Julia
+Burke–Shaw, Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant,
+Aizawa, Newton–Leipnik, Sakarya, Rikitake, Shimizu–Morioka, finance, Coullet,
+Genesio–Tesi), the Clifford and de Jong maps lifted into depth, a Gielis
+supershape, a harmonic-rippled sphere, a real spherical harmonic as an
+orbital, a Lissajous knot, a torus knot, the Hopf fibration, Chladni sand,
+four L-system plants (a generic one, a fern, a coral and a tree), a Voronoi
+foam, the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, and the
+Mandelbrot and a Julia set as reliefs. Flows are traced in time order so the
+cloud crawls along itself. A generated cloud persists as <code>gen:name</code>
+and is remade on launch. Some take knobs — the supershape's exponents, a
+knot's windings, the orbital's degree and order, the plant's rule, the Julia
 constant — which the menu opens a row for and writes into the spec:
-<code>gen:torus-knot?p=2;q=5</code>. <strong>quadratic</strong> is Sprott's
-search for a chaotic quadratic map, and its knob is the seed: <em>roll</em>
-is a new attractor.</p>
+<code>gen:torus-knot?p=2;q=5</code>, <code>gen:orbital?l=5;m=3</code>.</p>
+
+<p>Two are searches. <strong>quadratic</strong> is Sprott's: random
+three-dimensional quadratic maps until one is chaotic, judged by a positive
+Lyapunov exponent. <strong>quadratic flow</strong> is the same search with an
+integrator inside it, over vector fields rather than maps, which gives smooth
+ribbons where the map gives dust. The knob is the seed: <em>roll</em> is an
+attractor nobody has seen, and the same seed is the same attractor on every
+machine.</p>
+
+<p>Every named flow is tested for chaos rather than for looks: a test
+integrates all twenty-three and measures the largest Lyapunov exponent. Two
+of the shipped ones failed it — Halvorsen and the Hadley circulation were on
+limit cycles, which fill the same box and look, in any still frame, exactly
+like attractors — and have been put back on their chaotic constants.</p>
 
 <h3>From an image</h3>
 <p>Drag a <code>.png</code> or <code>.jpg</code> on. Position comes from the pixel
@@ -683,7 +698,9 @@ the other machine's.</p>
 
 <h3>From a simulation</h3>
 <pre><code>vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
-vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion</code></pre>
+vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
+vizz --live-cloud sim:smoke       # the same solver in three dimensions, with heat
+vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts</code></pre>
 
 <p>A simulation is a live cloud that needs no sender: it runs on its own thread
 at the frame rate and publishes through the stream's path. The panel's
@@ -700,7 +717,21 @@ field, a fluid with no solve; the kick is a gust. <strong>kuramoto</strong> is
 Kuramoto's coupled oscillators on a torus — a loud passage locks them into a
 ribbon, quiet frees them. <strong>life</strong> is a three-dimensional cellular
 automaton in the Clouds rule, slow masses that keep reshaping; the kick drops a
-seed.</p>
+seed. <strong>orbits</strong> is five hundred bodies pulling on each other
+round a heavy centre, each drawing its last two seconds as an arc — the
+loudness is the clock, the kick a shockwave. <strong>pendulum</strong> hangs
+four thousand double pendulums in a sheet from neighbouring angles: it swings
+as one surface, creases, then tears. <strong>smoke</strong> is the fluid
+solver in three dimensions with heat, a plume that rises and rolls up.
+<strong>liquid</strong> is four thousand particles of water in a box that
+tilts, gravity swinging round once a bar so it pours corner to corner.</p>
+
+<p>The automaton's rule is a knob, written <em>survive/born/states</em>. Past
+two states a cell that fails to survive counts down instead of dying, and only
+the top of the ramp counts as a neighbour — the ash left behind turns a flat
+rule into a solid that grows and crusts. <code>4/4/5</code> is a spiking
+crystal, <code>4-7/6-8/10</code> boils, <code>9-26/5-7,12-13,15/5</code> is
+Amoeba.</p>
 
 <h3>Showing and crossing between them</h3>
 

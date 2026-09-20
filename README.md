@@ -306,6 +306,8 @@ work and are tested; drawing the received frame is the next step.
 ```sh
 vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
 vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
+vizz --live-cloud sim:smoke       # the same solver in three dimensions, with heat
+vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
 ```
 
 A simulation is a live cloud that needs no sender: it runs on its own
@@ -358,9 +360,65 @@ With no audio the coupling breathes across the threshold on its own.
 seed grows into slow, cloud-like masses that keep reshaping, a generation
 every three frames. A kick drops a new seed; an automaton that dies out or
 floods the lattice is reseeded, because a dead automaton is a blank slot
-with a name on it. The rule is a knob — `sim:life?rule=4/4` is Bays'
-original 3D Life, `5-7/6` a slow builder — written as *survive/born* in
-neighbour counts and ranges.
+with a name on it.
+
+The rule is a knob, written as *survive/born/states* in neighbour counts
+and ranges. The third field is the interesting one. With two states a cell
+is alive or dead; with more, a cell that fails to survive counts *down*
+through the intermediate states, one a generation, and only the top state
+counts as a live neighbour to anybody. Those counting-down cells are the
+ash a growing front leaves behind it, drawn dimmer than the front, and
+they turn a flat rule into a solid that grows, hollows and crusts.
+
+```sh
+vizz --live-cloud 'sim:life?rule=4/4/5'              # Bays' 4-4-5, a spiking crystal
+vizz --live-cloud 'sim:life?rule=4-7/6-8/10'         # Pyroclastic, which boils
+vizz --live-cloud 'sim:life?rule=9-26/5-7,12-13,15/5'  # Amoeba
+vizz --live-cloud 'sim:life?rule=2,6,9/4,6,8-9/10'   # a builder
+```
+
+**orbits** is gravity by direct summation: five hundred bodies, every one
+of the hundred and thirty thousand pairs of them summed honestly every
+frame, round a centre six times their total mass. They start as a disc on
+near-circular orbits — the one arrangement that holds together long enough
+to watch — and then do to each other whatever they do. Each keeps its last
+two seconds as an arc, so the cloud is orbits rather than dots. Plummer
+softening, because without it one close pass sends a body away at the
+speed of arithmetic, and a spring past nine tenths of the box, because
+nothing outside it can be seen. The loudness is the clock, a kick is a
+shockwave out of the centre and a snare knocks the disc out of its plane.
+
+**pendulum** hangs four thousand double pendulums in a sheet, each started
+a hair from its neighbour. One double pendulum is the standard
+demonstration that four numbers can be unpredictable; four thousand of
+them are the demonstration of *why*. For the first second they swing as
+one surface, then it creases, then it tears, and within ten seconds two
+that started indistinguishable point opposite ways. Nothing here is
+random: the same start gives the same tearing every time. The loudness is
+gravity — quiet is the moon, loud is a heavy planet — and a kick hangs the
+sheet again from a new place, so the tearing can be watched more than once.
+
+**smoke** is the fluid solver again in three dimensions, with heat. Thirty
+-two cells a side, where the sheet has a hundred and twenty-eight, because
+a cube of cells costs thirty-two times what a square of the same side
+does; the detail comes from the sixty-five thousand tracers, two per cell,
+drawing filaments finer than the field that carries them. Buoyancy is
+Boussinesq — proportional to how much hotter a cell is than the box's
+average, so the net force is zero and a periodic box does not accelerate
+away — and what rises is a plume with a mushroom on it. A vent wanders the
+floor on its own; a kick is a blast somewhere else, a snare a shove
+sideways, the highs the roughness.
+
+**liquid** is smoothed-particle hydrodynamics — four thousand particles of
+water in a box, each drawn as a small cluster of points — solved by
+position-based fluids (Macklin & Müller, 2013) rather than the textbook
+weakly-compressible form. The textbook form is a spring system, and a
+spring stiff enough to look like water needs a time step far finer than a
+frame. The position-based solver works on the positions directly,
+projecting them three times a frame onto the constraint that the density
+is right, and is stable at any step at the price of looking slightly soft.
+Gravity tilts and swings round once a bar, so the liquid pours from corner
+to corner in time with the music; a kick thumps it through the floor.
 
 What a simulation gets from the app is deliberately narrow — the four
 bands, the loudness, where the bar is — because it is meant to be a
@@ -1288,15 +1346,19 @@ in the settings and re-rasterize deterministically on launch.
 
 **Or make one from an equation.** The clouds section's *generate…* menu,
 or `--cloud gen:<name>`, fills the next slot from a formula rather than a
-file: fifteen strange attractors (Thomas, Halvorsen, Dadras, Rössler,
-four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's
-circuit, the Hadley circulation, Rucklidge, the three-scroll system,
-Rabinovich–Fabrikant), the Clifford and de Jong maps lifted into depth by
-delay embedding, a Gielis supershape, a harmonic-rippled sphere, a 3:4:7
-Lissajous knot, a (3,7) torus knot, the Hopf fibration as nested tori of
-linked circles, Chladni sand on a vibrating plate, an L-system plant, the
-Sierpinski tetrahedron, the Menger sponge, the power-eight Mandelbulb's
-surface, and the Mandelbrot and a Julia set as reliefs.
+file: twenty-three strange attractors (Thomas, Halvorsen, Dadras,
+Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw,
+Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll
+system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the
+Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet and
+Genesio–Tesi), the Clifford and de Jong maps lifted into depth by delay
+embedding, a Gielis supershape, a harmonic-rippled sphere, a real
+spherical harmonic drawn as an orbital, a 3:4:7 Lissajous knot, a (3,7)
+torus knot, the Hopf fibration as nested tori of linked circles, Chladni
+sand on a vibrating plate, four L-system plants — a generic one, a fern,
+a coral and a tree — a Voronoi foam, the Sierpinski tetrahedron, the
+Menger sponge, the power-eight Mandelbulb's surface, and the Mandelbrot
+and a Julia set as reliefs.
 Each is made once on the CPU — flows in time order, so the cloud crawls
 along itself; surfaces in scan order; fractals by the chaos game or by
 marching rays — and then it is a cloud like any other: chosen by name,
@@ -1307,14 +1369,30 @@ fractal's search never delays the first frame.
 
 **Some take knobs.** Picking one of those from the menu opens its row —
 the supershape's fold and exponents, the knot's windings, the Chladni
-mode numbers, the Julia constant, the plant's rule and angle — and the
-row's *make* button writes them into the spec: `gen:plant?rule=F[+X]F;angle=22`,
-`gen:torus-knot?p=2;q=5`. Settings left at their defaults are left out, so
-the saved line stays short. **quadratic** is Sprott's search — random
-three-dimensional quadratic maps drawn on his coefficient grid until one
-is chaotic, judged by a positive Lyapunov exponent — and its one knob is
-the seed: *roll* is a new attractor nobody has seen, and
-`gen:quadratic?seed=7` is the same one on every machine.
+mode numbers, the orbital's degree and order, the Julia constant, the
+plant's rule and angle, the foam's cell count — and the row's *make*
+button writes them into the spec: `gen:plant?rule=F[+X]F;angle=22`,
+`gen:torus-knot?p=2;q=5`, `gen:orbital?l=5;m=3`. Settings left at their
+defaults are left out, so the saved line stays short.
+
+**Two of them are searches.** **quadratic** is Sprott's: random
+three-dimensional quadratic *maps* drawn on his coefficient grid until
+one is chaotic, judged by a positive Lyapunov exponent. **quadratic
+flow** is the same search with an integrator inside it — random quadratic
+*vector fields*, which is the smallest thing that can be chaotic at all,
+and gives smooth ribbons where the map gives dust. Perhaps one draw in a
+few hundred is a strange attractor; the rest run away to infinity or fall
+onto a point. The one knob is the seed: *roll* is an attractor nobody has
+seen, and `gen:quadratic?seed=7` is the same one on every machine.
+
+**Every named flow is tested for chaos, not for looks.** A test
+integrates all twenty-three and measures the largest Lyapunov exponent by
+following a neighbour and renormalising. It earns its keep: two of the
+shipped attractors turned out to have constants that put them on a limit
+cycle — Halvorsen at *a* = 1.89 and the Hadley circulation at *a* = 0.2 —
+which fills the same box, crawls along itself, and looks from any still
+frame exactly like an attractor. They are now at 1.4 and Lorenz' own
+0.25.
 
 `/shape/mode 7` shows a **cloud**. Which one is chosen by clicking its
 name in the panel's clouds section — the names are there, and a slot
