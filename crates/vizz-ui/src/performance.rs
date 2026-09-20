@@ -1996,7 +1996,10 @@ fn status_strip(
                      the punch, scene and preset rows come back when you switch it off",
                 )
                 .clicked()
-                || ui.ctx().input(|i| i.key_pressed(egui::Key::V))
+                // Not while typing: a "v" in a pad's new name used to hide
+                // the rename row mid-word.
+                || (!ui.ctx().egui_wants_keyboard_input()
+                    && ui.ctx().input(|i| i.key_pressed(egui::Key::V)))
             {
                 ui.ctx().data_mut(|d| d.insert_temp(peek_id(), !peeking));
             }
@@ -3180,6 +3183,12 @@ fn glide(
 /// loudest object on a screen where it is not the thing being played. Same
 /// size as its neighbours now; it stays findable by being red and by always
 /// sitting at the end of the first row.
+/// What the master is for, said on the fader that is the last thing
+/// between the picture and the room. The panel's OUTPUT group already
+/// called it the panic fader; the screen you play from did not.
+const MASTER_HOVER: &str = "the panic fader — dims everything on the output, and at the \
+                            bottom of its travel the output is black  ·  right-click resets it";
+
 fn master(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
@@ -3235,12 +3244,16 @@ fn master(
     }
     let _ = state;
 
+    // The state said in a word, not only in a rim: "0.00" is a number,
+    // "BLACK" is why the projector is dark.
+    let dark = t < 0.02;
     ui.label(
-        egui::RichText::new(format!("{value:.2}"))
+        egui::RichText::new(if dark { "BLACK".to_string() } else { format!("{value:.2}") })
             .size(13.0)
             .monospace()
-            .color(if t < 0.02 { WARN } else { INK }),
-    );
+            .color(if dark { WARN } else { INK }),
+    )
+    .on_hover_text(MASTER_HOVER);
     // Shrunk to the column like every other fader name, rather than
     // drawn at a fixed size and allowed to overhang. At a 1024-point
     // window the master's column is 55 points wide and this caption
@@ -3264,7 +3277,8 @@ fn master(
             .size(master_size.min(11.0))
             .strong()
             .color(vizz_design::accent::MASTER_INK),
-    );
+    )
+    .on_hover_text(MASTER_HOVER);
     ui.label(egui::RichText::new(" ").size(11.0));
 }
 
@@ -5865,6 +5879,26 @@ mod tests {
             on.contains("normal"),
             "the strip does not name the blend mode: {on}"
         );
+    }
+
+    /// A master at the bottom of its travel says so in a word.
+    ///
+    /// "0.00" is a number; "BLACK" is why the projector has gone dark
+    /// with everything else apparently fine — the classic mid-set panic,
+    /// answered on the one fader whose job is to be found without
+    /// looking. The word replaces the readout only while the output is
+    /// actually black.
+    #[test]
+    fn a_dimmed_out_master_reads_black() {
+        let reg = registry();
+        let dim = reg.id("/master/dim").expect("master dim");
+        let mut macros = Macros::default();
+        let lit = render_at_size(&mut macros, &reg, vec2(1440.0, 900.0));
+        assert!(!lit.contains("BLACK"), "a lit master says BLACK: {lit}");
+        reg.set(dim, 0.0);
+        let dark = render_at_size(&mut macros, &reg, vec2(1440.0, 900.0));
+        assert!(dark.contains("BLACK"), "a dimmed-out master does not say so: {dark}");
+        assert!(dark.contains("MASTER"), "the caption went with the number: {dark}");
     }
 
     /// The fader labels must be on the window, not merely drawn.

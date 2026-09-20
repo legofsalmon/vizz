@@ -715,15 +715,24 @@ typed a name you already know what you want.
 
 ```
 1 – 9, 0   fire preset slot 1–10
-Space      flash — white out while held
+Space      flash — white out while held; shift latches
+S B F I    strobe, black, freeze, invert while held; shift latches
 Tab        show or hide the control panel
 G          modulation canvas
 P          performance layout
+V          watch the output — the controls stand aside (performance layout)
 /          filter the parameter list
 ?          the shortcut list, on screen
 F11        fullscreen on the window's monitor
 Esc        leave fullscreen; otherwise quit (twice)
 ```
+
+The punch keys are the row's initials rather than its order, because a
+hand reaching for BLACK without looking wants B. They are handled by the
+window rather than the row, so they work whatever screen is up — including
+the window sizes at which the row has stood down for want of room. Holding
+a key repeats nothing: a held Escape used to deliver its own second press
+and end the show.
 
 `?` exists because a shortcut that lives only in a README is a shortcut
 nobody uses. The number keys write `/preset/recall` exactly as OSC or MIDI

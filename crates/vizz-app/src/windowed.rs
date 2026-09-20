@@ -1112,12 +1112,17 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
-        // Space writes the flash exactly as a MIDI note or the punch
-        // button would — one parameter, however it is played.
-        if let Some(pressed) = state.gui.flash_key.take() {
-            self.params
-                .registry
-                .set(self.params.punch_flash, if pressed { 1.0 } else { 0.0 });
+        // The punch keys write their parameters exactly as a MIDI note or
+        // the punch button would — one parameter, however it is played.
+        for (punch, engaged) in state.gui.punch_keys.drain(..) {
+            let id = match punch {
+                vizz_ui::Punch::Flash => self.params.punch_flash,
+                vizz_ui::Punch::Strobe => self.params.punch_strobe,
+                vizz_ui::Punch::Black => self.params.punch_black,
+                vizz_ui::Punch::Freeze => self.params.punch_freeze,
+                vizz_ui::Punch::Invert => self.params.punch_invert,
+            };
+            self.params.registry.set(id, if engaged { 1.0 } else { 0.0 });
         }
         // What the UI costs, measured rather than argued about. It is
         // CPU work on the render thread and it scales with what is on
@@ -1909,7 +1914,9 @@ impl ApplicationHandler for App {
             // the platform's own quit. Nothing to confirm.
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::F11) && event.state.is_pressed() =>
+                if event.logical_key == Key::Named(NamedKey::F11)
+                    && event.state.is_pressed()
+                    && !event.repeat =>
             {
                 if let Some(state) = &self.state {
                     let going_full = state.window.fullscreen().is_none();
@@ -1921,8 +1928,14 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            // Not on a repeat: a held Escape used to deliver its own
+            // second press well inside the confirmation window, so leaning
+            // on one key ended the show — the very thing the two-step
+            // quit exists to prevent.
             WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::Escape) && event.state.is_pressed() =>
+                if event.logical_key == Key::Named(NamedKey::Escape)
+                    && event.state.is_pressed()
+                    && !event.repeat =>
             {
                 // In fullscreen the first Escape leaves fullscreen — the
                 // standard meaning, and strictly safer than arming quit.

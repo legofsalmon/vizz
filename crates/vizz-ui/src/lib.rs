@@ -67,18 +67,20 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
         .show(ctx, |ui| {
             for (key, what) in [
                 ("1 – 9, 0", "fire preset slot 1–10"),
-                ("Space", "flash — white out while held"),
+                ("Space", "flash — white out while held · shift latches"),
+                ("S · B · F · I", "strobe · black · freeze · invert while held · shift latches"),
                 ("Tab", "show or hide the control panel"),
                 ("G", "modulation canvas"),
                 ("P", "performance layout"),
+                ("V", "watch the output — the controls stand aside (performance layout)"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
-                ("F11", "fullscreen — Esc leaves it"),
-                ("Esc", "quit — twice, to mean it"),
+                ("F11", "fullscreen"),
+                ("Esc", "quit — twice, to mean it · in fullscreen the first Esc only leaves it"),
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(
-                        [72.0, 18.0],
+                        [96.0, 18.0],
                         egui::Label::new(egui::RichText::new(key).strong().monospace()),
                     );
                     ui.label(what);
@@ -97,7 +99,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(
-                        [92.0, 18.0],
+                        [96.0, 18.0],
                         egui::Label::new(egui::RichText::new(gesture).strong().monospace()),
                     );
                     ui.label(what);
@@ -270,6 +272,52 @@ impl PointerWatch {
     }
 }
 
+/// The five punch gestures, in the order the performance row draws them.
+///
+/// Each has a key as well as a button, handled in the shell so it works
+/// whatever screen is up — including the window sizes at which the row
+/// itself has stood down for want of room. Space is the flash; the other
+/// four go by their initial, because mnemonic beats row order when a hand
+/// is reaching for BLACK without looking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Punch {
+    Flash,
+    Strobe,
+    Black,
+    Freeze,
+    Invert,
+}
+
+impl Punch {
+    pub const ALL: [Punch; 5] =
+        [Punch::Flash, Punch::Strobe, Punch::Black, Punch::Freeze, Punch::Invert];
+
+    /// The parameter the gesture writes.
+    pub fn addr(self) -> &'static str {
+        match self {
+            Punch::Flash => "/punch/flash",
+            Punch::Strobe => "/punch/strobe",
+            Punch::Black => "/punch/black",
+            Punch::Freeze => "/punch/freeze",
+            Punch::Invert => "/punch/invert",
+        }
+    }
+
+    /// Which punch a key is, if it is one. Case-insensitive, like G and
+    /// P: Caps Lock must not be able to disarm a blackout.
+    fn from_key(key: &winit::keyboard::Key) -> Option<Punch> {
+        use winit::keyboard::{Key, NamedKey};
+        match key.as_ref() {
+            Key::Named(NamedKey::Space) => Some(Punch::Flash),
+            Key::Character(c) if c.eq_ignore_ascii_case("s") => Some(Punch::Strobe),
+            Key::Character(c) if c.eq_ignore_ascii_case("b") => Some(Punch::Black),
+            Key::Character(c) if c.eq_ignore_ascii_case("f") => Some(Punch::Freeze),
+            Key::Character(c) if c.eq_ignore_ascii_case("i") => Some(Punch::Invert),
+            _ => None,
+        }
+    }
+}
+
 pub struct Gui {
     ctx: egui::Context,
     state: egui_winit::State,
@@ -299,13 +347,18 @@ pub struct Gui {
     pub focus_filter: bool,
     /// A number key was pressed: fire this preset slot.
     pub preset_key: Option<u32>,
-    /// Space went down (`Some(true)`) or up (`Some(false)`) this frame:
-    /// the flash gesture, taken by the app like `preset_key` so there is
-    /// one path writing the parameter. Held state is tracked here so a
-    /// release is only reported for a press this handler saw — a space
-    /// typed into a text field must not end as a flash release.
-    pub flash_key: Option<bool>,
-    space_flashing: bool,
+    /// Punch keys that went down or came up this frame — (which,
+    /// engaged). Taken by the app like `preset_key`, so there is one path
+    /// writing the parameter whether it came from a key, a note or the
+    /// button. Held state is tracked here so a release is only reported
+    /// for a press this handler saw — a space typed into a text field
+    /// must not end as a flash release.
+    pub punch_keys: Vec<(Punch, bool)>,
+    /// What a key is holding down, per punch, and whether shift latched
+    /// it. A latched punch survives the key coming up and the window
+    /// losing focus; the next plain press of its key releases it, as a
+    /// plain click releases a latched button.
+    punch_held: [Option<bool>; 5],
     /// What egui has been told is held down. See [`PointerWatch`].
     pointer: PointerWatch,
     graph_view: graph_view::GraphView,
@@ -343,8 +396,8 @@ impl Gui {
             quit_armed: false,
             focus_filter: false,
             preset_key: None,
-            flash_key: None,
-            space_flashing: false,
+            punch_keys: Vec::new(),
+            punch_held: [None; 5],
             pointer: PointerWatch::default(),
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
@@ -448,6 +501,7 @@ impl Gui {
         // typing a preset name.
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
+            && !event.repeat
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
             && !self.ctx.egui_wants_keyboard_input()
         {
@@ -457,29 +511,49 @@ impl Gui {
             }
             return true;
         }
-        // Space is the flash. Press and release both matter — it is the
-        // one held gesture on the keyboard — so it is handled before the
-        // pressed-only block below.
+        // The punch keys. Press and release both matter — these are the
+        // held gestures on the keyboard — so they are handled before the
+        // pressed-only block below. Shift on the press latches, exactly
+        // as shift-click does on the button, and the next plain press
+        // releases it.
         if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+            && let Some(punch) = Punch::from_key(&event.logical_key)
         {
+            let slot = punch as usize;
             if event.state.is_pressed()
                 && !event.repeat
                 && !self.ctx.egui_wants_keyboard_input()
-                && !self.space_flashing
             {
-                self.space_flashing = true;
-                self.flash_key = Some(true);
+                match self.punch_held[slot] {
+                    Some(true) => {
+                        self.punch_held[slot] = None;
+                        self.set_row_latch(punch, false);
+                        self.punch_keys.push((punch, false));
+                    }
+                    Some(false) => {}
+                    None => {
+                        let latch = self.ctx.input(|i| i.modifiers.shift);
+                        self.punch_held[slot] = Some(latch);
+                        if latch {
+                            self.set_row_latch(punch, true);
+                        }
+                        self.punch_keys.push((punch, true));
+                    }
+                }
                 return true;
             }
-            if !event.state.is_pressed() && self.space_flashing {
-                self.space_flashing = false;
-                self.flash_key = Some(false);
+            if !event.state.is_pressed() && self.punch_held[slot] == Some(false) {
+                self.punch_held[slot] = None;
+                self.punch_keys.push((punch, false));
                 return true;
             }
         }
+        // Pressed once, not held: a key repeat is the OS saying the same
+        // thing again, and a toggle that toggles on every repeat flickers
+        // the screen it is on and, for Escape, quits the show.
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
+            && !event.repeat
             && !self.ctx.egui_wants_keyboard_input()
         {
             match event.logical_key.as_ref() {
@@ -529,6 +603,16 @@ impl Gui {
         // keeps believing the button is held.
         if matches!(event, WindowEvent::Focused(false)) {
             self.release_held("the window lost focus");
+            // The keys too: switching away with Space down used to leave
+            // the output white with no key held anywhere. A latched punch
+            // is the exception — a blackout somebody chose to keep has to
+            // survive the window losing focus.
+            for punch in Punch::ALL {
+                if self.punch_held[punch as usize] == Some(false) {
+                    self.punch_held[punch as usize] = None;
+                    self.punch_keys.push((punch, false));
+                }
+            }
         }
         // A breadcrumb, deliberately not an action: dragging a fader past
         // the bottom of the window is normal and must keep working, so
@@ -555,6 +639,14 @@ impl Gui {
         }
         self.pointer.note(event);
         self.state.on_window_event(window, event).consumed
+    }
+
+    /// Keep the performance row's latch pip in step with a key latch, so
+    /// a blackout latched from the keyboard reads LATCHED on its button
+    /// too, and a plain click on that button releases it.
+    fn set_row_latch(&self, punch: Punch, latched: bool) {
+        let id = egui::Id::new(("punch-latch", punch.addr()));
+        self.ctx.data_mut(|d| d.insert_temp(id, latched));
     }
 
     /// Tell egui every button it thinks is down has come up.
@@ -860,6 +952,41 @@ impl Gui {
 
 #[cfg(test)]
 mod tests {
+    /// Every punch answers to one key, and the letters are the row's
+    /// initials whatever the case — Caps Lock must not disarm a blackout.
+    /// Nothing else on the keyboard is a punch, so G and P keep their
+    /// own meanings.
+    #[test]
+    fn every_punch_has_a_key_and_the_letters_ignore_case() {
+        use super::Punch;
+        use winit::keyboard::{Key, NamedKey};
+        let key = |c: &str| Key::Character(c.into());
+        assert_eq!(Punch::from_key(&Key::Named(NamedKey::Space)), Some(Punch::Flash));
+        for (lower, upper, want) in [
+            ("s", "S", Punch::Strobe),
+            ("b", "B", Punch::Black),
+            ("f", "F", Punch::Freeze),
+            ("i", "I", Punch::Invert),
+        ] {
+            assert_eq!(Punch::from_key(&key(lower)), Some(want), "{lower}");
+            assert_eq!(Punch::from_key(&key(upper)), Some(want), "{upper}");
+        }
+        for other in ["g", "p", "v", "1", "/", "?"] {
+            assert_eq!(Punch::from_key(&key(other)), None, "{other} is not a punch");
+        }
+        assert_eq!(Punch::from_key(&Key::Named(NamedKey::Escape)), None);
+        // The order the row draws them in, so `punch as usize` indexes
+        // the held-state array the way the row reads left to right.
+        assert_eq!(Punch::ALL.map(|p| p as usize), [0, 1, 2, 3, 4]);
+        assert_eq!(Punch::ALL.map(Punch::addr), [
+            "/punch/flash",
+            "/punch/strobe",
+            "/punch/black",
+            "/punch/freeze",
+            "/punch/invert",
+        ]);
+    }
+
     use super::*;
     use vizz_params::ParamDef;
 
