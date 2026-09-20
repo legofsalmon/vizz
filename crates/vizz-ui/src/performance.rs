@@ -198,6 +198,9 @@ pub struct PerformanceActions {
     /// Begin renaming this preset. A tile cannot hold a text field, so
     /// the stage hands the name to the panel's field and the panel opens.
     pub preset_rename_start: Option<String>,
+    /// The audio input picked on the strip: a device by name, or `None`
+    /// inside the `Some` for the system default. Takes the panel's path.
+    pub audio_device: Option<Option<String>>,
 }
 
 /// What the deck row asks the app to do.
@@ -1493,6 +1496,28 @@ fn family_tint(family: vizz_mod::preset::Family) -> egui::Color32 {
     }
 }
 
+/// The name under the pointer while a tile is dragged, so the hand knows
+/// what it is holding and where it will land.
+fn drag_ghost(ui: &egui::Ui, name: &str) {
+    let Some(pos) = ui.ctx().pointer_latest_pos() else { return };
+    let p = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("preset-drag-ghost"),
+    ));
+    let galley = p.layout_no_wrap(name.to_string(), egui::FontId::proportional(12.0), INK);
+    let rect = egui::Rect::from_min_size(pos + vec2(14.0, 10.0), galley.size())
+        .expand2(vec2(8.0, 5.0));
+    p.rect_filled(rect, 4.0, vizz_design::surface::RAISED);
+    p.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, crate::theme::CURRENT),
+        egui::StrokeKind::Outside,
+    );
+    p.galley(rect.min + vec2(8.0, 5.0), galley, INK);
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+}
+
 /// One preset, as a tile.
 fn preset_tile(
     ui: &mut egui::Ui,
@@ -1514,7 +1539,16 @@ fn preset_tile(
     // come from" — the one tile that should not look like the others.
     let current = state.preset_current == Some(slot as usize);
 
-    let (rect, response) = ui.allocate_exact_size(vec2(TILE_W, TILE_H), egui::Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(TILE_W, TILE_H), egui::Sense::click_and_drag());
+    // A tile can be dragged onto a scene pad. The payload is the name
+    // and the pad does the assigning, through the same action the menu
+    // uses — so SCENES can be filled from the pictures rather than from
+    // a flat list of words.
+    response.dnd_set_drag_payload(crate::grid_view::DragLook(name.clone()));
+    if response.dragged() {
+        drag_ghost(ui, name);
+    }
     // Asked before the painter is borrowed: reading a picture wants the
     // context's data map mutably, and a `Ui` cannot lend both at once.
     // Skipped entirely when the tile is scrolled out of sight, which is
@@ -1644,7 +1678,7 @@ fn preset_tile(
         if let Some(s) = &bound {
             hover = format!("{hover}  ·  {}", s.label());
         }
-        response.on_hover_text(hover)
+        response.on_hover_text(format!("{hover}  ·  drag onto a scene pad"))
     };
     response.context_menu(|ui| {
         // Always offered, MIDI or no MIDI: a picture is the tile's whole
@@ -1667,6 +1701,20 @@ fn preset_tile(
             actions.preset_rename_start = Some(name.clone());
             ui.close();
         }
+        // The menu route to a pad, beside the drag: the same action, for
+        // a hand that would rather pick a number than aim.
+        ui.menu_button("put on a scene pad", |ui| {
+            for (i, held) in state.grid.names.iter().enumerate() {
+                let label = match held {
+                    Some(held) => format!("{}   {held}", i + 1),
+                    None => format!("{}   —", i + 1),
+                };
+                if ui.button(label).clicked() {
+                    actions.grid.assign = Some((i, name.clone()));
+                    ui.close();
+                }
+            }
+        });
         if !state.midi.available {
             return;
         }
@@ -2312,16 +2360,39 @@ fn audio_strip(
             actions.react = Some(!reacting);
         }
         ui.add_space(8.0);
+        // The input, as a click target: choosing it used to mean the
+        // panel, two screens from the meters that say it is needed. A
+        // dropped device keeps its name here, so the line says which
+        // interface went rather than only that one did.
+        let (text, ink) = match (audio.connected, audio.device.as_deref()) {
+            (true, name) => (name.unwrap_or("input").to_string(), INK_3),
+            (false, Some(name)) => (format!("{name} — not capturing"), WARN),
+            (false, None) => ("audio: not connected".to_string(), WARN),
+        };
+        let label = ui
+            .add(
+                egui::Label::new(egui::RichText::new(text).size(12.0).color(ink))
+                    .sense(Sense::click()),
+            )
+            .on_hover_text("the audio input  ·  click to change it");
+        egui::Popup::menu(&label).show(|ui| {
+            if ui
+                .selectable_label(audio.device.is_none(), "system default")
+                .clicked()
+            {
+                actions.audio_device = Some(None);
+            }
+            ui.separator();
+            for name in crate::panel::device_list(ui) {
+                let selected = audio.device.as_deref() == Some(name.as_str());
+                if ui.selectable_label(selected, &name).clicked() {
+                    actions.audio_device = Some(Some(name.clone()));
+                }
+            }
+        });
         if !audio.connected {
-            ui.label(
-                egui::RichText::new("audio: not connected")
-                    .size(12.0)
-                    .color(WARN),
-            );
             return;
         }
-        let name = audio.device.as_deref().unwrap_or("input");
-        ui.label(egui::RichText::new(name).size(12.0).color(INK_3));
         ui.add_space(8.0);
 
         // Meters share out the width rather than taking a fixed size, so

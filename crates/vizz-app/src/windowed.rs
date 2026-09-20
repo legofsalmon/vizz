@@ -525,6 +525,16 @@ impl App {
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
         let senders = outputs::Outputs::new(&ctx.device, &self.opts.outputs);
+        // An output asked for that did not come up is said on screen,
+        // once, with its reason. The slot keeps retrying; until now the
+        // only record was a log line, and the first sign in the room was
+        // a receiver with nothing in it.
+        for (name, why) in senders.failures() {
+            self.startup_notes.push((
+                true,
+                format!("output '{name}' did not start — {why}; retrying in the background"),
+            ));
+        }
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
@@ -1427,9 +1437,8 @@ impl App {
                         self.engine.modulation.clock.beats,
                         &self.midi_view,
                         &self.library,
-                        vizz_mod::preset::Kind::Look,
-                        SCENE_FIRE,
-                        "scene",
+                        &self.engine.decks,
+                        &GridBinding::scenes(&self.params),
                     );
                     // The scenes lead, so the pair of sequencer controls
                     // lives on their row.
@@ -1446,6 +1455,8 @@ impl App {
                     self.engine.modulation.clock.beats,
                     &self.midi_view,
                     &self.library,
+                    &self.engine.decks,
+                    &self.params,
                 )),
                 // The Gui owns the `/` shortcut and overwrites this before
                 // the panel reads it; the app has nothing to add.
@@ -1653,6 +1664,14 @@ impl App {
                     &mut self.quit_for_update,
                     &mut notes,
                 );
+                // The slot numbers a controller's preset buttons were
+                // learned against move whenever the list re-sorts, so
+                // the list is read before and after and the bindings
+                // follow their looks by name. See `follow_recall_bindings`.
+                let reorders = actions.preset_save.is_some()
+                    || actions.preset_delete.is_some()
+                    || actions.preset_rename.is_some();
+                let looks_before = reorders.then(|| look_names(&self.library));
                 apply_preset_actions(
                     &actions,
                     &self.params.registry,
@@ -1661,8 +1680,18 @@ impl App {
                     &self.clouds,
                     &mut self.thumbs,
                 );
-                if let Some((from, to)) = &actions.preset_rename {
-                    apply_preset_rename(from, to, &mut self.engine, &mut self.library, &mut notes);
+                let renamed = actions.preset_rename.as_ref().and_then(|(from, to)| {
+                    apply_preset_rename(from, to, &mut self.engine, &mut self.library, &mut notes)
+                        .map(|saved| (from.clone(), saved))
+                });
+                if let Some(before) = looks_before {
+                    follow_recall_bindings(
+                        &before,
+                        &look_names(&self.library),
+                        renamed.as_ref().map(|(f, t)| (f.as_str(), t.as_str())),
+                        &self.midi_shared,
+                        &mut notes,
+                    );
                 }
                 // Before the grids: a page turn and a pad press landing on
                 // the same frame have to happen in that order, or the pad
@@ -1676,7 +1705,7 @@ impl App {
                 apply_grid_actions(
                     &actions.grid,
                     &self.params,
-                    &mut self.engine.grid,
+                    &mut self.engine,
                     &GridBinding::scenes(&self.params),
                     &self.midi_shared,
                     &mut self.library,
@@ -1685,7 +1714,7 @@ impl App {
                 apply_grid_actions(
                     &actions.gravity,
                     &self.params,
-                    &mut self.engine.gravity_grid,
+                    &mut self.engine,
                     &GridBinding::gravity(&self.params),
                     &self.midi_shared,
                     &mut self.library,
@@ -2483,16 +2512,10 @@ fn gravity_grid_view(
     beats: f64,
     midi: &MidiView,
     library: &vizz_mod::preset::Library,
+    book: &vizz_mod::deck::Book,
+    params: &crate::params::AppParams,
 ) -> vizz_ui::grid_view::GridView {
-    let mut view = grid_view(
-        grid,
-        beats,
-        midi,
-        library,
-        vizz_mod::preset::Kind::Gravity,
-        GRAVITY_FIRE,
-        "gravity",
-    );
+    let mut view = grid_view(grid, beats, midi, library, book, &GridBinding::gravity(params));
     // Gravity pads are violet; scene pads keep the default blue-grey.
     // The two grids are otherwise the same widget sixteen times over,
     // stacked one above the other, and firing the wrong one is not
@@ -2508,6 +2531,9 @@ const SCENE_FIRE: &str = "/scene/fire";
 const GRAVITY_FIRE: &str = "/gravity/fire";
 /// The address a deck chip writes. Same reason as the two above.
 const DECK_SELECT: &str = "/deck/select";
+/// The address a preset tile writes, and that a controller's preset
+/// buttons are learned against.
+const PRESET_RECALL: &str = "/preset/recall";
 
 /// The set list as the chip row needs to see it.
 ///
@@ -2539,6 +2565,59 @@ fn fire_value(slot: usize) -> f32 {
     slot as f32 + 1.0
 }
 
+/// Where else a look is played from: pads, and the pages they are on,
+/// not counting `except` on the open page. The live grid is the truth for
+/// the open page and the book for the others — the book's copy of the
+/// open page is only as fresh as the last turn.
+fn used_elsewhere(
+    live: &vizz_mod::scene::Grid,
+    book: &vizz_mod::deck::Book,
+    kind: vizz_mod::preset::Kind,
+    name: &str,
+    except: usize,
+) -> (usize, usize) {
+    let here = live
+        .cells()
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i != except && c.as_ref().is_some_and(|c| c.preset == name))
+        .count();
+    let (mut pads, mut pages) = (here, usize::from(here > 0));
+    for (i, deck) in book.decks().iter().enumerate() {
+        if i == book.active() {
+            continue;
+        }
+        let cells = match kind {
+            vizz_mod::preset::Kind::Look => &deck.scenes,
+            vizz_mod::preset::Kind::Gravity => &deck.gravity,
+        };
+        let n = cells.iter().flatten().filter(|c| c.preset == name).count();
+        if n > 0 {
+            pads += n;
+            pages += 1;
+        }
+    }
+    (pads, pages)
+}
+
+/// The next free "name 2", "name 3" … so a fork of a shared look lands
+/// beside it rather than on top of it. "drop 2" forked again is "drop
+/// 3", not "drop 2 2".
+fn free_variant(
+    library: &vizz_mod::preset::Library,
+    kind: vizz_mod::preset::Kind,
+    base: &str,
+) -> String {
+    let stem = base
+        .rsplit_once(' ')
+        .filter(|(_, n)| n.parse::<u32>().is_ok())
+        .map_or(base, |(stem, _)| stem);
+    (2..)
+        .map(|i| format!("{stem} {i}"))
+        .find(|n| !library.has(kind, n))
+        .unwrap_or_else(|| format!("{stem} 2"))
+}
+
 /// The scene grid as the panel needs to see it.
 ///
 /// `beats` is the musical clock, so the autopilot switch can show how far
@@ -2548,11 +2627,11 @@ fn grid_view(
     beats: f64,
     midi: &MidiView,
     library: &vizz_mod::preset::Library,
-    kind: vizz_mod::preset::Kind,
-    fire: &str,
-    noun: &'static str,
+    book: &vizz_mod::deck::Book,
+    b: &GridBinding,
 ) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
+    let (kind, fire, noun) = (b.kind, b.addr, b.noun);
     vizz_ui::grid_view::GridView {
         // Off by default; the scene grid's call site turns it on. The
         // controls act on both sequencers, so exactly one grid draws
@@ -2594,6 +2673,14 @@ fn grid_view(
             .map(|c| c.as_ref().is_some_and(|c| !library.has(kind, &c.preset)))
             .collect(),
         presets: library.all(kind),
+        // Where else each pad's look is played from, for the store hover
+        // and the fork-or-replace decision. See `used_elsewhere`.
+        shared: (0..vizz_ui::grid_view::SLOTS)
+            .map(|slot| {
+                grid.cell(slot)
+                    .map_or((0, 0), |c| used_elsewhere(grid, book, kind, &c.preset, slot))
+            })
+            .collect(),
         current: grid.current(),
         in_flight: grid.in_flight(),
         duration: grid.duration,
@@ -2954,13 +3041,20 @@ fn save_deck_state(engine: &crate::engine::FrameEngine, notes: &mut Notes) {
 fn apply_grid_actions(
     actions: &vizz_ui::grid_view::GridActions,
     params: &crate::params::AppParams,
-    grid: &mut vizz_mod::scene::Grid,
+    engine: &mut crate::engine::FrameEngine,
     b: &GridBinding,
     midi: &SharedMidi,
     library: &mut vizz_mod::preset::Library,
     notes: &mut Notes,
 ) {
     let reg = &params.registry;
+    // The grid this binding plays, and the book beside it for the
+    // question "where else is this look" — disjoint borrows of the engine.
+    let crate::engine::FrameEngine { grid, gravity_grid, decks: book, .. } = engine;
+    let grid = match b.kind {
+        vizz_mod::preset::Kind::Look => grid,
+        vizz_mod::preset::Kind::Gravity => gravity_grid,
+    };
     let mut dirty = false;
     if let Some(slot) = actions.fire {
         reg.set(b.fire, fire_value(slot));
@@ -3023,10 +3117,21 @@ fn apply_grid_actions(
         // the library under the pad's name and then referenced — rather
         // than a copy hidden inside the grid. One gesture, and the result
         // is a look you can also recall, edit and put on another pad.
-        let wanted = grid
-            .cell(slot)
-            .map(|c| c.preset.clone())
-            .unwrap_or_else(|| format!("{} {}", b.noun, slot + 1));
+        let existing = grid.cell(slot).map(|c| c.preset.clone());
+        // A look on other pads is shared, and re-capturing it changes
+        // every one of them, on pages you cannot see from here. So the
+        // default forks: what is on screen is saved as a new look on this
+        // pad only, and the shared one stays where it was. Shift-click,
+        // or the menu's "in place", is the other way round.
+        let elsewhere = existing
+            .as_deref()
+            .map_or(0, |n| used_elsewhere(grid, book, b.kind, n, slot).0);
+        let fork = elsewhere > 0 && !actions.store_in_place;
+        let wanted = match (&existing, fork) {
+            (Some(n), true) => free_variant(library, b.kind, n),
+            (Some(n), false) => n.clone(),
+            (None, _) => format!("{} {}", b.noun, slot + 1),
+        };
         // Stepped aside from a built-in's name if needed: a capture saved
         // under one succeeded and could then never be recalled, because
         // built-ins win the name — the look was silently discarded.
@@ -3040,6 +3145,25 @@ fn apply_grid_actions(
         let captured = vizz_mod::preset::Preset::capture_kind(reg, b.kind);
         match vizz_mod::preset::save_kind(b.kind, &name, &captured) {
             Ok(saved) => {
+                // Said, whichever way it went: the one gesture that
+                // invents a name is the one that never reported it.
+                let pads = |n: usize| if n == 1 { "pad" } else { "pads" };
+                notes.push((
+                    false,
+                    match (&existing, fork) {
+                        (Some(old), true) => format!(
+                            "captured as '{saved}' — '{old}' stays on its other {elsewhere} {}",
+                            pads(elsewhere)
+                        ),
+                        (Some(_), false) if elsewhere > 0 => format!(
+                            "re-captured '{saved}' on all {} {}",
+                            elsewhere + 1,
+                            pads(elsewhere + 1)
+                        ),
+                        (Some(_), false) => format!("re-captured '{saved}'"),
+                        (None, _) => format!("captured as '{saved}'"),
+                    },
+                ));
                 grid.assign(slot, saved);
                 // The pad now names a preset that did not exist a moment
                 // ago; without this the cache says it is missing and the
@@ -3240,7 +3364,7 @@ fn apply_preset_rename(
     engine: &mut crate::engine::FrameEngine,
     library: &mut vizz_mod::preset::Library,
     notes: &mut Notes,
-) {
+) -> Option<String> {
     // Which look is marked current, by name, before the numbers move.
     let current = engine
         .current_preset()
@@ -3251,7 +3375,7 @@ fn apply_preset_rename(
         Err(e) => {
             log::error!("could not rename preset {from}: {e:#}");
             notes.push((true, format!("could NOT rename '{from}': {e}")));
-            return;
+            return None;
         }
     };
     log::info!("renamed preset {from} to {saved}");
@@ -3279,6 +3403,70 @@ fn apply_preset_rename(
         n => format!("  ·  {n} pads follow"),
     };
     notes.push((false, format!("renamed '{from}' to '{saved}'{pads}")));
+    Some(saved)
+}
+
+/// The preset list in slot order: index plus one is the number
+/// `/preset/recall` fires it by.
+fn look_names(library: &vizz_mod::preset::Library) -> Vec<String> {
+    preset_entries(library).into_iter().map(|e| e.name).collect()
+}
+
+/// Keep a controller's preset buttons on the looks they were learned
+/// against when the list re-sorts under them. `/preset/recall` addresses
+/// a slot and the slots are the sorted list, so saving "aurora" used to
+/// shift every later look up by one, and the button learned for "drop"
+/// fired whatever now sat in its number. A binding whose look was
+/// deleted is dropped rather than left to fire a stranger.
+fn follow_recall_bindings(
+    before: &[String],
+    after: &[String],
+    renamed: Option<(&str, &str)>,
+    shared: &SharedMidi,
+    notes: &mut Notes,
+) {
+    let mut moves = Vec::new();
+    let mut gone = Vec::new();
+    for (old, name) in before.iter().enumerate() {
+        let now = match renamed {
+            Some((from, to)) if name == from => to,
+            _ => name.as_str(),
+        };
+        match after.iter().position(|n| n == now) {
+            Some(new) if new != old => moves.push((fire_value(old), fire_value(new))),
+            Some(_) => {}
+            None => gone.push(fire_value(old)),
+        }
+    }
+    if moves.is_empty() && gone.is_empty() {
+        return;
+    }
+    // `try_lock`, as every other touch of the map from this thread: the
+    // render loop never waits on the MIDI thread.
+    let Ok(mut state) = shared.try_lock() else { return };
+    let had = state.map.bindings.len();
+    for v in &gone {
+        state.map.unbind_value(PRESET_RECALL, *v);
+    }
+    let dropped = had - state.map.bindings.len();
+    let moved = state.map.repoint_values(PRESET_RECALL, &moves);
+    if moved + dropped > 0 {
+        state.revision += 1;
+    }
+    drop(state);
+    let buttons = |n: usize| if n == 1 { "button" } else { "buttons" };
+    if moved > 0 {
+        notes.push((
+            false,
+            format!("{moved} MIDI preset {} followed the looks they were learned on", buttons(moved)),
+        ));
+    }
+    if dropped > 0 {
+        notes.push((
+            false,
+            format!("{dropped} MIDI preset {} unmapped — the look was deleted", buttons(dropped)),
+        ));
+    }
 }
 
 fn apply_panel_actions(
@@ -3313,6 +3501,15 @@ fn apply_panel_actions(
     if let Some((param, value)) = actions.clear_slot_binding {
         state.map.unbind_value(&param, value);
         state.revision += 1;
+    }
+    if actions.clear_all_bindings {
+        let n = state.map.bindings.len();
+        state.map.bindings.clear();
+        // And the memory of which controllers were given their shipped
+        // layout, so re-plugging one brings it back.
+        state.profiled.clear();
+        state.revision += 1;
+        notes.push((false, format!("cleared {n} MIDI binding{}", if n == 1 { "" } else { "s" })));
     }
     // Persist as soon as a mapping changes: a crash mid-set should not
     // cost the mappings that were just set up.

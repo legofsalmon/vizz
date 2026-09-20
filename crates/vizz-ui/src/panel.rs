@@ -63,6 +63,10 @@ pub struct PanelActions {
     /// Remove the MIDI trigger for one value of a parameter, leaving the
     /// other values of it mapped.
     pub clear_slot_binding: Option<(String, f32)>,
+    /// Forget every binding on every device. Armed on screen; the app
+    /// also forgets which controllers were given their shipped layout,
+    /// so re-plugging one brings it back.
+    pub clear_all_bindings: bool,
     /// A word typed in the clouds section, to become a point cloud.
     pub text_cloud: Option<String>,
     /// Audio settings the user changed this frame.
@@ -482,7 +486,7 @@ pub fn draw(
             egui::CollapsingHeader::new("midi")
                 .id_salt("midi")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| midi_section(ui, state));
+                .show(ui, |ui| midi_section(ui, state, &mut actions));
 
             cluster(ui, "CONTENT");
             egui::CollapsingHeader::new("clouds")
@@ -1085,7 +1089,7 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
     }
 }
 
-fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
+fn midi_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     if !state.midi.available {
         ui.small("unavailable");
         return;
@@ -1113,6 +1117,53 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             }
         }
     }
+    // Every binding in one place. Before this the map could only be read
+    // one pad, one chip and one row at a time — forty bindings with no
+    // page that listed them and no way to clear a rig's worth at once.
+    let bindings = &state.midi.map.bindings;
+    if !bindings.is_empty() {
+        let n = bindings.len();
+        egui::CollapsingHeader::new(format!("{n} binding{}", if n == 1 { "" } else { "s" }))
+            .id_salt("midi-bindings")
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("midi-binding-rows")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("midi-binding-grid").striped(true).show(ui, |ui| {
+                            for b in bindings {
+                                ui.monospace(b.source.label());
+                                ui.label(binding_target(b));
+                                if ui.small_button("unmap").clicked() {
+                                    match b.value {
+                                        Some(v) => {
+                                            actions.clear_slot_binding =
+                                                Some((b.param.clone(), v));
+                                        }
+                                        None => actions.clear_binding = Some(b.param.clone()),
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });
+                if vizz_design::widgets::armed_button(
+                    ui,
+                    egui::Id::new("midi-clear-all"),
+                    0,
+                    vizz_design::widgets::Armed {
+                        idle_label: "clear all",
+                        armed_label: "clear every binding?",
+                        idle_hover: "forget every binding on every device (asks once) — \
+                                     re-plug a controller to get its shipped layout back",
+                        armed_hover: "click again to forget them all",
+                        small: true,
+                    },
+                ) {
+                    actions.clear_all_bindings = true;
+                }
+            });
+    }
     // While learning, echo whatever is arriving: the usual failure is a
     // controller that is not sending at all, and this distinguishes that
     // from a mapping problem immediately.
@@ -1128,6 +1179,24 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             // this line is shown for both kinds of learn.
             format!("learning {} — move or press a control (seen: {seen})", target.label),
         );
+    }
+}
+
+/// What a binding does, in the words the screen uses for it: a trigger
+/// names the pad, look or page it fires, a sweep names its parameter.
+fn binding_target(b: &vizz_midi::Binding) -> String {
+    match b.value {
+        Some(v) => {
+            let n = v.round() as i64;
+            match b.param.as_str() {
+                "/scene/fire" => format!("scene pad {n}"),
+                "/gravity/fire" => format!("gravity pad {n}"),
+                "/preset/recall" => format!("look {n}"),
+                "/deck/select" => format!("page {n}"),
+                p => format!("{p} = {v}"),
+            }
+        }
+        None => b.param.clone(),
     }
 }
 
@@ -1197,7 +1266,7 @@ const DEVICE_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(1);
 /// enumerations a second, on the render thread. Asking CoreAudio for the
 /// device list is not a cheap call, and the answer does not change sixty
 /// times a second.
-fn device_list(ui: &egui::Ui) -> Vec<String> {
+pub(crate) fn device_list(ui: &egui::Ui) -> Vec<String> {
     let id = egui::Id::new("audio-device-list");
     let cached: Option<(std::time::Instant, Vec<String>)> =
         ui.data(|d| d.get_temp(id));
@@ -4167,5 +4236,26 @@ mod swing_tests {
         assert_eq!(swing_text(&Source::Lfo(0), -0.5, 200.0), "±100");
         assert_eq!(swing_text(&Source::Audio(0), 0.5, 1.0), "up to +0.50");
         assert_eq!(swing_text(&Source::Level, -0.1, 12.0), "down to −1.2");
+    }
+}
+
+#[cfg(test)]
+mod binding_table_tests {
+    use super::*;
+
+    /// A row says what the control fires in the screen's own words, not
+    /// as an address and a float.
+    #[test]
+    fn a_binding_row_names_what_it_fires() {
+        let src = Source::Note { channel: 0, note: 36 };
+        let row = |param: &str, value: Option<f32>| {
+            binding_target(&vizz_midi::Binding { source: src, param: param.into(), value })
+        };
+        assert_eq!(row("/scene/fire", Some(4.0)), "scene pad 4");
+        assert_eq!(row("/gravity/fire", Some(1.0)), "gravity pad 1");
+        assert_eq!(row("/preset/recall", Some(12.0)), "look 12");
+        assert_eq!(row("/deck/select", Some(2.0)), "page 2");
+        assert_eq!(row("/punch/black", Some(1.0)), "/punch/black = 1");
+        assert_eq!(row("/fx/glow", None), "/fx/glow");
     }
 }

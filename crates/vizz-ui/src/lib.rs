@@ -1043,6 +1043,10 @@ impl Gui {
             self.face_changed = true;
             panel::begin_rename(&self.ctx, name);
         }
+        // The input picked on the stage strip takes the panel's path.
+        if let Some(device) = perf.audio_device {
+            actions.audio.device = Some(device);
+        }
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
