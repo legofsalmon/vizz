@@ -86,6 +86,10 @@ pub struct Settings {
     /// until it has been sized once; a first launch sizes itself to the
     /// display.
     pub window_size: Option<[u32; 2]>,
+    /// The first-launch card has been seen and dismissed. Once, ever:
+    /// the card teaches the keys and the screens, and the second launch
+    /// is not the first.
+    pub welcomed: bool,
 }
 
 /// See [`Settings::clock_source`].
@@ -303,6 +307,13 @@ fn civil_from_unix(secs: u64) -> (i64, u64, u64) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u64;
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u64;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// The first-launch card has done its job.
+pub fn save_welcomed() -> Result<()> {
+    let mut s = load();
+    s.welcomed = true;
+    save(&s)
 }
 
 /// Persist the fullscreen choice alone.

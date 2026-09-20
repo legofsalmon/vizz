@@ -187,6 +187,26 @@ fn derive(song: &Song, section: &Section, slot: usize) -> Preset {
             values.insert(addr.clone(), *v);
         }
     }
+    // The field and the effects chain, off. A pad sets what it names and
+    // an omitted parameter keeps whatever the last look put there — so a
+    // print pad that said nothing about the particles was drawn with the
+    // default sixty thousand blue sprites sitting on top of its page and
+    // the glow blooming the lot, on the fresh install this set exists
+    // for. The three shipped print looks zero these for the same reason;
+    // the set now does what they do. Scene placement, not print: the
+    // punch gestures never reach a print-placed stack.
+    values.insert("/particles/count".into(), 0.0);
+    for (addr, off) in [
+        ("/fx/trail", 0.0),
+        ("/fx/zoom", 1.0),
+        ("/fx/spin", 0.0),
+        ("/fx/mirror", 0.0),
+        ("/fx/glow", 0.0),
+        ("/fx/shift", 0.0),
+    ] {
+        values.insert(addr.into(), off);
+    }
+    values.insert("/vec/place".into(), 0.0);
     let tilt = energy_tilt(song.energy);
     for layer in 1..=LAYERS {
         let p = |name: &str| format!("/l{layer}/{name}");
@@ -327,6 +347,24 @@ mod tests {
             SECTIONS.map(|s| s.name),
             ["Intro", "Build", "Break", "Drop", "Bridge", "Peak", "Outro", "Blackout"]
         );
+    }
+
+    /// Every pad clears the field and the effects chain.
+    ///
+    /// A pad sets only what it names, and the set used to name only its
+    /// layers, paper and inks — so on the fresh install it is installed
+    /// for, every pad was drawn under the default blue sphere and its
+    /// glow. Pinned here because the contact sheets that sell the set are
+    /// rendered from the vector stack alone and cannot show it.
+    #[test]
+    fn every_pad_clears_the_field_and_the_effects() {
+        for (name, preset) in &set().presets {
+            assert_eq!(preset.values.get("/particles/count"), Some(&0.0), "{name} keeps the field");
+            assert_eq!(preset.values.get("/fx/glow"), Some(&0.0), "{name} keeps the glow");
+            assert_eq!(preset.values.get("/fx/trail"), Some(&0.0), "{name} keeps the trail");
+            assert_eq!(preset.values.get("/fx/zoom"), Some(&1.0), "{name} zooms a trail it has not got");
+            assert_eq!(preset.values.get("/vec/place"), Some(&0.0), "{name} prints over the punches");
+        }
     }
 
     /// Nothing in the set can render black on black.

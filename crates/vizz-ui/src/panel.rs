@@ -384,6 +384,9 @@ pub struct AudioView {
     /// Ticks are actually arriving right now — the difference between
     /// "following the wire" and "waiting for a wire that is silent".
     pub clock_ticking: bool,
+    /// The three "react" shapes are all attached — see
+    /// [`vizz_mod::shapes::reacting`].
+    pub reacting: bool,
 }
 
 /// Edits the panel wants applied to the audio settings, collected here
@@ -401,6 +404,9 @@ pub struct AudioEdits {
     /// Switch to this input device. `Some(None)` means the system
     /// default — distinct from `None`, which means "unchanged".
     pub device: Option<Option<String>>,
+    /// Make the picture follow the music, or stop — the same switch the
+    /// performance layout's audio strip carries.
+    pub react: Option<bool>,
 }
 
 pub fn draw(
@@ -1289,6 +1295,24 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             bands = vizz_audio::default_bands();
         }
         ui.small("play something first — fit reads the last few seconds");
+    });
+    // The same one-press switch the performance strip has, here because
+    // this is the section a person opens when the meters move and the
+    // picture does not.
+    ui.horizontal(|ui| {
+        let reacting = a.reacting;
+        if ui
+            .button(if reacting { "reacting" } else { "react" })
+            .on_hover_text(if reacting {
+                "the kick, the loudness and the snare are moving the picture — click to stop"
+            } else {
+                "make the picture follow the music: kick → size, loudness → glow, snare → brightness"
+            })
+            .clicked()
+        {
+            actions.audio.react = Some(!reacting);
+        }
+        ui.small("one press, three ready-made modulators — shape them on the canvas (G)");
     });
     // A band whose high edge is under its low edge would silently read
     // zero; clamp on edit rather than letting a drag produce a dead band.

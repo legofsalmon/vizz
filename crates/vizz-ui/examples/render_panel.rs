@@ -609,6 +609,7 @@ fn audio_view() -> vizz_ui::AudioView {
         dropped: 0,
         clock_midi: false,
         clock_ticking: false,
+        reacting: false,
     }
 }
 

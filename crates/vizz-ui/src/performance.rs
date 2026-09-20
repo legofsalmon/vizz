@@ -187,6 +187,10 @@ pub struct PerformanceActions {
     /// Put a ready-made modulator on this parameter, or take it off with
     /// `None`. Indexes [`vizz_mod::shapes::SHAPES`].
     pub set_mod_shape: Option<(String, Option<usize>)>,
+    /// Make the picture follow the music (`Some(true)`), or stop
+    /// (`Some(false)`): the three [`vizz_mod::shapes::REACT`] shapes at
+    /// once.
+    pub react: Option<bool>,
     /// What the deck row asks for this frame.
     pub decks: DeckActions,
     /// Take a fresh picture of this preset from what is on screen now.
@@ -1391,6 +1395,40 @@ fn block_cap(full_h: f32) -> f32 {
     rows * (TILE_H + TILE_GAP)
 }
 
+/// A whole starting layer, not one field.
+///
+/// Writing only the generator left ink 1 — a five-percent grey, the
+/// black ink for white paper — on near-black paper at normal blend:
+/// rings at thirteen out of two hundred and fifty-five, and a frame that
+/// read as having gone slightly darker. The button exists so that one
+/// press producing a picture teaches that the row means anything, and
+/// it produced a change. Now it writes a red ink, added, at full opacity
+/// and a readable frequency; the blend is found by its name so a
+/// reordered list cannot silently repoint it.
+fn start_first_layer(
+    registry: &ParamRegistry,
+    (kind, blend, opacity, freq, color): (
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+    ),
+    first: f32,
+) {
+    registry.set(kind, first);
+    registry.set(color, 1.0);
+    registry.set(opacity, 1.0);
+    registry.set(freq, 12.0);
+    let def = &registry.defs()[blend.index()];
+    if let Some(add) = (def.min.round() as i32..=def.max.round() as i32)
+        .map(|i| i as f32)
+        .find(|v| def.label_for(*v) == Some("add"))
+    {
+        registry.set(blend, add);
+    }
+}
+
 /// What a listed look was built on. A built-in says so itself, whatever
 /// the source cache has to say about a user file of the same name.
 fn entry_family(entry: &crate::PresetEntry) -> vizz_mod::preset::Family {
@@ -1702,7 +1740,8 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
     // opening something, because one press producing a picture is what
     // teaches that the row means anything.
     if !any_on {
-        let (kind, ..) = layer_ids[0];
+        let ids = layer_ids[0];
+        let (kind, ..) = ids;
         let def = &registry.defs()[kind.index()];
         // The first position past "off", whatever it happens to be
         // called — read from the definition rather than hardcoded, so
@@ -1726,7 +1765,7 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
                 )
                 .clicked()
             {
-                registry.set(kind, first);
+                start_first_layer(registry, ids, first);
             }
             ui.label(
                 egui::RichText::new("flat shapes over the point field")
@@ -2183,7 +2222,8 @@ fn status_strip(
         });
     });
 
-    audio_strip(ui, state.audio, width);
+    let reacting = state.graph.is_some_and(vizz_mod::shapes::reacting);
+    audio_strip(ui, state.audio, reacting, actions, width);
 }
 
 /// Audio across the full width, labelled.
@@ -2192,9 +2232,37 @@ fn status_strip(
 /// visuals stop reacting the first question is whether audio is still
 /// arriving and at what level — which the stubs could not answer, because
 /// nothing said which band was which or what "full" looked like.
-fn audio_strip(ui: &mut egui::Ui, audio: &AudioView, width: f32) {
+fn audio_strip(
+    ui: &mut egui::Ui,
+    audio: &AudioView,
+    reacting: bool,
+    actions: &mut PerformanceActions,
+    width: f32,
+) {
     const BANDS: [&str; 4] = ["low", "lo-mid", "hi-mid", "high"];
     ui.horizontal(|ui| {
+        // One press and the picture follows the music: the kick on the
+        // size, the loudness on the glow, the snare on the brightness.
+        // The same three ready-made modulators a hand would pick from the
+        // fader menus, attached together — because a first listener does
+        // not know those menus exist, and "why does nothing move with the
+        // music" is the first question the meters beside this raise.
+        if ui
+            .add(egui::Button::new(
+                egui::RichText::new(if reacting { "reacting" } else { "react" })
+                    .size(12.0)
+                    .color(if reacting { LIVE } else { INK_2 }),
+            ))
+            .on_hover_text(if reacting {
+                "the kick, the loudness and the snare are moving the picture — click to stop"
+            } else {
+                "make the picture follow the music: kick → size, loudness → glow, snare → brightness"
+            })
+            .clicked()
+        {
+            actions.react = Some(!reacting);
+        }
+        ui.add_space(8.0);
         if !audio.connected {
             ui.label(
                 egui::RichText::new("audio: not connected")
@@ -4489,6 +4557,31 @@ mod tests {
     }
 
 
+
+    /// The starting layer is a picture, not a change.
+    ///
+    /// The button used to write the generator alone, leaving the black
+    /// ink on the black paper at normal blend — rings at thirteen out of
+    /// two hundred and fifty-five. A first press has to produce something
+    /// a person can see, or the row it teaches teaches nothing.
+    #[test]
+    fn the_starting_layer_is_visible_on_the_default_paper() {
+        let reg = registry();
+        let ids = (
+            reg.id("/l1/kind").unwrap(),
+            reg.id("/l1/blend").unwrap(),
+            reg.id("/l1/opacity").unwrap(),
+            reg.id("/l1/freq").unwrap(),
+            reg.id("/l1/color").unwrap(),
+        );
+        start_first_layer(&reg, ids, 1.0);
+        assert_eq!(reg.target(ids.0), 1.0, "the generator");
+        assert_eq!(reg.target(ids.4), 1.0, "ink 1 is the black ink; the layer needs another");
+        assert_eq!(reg.target(ids.2), 1.0, "opacity");
+        assert!(reg.target(ids.3) >= 8.0, "a frequency that reads");
+        let blend = &reg.defs()[ids.1.index()];
+        assert_eq!(blend.label_for(reg.target(ids.1)), Some("add"), "the blend that shows on black");
+    }
 
     /// A layer can be started from the screen you play on.
     ///

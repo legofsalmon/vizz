@@ -108,6 +108,49 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
         });
 }
 
+/// What a first launch says, once, along the bottom of the screen.
+///
+/// Three things and a gesture, because nothing else in the app teaches
+/// the number keys, the play screen or the drop until the `?` overlay is
+/// found — and finding it was the thing nobody did. Any key dismisses it,
+/// as does a click on it; the app remembers, so the second launch is
+/// not the first. Returns true when clicked.
+fn welcome_card(ctx: &egui::Context) -> bool {
+    let mut clicked = false;
+    egui::Area::new(egui::Id::new("welcome-card"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let r = egui::Frame::NONE
+                .fill(vizz_design::surface::RAISED)
+                .stroke(egui::Stroke::new(1.0, vizz_design::surface::EDGE))
+                .inner_margin(egui::Margin::symmetric(16, 10))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "1 – 9 fire a look  ·  Space flashes  ·  P is the screen you play from  ·  ? lists every key",
+                            )
+                            .size(13.0)
+                            .color(vizz_design::ink::PRIMARY),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "drop a photo or a scan on the window and it becomes the field  ·  any key, or a click here, carries on",
+                            )
+                            .size(12.0)
+                            .color(vizz_design::ink::TERTIARY),
+                        );
+                    });
+                })
+                .response
+                .interact(egui::Sense::click());
+            clicked = r.clicked();
+        });
+    clicked
+}
+
 /// "Press Escape again to quit."
 ///
 /// Escape used to quit on the first press. On a laptop driving a projector
@@ -354,6 +397,12 @@ pub struct Gui {
     /// for a press this handler saw — a space typed into a text field
     /// must not end as a flash release.
     pub punch_keys: Vec<(Punch, bool)>,
+    /// Draw the first-launch card. Set by the app on a launch nobody has
+    /// been welcomed on; cleared by the first key or a click on the card.
+    pub welcome: bool,
+    /// The card was just dismissed, so the app can remember that it was.
+    /// Taken by the app like `preset_key`.
+    pub welcome_dismissed: bool,
     /// What a key is holding down, per punch, and whether shift latched
     /// it. A latched punch survives the key coming up and the window
     /// losing focus; the next plain press of its key releases it, as a
@@ -397,6 +446,8 @@ impl Gui {
             focus_filter: false,
             preset_key: None,
             punch_keys: Vec::new(),
+            welcome: false,
+            welcome_dismissed: false,
             punch_held: [None; 5],
             pointer: PointerWatch::default(),
             graph_view: graph_view::GraphView::default(),
@@ -494,6 +545,14 @@ impl Gui {
     /// in which case the caller should not act on it (so dragging a
     /// slider does not also trigger app shortcuts).
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        // The first key of a first launch is the card's cue to go: the
+        // person is doing the thing it said, or knows better.
+        if self.welcome
+            && let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state.is_pressed()
+        {
+            self.dismiss_welcome();
+        }
         // Tab is ours whenever nothing is being typed into: the panel
         // must be dismissible even while egui has mouse focus. While a
         // text field IS focused, Tab goes to egui as the focus-next it
@@ -641,6 +700,11 @@ impl Gui {
         self.state.on_window_event(window, event).consumed
     }
 
+    fn dismiss_welcome(&mut self) {
+        self.welcome = false;
+        self.welcome_dismissed = true;
+    }
+
     /// Keep the performance row's latch pip in step with a key latch, so
     /// a blackout latched from the keyboard reads LATCHED on its button
     /// too, and a plain click on that button releases it.
@@ -757,6 +821,11 @@ impl Gui {
         // where a shortcut list is most wanted.
         if self.shortcuts_open {
             shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
+        }
+        // Likewise the welcome: on every face, or a first launch that
+        // pressed P before reading it would lose it.
+        if self.welcome && welcome_card(&self.ctx) {
+            self.dismiss_welcome();
         }
         if self.quit_armed {
             quit_prompt(&self.ctx);
@@ -887,6 +956,10 @@ impl Gui {
         // panel's route toggle rather than round-tripped through the
         // app. They *are* graph edits — the shortcut builds the same
         // nodes a hand would — so the canvas is the one place they live.
+        if let Some(on) = perf.react.take() {
+            let done = vizz_mod::shapes::react(&mut modulation.graph, on);
+            self.notices.info(vizz_mod::shapes::react_notice(on, &done));
+        }
         if let Some((addr, shape)) = perf.set_mod_shape.take() {
             match shape {
                 Some(i) => {
@@ -1364,6 +1437,7 @@ mod tests {
                 dropped: 0,
                 clock_midi: false,
                 clock_ticking: false,
+                reacting: false,
             },
             video: None,
             live_cloud: None,

@@ -205,6 +205,11 @@ struct App {
     /// receiving redraw events entirely and the Syphon/NDI feed must not
     /// stop with it.
     presentable: bool,
+    /// Said on the first frame, from the code that runs before there is
+    /// a screen to say it on — the demo set's arrival, for one.
+    startup_notes: Notes,
+    /// Show the first-launch card on the first frame.
+    welcome_pending: bool,
     /// The render scale in effect, mirrored from settings so the panel
     /// can show it without a settings-file read on every frame.
     render_scale: f32,
@@ -256,6 +261,10 @@ const MODULATION_AUTOSAVE: std::time::Duration = std::time::Duration::from_secs(
 /// deliberate second press, short enough that an Escape now and an Escape
 /// in a minute are never the same gesture.
 const QUIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The look a first launch opens on. The one built-in that fills the
+/// frame and moves on its own — a first impression, not a neutral bed.
+const OPENER: &str = "Tunnel";
 
 /// The window a first launch opens with, in logical points, unless the
 /// display is smaller. Chosen for the performance layout: with a deck row
@@ -1155,6 +1164,16 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
+        // The first-launch card, and what it leaves behind: once it has
+        // been seen, it has been seen.
+        if std::mem::take(&mut self.welcome_pending) {
+            state.gui.welcome = true;
+        }
+        if std::mem::take(&mut state.gui.welcome_dismissed)
+            && let Err(e) = crate::settings::save_welcomed()
+        {
+            log::warn!("could not remember that the welcome was seen: {e:#}");
+        }
         // The punch keys write their parameters exactly as a MIDI note or
         // the punch button would — one parameter, however it is played.
         for (punch, engaged) in state.gui.punch_keys.drain(..) {
@@ -1268,6 +1287,7 @@ impl App {
                     vizz_ui::AudioView {
                         connected: st.connected(),
                         device: self.engine.audio.device_name.clone(),
+                        reacting: vizz_mod::shapes::reacting(&self.engine.modulation.graph),
                         bands: std::array::from_fn(|i| st.band(i)),
                         raw: std::array::from_fn(|i| st.raw(i)),
                         raw_peak: std::array::from_fn(|i| st.raw_peak(i)),
@@ -1491,7 +1511,14 @@ impl App {
                         }
                     }
                 }
-                let mut notes: Notes = Vec::new();
+                let mut notes: Notes = std::mem::take(&mut self.startup_notes);
+                // The panel's react switch, applied here where the graph
+                // and the notices both are; the stage's goes through the
+                // Gui, which owns the modulation borrow on that path.
+                if let Some(on) = actions.audio.react {
+                    let done = vizz_mod::shapes::react(&mut self.engine.modulation.graph, on);
+                    notes.push((false, vizz_mod::shapes::react_notice(on, &done)));
+                }
                 // The two sequencers, together. Read from the scene
                 // grid's actions only — the controls are drawn there
                 // because they act on both, so the gravity grid's copy
@@ -3221,13 +3248,36 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // is for. Strictly guarded — see `sets::is_fresh_install` — because
     // installing over somebody's own decks would be unforgivable.
     let mut installed = false;
+    let mut startup_notes: Notes = Vec::new();
     if vizz_mod::sets::is_fresh_install(&book, saved) {
-        match install_set(&vizz_mod::sets::electronic()) {
+        let set = vizz_mod::sets::electronic();
+        match install_set(&set) {
             Ok(fresh) => {
                 book = fresh;
                 installed = true;
+                // Said on screen, not only in the log: a double-click
+                // launch has no log, and a set list nobody asked for on
+                // a screen that is off by default is a mystery twice.
+                startup_notes.push((
+                    false,
+                    format!(
+                        "a demo set of {} songs is on the play screen (P) — right-click + there to remove it",
+                        set.decks.len()
+                    ),
+                ));
             }
             Err(e) => log::error!("could not install the built-in set: {e:#} — starting empty"),
+        }
+        // A first launch used to open on the parameter defaults — a soft
+        // blue sphere — with nothing on screen pointing at the looks or
+        // the keys that fire them. It opens playing a designed look
+        // instead, set on the parameter so the first frame recalls it
+        // exactly as a number key would; `startup_does_not_recall_a_preset`
+        // still pins that an ordinary launch rests at nothing.
+        if let Some(slot) = vizz_mod::preset::BUILTINS.iter().position(|b| b.name == OPENER) {
+            params.registry.set(params.preset_recall, slot as f32 + 1.0);
+        } else {
+            log::warn!("the opener {OPENER:?} is not a built-in — opening on the defaults");
         }
     }
     engine.adopt_decks(book);
@@ -3248,6 +3298,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         }
     }
     engine.adopt_column_sync(Arc::clone(&opts.columns));
+    let opts_show_gui = opts.show_gui;
     let mut app = App {
         engine,
         params,
@@ -3282,6 +3333,8 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         saved_modulation: restored_modulation,
         modulation_checked: Instant::now(),
         presentable: true,
+        startup_notes,
+        welcome_pending: !crate::settings::load().welcomed && opts_show_gui,
         midi_save_backoff: None,
         modulation_save_failing: false,
         output_status: Vec::new(),

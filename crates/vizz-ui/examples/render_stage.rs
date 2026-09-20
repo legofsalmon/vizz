@@ -434,6 +434,7 @@ fn audio_view() -> vizz_ui::AudioView {
         // Following MIDI clock with ticks arriving, so the badge shows.
         clock_midi: true,
         clock_ticking: true,
+        reacting: false,
     }
 }
 

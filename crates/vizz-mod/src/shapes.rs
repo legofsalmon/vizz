@@ -602,3 +602,98 @@ mod tests {
         assert_eq!(rows.len(), 3, "three shapes shared fewer than three rows: {rows:?}");
     }
 }
+
+/// The three ready-made modulators one press of "react" attaches, and
+/// where. The kick on the size, the loudness on the glow, the snare on
+/// the brightness: the low band punches the field, the level blooms it,
+/// the snare flashes it — the three things a first listener expects a
+/// picture to do with music, on three parameters every look has.
+pub const REACT: [(&str, &str); 3] = [
+    ("Kick", "/particles/size"),
+    ("Loudness", "/fx/glow"),
+    ("Snare", "/particles/brightness"),
+];
+
+/// Attach every [`REACT`] shape, or detach them all with `on = false`.
+/// Returns what it did, as (shape, address) pairs, for the notice.
+pub fn react(g: &mut NodeGraph, on: bool) -> Vec<(&'static str, &'static str)> {
+    let mut done = Vec::new();
+    for (shape, addr) in REACT {
+        let Some(i) = SHAPES.iter().position(|s| s.name == shape) else { continue };
+        let did = if on { attach(g, i, addr) } else { detach(g, addr) };
+        if did {
+            done.push((shape, addr));
+        }
+    }
+    done
+}
+
+/// Whether the picture is reacting: every [`REACT`] parameter is driven.
+/// Every, not any — one of the three attached by hand is a choice, not
+/// the switch being on.
+pub fn reacting(g: &NodeGraph) -> bool {
+    REACT.iter().all(|(_, addr)| driven(g, addr))
+}
+
+/// What the notice says after [`react`]: which shape went where, or that
+/// nothing needed doing. Shared by both screens so they say the same.
+pub fn react_notice(on: bool, done: &[(&str, &str)]) -> String {
+    if done.is_empty() {
+        return if on { "already reacting".into() } else { "nothing was reacting".into() };
+    }
+    let what = done
+        .iter()
+        .map(|(shape, addr)| {
+            format!("{} → {}", shape.to_lowercase(), addr.rsplit('/').next().unwrap_or(addr))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if on { format!("reacting: {what}") } else { format!("no longer reacting: {what}") }
+}
+
+#[cfg(test)]
+mod react_tests {
+    use super::*;
+
+    /// One press attaches all three and the graph says it is reacting;
+    /// a second takes all three off and leaves nothing behind. Every
+    /// shape named in the table has to exist, or the press would quietly
+    /// do two thirds of its job.
+    #[test]
+    fn react_is_a_switch_that_leaves_no_trace() {
+        for (shape, _) in REACT {
+            assert!(SHAPES.iter().any(|s| s.name == shape), "{shape} is not a shipped shape");
+        }
+        let mut g = NodeGraph::default();
+        assert!(!reacting(&g));
+        let on = react(&mut g, true);
+        assert_eq!(on.len(), 3, "{on:?}");
+        assert!(reacting(&g));
+        for (_, addr) in REACT {
+            assert!(driven(&g, addr), "{addr} is not driven");
+        }
+        assert_eq!(
+            react_notice(true, &on),
+            "reacting: kick → size · loudness → glow · snare → brightness"
+        );
+        let off = react(&mut g, false);
+        assert_eq!(off.len(), 3);
+        assert!(!reacting(&g));
+        assert!(g.nodes.is_empty(), "react left nodes behind: {}", g.nodes.len());
+        assert_eq!(react_notice(false, &[]), "nothing was reacting");
+    }
+
+    /// A shape attached by hand to one of the three is a choice, not
+    /// the switch: the chip must not read "reacting" for it, and the
+    /// press must still attach the other two.
+    #[test]
+    fn one_shape_by_hand_is_not_reacting() {
+        let mut g = NodeGraph::default();
+        let kick = SHAPES.iter().position(|s| s.name == "Kick").unwrap();
+        assert!(attach(&mut g, kick, "/particles/size"));
+        assert!(!reacting(&g));
+        let done = react(&mut g, true);
+        assert!(reacting(&g));
+        assert_eq!(done.len(), 3, "attach replaces the hand-made kick and adds the rest");
+    }
+}
