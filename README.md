@@ -394,6 +394,14 @@ vizz --audio-device "Scarlett"           # substring match
 vizz --no-audio                          # off entirely
 ```
 
+**The system default is usually the laptop's microphone**, which hears the
+room — the crowd, the PA's slap-back — rather than the mix. For the music
+itself, take an interface input fed from the mixer, or a loopback device
+(BlackHole on macOS, VB-Cable on Windows) carrying what the DJ software
+plays. The panel says under the picker when the chosen input is a
+microphone, and the stage strip's device name is a click target with the
+same list behind it.
+
 Four bands, each with its own frequency range, gain and envelope timing,
 available as modulation sources alongside the LFOs. Defaults are kick/sub,
 bass, mids and highs; the edges are draggable in the panel because what

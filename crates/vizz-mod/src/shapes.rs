@@ -35,6 +35,11 @@ pub struct ModShape {
     /// from it. Shown in the menu, because it is the difference between
     /// a fader you can still park at the top and one you cannot.
     pub bipolar: bool,
+    /// The audio band it listens to, if any. For the warning under the
+    /// menu: a shape gated on a band that never reaches the gate is
+    /// inert with its fader still reading amber, and nothing else says
+    /// which band to go and fit.
+    pub band: Option<usize>,
     /// Builds the source chain and returns the node to feed the sink.
     build: fn(&mut NodeGraph, [f32; 2]) -> NodeId,
 }
@@ -57,6 +62,7 @@ pub const SHAPES: &[ModShape] = &[
                 picture stop being still.",
         depth: 0.35,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::Sine, Rate::Beats(8.0)), at),
     },
     ModShape {
@@ -64,6 +70,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "A sine over four beats — one bar in four-four.",
         depth: 0.35,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::Sine, Rate::Beats(4.0)), at),
     },
     ModShape {
@@ -72,6 +79,7 @@ pub const SHAPES: &[ModShape] = &[
                 next one.",
         depth: 0.6,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let trig = g.add(NodeKind::BeatTrig { beats: 1.0 }, at);
             let env = g.add(
@@ -88,6 +96,7 @@ pub const SHAPES: &[ModShape] = &[
                 land, not chatter.",
         depth: 0.7,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let trig = g.add(NodeKind::BeatTrig { beats: 4.0 }, at);
             let env = g.add(
@@ -104,6 +113,7 @@ pub const SHAPES: &[ModShape] = &[
                 have to ride.",
         depth: 0.5,
         bipolar: false,
+        band: None,
         build: |g, at| g.add(NodeKind::Phasor { beats: 4.0 }, at),
     },
     ModShape {
@@ -112,6 +122,7 @@ pub const SHAPES: &[ModShape] = &[
                 the next.",
         depth: 0.5,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let phasor = g.add(NodeKind::Phasor { beats: 4.0 }, at);
             let flip = g.add(NodeKind::Scale { mul: -1.0, add: 1.0 }, step(at, 1));
@@ -125,6 +136,7 @@ pub const SHAPES: &[ModShape] = &[
                 lands on the beat instead of sliding past it.",
         depth: 0.5,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let phasor = g.add(NodeKind::Phasor { beats: 4.0 }, at);
             let steps = g.add(NodeKind::Quantise { steps: 4.0 }, step(at, 1));
@@ -138,6 +150,7 @@ pub const SHAPES: &[ModShape] = &[
                 drum rather than the clock.",
         depth: 0.6,
         bipolar: false,
+        band: Some(0),
         build: |g, at| band_env(g, at, 0, 0.005, 0.18),
     },
     ModShape {
@@ -145,6 +158,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "The same, on the high-mid band.",
         depth: 0.5,
         bipolar: false,
+        band: Some(2),
         build: |g, at| band_env(g, at, 2, 0.005, 0.14),
     },
     ModShape {
@@ -152,6 +166,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "The top band, smoothed. Shimmer rather than hits.",
         depth: 0.4,
         bipolar: false,
+        band: Some(3),
         build: |g, at| {
             let band = g.add(NodeKind::Band(3), at);
             let smooth = g.add(
@@ -168,6 +183,7 @@ pub const SHAPES: &[ModShape] = &[
                 track pushing, not one drum.",
         depth: 0.45,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let level = g.add(NodeKind::Level, at);
             let curve = g.add(
@@ -189,6 +205,7 @@ pub const SHAPES: &[ModShape] = &[
                 beat-locked — this is texture, not rhythm.",
         depth: 0.25,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::Sine, Rate::Hz(4.0)), at),
     },
     ModShape {
@@ -196,6 +213,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "A new value every beat, held until the next one.",
         depth: 0.5,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::SampleHold, Rate::Beats(1.0)), at),
     },
     ModShape {
@@ -203,6 +221,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "Random, twelve times a second. Broken neon.",
         depth: 0.3,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::SampleHold, Rate::Hz(12.0)), at),
     },
 ];

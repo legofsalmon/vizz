@@ -844,6 +844,7 @@ impl Gui {
         if self.quit_armed {
             quit_prompt(&self.ctx);
         }
+        drop_hint(&self.ctx);
         self.notices.draw(&self.ctx);
         if self.performance {
             return self
@@ -1054,6 +1055,100 @@ impl Gui {
             self.preset_key = Some(slot);
         }
         Ok(actions)
+    }
+}
+
+/// The rim and caption while a file is held over the window. A dragged
+/// file used to get nothing until it landed — which is the moment it was
+/// too late to learn whether this was the right window, or a file the
+/// app could take. The caption says what the drop will do, or why it
+/// will do nothing, before the hand lets go.
+fn drop_hint(ctx: &egui::Context) {
+    let files = ctx.input(|i| i.raw.hovered_files.clone());
+    if files.is_empty() {
+        return;
+    }
+    let ext = files
+        .iter()
+        .filter_map(|f| f.path.as_ref())
+        .filter_map(|p| p.extension())
+        .filter_map(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .next();
+    let caption = match ext.as_deref() {
+        Some("ply" | "xyz" | "pts" | "csv" | "png" | "jpg" | "jpeg") => "drop to load it as a cloud",
+        Some("gpl" | "hex" | "txt") => "drop to add the palette",
+        Some(_) => {
+            "not a file vizz can load — clouds are .ply .xyz .pts .csv .png .jpg, palettes .gpl .hex .txt"
+        }
+        None => "drop to load — clouds and palettes",
+    };
+    let rect = ctx.content_rect();
+    let p = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("drop-hint"),
+    ));
+    p.rect_stroke(
+        rect.shrink(3.0),
+        6.0,
+        egui::Stroke::new(3.0, theme::CURRENT),
+        egui::StrokeKind::Inside,
+    );
+    let ink = vizz_design::ink::PRIMARY;
+    let galley = p.layout_no_wrap(caption.to_string(), egui::FontId::proportional(15.0), ink);
+    let size = galley.size() + egui::vec2(28.0, 16.0);
+    let card = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.bottom() - 60.0),
+        size,
+    );
+    p.rect_filled(card, 6.0, vizz_design::surface::RAISED);
+    p.rect_stroke(card, 6.0, egui::Stroke::new(1.0, theme::CURRENT), egui::StrokeKind::Inside);
+    p.galley(card.min + egui::vec2(14.0, 8.0), galley, ink);
+}
+
+#[cfg(test)]
+mod drop_hint_tests {
+    use super::*;
+
+    fn painted(files: Vec<egui::HoveredFile>) -> String {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(800.0, 600.0),
+            )),
+            hovered_files: files,
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        drop_hint(&ctx);
+        let out = ctx.end_pass();
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => out.push_str(t.galley.text()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for s in &out.shapes {
+            walk(&s.shape, &mut text);
+        }
+        text
+    }
+
+    /// A file held over the window is answered before it lands: a
+    /// cloud, a palette, or a refusal with the list — and nothing at all
+    /// when nothing is held.
+    #[test]
+    fn a_hovered_file_gets_a_caption_before_it_lands() {
+        let file = |name: &str| egui::HoveredFile { path: Some(name.into()), mime: String::new() };
+        assert_eq!(painted(vec![]), "", "a caption with nothing held");
+        assert!(painted(vec![file("scan.ply")]).contains("as a cloud"));
+        assert!(painted(vec![file("dusk.gpl")]).contains("palette"));
+        let refused = painted(vec![file("notes.docx")]);
+        assert!(refused.contains("not a file vizz can load"), "{refused}");
+        assert!(refused.contains(".ply"), "the refusal should list what is loadable: {refused}");
     }
 }
 
@@ -1478,6 +1573,7 @@ mod tests {
                 clock_ticking: false,
                 reacting: false,
                 tap_count: 0,
+                auto_bpm: false,
             },
             video: None,
             live_cloud: None,

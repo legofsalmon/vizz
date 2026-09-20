@@ -1373,6 +1373,7 @@ impl App {
                         device: self.engine.audio.device_name.clone(),
                         reacting: vizz_mod::shapes::reacting(&self.engine.modulation.graph),
                         tap_count: self.tap.pending(),
+                        auto_bpm: self.audio_auto_bpm,
                         bands: std::array::from_fn(|i| st.band(i)),
                         raw: std::array::from_fn(|i| st.raw(i)),
                         raw_peak: std::array::from_fn(|i| st.raw_peak(i)),

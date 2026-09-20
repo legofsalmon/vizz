@@ -436,6 +436,7 @@ fn audio_view() -> vizz_ui::AudioView {
         clock_ticking: true,
         reacting: false,
         tap_count: 0,
+        auto_bpm: false,
     }
 }
 

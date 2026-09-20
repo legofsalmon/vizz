@@ -2245,9 +2245,44 @@ fn status_strip(
             // exists and one anybody finds.
             .on_hover_text(if state.audio.clock_midi {
                 "following MIDI clock — panel ▸ audio ▸ midi clock to go back to the internal one"
+            } else if state.audio.auto_bpm {
+                "detected from the audio — tap to override, or panel ▸ audio ▸ auto to switch it off"
             } else {
                 "internal clock — tap to set it, or panel ▸ audio ▸ midi clock to follow your mixer"
             });
+            // The source, as a badge beside the number: MIDI when the
+            // clock is followed, AUTO when detection drives it, and a
+            // question mark on either when it is set but not actually
+            // steering — no ticks arriving, or a detection too unsure
+            // to be trusted, with the clock coasting on its last tempo.
+            // The internal clock gets nothing: it is the state that
+            // needs no explaining.
+            let sure = state.audio.confidence >= vizz_audio::MIN_CONFIDENCE;
+            let source = match (state.audio.clock_midi, state.audio.clock_ticking, state.audio.auto_bpm) {
+                (true, true, _) => Some(("MIDI", LIVE, "following MIDI clock from the controller")),
+                (true, false, _) => Some((
+                    "MIDI?",
+                    WARN,
+                    "set to follow MIDI clock, but no ticks are arriving — running free on the last tempo",
+                )),
+                (false, _, true) if sure => Some(("AUTO", LIVE, "the tempo is detected from the audio")),
+                (false, _, true) => Some((
+                    "AUTO?",
+                    WARN,
+                    "auto is on but the detection is not sure — the clock is coasting on its last tempo; tap to set it",
+                )),
+                _ => None,
+            };
+            if let Some((badge, ink, hover)) = source {
+                ui.label(
+                    egui::RichText::new(badge)
+                        .size(10.5)
+                        .strong()
+                        .monospace()
+                        .color(ink),
+                )
+                .on_hover_text(hover);
+            }
             // Recording, both ways round. This chip used to appear only
             // once a take was already running, which made it a stop
             // button wearing a record button's name: the only way to
@@ -2402,6 +2437,12 @@ fn audio_strip(
         let each = ((width - 160.0) / 4.0).clamp(60.0, 130.0);
         for (i, label) in BANDS.iter().enumerate() {
             let v = audio.bands[i].clamp(0.0, 1.0);
+            // When this band last cleared the gate, for the modulator
+            // popup's warning; see `gate_silence`.
+            if v >= vizz_mod::shapes::GATE {
+                let now = ui.input(|inp| inp.time);
+                ui.data_mut(|d| d.insert_temp(gate_crossed_id(i), now));
+            }
             let (r, _) = ui.allocate_exact_size(vec2(each, 12.0), Sense::hover());
             ui.painter().rect_filled(r, 2.0, TRACK);
             // The track was 15 RGB points off the background — invisible,
@@ -2744,7 +2785,7 @@ fn fader(
                 ui.label(number);
             }
             midi_chip(ui, state, actions, addr);
-            mod_popup(ui, addr, slot, shape, actions);
+            mod_popup(ui, addr, slot, shape, state.audio.connected, actions);
         }
         _ => {
             // Unassigned, or pointing at a parameter this build no longer
@@ -2908,6 +2949,7 @@ fn mod_popup(
     addr: &str,
     slot: usize,
     current: Option<usize>,
+    audio_connected: bool,
     actions: &mut PerformanceActions,
 ) {
     if !is_mod_open(ui, slot) {
@@ -2959,6 +3001,24 @@ fn mod_popup(
                             }
                         }
                     });
+                // A gated shape whose band never opens the gate is inert
+                // with its fader still reading amber. Said here, where
+                // the shape was chosen, with the thing that fixes it.
+                if audio_connected
+                    && let Some(band) = current.and_then(|i| vizz_mod::shapes::SHAPES[i].band)
+                {
+                    let silent = gate_silence(ui, band);
+                    if silent > GATE_PATIENCE {
+                        ui.small(
+                            egui::RichText::new(format!(
+                                "the {} band has not crossed the gate for {silent:.0} s — \
+                                 press fit in the panel's audio section",
+                                vizz_mod::BAND_NAMES[band]
+                            ))
+                            .color(WARN),
+                        );
+                    }
+                }
             });
         });
     if let Some(pick) = chosen {
@@ -2972,6 +3032,22 @@ fn mod_popup(
 
 fn mod_key(slot: usize) -> egui::Id {
     egui::Id::new(("mod-open", slot))
+}
+
+/// How long a band may sit under the gate before the popup says so. A
+/// breakdown is not a fault; a whole verse without a kick reaching the
+/// line is a gain to fit.
+const GATE_PATIENCE: f64 = 10.0;
+
+fn gate_crossed_id(band: usize) -> egui::Id {
+    egui::Id::new(("band-gate-crossed", band))
+}
+
+/// Seconds since `band` last cleared the gate, or since launch if it
+/// never has. The strip records the crossings; this reads them.
+fn gate_silence(ui: &egui::Ui, band: usize) -> f64 {
+    let now = ui.input(|i| i.time);
+    now - ui.data(|d| d.get_temp::<f64>(gate_crossed_id(band))).unwrap_or(0.0)
 }
 fn open_mod(ui: &egui::Ui, slot: usize) {
     ui.memory_mut(|m| m.data.insert_temp(mod_key(slot), true));

@@ -406,6 +406,9 @@ pub struct AudioView {
     /// The three "react" shapes are all attached — see
     /// [`vizz_mod::shapes::reacting`].
     pub reacting: bool,
+    /// Auto tempo is switched on, so the stage can say where the clock
+    /// comes from.
+    pub auto_bpm: bool,
     /// Taps in the open series, for the button to count them off.
     pub tap_count: usize,
 }
@@ -1324,6 +1327,32 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 /// The beat clock's controls: what is detected, whether it drives the
 /// clock, whether MIDI clock does, and tap. Its own row so it is drawn
 /// with or without an audio input.
+/// Which side of the desk the input is on. The system default is the
+/// built-in microphone on nearly every laptop, and a microphone hears
+/// the room — the crowd, the PA's slap-back — rather than the mix. Said
+/// under the picker, with the two things that hear the music instead.
+fn mic_note(ui: &mut egui::Ui, state: &PanelState) {
+    let name = state.audio.device.as_deref();
+    let mic = name.is_none_or(|n| {
+        let n = n.to_ascii_lowercase();
+        n.contains("microphone") || n.contains(" mic") || n.starts_with("mic")
+    });
+    if !mic {
+        return;
+    }
+    ui.small(
+        egui::RichText::new(match name {
+            None => "the system default is usually the built-in microphone — it hears the room, not the mix",
+            Some(_) => "a microphone hears the room, not the mix",
+        })
+        .color(vizz_design::ink::FAINT),
+    )
+    .on_hover_text(
+        "for the music itself, pick an interface input fed from the mixer, or a loopback \
+         device (BlackHole on macOS, VB-Cable on Windows) carrying what the DJ software plays",
+    );
+}
+
 fn tempo_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let a = &state.audio;
     ui.horizontal(|ui| {
@@ -1376,6 +1405,7 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     // clicked already says so, and half the sections never restated
     // theirs. The status dot lives on the input row instead.
     device_picker(ui, state, actions);
+    mic_note(ui, state);
 
     // The clock's controls, before the bands: they used to sit under the
     // early return below, so with no interface plugged in — or after one

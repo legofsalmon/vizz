@@ -878,16 +878,23 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
     let name = view
         .upcoming
         .and_then(|s| view.names.get(s).cloned().flatten());
+    let size = vec2(ui.available_width().clamp(120.0, 210.0), 26.0);
+    // Bars to the next step, when there is room for the number: the
+    // sweep says something is coming, this says when. The panel's
+    // narrow copy keeps the short form rather than clipping it.
+    let left = view
+        .auto_phase
+        .map(|ph| (1.0 - ph.clamp(0.0, 1.0)) * view.bars)
+        .filter(|_| size.x >= 190.0);
     // ASCII only. egui's default font has no arrow glyph, so "→" renders
     // as a tofu box — which on the one control that says whether the show
     // is running itself reads as a bug.
-    let text = match (view.autopilot, name) {
-        (true, Some(n)) => format!("{label}  >  {n}"),
-        (true, None) => format!("{label}  >  (empty grid)"),
-        (false, _) => format!("{label} off"),
+    let text = match (view.autopilot, name, left) {
+        (true, Some(n), Some(b)) => format!("{label}  {b:.1} bars  >  {n}"),
+        (true, Some(n), None) => format!("{label}  >  {n}"),
+        (true, None, _) => format!("{label}  >  (empty grid)"),
+        (false, ..) => format!("{label} off"),
     };
-
-    let size = vec2(ui.available_width().clamp(120.0, 210.0), 26.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter();
     p.rect_filled(rect, 4.0, if view.autopilot { AUTO_BED } else { EMPTY });
@@ -927,10 +934,13 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
         },
     );
 
-    if response
-        .on_hover_text("walk the filled pads in time with the clock")
-        .clicked()
-    {
+    let hover = match view.auto_phase.map(|ph| (1.0 - ph.clamp(0.0, 1.0)) * view.bars) {
+        Some(b) if view.autopilot => format!(
+            "walking the filled pads in time with the clock — {b:.1} bars to the next step; click to stop"
+        ),
+        _ => "walk the filled pads in time with the clock".to_string(),
+    };
+    if response.on_hover_text(hover).clicked() {
         actions.set_autopilot = Some(!view.autopilot);
     }
 }
