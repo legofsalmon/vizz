@@ -158,6 +158,7 @@ fn main() {
         .collect();
     let state = performance::PerformanceState {
         project: "Warehouse",
+        record_countdown: None,
         decks: &decks,
         active_deck: 1,
         follow_columns: Some(true),

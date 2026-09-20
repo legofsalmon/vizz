@@ -320,6 +320,13 @@ pub fn takes_root() -> PathBuf {
 /// [`takes_root`]. UTC in the name — std has no timezone database, and a
 /// name that sorts correctly matters more than local wall time.
 pub fn take_dir() -> PathBuf {
+    take_dir_for(None)
+}
+
+/// Where the next take goes: `vizz-<look>-<date>-<time>`, the look
+/// being the recalled preset when there is one — so a folder says what
+/// was recorded, not only when. The stamp is UTC, as it always was.
+pub fn take_dir_for(look: Option<&str>) -> PathBuf {
     let base = takes_root();
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -327,7 +334,20 @@ pub fn take_dir() -> PathBuf {
         .unwrap_or(0);
     let (y, m, d) = civil_from_unix(secs);
     let (hh, mm, ss) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
-    base.join(format!("vizz-{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}"))
+    let stamp = format!("{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}");
+    base.join(match take_label(look) {
+        Some(look) => format!("vizz-{look}-{stamp}"),
+        None => format!("vizz-{stamp}"),
+    })
+}
+
+/// A look's name as a folder name can carry it: the preset tidying,
+/// then spaces to dashes, so `night bus` records as `night-bus`.
+fn take_label(look: Option<&str>) -> Option<String> {
+    // Emptiness is checked first: the tidying names a blank "untitled",
+    // and a take of nothing recalled is filed under the stamp alone.
+    let look = look?.trim();
+    (!look.is_empty()).then(|| vizz_mod::library::sanitize(look).replace(' ', "-"))
 }
 
 /// Days-since-epoch to calendar date (Howard Hinnant's civil algorithm).
@@ -632,5 +652,24 @@ mod persistence_tests {
         assert_eq!(old.audio_bands, None);
         assert!(!old.start_on_stage);
         assert_eq!(RecordPrefs::default().quality, 92);
+    }
+}
+
+#[cfg(test)]
+mod take_name_tests {
+    use super::*;
+
+    /// A take is filed under the look it recorded, tidied for a folder
+    /// name, and under the stamp alone when nothing was recalled.
+    #[test]
+    fn a_take_folder_names_the_look() {
+        assert_eq!(take_label(Some("night bus")).as_deref(), Some("night-bus"));
+        assert_eq!(take_label(Some("  ")), None);
+        assert_eq!(take_label(None), None);
+        let dir = take_dir_for(Some("night bus"));
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("vizz-night-bus-"), "{name}");
+        let plain = take_dir_for(None).file_name().unwrap().to_string_lossy().into_owned();
+        assert!(plain.starts_with("vizz-2"), "{plain}");
     }
 }

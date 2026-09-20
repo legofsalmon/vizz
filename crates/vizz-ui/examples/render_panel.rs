@@ -321,6 +321,7 @@ fn main() {
         project: "Show 1".into(),
         local_address: Some("192.168.1.42".into()),
         takes_root: None,
+        record_countdown: None,
         decks: Vec::new(),
         active_deck: 0,
         follow_columns: None,

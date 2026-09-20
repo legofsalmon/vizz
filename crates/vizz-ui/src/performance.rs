@@ -79,6 +79,8 @@ pub struct PerformanceState<'a> {
     /// A recording in progress: the strip wears a red chip, because
     /// forgetting a recording is how disks fill mid-set.
     pub recording: Option<crate::RecordingView>,
+    /// Seconds left on a recording countdown, when one is running.
+    pub record_countdown: Option<u32>,
     pub outputs: &'a [OutputStatus],
     pub audio: &'a AudioView,
     pub fps: f32,
@@ -554,7 +556,7 @@ pub fn draw(
                     }
 
                     if !state.presets.is_empty() && !peeking && !stand.hides_layers() {
-                        section(ui, "PRESETS");
+                        section(ui, "PRESETS · cut");
                         preset_row(ui, state, &mut actions, col_w, full.y);
                         ui.add_space(10.0);
                     }
@@ -669,7 +671,7 @@ pub fn draw(
                     // against a theoretical one.
                     deck_row(ui, state, &mut actions);
                     if let Some(gravity) = state.gravity.filter(|_| !peeking) {
-                        section(ui, "GRAVITY");
+                        section(ui, "GRAVITY · blend");
                         // Sixteen empty pads for a layer nobody has touched
                         // is a lot of screen spent saying nothing — but
                         // hiding the row entirely hid its *store* button
@@ -691,7 +693,7 @@ pub fn draw(
 
 
 
-                        section(ui, "SCENES");
+                        section(ui, "SCENES · blend");
                         let mut scenes = state.grid.clone();
                         scenes.width = Some(inner_w);
                         actions.grid = crate::grid_view::draw(ui, &scenes);
@@ -727,7 +729,7 @@ pub fn draw(
                         // that is where you are already looking when you
                         // decide there are too few or too many.
                         ui.horizontal(|ui| {
-                            section(ui, "CONTROLS");
+                            section(ui, "FADERS");
                             ui.add_space(6.0);
                             let count = macros.count();
                             let minus = ui
@@ -931,6 +933,12 @@ fn gravity_ghost(ui: &mut egui::Ui, actions: &mut PerformanceActions) {
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
+    // "SCENES · blend": the tail says how the row plays, in the fainter
+    // ink. A recall lands at once and a pad blends, and the rule is the
+    // one line every glance at the row passes over.
+    let (title, tail) = title
+        .split_once(" · ")
+        .map_or((title, None), |(t, tail)| (t, Some(tail)));
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(title)
@@ -939,6 +947,14 @@ fn section(ui: &mut egui::Ui, title: &str) {
                 .strong()
                 .monospace(),
         );
+        if let Some(tail) = tail {
+            ui.label(
+                egui::RichText::new(tail)
+                    .size(10.5)
+                    .color(vizz_design::ink::FAINT)
+                    .monospace(),
+            );
+        }
         let rect = ui.available_rect_before_wrap();
         let y = rect.center().y;
         ui.painter().line_segment(
@@ -2071,9 +2087,16 @@ fn punch_button(
             }
         });
     if is_latched {
-        // The latch pip: a small ARMED corner square, the one visual
-        // that says "this stays on when you let go".
+        // A rim round the whole button and the corner pip: a latched
+        // punch stays on when you let go, and a 6x6 pip alone was too
+        // little to tell that from a held one across a desk.
         let r = response.rect;
+        ui.painter().rect_stroke(
+            r,
+            4.0,
+            egui::Stroke::new(2.0, crate::theme::ARMED),
+            egui::StrokeKind::Inside,
+        );
         ui.painter().rect_filled(
             egui::Rect::from_min_size(
                 egui::pos2(r.right() - 8.0, r.top() + 2.0),
@@ -2291,8 +2314,8 @@ fn status_strip(
             // take you cannot begin from the screen you play on is a
             // take that does not get begun.
             if let Some(id) = registry.id("/record/active") {
-                let (text, fill, ink, hover) = match &state.recording {
-                    Some(rec) => (
+                let (text, fill, ink, hover) = match (&state.recording, state.record_countdown) {
+                    (Some(rec), _) => (
                         format!(
                             "REC {}:{:02} · {}f{}",
                             rec.secs / 60,
@@ -2308,11 +2331,21 @@ fn status_strip(
                         Color32::WHITE,
                         "recording the master — click to stop",
                     ),
+                    // A countdown is the parameter already on and no
+                    // frames yet: said as such, and the click cancels
+                    // it. The chip used to ignore the parameter, so a
+                    // countdown could only be stopped from the panel.
+                    (None, Some(left)) => (
+                        format!("REC in {left}…"),
+                        vizz_design::accent::REC_BED,
+                        Color32::WHITE,
+                        "counting down to the take — click to cancel",
+                    ),
                     // Idle sits dark with the word in a dimmed red, so it
                     // reads as armed-and-waiting rather than as another
                     // status light, and cannot be mistaken at a glance
                     // for a take in progress.
-                    None => (
+                    (None, None) => (
                         "REC".to_string(),
                         vizz_design::accent::REC_BED,
                         vizz_design::accent::REC_INK,
@@ -2324,19 +2357,12 @@ fn status_strip(
                         .fill(fill),
                 );
                 if chip.on_hover_text(hover).clicked() {
-                    registry.set(id, if state.recording.is_some() { 0.0 } else { 1.0 });
+                    // Reads the parameter, as the panel's button does:
+                    // during a countdown it is already on, and the
+                    // click has to be the cancel.
+                    let on = registry.target(id) >= 0.5;
+                    registry.set(id, if on { 0.0 } else { 1.0 });
                 }
-            }
-            if state.audio.clock_midi {
-                // Following the wire — or supposed to be. Green while
-                // ticks arrive, warning-amber while the wire is silent
-                // and the clock is running free on its last tempo.
-                let (word, colour) = if state.audio.clock_ticking {
-                    ("MIDI", LIVE)
-                } else {
-                    ("MIDI?", WARN)
-                };
-                ui.label(egui::RichText::new(word).size(13.0).strong().color(colour));
             }
             // Beat indicator: brightest on the downbeat, so tempo is
             // visible without reading a number.
@@ -2929,7 +2955,7 @@ fn midi_chip(
                     egui::Label::new(egui::RichText::new("learn").size(11.0).color(INK_4))
                         .sense(Sense::click()),
                 )
-                .on_hover_text("bind the next control you move to this fader")
+                .on_hover_text("bind the next knob or fader you move to this fader")
                 .clicked()
             {
                 actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::param(addr)));
@@ -3779,7 +3805,7 @@ mod tests {
         // Wide: everything is still there, because nothing had to stand
         // down to make room for the picture.
         let text = render_at(&mut macros, &reg, &MidiView::default(), None, None, 1440.0);
-        for want in ["SCENES", "PUNCH", "CONTROLS", "size"] {
+        for want in ["SCENES", "PUNCH", "FADERS", "size"] {
             assert!(text.contains(want), "{want} went missing on a wide window: {text}");
         }
 
@@ -3809,7 +3835,7 @@ mod tests {
         // is its own problem and not the width fallback under test here.
         // Asserting a name would be asserting that bug instead of this
         // one, and would go on failing after this one was fixed.
-        assert!(text.contains("CONTROLS"), "the narrow layout lost the desk: {text}");
+        assert!(text.contains("FADERS"), "the narrow layout lost the desk: {text}");
     }
 
 
@@ -3827,7 +3853,7 @@ mod tests {
 
         let text = render(&mut macros, &reg);
         assert!(
-            text.contains("CONTROLS"),
+            text.contains("FADERS"),
             "the desk lost its caption: {text}"
         );
         // The count is shown, not only implied by counting faders.
@@ -3936,6 +3962,7 @@ mod tests {
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -4053,6 +4080,7 @@ mod tests {
          -> (PerformanceActions, Vec<(String, egui::Rect)>) {
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
             decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -4213,6 +4241,7 @@ mod tests {
          -> Vec<(String, egui::Pos2)> {
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
             decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -4594,6 +4623,7 @@ mod tests {
             });
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -4821,6 +4851,7 @@ mod tests {
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
             decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -5219,6 +5250,7 @@ mod tests {
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -5361,6 +5393,7 @@ mod tests {
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -5496,6 +5529,7 @@ mod tests {
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -5822,6 +5856,7 @@ mod tests {
         let decks = SHEET_DECKS.with(|f| f.borrow().clone());
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &decks,
             active_deck: 1,
             follow_columns: (!decks.is_empty()).then_some(false),
@@ -5893,6 +5928,7 @@ mod tests {
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -5968,6 +6004,7 @@ mod tests {
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -6040,6 +6077,7 @@ mod tests {
         ];
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &decks,
             active_deck: 0,
             follow_columns: Some(false),
@@ -6159,6 +6197,7 @@ mod tests {
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,

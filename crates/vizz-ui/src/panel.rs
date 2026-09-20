@@ -108,6 +108,13 @@ pub struct PanelActions {
     pub cloud_show: Option<usize>,
     /// Recording settings the user changed this frame.
     pub record_setup: Option<RecordSetup>,
+    /// Size the window to the output's shape, as large as the display
+    /// allows. The window is a preview and never follows the output on
+    /// its own; this is the one gesture that makes it.
+    pub fit_window: bool,
+    /// A line for the notices, from a gesture whose outcome the panel
+    /// itself decided — fit says which bands it set and which were silent.
+    pub notice: Option<String>,
     /// Connect the video input to this spec, or `Some(None)` to stop
     /// the one running. The app owns opening: it holds the GPU and the
     /// runtimes, and the panel only ever asks.
@@ -260,6 +267,8 @@ pub struct PanelState {
     pub focus_filter: bool,
     /// A recording in progress, if one is.
     pub recording: Option<RecordingView>,
+    /// Seconds left on a recording countdown, when one is running.
+    pub record_countdown: Option<u32>,
     /// Draw every collapsible section open.
     ///
     /// For offscreen rendering — tests and the preview example — where
@@ -291,6 +300,7 @@ impl Default for PanelState {
             video: Default::default(),
             local_address: Default::default(),
             takes_root: None,
+            record_countdown: None,
             live_cloud: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: Default::default(),
@@ -840,6 +850,14 @@ pub struct UpdateView {
 fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let Some(version) = &state.update_available else { return };
     let view = state.update.clone().unwrap_or_default();
+    // "later" hides the row until the next launch. Only while idle: a
+    // download in flight, a build ready to install or a failure is news
+    // that must not be hidden behind an earlier click.
+    let snoozed = egui::Id::new("update-snoozed");
+    let idle = matches!(view.stage, vizz_update::Stage::Idle);
+    if idle && ui.data(|d| d.get_temp::<bool>(snoozed)).unwrap_or(false) {
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
         ui.colored_label(WARN, format!("vizz {version} available"));
         match &view.stage {
@@ -897,6 +915,14 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             }
         }
         ui.hyperlink_to("what changed", vizz_update::RELEASES_URL);
+        if idle
+            && ui
+                .small_button("later")
+                .on_hover_text("hide this until the next launch")
+                .clicked()
+        {
+            ui.data_mut(|d| d.insert_temp(snoozed, true));
+        }
     });
     ui.separator();
 }
@@ -1180,7 +1206,7 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
             crate::theme::LEARN,
             // "move or press": sweeps are moved, triggers are pressed, and
             // this line is shown for both kinds of learn.
-            format!("learning {} — move or press a control (seen: {seen})", target.label),
+            format!("learning {} — move a knob or press a button (seen: {seen})", target.label),
         );
     }
 }
@@ -1211,7 +1237,12 @@ fn binding_target(b: &vizz_midi::Binding) -> String {
 /// gain above 1 the envelope covers the raw signal completely, and the
 /// whole point of the meter is comparing the two to set the gain.
 fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(80.0, 12.0), egui::Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(80.0, 12.0), egui::Sense::hover());
+    response.on_hover_text(
+        "top: what modulation gets · bottom: what is arriving · the red mark means this band \
+         is pinned at full",
+    );
     let p = ui.painter();
     p.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(140));
     let h = rect.height() * 0.5;
@@ -1452,7 +1483,10 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                         .fixed_decimals(1)
                         .suffix(" dB"),
                 )
-                .on_hover_text("sensitivity — how hard this band drives modulation")
+                .on_hover_text(
+                    "sensitivity — how hard this band drives modulation. An analysis gain, not a \
+                     mixer gain: +18 dB is normal here",
+                )
                 .changed()
             {
                 band.set_gain_db(db);
@@ -1472,15 +1506,30 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             .clicked()
         {
             let mut fitted = bands;
+            let mut silent = Vec::new();
             for (i, band) in fitted.iter_mut().enumerate() {
                 // A silent band keeps whatever it had: dividing into
                 // nothing would ask for infinite gain, and a band nobody
                 // is feeding is not evidence of anything.
-                if let Some(db) = vizz_audio::fit_gain_db(a.raw_peak[i]) {
-                    band.set_gain_db(db);
+                match vizz_audio::fit_gain_db(a.raw_peak[i]) {
+                    Some(db) => band.set_gain_db(db),
+                    None => silent.push(vizz_mod::BAND_NAMES[i]),
                 }
             }
             bands = fitted;
+            // Said, because the press used to be silent when nothing was
+            // playing and the gains it left alone looked like gains it
+            // had set.
+            actions.notice = Some(match silent.len() {
+                0 => "fit all four bands from the last few seconds".to_string(),
+                4 => "nothing arrived in the last few seconds — play something, then fit".to_string(),
+                n => format!(
+                    "fit {} band{} from the last few seconds — {} silent, left as set",
+                    4 - n,
+                    if n == 3 { "" } else { "s" },
+                    silent.join(" and ")
+                ),
+            });
         }
         // Armed, matching the other destructive clicks: this sits one
         // button away from "fit" and throws away a gain setup that took
@@ -1529,7 +1578,8 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     }
 
     if a.dropped > 0 {
-        ui.small(format!("{} samples dropped", a.dropped));
+        ui.small(format!("{} samples dropped", a.dropped))
+            .on_hover_text("analysis fell behind — the picture is fine, the modulation missed frames");
     }
 }
 
@@ -2131,6 +2181,20 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
                 next.height = h;
                 commit = true;
             }
+        }
+        // The window follows the output only when asked: it is a
+        // preview, and a 4K output on a laptop must not open a 4K
+        // window. This sizes it to the output's shape, as large as the
+        // display allows.
+        if ui
+            .small_button("fit window")
+            .on_hover_text(
+                "size the window to the output's shape, as large as this display allows — the \
+                 window is only a preview; receivers and recordings get the full size",
+            )
+            .clicked()
+        {
+            actions.fit_window = true;
         }
     });
     // Said out loud while it matters, not only on hover: rebuilding the

@@ -834,7 +834,10 @@ impl App {
         let Some(state) = &mut self.state else { return };
         state
             .gui
-            .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+            .notify_info(format!(
+                "cloud '{name}' loaded into slot {slot} and shown — {}",
+                cloud_size_note(points.len())
+            ));
     }
 
     /// Put a cloud slot on screen: point `/cloud/a` at it, park the morph
@@ -1350,6 +1353,10 @@ impl App {
                 // than a syscall per frame.
                 local_address: vizz_io::net::local_ip().map(|ip| ip.to_string()),
                 takes_root: Some(self.takes_root.clone()),
+                record_countdown: record_countdown_left(
+                    self.record_countdown_secs,
+                    self.record_countdown_from,
+                ),
                 decks: deck_chips(&self.engine.decks, &self.midi_view),
                 active_deck: self.engine.decks.active(),
                 // Always on offer. Following is off by default, so a
@@ -1608,6 +1615,12 @@ impl App {
                     }
                 }
                 let mut notes: Notes = std::mem::take(&mut self.startup_notes);
+                if let Some(text) = &actions.notice {
+                    notes.push((false, text.clone()));
+                }
+                if actions.fit_window {
+                    fit_window(&state.window, [self.opts.outputs.width, self.opts.outputs.height]);
+                }
                 // The panel's react switch, applied here where the graph
                 // and the notices both are; the stage's goes through the
                 // Gui, which owns the modulation borrow on that path.
@@ -1859,7 +1872,8 @@ impl App {
                     self.record_countdown_from = None;
                     self.record_countdown_last = None;
                 }
-                let dir = crate::settings::take_dir();
+                let look = current_look_name(&self.engine, &self.library);
+                let dir = crate::settings::take_dir_for(look.as_deref());
                 match vizz_io::recorder::Recorder::new(
                     &state.ctx.device,
                     &dir,
@@ -1868,6 +1882,12 @@ impl App {
                     self.record_settings,
                 ) {
                     Ok(rec) => {
+                        write_take_sidecar(
+                            &dir,
+                            look.as_deref(),
+                            [publish.width(), publish.height()],
+                            &self.record_settings,
+                        );
                         state.gui.notify_info(format!("recording to {}", dir.display()));
                         log::info!("recording to {}", dir.display());
                         *slot = Some(rec);
@@ -3470,6 +3490,90 @@ fn follow_recall_bindings(
     }
 }
 
+/// Seconds left on a recording countdown, for the REC chip. Free of
+/// `self` because it is asked while the render state is borrowed.
+fn record_countdown_left(secs: u32, from: Option<std::time::Instant>) -> Option<u32> {
+    let left = secs as f32 - from?.elapsed().as_secs_f32();
+    (left > 0.0).then(|| left.ceil() as u32)
+}
+
+/// The look on screen by name, when one was recalled.
+fn current_look_name(
+    engine: &crate::engine::FrameEngine,
+    library: &vizz_mod::preset::Library,
+) -> Option<String> {
+    let slot = engine.current_preset()?;
+    preset_entries(library).into_iter().nth(slot.checked_sub(1)?).map(|e| e.name)
+}
+
+/// Size the window to the output's shape, as large as the display allows
+/// with room for the chrome. Only when asked — the window is a preview,
+/// and a remembered 4K output must not open a 4K window on a laptop.
+fn fit_window(window: &winit::window::Window, output: [u32; 2]) {
+    let scale = window.scale_factor();
+    let room = window
+        .current_monitor()
+        .map(|m| m.size().to_logical::<f32>(scale))
+        .map_or([1440.0, 900.0], |s| [s.width - 80.0, s.height - 120.0]);
+    let [ow, oh] = [output[0].max(1) as f32, output[1].max(1) as f32];
+    let k = (room[0] / ow).min(room[1] / oh).min(1.0);
+    let w = (ow * k).max(MIN_WINDOW[0] as f32);
+    let h = (oh * k).max(MIN_WINDOW[1] as f32);
+    let _ = window.request_inner_size(LogicalSize::new(w, h));
+}
+
+/// `take.json` beside the frames: what was recorded, at what size and
+/// rate, by which build — what assembling a video needs to know and what
+/// a folder of numbered frames cannot say for itself.
+fn write_take_sidecar(
+    dir: &std::path::Path,
+    look: Option<&str>,
+    size: [u32; 2],
+    settings: &vizz_io::recorder::Settings,
+) {
+    let json = serde_json::json!({
+        "vizz": env!("CARGO_PKG_VERSION"),
+        "look": look,
+        "width": size[0],
+        "height": size[1],
+        "fps": settings.fps,
+        "format": settings.format.extension(),
+        "max_secs": settings.max_secs,
+    });
+    match serde_json::to_string_pretty(&json) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(dir.join("take.json"), text) {
+                log::warn!("could not write take.json: {e}");
+            }
+        }
+        Err(e) => log::warn!("could not encode take.json: {e}"),
+    }
+}
+
+/// How big a loaded cloud is, and whether it was sampled down to fit a
+/// slot: a four-million-point scan silently became sixty-five thousand,
+/// and the app never said a number.
+fn cloud_size_note(points: usize) -> String {
+    let cap = vizz_render::attractor::POINTS;
+    if points > cap {
+        format!("{} points, sampled to {}", thousands(points), thousands(cap))
+    } else {
+        format!("{} points", thousands(points))
+    }
+}
+
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn apply_panel_actions(
     actions: vizz_ui::PanelActions,
     shared: &SharedMidi,
@@ -3788,4 +3892,21 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cloud_note_tests {
+    use super::*;
+
+    /// The notice says the number, with separators, and says when the
+    /// slot could not hold all of it.
+    #[test]
+    fn a_loaded_cloud_is_reported_by_size() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(65_536), "65,536");
+        assert_eq!(thousands(4_190_233), "4,190,233");
+        assert_eq!(cloud_size_note(12_000), "12,000 points");
+        assert_eq!(cloud_size_note(4_190_233), "4,190,233 points, sampled to 65,536");
+    }
 }

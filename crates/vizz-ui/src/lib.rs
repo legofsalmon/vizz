@@ -209,7 +209,7 @@ fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "MIDI learn armed: the next control you move or press binds to {label} — click to cancel"
+                            "MIDI learn armed: the next knob or button you move or press binds to {label} — click to cancel"
                         ))
                         .size(13.0)
                         .color(vizz_design::feedback::ON_LEARN_BED),
@@ -929,6 +929,7 @@ impl Gui {
         let health = state.health.as_ref();
         let perf_state = performance::PerformanceState {
             recording: state.recording,
+            record_countdown: state.record_countdown,
             outputs: &state.outputs,
             audio: &state.audio,
             fps: health.map(|h| h.fps).unwrap_or(0.0),
@@ -1322,6 +1323,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1377,6 +1379,7 @@ mod tests {
             project: "Basement".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1441,6 +1444,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1498,6 +1502,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1547,6 +1552,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1653,6 +1659,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1711,6 +1718,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1876,6 +1884,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1929,6 +1938,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: None,
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2011,6 +2021,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2070,6 +2081,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2139,6 +2151,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2206,6 +2219,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2330,6 +2344,7 @@ mod tests {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
             takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,

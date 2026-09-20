@@ -194,6 +194,10 @@ where every finished frame is a finished file, so a crash mid-take costs
 nothing already written. Takes land in `~/Movies/vizz/vizz-<timestamp>/`
 (macOS) or `~/Videos/vizz/…` elsewhere; the recording section says so
 and has a **reveal** button that opens the folder. Alongside the frames
+is a `take.json` naming the look that was recalled, the size, the rate,
+the format and the build that wrote it — what assembling a video needs to
+know — and the folder itself is named for the look (`vizz-night-bus-…`)
+when one was on screen. Beside them
 is a `frames.csv` of per-frame wall-clock times so a variable-rate
 capture assembles honestly:
 
@@ -1505,6 +1509,12 @@ Windows use CoreMIDI/WinMM and need nothing extra.
 Send standard OSC messages (float, int, double, or bool args) to the UDP
 port. Unknown addresses and malformed packets are logged and ignored —
 control input can never crash the renderer.
+
+The words on screen are accepted on the wire as aliases: `/look/…` for
+`/preset/…`, `/song/…` for `/deck/…`, `/background/…` for `/bg/…`,
+`/ink/N/…` for `/pal/N/…` and `/print/N/…` for `/lN/…`. The stored
+addresses in the table stay canonical — presets and bindings hold them —
+and the aliases are read on the way in only.
 
 | Address | Range | Default | Meaning |
 |---------|-------|---------|---------|

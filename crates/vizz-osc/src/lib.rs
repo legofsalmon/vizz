@@ -169,19 +169,20 @@ fn apply_packet(registry: &ParamRegistry, columns: &ColumnSync, packet: OscPacke
                 log::debug!("OSC message {} had no numeric argument", msg.addr);
                 return;
             };
+            let addr = canonical(&msg.addr);
             // A driven parameter is the transition's, not the wire's:
             // `/cloud/morph` is swept by whichever scene change is in
             // flight, and an OSC write landing in the middle of that is
             // two things steering one value. Dropped with a note rather
             // than silently, so a script that still sends one can be
             // found.
-            if let Some(id) = registry.id(&msg.addr)
+            if let Some(id) = registry.id(&addr)
                 && registry.defs()[id.index()].driven
             {
                 log::debug!("OSC message {} is driven by the app, not by hand", msg.addr);
                 return;
             }
-            registry.set_by_addr(&msg.addr, value);
+            registry.set_by_addr(&addr, value);
         }
         OscPacket::Bundle(bundle) => {
             for inner in bundle.content {
@@ -189,6 +190,28 @@ fn apply_packet(registry: &ParamRegistry, columns: &ColumnSync, packet: OscPacke
             }
         }
     }
+}
+
+/// The on-screen words, accepted on the wire. The stored addresses stay
+/// canonical — presets and bindings hold them — and these are read on
+/// the way in only: `/look/…` for `/preset/…`, `/song/…` for `/deck/…`,
+/// `/background/…` for `/bg/…`, `/ink/N/…` for `/pal/N/…` and
+/// `/print/N/…` for `/lN/…`. The panel names the thing, the wire may
+/// use that name, and the address a preset wrote in 0.12 still works.
+pub fn canonical(addr: &str) -> std::borrow::Cow<'_, str> {
+    for (alias, real) in [("/look/", "/preset/"), ("/song/", "/deck/"), ("/background/", "/bg/"), ("/ink/", "/pal/")] {
+        if let Some(rest) = addr.strip_prefix(alias) {
+            return format!("{real}{rest}").into();
+        }
+    }
+    if let Some(rest) = addr.strip_prefix("/print/")
+        && let Some((n, tail)) = rest.split_once('/')
+        && !n.is_empty()
+        && n.chars().all(|c| c.is_ascii_digit())
+    {
+        return format!("/l{n}/{tail}").into();
+    }
+    addr.into()
 }
 
 /// Turn `/composition/decks/N/select` into a deck select, if this is one
@@ -708,5 +731,25 @@ mod tests {
         client.send_to(&bytes, server.local_addr()).unwrap();
 
         assert!(wait_for(&reg, COLUMN_FIRE, 8.0), "the column never arrived");
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::canonical;
+
+    /// The words on screen reach the parameters they name, and an
+    /// address that is already canonical passes through untouched.
+    #[test]
+    fn the_on_screen_words_are_accepted_on_the_wire() {
+        assert_eq!(canonical("/look/recall"), "/preset/recall");
+        assert_eq!(canonical("/song/select"), "/deck/select");
+        assert_eq!(canonical("/song/next"), "/deck/next");
+        assert_eq!(canonical("/background/red"), "/bg/red");
+        assert_eq!(canonical("/ink/2/g"), "/pal/2/g");
+        assert_eq!(canonical("/print/1/scale"), "/l1/scale");
+        assert_eq!(canonical("/print/x/scale"), "/print/x/scale", "not a layer number");
+        assert_eq!(canonical("/preset/recall"), "/preset/recall");
+        assert_eq!(canonical("/particles/count"), "/particles/count");
     }
 }

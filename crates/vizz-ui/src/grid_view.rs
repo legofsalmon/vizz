@@ -518,7 +518,13 @@ fn pad(
         // it, as the shortcut it now is.
         ui.menu_button("assign preset…", |ui| {
             if view.presets.is_empty() {
-                ui.label("no presets saved yet");
+                // A pull is not a look, and the gravity pool has no list
+                // of its own: say where one comes from.
+                ui.label(if view.noun == "gravity" {
+                    "no pulls saved yet — shape the wells in the panel's gravity group, then capture one here"
+                } else {
+                    "no looks saved yet"
+                });
                 return;
             }
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
@@ -686,7 +692,7 @@ fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
             _ => format!("capture the current look into {noun} {n}"),
         },
         PadMode::Clear => format!("empty {noun} {n}"),
-        PadMode::Learn => format!("bind the next control you press to firing {noun} {n}"),
+        PadMode::Learn => format!("bind the next button you press to firing {noun} {n}"),
     }
 }
 
