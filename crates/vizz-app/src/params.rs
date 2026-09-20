@@ -169,7 +169,15 @@ pub const MAX_PARTICLES: f32 = 500_000.0;
 /// reachable. Fixed rather than sized from the preset list, because the
 /// parameter set is built once at startup and saving a preset must not
 /// reshape the registry underneath a running show.
-pub const MAX_PRESET_SLOT: f32 = 64.0;
+///
+/// Sized for a library, not for the built-ins. It was 64 — nine
+/// built-ins and a grid's worth of headroom — while a fresh install put
+/// a hundred and sixty looks on top of the nine, so every tile from the
+/// sixty-fifth up wrote a value that clamped to 64 and recalled the same
+/// look, with the current stroke landing on tile 64 rather than the one
+/// clicked. The panel's list had the same arithmetic. The test below
+/// counts the shipped set now, not only the built-ins.
+pub const MAX_PRESET_SLOT: f32 = 512.0;
 
 /// Highest slot `/scene/fire` will address. Slot 0 is "none" and the grid
 /// runs from 1, exactly as preset recall does, so a control resting at
@@ -903,16 +911,19 @@ mod tests {
     /// fixed at startup while the list grows on disk, so the two can drift
     /// apart — and a preset you cannot address is invisible to MIDI.
     #[test]
-    fn recall_range_covers_the_builtins_with_room_to_spare() {
-        // Slot 0 is "none", so N built-ins need slots up to N.
+    fn recall_range_covers_the_shipped_library_with_room_to_spare() {
+        // Slot 0 is "none", so N looks need slots up to N. A fresh
+        // install lists the built-ins and then the whole built-in set,
+        // and every one of them is a tile a hand can press.
         let builtins = vizz_mod::preset::BUILTINS.len() as f32;
+        let shipped = builtins + vizz_mod::sets::electronic().presets.len() as f32;
         assert!(
-            MAX_PRESET_SLOT >= builtins,
-            "recall tops out at {MAX_PRESET_SLOT} but there are {builtins} built-ins"
+            MAX_PRESET_SLOT >= shipped,
+            "recall tops out at {MAX_PRESET_SLOT} but a fresh install lists {shipped} looks"
         );
         assert!(
-            MAX_PRESET_SLOT >= builtins + 16.0,
-            "no headroom for user presets"
+            MAX_PRESET_SLOT >= shipped + 64.0,
+            "no headroom for a library of your own on top of the shipped one"
         );
     }
 

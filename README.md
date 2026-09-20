@@ -1601,7 +1601,7 @@ control input can never crash the renderer.
 | `/bg/green` | 0 – 1 | 0.004 | background green |
 | `/bg/blue` | 0 – 1 | 0.008 | background blue |
 | `/bg/alpha` | 0 – 1 | 1 | background opacity; 0 delivers the field on nothing |
-| `/preset/recall` | 0 – 64 | 0 | recall preset N on change; 0 = none |
+| `/preset/recall` | 0 – 512 | 0 | recall preset N on change; 0 = none |
 | `/scene/fire` | 0 – 16 | 0 | fire scene 1–16 on change; 0 = none |
 | `/scene/time` | 0 – 60 | 2 | scene blend time, seconds |
 | `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
