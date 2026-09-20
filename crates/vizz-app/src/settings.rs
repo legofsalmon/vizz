@@ -90,6 +90,36 @@ pub struct Settings {
     /// the card teaches the keys and the screens, and the second launch
     /// is not the first.
     pub welcomed: bool,
+    /// The four analysis bands — edges and gains — and whether detected
+    /// tempo drives the clock. Tuned per venue with `fit`, against real
+    /// material, and forgotten every launch until this was remembered.
+    pub audio_bands: Option<[vizz_audio::Band; 4]>,
+    pub audio_auto_bpm: Option<bool>,
+    /// How takes are written, as last set in the recording section.
+    pub record: Option<RecordPrefs>,
+    /// Open on the performance layout: the screen that was up when the
+    /// app was last quit. A set that lives on the stage should not start
+    /// on the panel every night.
+    pub start_on_stage: bool,
+}
+
+/// How a take is written. A mirror of the recorder's settings that can be
+/// serialised, plus the countdown, which the app keeps beside them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RecordPrefs {
+    /// PNG when true, JPEG otherwise.
+    pub lossless: bool,
+    pub quality: u8,
+    pub fps: f32,
+    pub max_secs: Option<f32>,
+    pub countdown_secs: u32,
+}
+
+impl Default for RecordPrefs {
+    fn default() -> Self {
+        Self { lossless: false, quality: 92, fps: 30.0, max_secs: None, countdown_secs: 0 }
+    }
 }
 
 /// See [`Settings::clock_source`].
@@ -312,6 +342,28 @@ fn civil_from_unix(secs: u64) -> (i64, u64, u64) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u64;
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u64;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Remember the bands and the auto-tempo switch.
+pub fn save_audio(bands: [vizz_audio::Band; 4], auto_bpm: bool) -> Result<()> {
+    let mut s = load();
+    s.audio_bands = Some(bands);
+    s.audio_auto_bpm = Some(auto_bpm);
+    save(&s)
+}
+
+/// Remember how takes are written.
+pub fn save_record(prefs: RecordPrefs) -> Result<()> {
+    let mut s = load();
+    s.record = Some(prefs);
+    save(&s)
+}
+
+/// Remember which screen was up.
+pub fn save_start_on_stage(on_stage: bool) -> Result<()> {
+    let mut s = load();
+    s.start_on_stage = on_stage;
+    save(&s)
 }
 
 /// The first-launch card has done its job.
@@ -543,5 +595,42 @@ mod tests {
             let s = Settings { output_size: Some(size), ..Default::default() };
             assert_eq!(s.output_or([1920, 1080]), size, "{size:?} was resized");
         }
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    /// What a venue hand-tunes comes back the way it was left: the record
+    /// setup and the bands survive a write and a read, and a file from
+    /// before these fields loads with the shipped values rather than
+    /// failing.
+    #[test]
+    fn the_rig_settings_round_trip_and_older_files_still_load() {
+        let mut bands = vizz_audio::default_bands();
+        bands[0].set_gain_db(6.0);
+        let s = Settings {
+            record: Some(RecordPrefs {
+                lossless: true,
+                quality: 70,
+                fps: 25.0,
+                max_secs: Some(15.0),
+                countdown_secs: 3,
+            }),
+            audio_bands: Some(bands),
+            audio_auto_bpm: Some(true),
+            start_on_stage: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.record, None);
+        assert_eq!(old.audio_bands, None);
+        assert!(!old.start_on_stage);
+        assert_eq!(RecordPrefs::default().quality, 92);
     }
 }

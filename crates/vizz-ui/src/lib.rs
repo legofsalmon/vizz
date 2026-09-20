@@ -403,6 +403,9 @@ pub struct Gui {
     /// The card was just dismissed, so the app can remember that it was.
     /// Taken by the app like `preset_key`.
     pub welcome_dismissed: bool,
+    /// The performance layout was just entered or left, so the app can
+    /// remember which screen to open on. Taken by the app.
+    pub face_changed: bool,
     /// What a key is holding down, per punch, and whether shift latched
     /// it. A latched punch survives the key coming up and the window
     /// losing focus; the next plain press of its key releases it, as a
@@ -448,6 +451,7 @@ impl Gui {
             punch_keys: Vec::new(),
             welcome: false,
             welcome_dismissed: false,
+            face_changed: false,
             punch_held: [None; 5],
             pointer: PointerWatch::default(),
             graph_view: graph_view::GraphView::default(),
@@ -625,6 +629,7 @@ impl Gui {
                 }
                 winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("p") => {
                     self.performance = !self.performance;
+                    self.face_changed = true;
                     if !self.performance {
                         self.drop_text_focus();
                     }
@@ -855,6 +860,7 @@ impl Gui {
         }
         if actions.open_performance {
             self.performance = true;
+            self.face_changed = true;
             self.drop_text_focus();
         }
         if actions.open_shortcuts {
@@ -944,6 +950,7 @@ impl Gui {
         }
         if perf.exit {
             self.performance = false;
+            self.face_changed = true;
         }
         // Growing or shrinking the fader set, saved like any other
         // assignment change. Warned about when it costs something: the

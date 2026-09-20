@@ -210,6 +210,9 @@ struct App {
     startup_notes: Notes,
     /// Show the first-launch card on the first frame.
     welcome_pending: bool,
+    /// Open on the performance layout on the first frame — the screen
+    /// that was up at the last quit.
+    start_on_stage_pending: bool,
     /// Where takes land, as the panel shows it. Asked once: the home
     /// directory does not move during a set.
     takes_root: String,
@@ -1191,6 +1194,15 @@ impl App {
         if std::mem::take(&mut self.welcome_pending) {
             state.gui.welcome = true;
         }
+        // The screen you were on is the screen you get back.
+        if std::mem::take(&mut self.start_on_stage_pending) {
+            state.gui.performance = true;
+        }
+        if std::mem::take(&mut state.gui.face_changed)
+            && let Err(e) = crate::settings::save_start_on_stage(state.gui.performance)
+        {
+            log::warn!("could not remember which screen was up: {e:#}");
+        }
         if std::mem::take(&mut state.gui.welcome_dismissed)
             && let Err(e) = crate::settings::save_welcomed()
         {
@@ -1537,6 +1549,15 @@ impl App {
                         ..self.record_settings
                     };
                     self.record_countdown_secs = setup.countdown_secs;
+                    if let Err(e) = crate::settings::save_record(crate::settings::RecordPrefs {
+                        lossless: setup.lossless,
+                        quality: setup.quality,
+                        fps: setup.fps,
+                        max_secs: setup.max_secs,
+                        countdown_secs: setup.countdown_secs,
+                    }) {
+                        log::warn!("could not remember the recording setup: {e:#}");
+                    }
                 }
                 if let Some(want) = actions.video_open.clone() {
                     match want {
@@ -2358,6 +2379,13 @@ fn apply_audio_actions(
     if let Ok(mut s) = engine.audio.settings.lock() {
         s.bands = *bands;
         s.auto_bpm = *auto_bpm;
+    }
+    // Remembered: the bands are the one thing tuned per venue, against
+    // real material, and used to be re-fitted every launch.
+    if (a.bands.is_some() || a.auto_bpm.is_some())
+        && let Err(e) = crate::settings::save_audio(*bands, *auto_bpm)
+    {
+        log::warn!("could not remember the audio bands: {e:#}");
     }
 }
 
@@ -3302,6 +3330,17 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // locked pair is locked from launch rather than from the first time
     // the toggle is touched.
     engine.autopilot_lock = crate::settings::load().autopilot_lock;
+    // The bands and the auto-tempo switch, as they were left. Pushed to
+    // the analysis thread now, so the first frame analyses with them
+    // rather than with the shipped defaults until somebody touches one.
+    let restored = crate::settings::load();
+    let restored_bands = restored.audio_bands.unwrap_or_else(vizz_audio::default_bands);
+    let restored_auto = restored.audio_auto_bpm.unwrap_or(false);
+    if let Ok(mut s) = engine.audio.settings.lock() {
+        s.bands = restored_bands;
+        s.auto_bpm = restored_auto;
+    }
+    let restored_record = restored.record.unwrap_or_default();
     // Taken before the engine moves into the app: the autosave compares
     // against what was restored, so a launch that changes nothing leaves
     // the file alone.
@@ -3387,16 +3426,25 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         params,
         opts,
         state: None,
-        audio_bands: vizz_audio::default_bands(),
-        audio_auto_bpm: false,
+        audio_bands: restored_bands,
+        audio_auto_bpm: restored_auto,
         tap: vizz_audio::TapTempo::new(),
         live: None,
         live_revision: 0,
         live_points: Vec::new(),
         live_shown: false,
         video: None,
-        record_settings: Default::default(),
-        record_countdown_secs: 0,
+        record_settings: vizz_io::recorder::Settings {
+            format: if restored_record.lossless {
+                vizz_io::recorder::Format::Png
+            } else {
+                vizz_io::recorder::Format::Jpeg { quality: restored_record.quality }
+            },
+            fps: restored_record.fps,
+            max_secs: restored_record.max_secs,
+            ..Default::default()
+        },
+        record_countdown_secs: restored_record.countdown_secs,
         record_countdown_from: None,
         record_countdown_last: None,
         video_sources: Default::default(),
@@ -3417,7 +3465,8 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         modulation_checked: Instant::now(),
         presentable: true,
         startup_notes,
-        welcome_pending: !crate::settings::load().welcomed && opts_show_gui,
+        welcome_pending: !restored.welcomed && opts_show_gui,
+        start_on_stage_pending: restored.start_on_stage && opts_show_gui,
         takes_root: crate::settings::takes_root().display().to_string(),
         audio_live: None,
         midi_ports_seen: Vec::new(),
