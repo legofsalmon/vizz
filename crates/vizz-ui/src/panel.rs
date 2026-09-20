@@ -728,7 +728,11 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                 ui.menu_button("simulate…", |ui| {
                     for g in vizz_mod::generators::SIMULATIONS {
                         if ui.button(g.name).on_hover_text(g.about).clicked() {
-                            actions.live_cloud = Some(Some(format!("sim:{}", g.id)));
+                            if g.params.is_empty() {
+                                actions.live_cloud = Some(Some(format!("sim:{}", g.id)));
+                            } else {
+                                ui.data_mut(|d| d.insert_temp(picked_id("sim"), g.id.to_string()));
+                            }
                             ui.close();
                         }
                     }
@@ -736,6 +740,9 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                 .response
                 .on_hover_text("a cloud that moves on its own, in the live slot, driven by the audio");
             });
+            if let Some(spec) = settings_row(ui, "sim", vizz_mod::generators::SIMULATIONS, "run") {
+                actions.live_cloud = Some(Some(format!("sim:{spec}")));
+            }
         }
     }
     send_here(ui, state, &addr);
@@ -1046,7 +1053,13 @@ fn clouds_section(
                 );
                 for g in vizz_mod::generators::CATALOGUE.iter().filter(|g| g.family == family) {
                     if ui.button(g.name).on_hover_text(g.about).clicked() {
-                        actions.generate_cloud = Some(g.id.to_string());
+                        // One with knobs opens its row; one without is
+                        // made on the spot.
+                        if g.params.is_empty() {
+                            actions.generate_cloud = Some(g.id.to_string());
+                        } else {
+                            ui.data_mut(|d| d.insert_temp(picked_id("gen"), g.id.to_string()));
+                        }
                         ui.close();
                     }
                 }
@@ -1055,6 +1068,90 @@ fn clouds_section(
         .response
         .on_hover_text("a cloud from an equation — attractors, knots, fractals; it takes the next free slot");
     });
+    if let Some(spec) = settings_row(ui, "gen", vizz_mod::generators::CATALOGUE, "make") {
+        actions.generate_cloud = Some(spec);
+    }
+}
+
+/// Which generator or simulation has its knobs out, per menu.
+fn picked_id(scope: &str) -> egui::Id {
+    egui::Id::new(("generator-picked", scope.to_string()))
+}
+
+/// The knobs of the picked generator or simulation, and the button
+/// that makes it. Returns the spec on a press. The values live in egui's
+/// memory keyed by generator and knob, so a rule typed once is there
+/// the next time the plant is picked.
+fn settings_row(
+    ui: &mut egui::Ui,
+    scope: &str,
+    list: &[vizz_mod::generators::Generator],
+    verb: &str,
+) -> Option<String> {
+    use vizz_mod::generators::Kind;
+    let picked: Option<String> = ui.data(|d| d.get_temp(picked_id(scope)));
+    let g = list.iter().find(|g| Some(g.id) == picked.as_deref())?;
+    let mut made = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(g.name).strong()).on_hover_text(g.about);
+        let mut settings: Vec<(&str, String)> = Vec::new();
+        for p in g.params {
+            let key = egui::Id::new(("generator-knob", scope.to_string(), g.id, p.key));
+            let mut value: String =
+                ui.data(|d| d.get_temp(key)).unwrap_or_else(|| p.default.to_string());
+            ui.small(p.label);
+            match p.kind {
+                Kind::Number { min, max } => {
+                    let mut v: f64 = value.parse().unwrap_or_else(|_| p.default.parse().unwrap_or(0.0));
+                    let step = if max - min <= 20.0 { 0.05 } else { 0.5 };
+                    if ui
+                        .add(egui::DragValue::new(&mut v).range(min..=max).speed(step).max_decimals(3))
+                        .on_hover_text(p.about)
+                        .changed()
+                    {
+                        value = trim_number(v);
+                    }
+                }
+                Kind::Seed => {
+                    let mut v: i64 = value.parse().unwrap_or(1);
+                    if ui
+                        .add(egui::DragValue::new(&mut v).range(0..=i64::MAX).speed(1.0))
+                        .on_hover_text(p.about)
+                        .changed()
+                    {
+                        value = v.to_string();
+                    }
+                    // A roll: any seed is as good as any other, and the
+                    // point of a search is not to type one.
+                    if ui.small_button("roll").on_hover_text("a new seed, a new search").clicked() {
+                        let t = ui.input(|i| i.time);
+                        value = ((t * 1000.0) as i64 % 100_000 + 1).to_string();
+                    }
+                }
+                Kind::Text => {
+                    ui.add(egui::TextEdit::singleline(&mut value).desired_width(200.0))
+                        .on_hover_text(p.about);
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(key, value.clone()));
+            settings.push((p.key, value));
+        }
+        if ui.button(verb).clicked() {
+            made = Some(vizz_mod::generators::spec(g, &settings));
+        }
+        if ui.small_button("×").on_hover_text("put the knobs away").clicked() {
+            ui.data_mut(|d| d.remove_temp::<String>(picked_id(scope)));
+        }
+    });
+    made
+}
+
+/// A number as short as it can be written back: `7` rather than
+/// `7.000`, so a spec reads like something a person typed.
+fn trim_number(v: f64) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-" { "0".to_string() } else { s.to_string() }
 }
 
 /// The colour ramps, by the index `/color/palette` uses.
@@ -4391,5 +4488,21 @@ mod binding_table_tests {
         assert_eq!(row("/deck/select", Some(2.0)), "page 2");
         assert_eq!(row("/punch/black", Some(1.0)), "/punch/black = 1");
         assert_eq!(row("/fx/glow", None), "/fx/glow");
+    }
+}
+
+#[cfg(test)]
+mod knob_tests {
+    use super::*;
+
+    /// A knob's value goes into the spec the way a person would write
+    /// it.
+    #[test]
+    fn numbers_are_written_short() {
+        assert_eq!(trim_number(7.0), "7");
+        assert_eq!(trim_number(0.156), "0.156");
+        assert_eq!(trim_number(-0.8), "-0.8");
+        assert_eq!(trim_number(2.5), "2.5");
+        assert_eq!(trim_number(0.0), "0");
     }
 }

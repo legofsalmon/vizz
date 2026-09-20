@@ -65,14 +65,27 @@ pub const IDS: &[&str] = &["fluid", "reaction", "flock", "wind", "kuramoto", "li
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
-pub fn start(id: &str) -> Option<Box<dyn Simulation>> {
+pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
+    let (id, settings) = match spec.split_once('?') {
+        None => (spec, Vec::new()),
+        Some((id, rest)) => (
+            id,
+            rest.split(';')
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k.trim(), v.trim()))
+                .collect::<Vec<_>>(),
+        ),
+    };
+    let text = |key: &str, default: &str| -> String {
+        settings.iter().find(|(k, _)| *k == key).map_or(default, |(_, v)| *v).to_string()
+    };
     match id {
         "fluid" => Some(Box::new(Fluid::new())),
         "reaction" => Some(Box::new(Reaction::new())),
         "flock" => Some(Box::new(Flock::new())),
         "wind" => Some(Box::new(Wind::new())),
         "kuramoto" => Some(Box::new(Kuramoto::new())),
-        "life" => Some(Box::new(Life::new())),
+        "life" => Some(Box::new(Life::with_rule(&text("rule", Life::CLOUDS)))),
         _ => None,
     }
 }
@@ -1046,16 +1059,34 @@ const LG: usize = 48;
 pub struct Life {
     cells: Vec<u8>,
     next: Vec<u8>,
+    /// Indexed by neighbour count: whether a live cell survives, and
+    /// whether a dead one is born.
+    survive: [bool; 27],
+    born: [bool; 27],
     frame: u32,
     since_kick: f32,
     rng: Rng,
 }
 
 impl Life {
+    /// The Clouds rule, as `survive/born` in neighbour counts.
+    pub const CLOUDS: &'static str = "13-26/13-14,17-19";
+
     pub fn new() -> Self {
+        Self::with_rule(Self::CLOUDS)
+    }
+
+    /// An automaton in the rule `survive/born`, each side a list of
+    /// neighbour counts and ranges — `13-26/13-14,17-19`. A rule that
+    /// will not parse is the Clouds rule, because a blank rule is a
+    /// blank slot.
+    pub fn with_rule(rule: &str) -> Self {
+        let (survive, born) = parse_rule(rule).unwrap_or_else(|| parse_rule(Self::CLOUDS).expect("the shipped rule parses"));
         let mut l = Self {
             cells: vec![0; LG * LG * LG],
             next: vec![0; LG * LG * LG],
+            survive,
+            born,
             frame: 0,
             since_kick: 10.0,
             rng: Rng::new(0x11FE),
@@ -1099,9 +1130,9 @@ impl Life {
                         }
                     }
                     let alive = self.cells[at(x, y, z)] == 1;
-                    let born = matches!(n, 13 | 14 | 17..=19);
-                    let survives = n >= 13;
-                    self.next[at(x, y, z)] = u8::from(if alive { survives } else { born });
+                    let n = n as usize;
+                    self.next[at(x, y, z)] =
+                        u8::from(if alive { self.survive[n] } else { self.born[n] });
                 }
             }
         }
@@ -1117,6 +1148,31 @@ impl Default for Life {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `survive/born`, each a comma list of counts and `lo-hi` ranges over
+/// 0–26. `None` when either side is missing or holds anything else.
+fn parse_rule(rule: &str) -> Option<([bool; 27], [bool; 27])> {
+    let (s, b) = rule.split_once('/')?;
+    let side = |text: &str| -> Option<[bool; 27]> {
+        let mut set = [false; 27];
+        for item in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            let (lo, hi) = match item.split_once('-') {
+                Some((lo, hi)) => (lo.trim().parse::<usize>().ok()?, hi.trim().parse::<usize>().ok()?),
+                None => {
+                    let n = item.parse::<usize>().ok()?;
+                    (n, n)
+                }
+            };
+            if lo > hi || hi > 26 {
+                return None;
+            }
+            set[lo..=hi].iter_mut().for_each(|on| *on = true);
+        }
+        Some(set)
+    };
+    let (s, b) = (side(s)?, side(b)?);
+    (s.iter().any(|x| *x) || b.iter().any(|x| *x)).then_some((s, b))
 }
 
 impl Simulation for Life {
@@ -1376,6 +1432,23 @@ mod tests {
         let mut pts = Vec::new();
         l.points(&mut pts);
         box_ok(&pts);
+    }
+
+    /// A rule is read as counts and ranges, and a rule that will not
+    /// read is the shipped one rather than a blank lattice.
+    #[test]
+    fn automaton_rules_parse_and_bad_ones_fall_back() {
+        let (s, b) = parse_rule("13-26/13-14,17-19").unwrap();
+        assert!(s[13] && s[26] && !s[12]);
+        assert!(b[13] && b[14] && !b[15] && b[17] && b[19] && !b[20]);
+        let (s, b) = parse_rule("4/4").unwrap();
+        assert!(s[4] && !s[5] && b[4]);
+        assert!(parse_rule("4").is_none());
+        assert!(parse_rule("27/4").is_none());
+        assert!(parse_rule("a/b").is_none());
+        let fallback = Life::with_rule("nonsense");
+        assert_eq!(fallback.survive, Life::new().survive);
+        assert!(start("life?rule=4/4").is_some());
     }
 
     /// Every simulation is reachable by id, and nothing else is.

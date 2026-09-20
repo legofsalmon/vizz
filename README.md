@@ -358,7 +358,9 @@ With no audio the coupling breathes across the threshold on its own.
 seed grows into slow, cloud-like masses that keep reshaping, a generation
 every three frames. A kick drops a new seed; an automaton that dies out or
 floods the lattice is reseeded, because a dead automaton is a blank slot
-with a name on it.
+with a name on it. The rule is a knob — `sim:life?rule=4/4` is Bays'
+original 3D Life, `5-7/6` a slow builder — written as *survive/born* in
+neighbour counts and ranges.
 
 What a simulation gets from the app is deliberately narrow — the four
 bands, the loudness, where the bar is — because it is meant to be a
@@ -1293,6 +1295,17 @@ crossed to with a scene change, recorded as a look's source and filed
 under *attractors* or *shapes*. A generated cloud persists as `gen:<name>`
 and is remade deterministically on launch, on the loader thread, so a
 fractal's search never delays the first frame.
+
+**Some take knobs.** Picking one of those from the menu opens its row —
+the supershape's fold and exponents, the knot's windings, the Chladni
+mode numbers, the Julia constant, the plant's rule and angle — and the
+row's *make* button writes them into the spec: `gen:plant?rule=F[+X]F;angle=22`,
+`gen:torus-knot?p=2;q=5`. Settings left at their defaults are left out, so
+the saved line stays short. **quadratic** is Sprott's search — random
+three-dimensional quadratic maps drawn on his coefficient grid until one
+is chaotic, judged by a positive Lyapunov exponent — and its one knob is
+the seed: *roll* is a new attractor nobody has seen, and
+`gen:quadratic?seed=7` is the same one on every machine.
 
 `/shape/mode 7` shows a **cloud**. Which one is chosen by clicking its
 name in the panel's clouds section — the names are there, and a slot

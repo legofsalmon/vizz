@@ -490,13 +490,14 @@ impl std::str::FromStr for Source {
         if let Some(rest) = s.strip_prefix("file://") {
             return Ok(Source::Watch(rest.into()));
         }
-        if let Some(id) = s.strip_prefix("sim:") {
+        if let Some(spec) = s.strip_prefix("sim:") {
+            let id = spec.split('?').next().unwrap_or(spec);
             anyhow::ensure!(
                 crate::simulate::IDS.contains(&id),
                 "no simulation called {id} — there are {}",
                 crate::simulate::IDS.join(", ")
             );
-            return Ok(Source::Simulate(id.to_string()));
+            return Ok(Source::Simulate(spec.to_string()));
         }
         // `host:port` with a numeric port, and nothing that looks like a
         // path. A Windows path such as C:\clouds\a.ply also contains a
@@ -545,7 +546,9 @@ impl LiveCloud {
         let slot = Arc::new(Slot::default());
         let stop = Arc::new(AtomicBool::new(false));
         let label = match &source {
-            Source::Simulate(id) => format!("{id} — simulation"),
+            Source::Simulate(spec) => {
+                format!("{} — simulation", spec.split('?').next().unwrap_or(spec))
+            }
             other => format!("{other:?}"),
         };
         let (s, st) = (Arc::clone(&slot), Arc::clone(&stop));

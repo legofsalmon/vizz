@@ -68,13 +68,30 @@ pub const IDS: &[&str] = &[
     "plant",
     "mandelbrot",
     "julia",
+    "quadratic",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
 /// know. Always exactly [`POINTS`] points, centred, the widest axis
 /// spanning `[-1, 1]` — the box every other cloud is fitted to, so
 /// `/particles/spread` means the same thing whatever is in the slot.
-pub fn generate(id: &str) -> Option<Vec<Point>> {
+pub fn generate(spec: &str) -> Option<Vec<Point>> {
+    let (id, settings) = split_spec(spec);
+    let num = |key: &str, default: f64| -> f64 {
+        settings
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or(default)
+    };
+    let text = |key: &str, default: &str| -> String {
+        settings
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(default, |(_, v)| *v)
+            .to_string()
+    };
     let raw = match id {
         // Flows: integrated from a point on the attractor, in time order.
         "thomas" => flow(thomas, [0.1, 0.0, 0.0], 0.05, Frame::Diagonal),
@@ -96,17 +113,29 @@ pub fn generate(id: &str) -> Option<Vec<Point>> {
         "clifford" => map(clifford, [0.1, 0.0]),
         "dejong" => map(dejong, [0.1, 0.1]),
         // Surfaces, in scan order.
-        "supershape" => supershape(),
-        "harmonic" => harmonic(),
+        "supershape" => {
+            supershape(num("m", 7.0), num("n1", 2.0).max(0.05), num("n2", 8.0), num("n3", 4.0))
+        }
+        "harmonic" => harmonic(num("round", 3.0).round(), num("up", 2.0).round()),
         // Curves, along the curve, thickened into tubes.
-        "lissajous" => tube(lissajous, 0.05, Frame::YUp),
-        "torus-knot" => tube(torus_knot, 0.04, Frame::YUp),
+        "lissajous" => {
+            let (a, b, c) = (num("a", 3.0).round(), num("b", 4.0).round(), num("c", 7.0).round());
+            tube(move |t| lissajous(t, a, b, c), 0.05, Frame::YUp)
+        }
+        "torus-knot" => {
+            let (p, q) = (num("p", 3.0).round(), num("q", 7.0).round());
+            tube(move |t| torus_knot(t, p, q), 0.04, Frame::YUp)
+        }
         "hopf" => hopf(),
-        // The rest: sampled.
-        "chladni" => chladni(),
-        "plant" => plant(),
+        // The rest: sampled, grown, searched.
+        "chladni" => chladni(num("n", 5.0).round(), num("m", 2.0).round()),
+        "plant" => plant(&text("rule", "F[+&X][-^X]/F[\\X]X"), num("angle", 25.0)),
         "mandelbrot" => escape_relief([-2.1, 0.7], [-1.4, 1.4], |x, y| escape(x, y, x, y)),
-        "julia" => escape_relief([-1.6, 1.6], [-1.6, 1.6], |x, y| escape(x, y, -0.8, 0.156)),
+        "julia" => {
+            let (cr, ci) = (num("cr", -0.8), num("ci", 0.156));
+            escape_relief([-1.6, 1.6], [-1.6, 1.6], move |x, y| escape(x, y, cr, ci))
+        }
+        "quadratic" => quadratic(num("seed", 1.0).abs() as u64),
         "sierpinski" => sierpinski(),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
@@ -378,10 +407,10 @@ fn grid(f: impl Fn(f64, f64) -> [f64; 3]) -> Vec<[f64; 3]> {
 
 /// The spherical product of two superformulas — Gielis' 3D form — with
 /// the (7, 2, 8, 4) parameters, a seven-fold flower.
-fn supershape() -> Vec<[f64; 3]> {
+fn supershape(m: f64, n1: f64, n2: f64, n3: f64) -> Vec<[f64; 3]> {
     grid(|lon, lat| {
-        let r1 = superformula(lon, 7.0, 2.0, 8.0, 4.0);
-        let r2 = superformula(lat, 7.0, 2.0, 8.0, 4.0);
+        let r1 = superformula(lon, m, n1, n2, n3);
+        let r2 = superformula(lat, m, n1, n2, n3);
         orient(
             [r1 * lon.cos() * r2 * lat.cos(), r1 * lon.sin() * r2 * lat.cos(), r2 * lat.sin()],
             Frame::ZUp,
@@ -391,9 +420,9 @@ fn supershape() -> Vec<[f64; 3]> {
 
 /// A sphere rippled by a spherical harmonic: three waves round, two
 /// waves up.
-fn harmonic() -> Vec<[f64; 3]> {
+fn harmonic(round: f64, up: f64) -> Vec<[f64; 3]> {
     grid(|lon, lat| {
-        let r = 1.0 + 0.45 * (3.0 * lon).cos() * (2.0 * lat).sin();
+        let r = 1.0 + 0.45 * (round * lon).cos() * (up * lat).sin();
         orient([r * lon.cos() * lat.cos(), r * lon.sin() * lat.cos(), r * lat.sin()], Frame::ZUp)
     })
 }
@@ -402,25 +431,23 @@ fn harmonic() -> Vec<[f64; 3]> {
 
 /// A 3:4:7 Lissajous knot: pairwise coprime frequencies, phases off the
 /// values that would let it cross itself.
-fn lissajous(t: f64) -> [f64; 3] {
-    [(3.0 * t + 0.5).cos(), (4.0 * t + 1.3).cos(), (7.0 * t).cos()]
+fn lissajous(t: f64, a: f64, b: f64, c: f64) -> [f64; 3] {
+    [(a * t + 0.5).cos(), (b * t + 1.3).cos(), (c * t).cos()]
 }
 
 /// A (3,7) torus knot: three times round the axis, seven times through
 /// the hole. The trefoil in `/shape/mode` is the (2,3) of the same family.
-fn torus_knot(t: f64) -> [f64; 3] {
-    const P: f64 = 3.0;
-    const Q: f64 = 7.0;
+fn torus_knot(t: f64, p: f64, q: f64) -> [f64; 3] {
     const R: f64 = 0.7;
     const RADIUS: f64 = 0.3;
-    let ring = R + RADIUS * (Q * t).cos();
-    [ring * (P * t).cos(), RADIUS * (Q * t).sin(), ring * (P * t).sin()]
+    let ring = R + RADIUS * (q * t).cos();
+    [ring * (p * t).cos(), RADIUS * (q * t).sin(), ring * (p * t).sin()]
 }
 
 /// A closed curve traced once, thickened into a fuzzy tube: each point
 /// on the curve gets a random offset inside a ball of `radius`, so the
 /// cloud reads as a volume rather than a wire.
-fn tube(curve: fn(f64) -> [f64; 3], radius: f64, frame: Frame) -> Vec<[f64; 3]> {
+fn tube(curve: impl Fn(f64) -> [f64; 3], radius: f64, frame: Frame) -> Vec<[f64; 3]> {
     let mut rng = Rng::new(0x7A5E_C0DE);
     (0..POINTS)
         .map(|i| {
@@ -485,20 +512,27 @@ fn hopf() -> Vec<[f64; 3]> {
 /// longer. Points are strewn along the segments in drawing order — the
 /// crawl runs up the trunk and out along the twigs — inside a tube that
 /// thins with depth, so the trunk is wood and the tips are twigs.
-fn plant() -> Vec<[f64; 3]> {
+fn plant(rule: &str, angle: f64) -> Vec<[f64; 3]> {
+    // A rule is text somebody typed: the generations are capped by the
+    // string's growth rather than by a count, so a rule with six X's
+    // does not rewrite itself into a gigabyte.
+    let rule = if rule.contains('F') { rule } else { "F[+&X][-^X]/F[\\X]X" };
     let mut s = String::from("X");
     for _ in 0..5 {
+        if s.len() * rule.len() > 4_000_000 {
+            break;
+        }
         let mut next = String::with_capacity(s.len() * 4);
         for c in s.chars() {
             match c {
-                'X' => next.push_str("F[+&X][-^X]/F[\\X]X"),
+                'X' => next.push_str(rule),
                 'F' => next.push_str("FF"),
                 c => next.push(c),
             }
         }
         s = next;
     }
-    let delta = 25f64.to_radians();
+    let delta = angle.clamp(1.0, 179.0).to_radians();
     // The turtle: position, heading, left, up.
     let mut p = [0.0, 0.0, 0.0];
     let (mut h, mut l, mut u) = ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
@@ -602,16 +636,17 @@ fn escape_relief(xr: [f64; 2], yr: [f64; 2], f: impl Fn(f64, f64) -> f64) -> Vec
 /// Chladni's sand: a plate vibrating in its (5, 2) mode, points kept
 /// where it stands still. Rejection-sampled with a Gaussian acceptance on
 /// the displacement, so the lines have the soft width sand has.
-fn chladni() -> Vec<[f64; 3]> {
-    const N: f64 = 5.0;
-    const M: f64 = 2.0;
+fn chladni(n: f64, m: f64) -> Vec<[f64; 3]> {
+    // Equal mode numbers cancel to nothing everywhere, which would
+    // accept every point and draw a plain square.
+    let (n, m) = if (n - m).abs() < 0.5 { (n, m + 1.0) } else { (n, m) };
     const SIGMA: f64 = 0.07;
     let mut rng = Rng::new(0x51CE_D5A7);
     let mut out = Vec::with_capacity(POINTS);
     while out.len() < POINTS {
         let x = rng.f64() * 2.0 - 1.0;
         let y = rng.f64() * 2.0 - 1.0;
-        let psi = (N * PI * x).cos() * (M * PI * y).cos() - (M * PI * x).cos() * (N * PI * y).cos();
+        let psi = (n * PI * x).cos() * (m * PI * y).cos() - (m * PI * x).cos() * (n * PI * y).cos();
         if rng.f64() < (-(psi / SIGMA).powi(2)).exp() {
             // The plate lies flat; a hair of height so it is not a
             // single plane the camera can edge-on into nothing.
@@ -735,7 +770,116 @@ fn mandelbulb() -> Vec<[f64; 3]> {
     out
 }
 
+// --- Searched -----------------------------------------------------------
+
+/// Sprott's search (Strange Attractors: Creating Patterns in Chaos,
+/// 1993): draw the thirty coefficients of a three-dimensional quadratic
+/// map at random and keep the first map that is chaotic — bounded, and
+/// with a positive largest Lyapunov exponent, measured by following a
+/// neighbour and renormalising. About one draw in a hundred is, and
+/// every one of those is an attractor nobody has seen before. The seed
+/// is the whole parameter: the same seed is the same attractor on every
+/// machine.
+fn quadratic(seed: u64) -> Vec<[f64; 3]> {
+    let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x51));
+    // Bounded by construction: a search that never finds chaos would
+    // otherwise never return. Ten thousand draws is a hundred times the
+    // expected wait.
+    for _ in 0..10_000 {
+        // Coefficients on Sprott's grid, -1.2 to 1.2 in steps of 0.1.
+        let c: [f64; 30] = std::array::from_fn(|_| ((rng.next() % 25) as f64 - 12.0) * 0.1);
+        if let Some(points) = quadratic_orbit(&c) {
+            return points;
+        }
+    }
+    // Nothing chaotic on this seed: the sphere of it, rather than a
+    // panic in a loader thread.
+    (0..POINTS)
+        .map(|_| rng.on_sphere())
+        .collect()
+}
+
+fn quadratic_step(c: &[f64; 30], [x, y, z]: [f64; 3]) -> [f64; 3] {
+    let mut out = [0.0; 3];
+    for (k, o) in out.iter_mut().enumerate() {
+        let a = &c[k * 10..k * 10 + 10];
+        *o = a[0]
+            + a[1] * x
+            + a[2] * x * x
+            + a[3] * x * y
+            + a[4] * x * z
+            + a[5] * y
+            + a[6] * y * y
+            + a[7] * y * z
+            + a[8] * z
+            + a[9] * z * z;
+    }
+    out
+}
+
+/// The orbit of one candidate, if it is chaotic: `None` when it
+/// escapes, collapses, or settles into a cycle.
+fn quadratic_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
+    const SEPARATION: f64 = 1e-6;
+    let mut p = [0.05, 0.05, 0.05];
+    let mut q = [0.05 + SEPARATION, 0.05, 0.05];
+    let mut lyapunov = 0.0;
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for i in 0..4_000 {
+        p = quadratic_step(c, p);
+        q = quadratic_step(c, q);
+        if p.iter().any(|v| !v.is_finite() || v.abs() > 1e5) {
+            return None;
+        }
+        let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+        let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if dist == 0.0 {
+            return None;
+        }
+        if i >= 1_000 {
+            lyapunov += (dist / SEPARATION).ln();
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let scale = SEPARATION / dist;
+        q = [p[0] + d[0] * scale, p[1] + d[1] * scale, p[2] + d[2] * scale];
+    }
+    let lyapunov = lyapunov / 3_000.0;
+    let extent = (0..3).fold(0.0f64, |m, k| m.max(hi[k] - lo[k]));
+    if lyapunov < 0.01 || extent < 0.05 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(POINTS);
+    for _ in 0..POINTS {
+        p = quadratic_step(c, p);
+        if p.iter().any(|v| !v.is_finite() || v.abs() > 1e5) {
+            return None;
+        }
+        out.push(p);
+    }
+    Some(out)
+}
+
 // --- Plumbing ---------------------------------------------------------
+
+/// The id and the settings of a spec, `id?key=value;key=value`. The
+/// same split as vizz-mod's; small enough to keep this crate free of
+/// that one.
+fn split_spec(spec: &str) -> (&str, Vec<(&str, &str)>) {
+    match spec.split_once('?') {
+        None => (spec, Vec::new()),
+        Some((id, rest)) => (
+            id,
+            rest.split(';')
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k.trim(), v.trim()))
+                .collect(),
+        ),
+    }
+}
 
 /// Centre the cloud and fit its widest axis to `[-1, 1]` — uniform, so
 /// the shape is not squashed — and pack it as white points that take the
@@ -857,6 +1001,43 @@ mod tests {
             assert_eq!(generate(id), generate(id), "{id} differs between runs");
         }
         assert!(generate("no such thing").is_none());
+    }
+
+    /// A setting changes the cloud, a default one is the plain id, and a
+    /// value that will not parse falls back rather than failing.
+    #[test]
+    fn settings_shape_the_cloud_and_bad_ones_fall_back() {
+        assert_ne!(generate("supershape?m=3"), generate("supershape"));
+        assert_eq!(generate("supershape?m=7;n1=2"), generate("supershape"));
+        assert_ne!(generate("torus-knot?p=2;q=3"), generate("torus-knot"));
+        assert_ne!(generate("plant?angle=45"), generate("plant"));
+        assert_eq!(generate("plant?angle=banana"), generate("plant"));
+        assert_ne!(generate("julia?cr=0.3;ci=0.5"), generate("julia"));
+        assert_eq!(generate("chladni?n=4;m=4").map(|p| p.len()), Some(POINTS));
+        let pts = generate("plant?rule=XXXXXXXX").unwrap();
+        assert_eq!(pts.len(), POINTS, "a rule with no F falls back to the shipped one");
+    }
+
+    /// Sprott's search finds chaos on every seed tried, and different
+    /// seeds are different attractors.
+    #[test]
+    fn the_quadratic_search_finds_a_different_attractor_per_seed() {
+        let a = generate("quadratic?seed=1").unwrap();
+        let b = generate("quadratic?seed=2").unwrap();
+        assert_ne!(a, b);
+        for seed in 1..=4 {
+            let pts = generate(&format!("quadratic?seed={seed}")).unwrap();
+            let widest = pts.iter().map(|p| p.pos[0].abs().max(p.pos[1].abs()).max(p.pos[2].abs())).fold(0.0f32, f32::max);
+            assert!(widest > 0.99, "seed {seed} did not fill its box");
+            // Not a point and not a line: an attractor has area.
+            let mut spread = [0.0f32; 3];
+            for p in &pts {
+                for (s, v) in spread.iter_mut().zip(p.pos) {
+                    *s = s.max(v.abs());
+                }
+            }
+            assert!(spread.iter().filter(|s| **s > 0.15).count() >= 2, "seed {seed}: {spread:?}");
+        }
     }
 
     /// The diagonal frame stands (1,1,1) upright, and only rotates.

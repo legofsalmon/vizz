@@ -976,34 +976,35 @@ impl App {
     /// the frame stall the thread exists to avoid. `restore` names the
     /// slot a saved `gen:` entry goes back into; `None` adopts the result
     /// as a drop would.
-    fn make_generated_cloud(&mut self, id: &str, restore: Option<usize>) {
-        let Some(generator) = vizz_mod::generators::by_id(id) else {
-            log::warn!("no generator called {id}");
+    fn make_generated_cloud(&mut self, spec: &str, restore: Option<usize>) {
+        let Some(generator) = vizz_mod::generators::by_id(spec) else {
+            log::warn!("no generator called {spec}");
             if let Some(state) = &mut self.state {
-                state.gui.notify_error(format!("no generator called '{id}'"));
+                state.gui.notify_error(format!("no generator called '{spec}'"));
             }
             return;
         };
+        let name = vizz_mod::generators::slot_name(spec).unwrap_or_else(|| generator.name.to_string());
         if restore.is_none()
             && let Some(state) = &mut self.state
         {
-            state.gui.notify_info(format!("making {}…", generator.name));
+            state.gui.notify_info(format!("making {name}…"));
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let id_owned = id.to_string();
+        let spec_owned = spec.to_string();
         let spawned = std::thread::Builder::new()
             .name("vizz-cloud-generate".into())
             .spawn(move || {
-                let result = vizz_render::generate::generate(&id_owned)
-                    .ok_or_else(|| anyhow::anyhow!("no generator called {id_owned}"));
+                let result = vizz_render::generate::generate(&spec_owned)
+                    .ok_or_else(|| anyhow::anyhow!("no generator called {spec_owned}"));
                 let _ = tx.send(result);
             });
         match spawned {
             Ok(_) => self.pending_clouds.push(PendingCloud {
-                path: std::path::PathBuf::from(format!("gen:{id}")),
+                path: std::path::PathBuf::from(format!("gen:{spec}")),
                 rx,
-                name: generator.name.to_string(),
-                stored: format!("gen:{id}"),
+                name,
+                stored: format!("gen:{spec}"),
                 restore,
             }),
             Err(e) => {
