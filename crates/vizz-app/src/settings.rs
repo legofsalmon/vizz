@@ -270,12 +270,12 @@ pub fn save_clouds(clouds: &[String]) -> Result<()> {
 }
 
 /// Remember the loaded palettes, same read-modify-write reason.
-/// Where a new recording lands: a fresh timestamped directory under the
-/// platform's video folder, falling back to the config directory when no
-/// home exists. UTC in the name — std has no timezone database, and a
-/// name that sorts correctly matters more than local wall time.
-pub fn take_dir() -> PathBuf {
-    let base = std::env::home_dir()
+/// Where every recording lands: the platform's video folder, falling
+/// back to the config directory when no home exists. Its own function
+/// because the panel shows it — a take's folder used to be named in a
+/// four-second notice and nowhere else in the app.
+pub fn takes_root() -> PathBuf {
+    std::env::home_dir()
         .map(|h| {
             if cfg!(target_os = "macos") {
                 h.join("Movies").join("vizz")
@@ -283,9 +283,14 @@ pub fn take_dir() -> PathBuf {
                 h.join("Videos").join("vizz")
             }
         })
-        .unwrap_or_else(|| {
-            vizz_mod::project::root().join("recordings")
-        });
+        .unwrap_or_else(|| vizz_mod::project::root().join("recordings"))
+}
+
+/// Where a new recording lands: a fresh timestamped directory under
+/// [`takes_root`]. UTC in the name — std has no timezone database, and a
+/// name that sorts correctly matters more than local wall time.
+pub fn take_dir() -> PathBuf {
+    let base = takes_root();
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

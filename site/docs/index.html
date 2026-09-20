@@ -1123,9 +1123,10 @@ texture's memory and is off by default.</p>
 
 <h2 id="recording">Recording</h2>
 
-<p>vizz records the master output as a <strong>PNG sequence</strong>. Every
-finished frame is a finished file, so a crash mid-take costs nothing already
-written.</p>
+<p>vizz records the master output as an <strong>image sequence</strong> —
+JPEG at quality 92 and 30 fps by default, PNG on request from the panel's
+<strong>recording</strong> section. Every finished frame is a finished file,
+so a crash mid-take costs nothing already written.</p>
 
 <ol class="steps">
 <li>Press the <strong>REC</strong> chip on the performance layout's status
@@ -1137,9 +1138,12 @@ dropped.</li>
 </ol>
 
 <p>Takes land in <code>~/Movies/vizz/vizz-&lt;timestamp&gt;/</code> on macOS and
-<code>~/Videos/vizz/…</code> elsewhere. Assemble one with ffmpeg:</p>
+<code>~/Videos/vizz/…</code> elsewhere; the recording section says so, and its
+<strong>reveal</strong> button opens the folder. Assemble one with ffmpeg:</p>
 
-<pre><code>ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4</code></pre>
+<pre><code>ffmpeg -framerate 30 -i frame_%06d.jpg -pix_fmt yuv420p take.mp4</code></pre>
+
+<p>Use <code>.png</code> and the rate you recorded at if you changed either.</p>
 
 <p>Alongside the frames is a <code>frames.csv</code> of per-frame wall-clock
 times, so a take that dropped frames can be assembled honestly instead of
@@ -1309,7 +1313,7 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/scene/bars</code></td><td>0.25 – 16</td><td>4</td><td>bars between scene autopilot steps</td></tr>
     <tr><td><code>/deck/select</code></td><td>0 – 24</td><td>0</td><td>turn to page 1–24 on change; 0 = none</td></tr>
     <tr><td><code>/column/fire</code></td><td>0 – 16</td><td>0</td><td>fire column 1–16 — the scene pad and the gravity pad of that number, together</td></tr>
-    <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to a PNG sequence; 1 starts, 0 stops</td></tr>
+    <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to an image sequence; 1 starts, 0 stops</td></tr>
     <tr><td><code>/master/dim</code></td><td>0 – 1</td><td>1</td><td>master fader</td></tr>
 </table>
 </div>

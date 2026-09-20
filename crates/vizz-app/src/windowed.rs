@@ -210,6 +210,9 @@ struct App {
     startup_notes: Notes,
     /// Show the first-launch card on the first frame.
     welcome_pending: bool,
+    /// Where takes land, as the panel shows it. Asked once: the home
+    /// directory does not move during a set.
+    takes_root: String,
     /// The render scale in effect, mirrored from settings so the panel
     /// can show it without a settings-file read on every frame.
     render_scale: f32,
@@ -1266,6 +1269,7 @@ impl App {
                 // Cached in vizz-io, so this is a lock and a clone rather
                 // than a syscall per frame.
                 local_address: vizz_io::net::local_ip().map(|ip| ip.to_string()),
+                takes_root: Some(self.takes_root.clone()),
                 decks: deck_chips(&self.engine.decks, &self.midi_view),
                 active_deck: self.engine.decks.active(),
                 // Always on offer. Following is off by default, so a
@@ -1518,6 +1522,11 @@ impl App {
                 if let Some(on) = actions.audio.react {
                     let done = vizz_mod::shapes::react(&mut self.engine.modulation.graph, on);
                     notes.push((false, vizz_mod::shapes::react_notice(on, &done)));
+                }
+                if actions.reveal_takes
+                    && let Err(e) = reveal_folder(&crate::settings::takes_root())
+                {
+                    notes.push((true, format!("could not open the takes folder: {e}")));
                 }
                 // The two sequencers, together. Read from the scene
                 // grid's actions only — the controls are drawn there
@@ -2072,6 +2081,26 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// Show a folder in the platform's file browser, making it first if no
+/// take has been recorded yet — "reveal" on a folder that does not exist
+/// is an error nobody can act on.
+fn reveal_folder(path: &std::path::Path) -> Result<()> {
+    use anyhow::Context as _;
+    std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(path)
+        .spawn()
+        .with_context(|| format!("running {program}"))?;
+    Ok(())
 }
 
 /// Copy MIDI state for the panel. Non-blocking by design: if the MIDI
@@ -3335,6 +3364,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         presentable: true,
         startup_notes,
         welcome_pending: !crate::settings::load().welcomed && opts_show_gui,
+        takes_root: crate::settings::takes_root().display().to_string(),
         midi_save_backoff: None,
         modulation_save_failing: false,
         output_status: Vec::new(),

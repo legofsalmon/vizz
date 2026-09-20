@@ -1,5 +1,5 @@
-//! PNG-sequence recorder: the master output to disk, without ever making
-//! the render loop wait.
+//! Image-sequence recorder — JPEG by default, PNG on request: the master
+//! output to disk, without ever making the render loop wait.
 //!
 //! The same shape as the NDI sender on purpose: an async [`ReadbackRing`]
 //! feeds a bounded channel feeding a worker thread, and every stage drops
@@ -7,11 +7,11 @@
 //! nothing else. The drops are counted and reported, so a capture that
 //! could not keep up says so instead of pretending.
 //!
-//! PNG rather than a video container because it needs no codec, survives
-//! a crash mid-take (every finished frame is a finished file), and
-//! assembles with one ffmpeg line. Frames arrive at whatever rate the app
+//! Still images rather than a video container because they need no codec,
+//! survive a crash mid-take (every finished frame is a finished file), and
+//! assemble with one ffmpeg line. Frames arrive at whatever rate the app
 //! actually rendered, so alongside the images the worker writes
-//! `frames.csv` — `index,elapsed_ms` per frame — which is what lets a
+//! `frames.csv` — `frame,elapsed_ms` per frame — which is what lets a
 //! variable-rate take be assembled honestly later.
 
 use std::io::Write as _;

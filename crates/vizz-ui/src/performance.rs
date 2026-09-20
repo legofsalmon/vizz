@@ -2184,7 +2184,7 @@ fn status_strip(
                         "REC".to_string(),
                         vizz_design::accent::REC_BED,
                         vizz_design::accent::REC_INK,
-                        "record the master as a PNG sequence — click to start",
+                        "record the master as an image sequence — click to start · the panel's recording section sets the format and rate",
                     ),
                 };
                 let chip = ui.add(

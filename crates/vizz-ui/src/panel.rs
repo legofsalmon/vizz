@@ -113,6 +113,9 @@ pub struct PanelActions {
     /// Open the modulation canvas window. The canvas was reachable only
     /// through `G`, which made it a feature you had to already know about.
     pub open_canvas: bool,
+    /// Show the folder every take lands in, in the platform's file
+    /// browser.
+    pub reveal_takes: bool,
 }
 
 /// How big the output is and how hard it is worked.
@@ -185,6 +188,9 @@ pub struct PanelState {
     /// This machine's address on the network, for the stream field to
     /// show. `None` when it is not on one — see `vizz_io::net`.
     pub local_address: Option<String>,
+    /// Where takes land, for the recording section to say so. A take's
+    /// folder used to be named in a four-second notice and nowhere else.
+    pub takes_root: Option<String>,
     /// The live point-cloud stream: `None` when nothing is running.
     pub live_cloud: Option<LiveCloudStatus>,
     /// Current analysis settings, mirrored here so the widgets have
@@ -272,6 +278,7 @@ impl Default for PanelState {
             video_sources: Default::default(),
             video: Default::default(),
             local_address: Default::default(),
+            takes_root: None,
             live_cloud: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: Default::default(),
@@ -1598,6 +1605,23 @@ fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let mut next = state.record;
 
+    // Where they go, permanently on screen. The stop notice named the
+    // folder for four seconds and then nothing in the app could say it;
+    // the folders are dated and sort newest-last, but only if you know
+    // where to look.
+    if let Some(root) = &state.takes_root {
+        ui.horizontal(|ui| {
+            ui.small(format!("takes go to {root}"));
+            if ui
+                .small_button("reveal")
+                .on_hover_text("open that folder in the file browser")
+                .clicked()
+            {
+                actions.reveal_takes = true;
+            }
+        });
+    }
+
     // The cost line first, because it is the reason this section exists.
     let per_sec = next.bytes_per_sec as f64 / 1_000_000.0;
     let headline = format!("{per_sec:.0} MB/s at the current size");
@@ -1940,9 +1964,21 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegist
                     vizz_design::ink::SECONDARY
                 }),
             );
+            // Named by what it actually writes: the hover promised a
+            // PNG sequence for a year after JPEG became the default, on
+            // a live take that cannot be repeated.
+            let format = if state.record.lossless {
+                "PNG".to_string()
+            } else {
+                format!("JPEG q{}", state.record.quality)
+            };
             if ui
                 .add(button)
-                .on_hover_text("PNG sequence of the master output — heavy resolutions drop frames rather than stall the show")
+                .on_hover_text(format!(
+                    "{format} image sequence of the master output at {:.0} fps — \
+                     heavy resolutions drop frames rather than stall the show",
+                    state.record.fps
+                ))
                 .clicked()
             {
                 registry.set(id, if on { 0.0 } else { 1.0 });

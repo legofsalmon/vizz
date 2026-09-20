@@ -188,21 +188,25 @@ NDI frame is survivable and missing vsync is not.
 
 `/record/active` (the REC chip on the performance layout, a button in
 the panel's outputs section, OSC, or a learned MIDI button) records
-the master output as a **PNG sequence** — every finished frame is a
-finished file, so a crash mid-take costs nothing already written. Takes
-land in `~/Movies/vizz/vizz-<timestamp>/` (macOS) or `~/Videos/vizz/…`
-elsewhere, with a `frames.csv` of per-frame wall-clock times so a
-variable-rate capture assembles honestly:
+the master output as an **image sequence** — JPEG at quality 92 and
+30 fps by default, PNG on request from the panel's recording section —
+where every finished frame is a finished file, so a crash mid-take costs
+nothing already written. Takes land in `~/Movies/vizz/vizz-<timestamp>/`
+(macOS) or `~/Videos/vizz/…` elsewhere; the recording section says so
+and has a **reveal** button that opens the folder. Alongside the frames
+is a `frames.csv` of per-frame wall-clock times so a variable-rate
+capture assembles honestly:
 
 ```sh
-ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4
+ffmpeg -framerate 30 -i frame_%06d.jpg -pix_fmt yuv420p take.mp4
 ```
 
-Recording never stalls the show: a slow disk drops frames on the
-recording only, the drops are counted and reported, and a full disk
-stops the take with a notice instead of retrying sixty times a second.
-Heavy resolutions will drop frames — PNG encoding at 1080p60 is at the
-edge of one core — and the counters say exactly how many.
+Use `.png` and the rate you recorded at if you changed either. Recording
+never stalls the show: a slow disk drops frames on the recording only,
+the drops are counted and reported, and a full disk stops the take with
+a notice instead of retrying sixty times a second. Heavy resolutions will
+drop frames — PNG encoding at 1080p60 is at the edge of one core — and
+the counters say exactly how many.
 
 ### Fullscreen
 
@@ -1609,7 +1613,7 @@ control input can never crash the renderer.
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
 | `/deck/select` | 0 – 24 | 0 | turn to page 1–24 on change; 0 = none |
 | `/column/fire` | 0 – 16 | 0 | fire column 1–16 — the scene pad and the gravity pad of that number, together |
-| `/record/active` | 0 – 1 | 0 | record the master to a PNG sequence; 1 starts, 0 stops |
+| `/record/active` | 0 – 1 | 0 | record the master to an image sequence; 1 starts, 0 stops |
 | `/master/dim` | 0 – 1 | 1 | master fader |
 
 The table is checked against the parameter registry by a test

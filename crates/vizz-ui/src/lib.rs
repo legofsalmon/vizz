@@ -1192,6 +1192,7 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1246,6 +1247,7 @@ mod tests {
             // the looks it happens to be listing.
             project: "Basement".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1309,6 +1311,7 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1365,6 +1368,7 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1413,6 +1417,7 @@ mod tests {
         let mut state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1516,6 +1521,7 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1573,6 +1579,7 @@ mod tests {
         let base = |update: Option<String>| PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1737,6 +1744,7 @@ mod tests {
         let state = |current: Option<usize>| PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1789,6 +1797,7 @@ mod tests {
         PanelState {
             project: "Show 1".into(),
             local_address: None,
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1870,6 +1879,7 @@ mod tests {
         let mut state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1928,6 +1938,7 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1996,6 +2007,7 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2062,6 +2074,7 @@ mod tests {
         let mut state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -2185,6 +2198,7 @@ mod tests {
         PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
