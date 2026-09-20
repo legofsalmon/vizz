@@ -1385,6 +1385,22 @@ few hundred is a strange attractor; the rest run away to infinity or fall
 onto a point. The one knob is the seed: *roll* is an attractor nobody has
 seen, and `gen:quadratic?seed=7` is the same one on every machine.
 
+Deciding a candidate is worth keeping takes three things, and each was
+added after the previous one let something through. A positive exponent
+over a short run is not enough: a field still spiralling *in* towards a
+limit cycle pushes a neighbour off its trajectory while it settles, so
+it is measured again over twenty times as long. A positive exponent over
+a long run is not enough either: if it is barely positive, the orbit
+drawn over one slot separates by a factor of eighty and reads as a thick
+loop, so the candidate is kept only if what gets drawn stretches by e⁸.
+And being chaotic is not the same as being an *attractor*: a chaotic
+saddle holds an orbit for a long while and then lets it go, in a
+direction decided by the last bit of the arithmetic, so a candidate must
+also stay inside a box four times its own width for a further hundred
+thousand steps. Points are then placed evenly along the trajectory
+rather than evenly in time, because a field drawn at random changes
+speed as it goes round.
+
 **Every named flow is tested for chaos, not for looks.** A test
 integrates all twenty-three and measures the largest Lyapunov exponent by
 following a neighbour and renormalising. It earns its keep: two of the

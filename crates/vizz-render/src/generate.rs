@@ -949,41 +949,86 @@ fn quadratic_step(c: &[f64; 30], [x, y, z]: [f64; 3]) -> [f64; 3] {
     out
 }
 
-/// The orbit of one candidate, if it is chaotic: `None` when it
-/// escapes, collapses, or settles into a cycle.
-fn quadratic_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
+/// What a run of a candidate measured: where it ended up, its largest
+/// Lyapunov exponent, its mean speed (flows only) and how wide it
+/// wandered.
+struct Probe {
+    at: [f64; 3],
+    lyapunov: f64,
+    speed: f64,
+    extent: f64,
+}
+
+/// The probe step for a flow. Coefficients of order one make a field of
+/// order one, so this is a small fraction of a transit either way.
+const PROBE_DT: f64 = 0.05;
+
+/// One run of a candidate map: settle for `transient` iterations, then
+/// measure for `measure` more. The exponent is Benettin's method —
+/// follow a neighbour, see how fast it is pushed away, renormalise.
+fn quadratic_map_probe(
+    c: &[f64; 30],
+    start: [f64; 3],
+    transient: usize,
+    measure: usize,
+) -> Option<Probe> {
     const SEPARATION: f64 = 1e-6;
-    let mut p = [0.05, 0.05, 0.05];
-    let mut q = [0.05 + SEPARATION, 0.05, 0.05];
+    let sane = |p: &[f64; 3]| p.iter().all(|v| v.is_finite() && v.abs() < 1e5);
+    let mut p = start;
+    for _ in 0..transient {
+        p = quadratic_step(c, p);
+        if !sane(&p) {
+            return None;
+        }
+    }
+    let mut q = [p[0] + SEPARATION, p[1], p[2]];
     let mut lyapunov = 0.0;
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];
-    for i in 0..4_000 {
+    for _ in 0..measure {
         p = quadratic_step(c, p);
         q = quadratic_step(c, q);
-        if p.iter().any(|v| !v.is_finite() || v.abs() > 1e5) {
+        if !sane(&p) || !sane(&q) {
             return None;
         }
         let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
         let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if dist == 0.0 {
+        if dist == 0.0 || !dist.is_finite() {
             return None;
         }
-        if i >= 1_000 {
-            lyapunov += (dist / SEPARATION).ln();
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
+        lyapunov += (dist / SEPARATION).ln();
         let scale = SEPARATION / dist;
         q = [p[0] + d[0] * scale, p[1] + d[1] * scale, p[2] + d[2] * scale];
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
     }
-    let lyapunov = lyapunov / 3_000.0;
-    let extent = (0..3).fold(0.0f64, |m, k| m.max(hi[k] - lo[k]));
-    if lyapunov < 0.01 || extent < 0.05 {
+    Some(Probe {
+        at: p,
+        // Per iteration for a map, where a flow's is per unit time.
+        lyapunov: lyapunov / measure as f64,
+        speed: 0.0,
+        extent: (0..3).fold(0.0f64, |m, k| m.max(hi[k] - lo[k])),
+    })
+}
+
+/// The orbit of one candidate, if it is chaotic: `None` when it
+/// escapes, collapses, or settles into a cycle.
+///
+/// Measured twice, and the second time is not a formality — see
+/// [`quadratic_flow_orbit`], where the same short run was caught
+/// calling a limit cycle chaotic.
+fn quadratic_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
+    let quick = quadratic_map_probe(c, [0.05, 0.05, 0.05], 1_000, 3_000)?;
+    if quick.lyapunov < 0.01 || quick.extent < 0.05 {
         return None;
     }
+    let settled = quadratic_map_probe(c, quick.at, 40_000, 40_000)?;
+    if settled.lyapunov < 0.01 || settled.extent < 0.05 {
+        return None;
+    }
+    let mut p = settled.at;
     let mut out = Vec::with_capacity(POINTS);
     for _ in 0..POINTS {
         p = quadratic_step(c, p);
@@ -1014,35 +1059,31 @@ fn quadratic_flow(seed: u64) -> Vec<[f64; 3]> {
     (0..POINTS).map(|_| rng.on_sphere()).collect()
 }
 
-/// One candidate field, if it is a strange attractor. Most draws are
-/// rejected in the first few hundred steps because they escape, which
-/// is what makes the search affordable.
-fn quadratic_flow_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
-    /// The probe step. Coefficients of order one make a field of order
-    /// one, so this is a small fraction of a transit either way.
-    const DT: f64 = 0.05;
+/// One run of a candidate field, integrated rather than iterated.
+fn quadratic_flow_probe(
+    c: &[f64; 30],
+    start: [f64; 3],
+    transient: usize,
+    measure: usize,
+) -> Option<Probe> {
     const SEPARATION: f64 = 1e-6;
-    const TRANSIENT: usize = 2_000;
-    const MEASURE: usize = 3_000;
     let f = |p| quadratic_step(c, p);
     let sane = |p: &[f64; 3]| p.iter().all(|v| v.is_finite() && v.abs() < 1e3);
-    let mut p = [0.05, 0.05, 0.05];
-    for _ in 0..TRANSIENT {
-        p = rk4(f, p, DT);
+    let mut p = start;
+    for _ in 0..transient {
+        p = rk4(f, p, PROBE_DT);
         if !sane(&p) {
             return None;
         }
     }
-    // The largest Lyapunov exponent, per unit time: follow a neighbour
-    // and renormalise the separation each step (Benettin's method).
     let mut q = [p[0] + SEPARATION, p[1], p[2]];
     let mut lyapunov = 0.0;
     let mut speed = 0.0;
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];
-    for _ in 0..MEASURE {
-        p = rk4(f, p, DT);
-        q = rk4(f, q, DT);
+    for _ in 0..measure {
+        p = rk4(f, p, PROBE_DT);
+        q = rk4(f, q, PROBE_DT);
         if !sane(&p) || !sane(&q) {
             return None;
         }
@@ -1061,24 +1102,79 @@ fn quadratic_flow_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
             hi[k] = hi[k].max(p[k]);
         }
     }
-    let lyapunov = lyapunov / (MEASURE as f64 * DT);
-    let speed = speed / MEASURE as f64;
-    let extent = (0..3).fold(0.0f64, |m, k| m.max(hi[k] - lo[k]));
+    Some(Probe {
+        at: p,
+        lyapunov: lyapunov / (measure as f64 * PROBE_DT),
+        speed: speed / measure as f64,
+        extent: (0..3).fold(0.0f64, |m, k| m.max(hi[k] - lo[k])),
+    })
+}
+
+/// One candidate field, if it is a strange attractor. Most draws are
+/// rejected in the first few hundred steps because they escape, which
+/// is what makes the search affordable.
+///
+/// The measurement is made twice, and the second one earned its place.
+/// A field still spiralling *in* towards a limit cycle pushes a
+/// neighbour off its trajectory while it settles, so a short run
+/// reports a healthy positive exponent for something that is not
+/// chaotic at all — and draws as a plain closed loop. The first seed
+/// tried was exactly that: 0.0137 over a hundred and fifty time units,
+/// and 0.0001 over ten thousand.
+fn quadratic_flow_orbit(c: &[f64; 30]) -> Option<Vec<[f64; 3]>> {
+    let quick = quadratic_flow_probe(c, [0.05, 0.05, 0.05], 2_000, 3_000)?;
+    if quick.lyapunov < 0.01 || quick.extent < 0.05 || quick.speed < 1e-6 {
+        return None;
+    }
+    let Probe { mut at, lyapunov, speed, extent } =
+        quadratic_flow_probe(c, quick.at, 40_000, 40_000)?;
     if lyapunov < 0.01 || extent < 0.05 || speed < 1e-6 {
         return None;
     }
-    // Draw at a step that makes one point about a hundredth of the
-    // attractor's width, whatever speed this field happens to run at:
-    // the cloud has to read as a path, and a fixed step cannot for a
-    // system whose scale was drawn at random.
-    let dt = (extent * 0.01 / speed).clamp(1e-4, 0.25);
-    let mut out = Vec::with_capacity(POINTS);
-    for _ in 0..POINTS {
-        p = rk4(f, p, dt);
-        if !sane(&p) {
+    // And it must *stay*. Some of these fields are chaotic saddles
+    // rather than attractors: the orbit wanders a strange set for a
+    // long while and then leaves for good. Since it is chaotic, which
+    // way it leaves depends on the last bit of the arithmetic, so one
+    // machine keeps a cloud another machine loses — and a generator
+    // whose picture is not the same everywhere is not a generator.
+    // A hundred thousand steps inside a box four times the width it
+    // wandered is what separates the two.
+    let fence = (extent * 4.0).max(10.0);
+    let f = |p| quadratic_step(c, p);
+    let mut far = at;
+    for _ in 0..100_000 {
+        far = rk4(f, far, PROBE_DT);
+        if far.iter().any(|v| !v.is_finite() || v.abs() > fence) {
             return None;
         }
-        out.push(orient(p, Frame::ZUp));
+    }
+    // Draw with the step chosen per point, so consecutive points are a
+    // fixed distance apart *along the trajectory* rather than a fixed
+    // interval apart in time. A field drawn at random runs at whatever
+    // speed it likes, and changes speed round its own orbit; stepping
+    // in time gives a cloud dense where the flow crawls and dashed
+    // where it sprints, and the dashed part is what stops it reading as
+    // a path at all.
+    let target = extent * 0.04;
+    // Keep the candidate only if the orbit that will be drawn is long
+    // enough to *show* the folding. A positive exponent is not enough
+    // on its own: a flow whose exponent is barely positive separates
+    // neighbouring trajectories by a factor of eighty over a whole
+    // slot, which draws as one thick loop. Stretching by e⁸ — three
+    // thousand — is where the structure appears.
+    let expected = POINTS as f64 * (target / speed).clamp(1e-6, 0.25);
+    if lyapunov * expected < 8.0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(POINTS);
+    for _ in 0..POINTS {
+        let v = f(at);
+        let here = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        at = rk4(f, at, (target / here.max(1e-9)).clamp(1e-6, 0.25));
+        if at.iter().any(|v| !v.is_finite() || v.abs() > 1e3) {
+            return None;
+        }
+        out.push(orient(at, Frame::ZUp));
     }
     Some(out)
 }
@@ -1477,6 +1573,26 @@ mod tests {
         // centres are within a hair of each other.
         let pts = generate("voronoi?cells=8;seed=3").unwrap();
         assert_eq!(pts.len(), POINTS);
+    }
+
+    /// The search rejects a field that is still settling. These thirty
+    /// coefficients are the first draw on seed 1 that passed the short
+    /// probe: over a hundred and fifty time units a neighbour is pushed
+    /// away at 0.0137 a unit, which reads as chaos. It is not — the
+    /// trajectory is spiralling in towards a limit cycle, and over ten
+    /// thousand time units the exponent is 0.0001. It drew as a plain
+    /// closed loop, which is what gave it away.
+    #[test]
+    fn the_flow_search_rejects_a_field_that_is_still_settling() {
+        let c: [f64; 30] = [
+            0.8, 0.7, 0.4, 0.0, 1.2, 0.1, -0.6, -0.8, -0.2, 1.2, -0.1, -0.1, -0.7, 0.1, 1.1,
+            -1.0, 0.0, 0.9, -0.8, -0.1, -0.1, 0.6, -0.3, -1.0, -0.8, -1.2, -0.7, 0.9, -0.1, 0.3,
+        ];
+        let quick = quadratic_flow_probe(&c, [0.05, 0.05, 0.05], 2_000, 3_000).unwrap();
+        assert!(quick.lyapunov > 0.01, "the short probe should be fooled: {}", quick.lyapunov);
+        let settled = quadratic_flow_probe(&c, quick.at, 40_000, 40_000).unwrap();
+        assert!(settled.lyapunov < 0.005, "the long one should not be: {}", settled.lyapunov);
+        assert!(quadratic_flow_orbit(&c).is_none(), "the search kept a limit cycle");
     }
 
     /// The diagonal frame stands (1,1,1) upright, and only rotates.
