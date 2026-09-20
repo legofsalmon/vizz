@@ -337,19 +337,73 @@ fn scene_h_id() -> egui::Id {
     egui::Id::new("performance-scene-h")
 }
 
-/// Below this window height the sections between the status strip and
-/// the desk stay stood down once they have been stood down.
-///
-/// Hysteresis, not a second opinion. Standing the sections down frees
-/// exactly the room that would say they can come back, so a single
-/// measurement makes the flag oscillate every frame — a screen that
-/// flickers between two layouts. This is the "and it is still a short
-/// window" half of the test.
-const CRAMPED_UNDER: f32 = 780.0;
+/// Below this window height the preset block shows one row of tiles and
+/// a glimpse of the next rather than two rows. Purely about the tiles;
+/// what stands down and when is [`StandDown`]'s business.
+const SHORT_WINDOW: f32 = 780.0;
 
-/// Where the cramped flag lives between frames. See the layout body.
-fn cramped_id() -> egui::Id {
-    egui::Id::new("performance-cramped")
+/// How the sections between the status strip and the desk stand down
+/// when the faders would otherwise starve, and come back when there is
+/// room again.
+///
+/// Measured, not predicted, and in two steps: first LAYERS and the
+/// preset tiles, then PUNCH — the punches are the last thing a hand
+/// wants to lose. `cost` is what each step freed, measured on the frame
+/// after it was taken, and a step is only undone once the room to spare
+/// exceeds what undoing it will cost. That is the hysteresis. Standing a
+/// section down frees exactly the room that would say it can return, so
+/// a single test oscillates at frame rate; the fixed height floor that
+/// used to stand in for this only held below one window size, and above
+/// it — 1280x800 with a filled gravity grid — the top of the screen
+/// flickered between two layouts every frame.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct StandDown {
+    /// 0: everything drawn; 1: LAYERS and PRESETS down; 2: PUNCH too.
+    level: u8,
+    /// Points each step freed, indexed by the level it led to, minus one.
+    cost: [f32; 2],
+    /// The block's height on the frame before a step, so the frame after
+    /// can measure what the step freed.
+    measuring_from: Option<f32>,
+}
+
+impl StandDown {
+    const MAX: u8 = 2;
+    /// A little more than the cost, so a section returns with room to
+    /// spare rather than at exactly the point it starved.
+    const SLACK: f32 = 8.0;
+
+    /// Settle the level for the next frame from what this one measured:
+    /// `above` is the height of the block that stands down, `room` what
+    /// the faders were left, `floor` what they need.
+    fn step(&mut self, above: f32, room: f32, floor: f32) {
+        if let Some(before) = self.measuring_from.take()
+            && self.level > 0
+        {
+            self.cost[usize::from(self.level) - 1] = (before - above).max(0.0);
+        }
+        if room < floor {
+            if self.level < Self::MAX {
+                self.measuring_from = Some(above);
+                self.level += 1;
+            }
+        } else if self.level > 0 && room - floor >= self.cost[usize::from(self.level) - 1] + Self::SLACK {
+            self.level -= 1;
+        }
+    }
+
+    fn hides_layers(self) -> bool {
+        self.level >= 1
+    }
+
+    fn hides_punch(self) -> bool {
+        self.level >= Self::MAX
+    }
+}
+
+/// Where the stand-down state lives between frames. See the layout body.
+fn stand_id() -> egui::Id {
+    egui::Id::new("performance-stand-down")
 }
 
 /// Where the peek toggle's state lives between frames.
@@ -418,7 +472,10 @@ pub fn draw(
             // every section here, which is the kind of second copy that
             // drifts. One frame late is invisible on a resize and the
             // layout settles immediately.
-            let cramped = ui.ctx().data_mut(|d| *d.get_temp_mut_or(cramped_id(), false));
+            let stand: StandDown =
+                ui.ctx().data_mut(|d| *d.get_temp_mut_or(stand_id(), StandDown::default()));
+            // How tall the block that stands down came to this frame.
+            let mut above_h = 0.0_f32;
             // The scrim is painted *around* the output pane, not over it,
             // so the picture comes through at full strength while every
             // label keeps its opaque ground. Four rects — above, below,
@@ -475,21 +532,40 @@ pub fn draw(
                     // sixteen-pad grid is still a sixteen-pad grid over
                     // the picture. The two rows that stay are the two a
                     // hand is already on.
-                    if !peeking && !cramped {
+                    let above_top = ui.cursor().top();
+                    if !peeking && !stand.hides_punch() {
                         section(ui, "PUNCH");
                         punch_row(ui, registry, state, &mut actions);
                         ui.add_space(10.0);
                     }
 
-                    if !peeking && !cramped && layer_strip(ui, registry, col_w) {
+                    if !peeking && !stand.hides_layers() && layer_strip(ui, registry, col_w) {
                         ui.add_space(10.0);
                     }
 
-                    if !state.presets.is_empty() && !peeking && !cramped {
+                    if !state.presets.is_empty() && !peeking && !stand.hides_layers() {
                         section(ui, "PRESETS");
                         preset_row(ui, state, &mut actions, col_w, full.y);
                         ui.add_space(10.0);
                     }
+
+                    // What stood down, said. A row that vanishes when the
+                    // window shrinks reads as a bug unless something says
+                    // a taller window brings it back. Inside the measured
+                    // block, so the same budget pays for it.
+                    if !peeking && stand.hides_layers() {
+                        ui.label(
+                            egui::RichText::new(if stand.hides_punch() {
+                                "taller window → punch, layers and preset tiles"
+                            } else {
+                                "taller window → layers and preset tiles"
+                            })
+                            .size(11.0)
+                            .color(INK_3),
+                        );
+                        ui.add_space(6.0);
+                    }
+                    above_h = ui.cursor().top() - above_top;
 
                     });
                     // The bottom of the desk: the pads and the faders, both
@@ -720,19 +796,13 @@ pub fn draw(
                     let fader_top = ui.cursor().top();
                     let floor = FADER_ABS_MIN + FADER_CHROME + 6.0;
                     let room = full.y - fader_top - PAD;
-                    // Next frame's `cramped`: the sections above stand
-                    // down when the room left cannot hold the block.
-                    // Hysteresis on the way back, because standing them
-                    // down frees exactly the room that would say they
-                    // can return — a single test makes it oscillate.
+                    // Next frame's stand-down: the sections above give
+                    // way, a step at a time, when the room left cannot
+                    // hold the block, and come back once there is room
+                    // to spare for what coming back costs.
                     ui.ctx().data_mut(|d| {
-                        let was: bool = *d.get_temp_mut_or(cramped_id(), false);
-                        let starved = room < floor;
-                        d.insert_temp(cramped_id(), if was {
-                            starved || full.y < CRAMPED_UNDER
-                        } else {
-                            starved
-                        });
+                        d.get_temp_mut_or(stand_id(), StandDown::default())
+                            .step(above_h, room, floor);
                     });
                     faders(ui, registry, macros, state, &mut actions, inner_w, room.max(floor));
 
@@ -1252,7 +1322,7 @@ fn preset_row(
     // Measured rather than modelled, because the content is a wrapped
     // flow of tiles and headings, and any formula for its height would be
     // a second implementation of egui's wrapping — wrong in exactly the
-    // cases that matter. One frame late is the same trade `cramped` and
+    // cases that matter. One frame late is the same trade `StandDown` and
     // the scene block already make further down.
     let id = ui.make_persistent_id("preset-block-h");
     let measured: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
@@ -1317,7 +1387,7 @@ fn preset_row(
 /// screen than the text row showed, and more of them *recognised* —
 /// which is the trade the tile is for, and why the block scrolls.
 fn block_cap(full_h: f32) -> f32 {
-    let rows = if full_h >= CRAMPED_UNDER { PRESET_ROWS_SHOWN } else { PRESET_ROWS_CRAMPED };
+    let rows = if full_h >= SHORT_WINDOW { PRESET_ROWS_SHOWN } else { PRESET_ROWS_CRAMPED };
     rows * (TILE_H + TILE_GAP)
 }
 
@@ -5644,6 +5714,136 @@ mod tests {
                 .count();
         }
         count
+    }
+
+    /// The on-screen text of each of `frames` consecutive passes, with a
+    /// deck row and, when given, a gravity grid — the state the app is
+    /// actually in once a show is set up, which the shared harness leaves
+    /// out so the other tests do not all find chip names in their sheets.
+    fn frames_with(
+        reg: &ParamRegistry,
+        gravity: Option<&crate::grid_view::GridView>,
+        size: Vec2,
+        frames: usize,
+    ) -> Vec<String> {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = [crate::PresetEntry::from("Slow bloom"), crate::PresetEntry::from("Butterfly")];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let decks = vec![
+            DeckChip { name: "opener".into(), ..Default::default() },
+            DeckChip { name: "encore".into(), ..Default::default() },
+        ];
+        let state = PerformanceState {
+            project: "Show 1",
+            decks: &decks,
+            active_deck: 0,
+            follow_columns: Some(false),
+            recording: None,
+            preset_current: None,
+            outputs: &[],
+            audio: &audio,
+            fps: 60.0,
+            over_budget: false,
+            bpm: 128.0,
+            bar_phase: 0.1,
+            presets: &names,
+            thumb_revision: 0,
+            grid: &grid,
+            gravity,
+            midi: &midi,
+            values: None,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
+            graph: None,
+        };
+        let mut macros = Macros::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        (0..frames)
+            .map(|i| {
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(i as f64 * 0.05),
+                    ..Default::default()
+                });
+                draw(&ctx, reg, &state, &mut macros);
+                let out = ctx.end_pass();
+                out.shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if on_screen(t, screen) => Some(painted(&t.galley)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    /// Standing sections down must settle, and must keep the punches.
+    ///
+    /// The old rule stood PUNCH, LAYERS and PRESETS down together the
+    /// frame the faders starved, and brought them back on a fixed height
+    /// floor — so above that floor, with a filled gravity grid and a deck
+    /// row, the flag flipped every frame and the top of the screen
+    /// flickered between two layouts. And at the size the app used to
+    /// open at, the punches went with everything else. Now the layers and
+    /// the tiles go first and the punch row last, each step measured and
+    /// only undone once there is room to spare — so this runs the layout
+    /// for a dozen frames at the sizes that misbehaved and asks that the
+    /// last frames agree with each other, that PUNCH stayed, and that
+    /// something on screen says what a taller window would bring back.
+    #[test]
+    fn standing_down_settles_and_keeps_the_punch_row() {
+        let reg = registry();
+        let gravity = crate::grid_view::GridView {
+            names: (0..16).map(|i| Some(format!("well {i}"))).collect(),
+            missing: vec![false; 16],
+            midi: vec![None; 16],
+            ..Default::default()
+        };
+        // The punch row holds down to the size the app used to open at.
+        // At the floor the layout is asked to hold, 1024x640, it cannot:
+        // a deck row, two full grids and the faders leave no room for it,
+        // and then the one thing owed is a line saying so.
+        for (w, h, punch) in [
+            (1280.0, 800.0, true),
+            (1366.0, 768.0, true),
+            (1280.0, 720.0, true),
+            (1024.0, 640.0, false),
+        ] {
+            let frames = frames_with(&reg, Some(&gravity), vec2(w, h), 12);
+            let tail = &frames[6..];
+            assert!(
+                tail.windows(2).all(|p| p[0] == p[1]),
+                "at {w}x{h} the layout never settled:\n{}\n---\n{}",
+                tail[0],
+                tail[1]
+            );
+            let last = tail.last().unwrap();
+            assert!(last.contains("MASTER"), "at {w}x{h} the master stood down: {last}");
+            if punch {
+                assert!(last.contains("PUNCH"), "at {w}x{h} the punch row stood down: {last}");
+            } else {
+                assert!(
+                    last.contains("taller window → punch"),
+                    "at {w}x{h} the punch row stood down and nothing said so: {last}"
+                );
+            }
+            if !last.contains("PRESETS") {
+                assert!(
+                    last.contains("taller window"),
+                    "at {w}x{h} the tiles stood down and nothing said so: {last}"
+                );
+            }
+        }
+        // And with room to spare, nothing stands down at all.
+        let full = frames_with(&reg, Some(&gravity), vec2(1440.0, 900.0), 12);
+        let last = full.last().unwrap();
+        assert!(last.contains("PRESETS") && last.contains("PUNCH"), "{last}");
+        assert!(!last.contains("taller window"), "a roomy window still apologised: {last}");
     }
 
     /// Draw the layout with a gravity grid in a given state, and return

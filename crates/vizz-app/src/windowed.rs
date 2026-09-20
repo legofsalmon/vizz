@@ -257,11 +257,54 @@ const MODULATION_AUTOSAVE: std::time::Duration = std::time::Duration::from_secs(
 /// in a minute are never the same gesture.
 const QUIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// The window a first launch opens with, in logical points, unless the
+/// display is smaller. Chosen for the performance layout: with a deck row
+/// and both pad grids up, this is the size at which the punch row, the
+/// layer strip and two rows of preset tiles all fit above the faders.
+const DEFAULT_WINDOW: [u32; 2] = [1440, 900];
+
+/// The smallest window the layout is asked to hold. The layout tests
+/// sweep down to it, and the desk keeps its faders and its master there.
+const MIN_WINDOW: [u32; 2] = [1024, 640];
+
 impl App {
+    /// How big to open the window.
+    ///
+    /// An explicit --width/--height is a request and wins. Otherwise the
+    /// size it was last dragged to; and on a first launch, a size the
+    /// performance layout can actually use — 1440x900, or nine tenths of
+    /// the display when that is smaller. It used to open at the output
+    /// size, 1280x720, a window at which the play screen stood its punch
+    /// row, layer strip and preset tiles down for want of room and never
+    /// said why. What receivers get and what the window is are different
+    /// decisions; this is the second one.
+    fn window_size(&self, event_loop: &ActiveEventLoop) -> [u32; 2] {
+        if self.opts.size_from_cli {
+            return [self.opts.width, self.opts.height];
+        }
+        if let Some(size) = crate::settings::load().window_size {
+            return [size[0].max(MIN_WINDOW[0]), size[1].max(MIN_WINDOW[1])];
+        }
+        let display = event_loop.primary_monitor().map(|m| {
+            let s = m.size().to_logical::<f64>(m.scale_factor());
+            [s.width, s.height]
+        });
+        let fit = |want: u32, have: Option<f64>| match have {
+            Some(px) if px > 0.0 => (f64::from(want)).min(px * 0.9) as u32,
+            _ => want,
+        };
+        [
+            fit(DEFAULT_WINDOW[0], display.map(|d| d[0])).max(MIN_WINDOW[0]),
+            fit(DEFAULT_WINDOW[1], display.map(|d| d[1])).max(MIN_WINDOW[1]),
+        ]
+    }
+
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<RenderState> {
+        let [w, h] = self.window_size(event_loop);
         let mut attrs = Window::default_attributes()
             .with_title(self.opts.title.clone())
-            .with_inner_size(LogicalSize::new(self.opts.width, self.opts.height));
+            .with_inner_size(LogicalSize::new(w, h))
+            .with_min_inner_size(LogicalSize::new(MIN_WINDOW[0], MIN_WINDOW[1]));
         // The flag forces fullscreen for this run; otherwise the last
         // toggle is remembered — a venue machine that always runs
         // fullscreen should not need retelling every launch.
@@ -1878,11 +1921,27 @@ impl ApplicationHandler for App {
         if let Some(state) = &self.state {
             let mem: crate::settings::GraphCanvas = state.gui.graph_view_memory().into();
             let mut s = crate::settings::load();
+            let mut changed = false;
             if s.graph_view.as_ref() != Some(&mem) {
                 s.graph_view = Some(mem);
-                if let Err(e) = crate::settings::save(&s) {
-                    log::warn!("could not remember the canvas view: {e:#}");
+                changed = true;
+            }
+            // The window's size, so it opens where it was dragged to. Not
+            // while fullscreen: that size is the monitor's, and it is
+            // remembered by the fullscreen flag instead.
+            if state.window.fullscreen().is_none() {
+                let size = state.window.inner_size().to_logical::<u32>(state.window.scale_factor());
+                let size = [size.width, size.height];
+                if size[0] >= MIN_WINDOW[0]
+                    && size[1] >= MIN_WINDOW[1]
+                    && s.window_size != Some(size)
+                {
+                    s.window_size = Some(size);
+                    changed = true;
                 }
+            }
+            if changed && let Err(e) = crate::settings::save(&s) {
+                log::warn!("could not remember the canvas view and window size: {e:#}");
             }
         }
     }

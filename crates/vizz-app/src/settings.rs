@@ -81,6 +81,11 @@ pub struct Settings {
     /// canvas opens where you were working, not at the origin with the
     /// name field blank.
     pub graph_view: Option<GraphCanvas>,
+    /// The window's last size in logical points, so it opens at the size
+    /// it was dragged to rather than at a default every launch. `None`
+    /// until it has been sized once; a first launch sizes itself to the
+    /// display.
+    pub window_size: Option<[u32; 2]>,
 }
 
 /// See [`Settings::clock_source`].
