@@ -612,6 +612,94 @@ pub const CATALOGUE: &[Generator] = &[
         ],
     },
     Generator {
+        id: "hilbert",
+        name: "Hilbert curve",
+        about: "one unbroken line through every cell of a cube — the cloud crawls along a curve that fills space",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[Param { key: "order", label: "order", about: "how many times the curve folds into itself", default: "3", kind: Kind::Number { min: 1.0, max: 5.0 } }],
+    },
+    Generator {
+        id: "lorenz96",
+        name: "Lorenz-96",
+        about: "Lorenz's toy atmosphere: a ring of variables advecting each other; the test bed every weather forecasting scheme meets first",
+        family: Family::Attractor,
+        group: Group::Flow,
+        params: &[
+            Param { key: "size", label: "variables", about: "how many round the ring", default: "5", kind: Kind::Number { min: 4.0, max: 40.0 } },
+            Param { key: "forcing", label: "forcing", about: "how hard it is driven; 8 is the chaotic one", default: "8", kind: Kind::Number { min: 0.0, max: 20.0 } },
+        ],
+    },
+    Generator {
+        id: "duffing",
+        name: "Duffing",
+        about: "a mass in a double well, shaken — drawn on the cylinder of the forcing phase, so once round the tube is one period",
+        family: Family::Attractor,
+        group: Group::Flow,
+        params: &[Param { key: "drive", label: "drive", about: "how hard it is shaken", default: "0.5", kind: Kind::Number { min: 0.0, max: 2.0 } }],
+    },
+    Generator {
+        id: "gumowski",
+        name: "Gumowski–Mira",
+        about: "from a study of particle beams at CERN — moths and mandalas that change completely in the third decimal place",
+        family: Family::Attractor,
+        group: Group::Map,
+        params: &[Param { key: "mu", label: "μ", about: "the one number; try small changes", default: "-0.801", kind: Kind::Number { min: -1.0, max: 1.0 } }],
+    },
+    Generator {
+        id: "newton",
+        name: "Newton",
+        about: "Newton's method for zⁿ = 1 as a relief — basins whose boundary touches every basin at once",
+        family: Family::Shape,
+        group: Group::Fractal,
+        params: &[Param { key: "power", label: "roots", about: "how many roots to chase", default: "3", kind: Kind::Number { min: 2.0, max: 8.0 } }],
+    },
+    Generator {
+        id: "lyapunov",
+        name: "Lyapunov",
+        about: "the Markus–Hess fractal — where the logistic map settles into a cycle, drawn as towers over the chaotic sea",
+        family: Family::Shape,
+        group: Group::Fractal,
+        params: &[Param { key: "sequence", label: "pattern", about: "which rate, in turn: AB is the published one, AABAB is another city", default: "AB", kind: Kind::Text }],
+    },
+    Generator {
+        id: "dini",
+        name: "Dini",
+        about: "a pseudosphere dragged along a helix — constant negative curvature, everywhere the same",
+        family: Family::Shape,
+        group: Group::Surface,
+        params: &[Param { key: "twist", label: "twist", about: "how fast the horn climbs", default: "0.2", kind: Kind::Number { min: 0.0, max: 1.0 } }],
+    },
+    Generator {
+        id: "enneper",
+        name: "Enneper",
+        about: "a minimal surface from 1864 that runs through itself twice, which is exactly the interesting part",
+        family: Family::Shape,
+        group: Group::Surface,
+        params: &[],
+    },
+    Generator {
+        id: "spirograph",
+        name: "spirograph",
+        about: "the curve a pen traces through a hole in a wheel rolling inside another, given a slow rise so it coils",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[
+            Param { key: "R", label: "wheel", about: "the big wheel", default: "5", kind: Kind::Number { min: 1.0, max: 20.0 } },
+            Param { key: "r", label: "roller", about: "the small wheel; the ratio decides the petals", default: "3", kind: Kind::Number { min: 0.2, max: 19.0 } },
+            Param { key: "pen", label: "pen", about: "how far the pen sits from the roller's centre", default: "5", kind: Kind::Number { min: 0.1, max: 20.0 } },
+            Param { key: "wave", label: "rise", about: "how many times it climbs and falls", default: "1", kind: Kind::Number { min: 0.0, max: 8.0 } },
+        ],
+    },
+    Generator {
+        id: "figure-eight",
+        name: "figure-eight knot",
+        about: "the only knot with four crossings, and the simplest one that is its own mirror image",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[],
+    },
+    Generator {
         id: "mandelbrot",
         name: "Mandelbrot",
         about: "the Mandelbrot set as a relief — the set a plateau, the escape time the country round it",
@@ -693,6 +781,22 @@ pub const SIMULATIONS: &[Generator] = &[
         params: &[],
     },
     Generator {
+        id: "sand",
+        name: "sandpile",
+        about: "grains dropped and toppled — the model that named self-organised criticality, and a fractal nobody designed; the kick drops a load somewhere else",
+        family: Family::Shape,
+        group: Group::Field,
+        params: &[],
+    },
+    Generator {
+        id: "spiral",
+        name: "spirals",
+        about: "the Belousov–Zhabotinsky reaction — rotating waves that annihilate where they meet, the same dynamics as a heartbeat; the kick seeds fresh defects",
+        family: Family::Shape,
+        group: Group::Field,
+        params: &[],
+    },
+    Generator {
         id: "kuramoto",
         name: "kuramoto",
         about: "Kuramoto's coupled oscillators on a torus — a loud passage locks them into a ribbon, quiet frees them; the kick scatters half",
@@ -735,11 +839,11 @@ pub const SIMULATIONS: &[Generator] = &[
     Generator {
         id: "life",
         name: "life",
-        about: "a three-dimensional cellular automaton in the Clouds rule — slow masses that keep reshaping; the kick drops a seed",
+        about: "a three-dimensional cellular automaton in the Pyroclastic rule — a lattice that boils, endlessly; the kick drops a seed",
         family: Family::Shape,
         group: Group::Field,
         params: &[
-            Param { key: "rule", label: "rule", about: "survive / born / states, as neighbour counts: 13-26/13-14,17-19 is Clouds; 4/4/5 is Bays' 4-4-5, a spiking crystal; 4-7/6-8/10 boils; 9-26/5-7,12-13,15/5 is Amoeba; 2,6,9/4,6,8-9/10 builds", default: "13-26/13-14,17-19", kind: Kind::Text },
+            Param { key: "rule", label: "rule", about: "survive / born / states, as neighbour counts: 4-7/6-8/10 is Pyroclastic and boils; 2,6,9/4,6,8-9/10 builds; 4/4/5 is Bays' 4-4-5, a spiking crystal; 13-26/13-14,17-19 is Clouds, which grows lovely masses and then stops, so it is started again", default: "4-7/6-8/10", kind: Kind::Text },
         ],
     },
 ];
@@ -828,8 +932,11 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), CATALOGUE.len(), "two generators share an id");
         for g in CATALOGUE {
+            // Lowercase, hyphens and digits: a settings file and a
+            // command line both carry these unchanged, and a system
+            // named after a year has the year in its name.
             assert!(
-                g.id.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                g.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
                 "{} is not a lowercase id",
                 g.id
             );

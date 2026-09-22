@@ -95,6 +95,16 @@ pub const IDS: &[&str] = &[
     "dla",
     "mandelbox",
     "quaternion",
+    "hilbert",
+    "lorenz96",
+    "duffing",
+    "gumowski",
+    "newton",
+    "lyapunov",
+    "dini",
+    "enneper",
+    "spirograph",
+    "figure-eight",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
@@ -172,6 +182,20 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         "dla" => dla(num("seed", 1.0).abs() as u64),
         "mandelbox" => mandelbox(num("scale", 2.0)),
         "quaternion" => quaternion(num("cr", -0.2), num("ci", 0.6), num("cj", 0.2)),
+        "hilbert" => hilbert(num("order", 3.0)),
+        "lorenz96" => lorenz96(num("size", 5.0), num("forcing", 8.0)),
+        "duffing" => duffing(num("drive", 0.5)),
+        "gumowski" => gumowski(num("mu", -0.801)),
+        "newton" => newton(num("power", 3.0)),
+        "lyapunov" => lyapunov(&text("sequence", "AB")),
+        "dini" => dini(num("twist", 0.2)),
+        "enneper" => enneper(),
+        "spirograph" => {
+            let (big, small, pen) = (num("R", 5.0), num("r", 3.0), num("pen", 5.0));
+            let wave = num("wave", 1.0);
+            tube(move |t| spirograph(t * 12.0, big, small, pen, wave), 0.12, Frame::YUp)
+        }
+        "figure-eight" => tube(figure_eight, 0.28, Frame::YUp),
         "sierpinski" => sierpinski(),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
@@ -1480,6 +1504,348 @@ fn dla(seed: u64) -> Vec<[f64; 3]> {
         out.push(grains[out.len() % grains.len()]);
     }
     out
+}
+
+/// Lorenz' *other* system (1996), the one meteorologists actually use
+/// as a test bed: `size` variables arranged in a ring, each one
+/// advected by its neighbours, damped, and forced equally everywhere.
+/// It is a toy atmosphere — the ring is a latitude circle — and at a
+/// forcing of 8 it is chaotic, which is the whole reason it exists:
+/// every data assimilation scheme in operational weather forecasting
+/// has been tried on it first.
+///
+/// Any number of variables from four up, of which three are drawn.
+fn lorenz96(size: f64, forcing: f64) -> Vec<[f64; 3]> {
+    const DT: f64 = 0.01;
+    const TRANSIENT: usize = 5_000;
+    let n = size.round().clamp(4.0, 40.0) as usize;
+    let f = forcing.clamp(0.0, 20.0);
+    let rate = |x: &[f64], out: &mut [f64]| {
+        for i in 0..n {
+            out[i] = (x[(i + 1) % n] - x[(i + n - 2) % n]) * x[(i + n - 1) % n] - x[i] + f;
+        }
+    };
+    let mut x = vec![f; n];
+    // One variable nudged, because the even state is a fixed point.
+    x[0] += 0.01;
+    let mut k = [vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]];
+    let mut work = vec![0.0; n];
+    let step = |x: &mut Vec<f64>, k: &mut [Vec<f64>; 4], work: &mut Vec<f64>| {
+        rate(x, &mut k[0]);
+        for (w, (x, k)) in work.iter_mut().zip(x.iter().zip(&k[0])) {
+            *w = x + k * DT * 0.5;
+        }
+        rate(work, &mut k[1]);
+        for (w, (x, k)) in work.iter_mut().zip(x.iter().zip(&k[1])) {
+            *w = x + k * DT * 0.5;
+        }
+        rate(work, &mut k[2]);
+        for (w, (x, k)) in work.iter_mut().zip(x.iter().zip(&k[2])) {
+            *w = x + k * DT;
+        }
+        rate(work, &mut k[3]);
+        for i in 0..n {
+            x[i] += DT / 6.0 * (k[0][i] + 2.0 * k[1][i] + 2.0 * k[2][i] + k[3][i]);
+        }
+    };
+    for _ in 0..TRANSIENT {
+        step(&mut x, &mut k, &mut work);
+    }
+    (0..POINTS)
+        .map(|_| {
+            step(&mut x, &mut k, &mut work);
+            if x.iter().any(|v| !v.is_finite()) {
+                x.iter_mut().enumerate().for_each(|(i, v)| *v = f + if i == 0 { 0.01 } else { 0.0 });
+            }
+            [x[0], x[1], x[2]]
+        })
+        .collect()
+}
+
+/// The forced Duffing oscillator — a mass in a double well, shaken.
+/// Two stable places to sit and a periodic push: below a drive
+/// strength it settles into one well, above it the mass hops between
+/// them at no predictable moment.
+///
+/// Drawn on the cylinder the system actually lives on, because it is
+/// not autonomous: the third coordinate is the *phase of the forcing*,
+/// so going once round the tube is one period of the drive, and the
+/// attractor is a ribbon winding round it. A Poincaré section is one
+/// slice of this picture.
+fn duffing(drive: f64) -> Vec<[f64; 3]> {
+    const DAMPING: f64 = 0.3;
+    const RATE: f64 = 1.2;
+    const DT: f64 = 0.02;
+    const RING: f64 = 1.0;
+    const TUBE: f64 = 0.42;
+    let drive = drive.clamp(0.0, 2.0);
+    let f = move |[x, v, phase]: [f64; 3]| {
+        [v, -DAMPING * v + x - x * x * x + drive * phase.cos(), RATE]
+    };
+    let mut p = [0.5, 0.0, 0.0];
+    for _ in 0..5_000 {
+        p = rk4(f, p, DT);
+    }
+    (0..POINTS)
+        .map(|_| {
+            p = rk4(f, p, DT);
+            if p.iter().take(2).any(|v| !v.is_finite() || v.abs() > 1e3) {
+                p = [0.5, 0.0, p[2]];
+            }
+            let ring = RING + TUBE * p[0] * 0.55;
+            let (s, c) = p[2].sin_cos();
+            [ring * c, p[1] * TUBE * 0.55, ring * s]
+        })
+        .collect()
+}
+
+/// The Gumowski–Mira map (CERN, 1980), from a study of particle beams
+/// in an accelerator. One rational nonlinearity, two lines of
+/// arithmetic, and a family of shapes that look like nothing else in
+/// mathematics — moths, mandalas, printed circuit boards — changing
+/// completely for a change of μ in the third decimal place.
+fn gumowski(mu: f64) -> Vec<[f64; 3]> {
+    let mu = mu.clamp(-1.0, 1.0);
+    let g = move |x: f64| mu * x + 2.0 * (1.0 - mu) * x * x / (1.0 + x * x);
+    let (mut x, mut y) = (0.1, 0.1);
+    let mut out = Vec::with_capacity(POINTS);
+    for i in 0..POINTS + 100 {
+        let nx = y + g(x);
+        let ny = -x + g(nx);
+        // Some corners of the parameter range run away; rather than
+        // leave a hole in the cloud, start the orbit again.
+        if !nx.is_finite() || !ny.is_finite() || nx.abs() > 1e3 || ny.abs() > 1e3 {
+            x = 0.1;
+            y = 0.1;
+            continue;
+        }
+        let prev = x;
+        x = nx;
+        y = ny;
+        if i >= 100 {
+            out.push([x, y, prev * 0.6]);
+        }
+    }
+    while out.len() < POINTS {
+        out.push([0.0; 3]);
+    }
+    out
+}
+
+/// Newton's method for zⁿ = 1, as a relief: which root a starting
+/// point falls to, and how long it takes to get there.
+///
+/// Every point of the plane belongs to one root's basin, and the
+/// boundaries between basins have the property that every point on one
+/// touches *all* of them at once — which is why the picture is a
+/// fractal rather than a pie chart, and why Cayley, who asked the
+/// question in 1879 and solved the quadratic case immediately, got no
+/// further with the cubic.
+fn newton(power: f64) -> Vec<[f64; 3]> {
+    const LIMIT: usize = 40;
+    let n = power.round().clamp(2.0, 8.0) as i32;
+    escape_relief([-1.6, 1.6], [-1.6, 1.6], move |mut x, mut y| {
+        for step in 0..LIMIT {
+            // zⁿ and zⁿ⁻¹ by repeated multiplication.
+            let (mut px, mut py) = (1.0f64, 0.0f64);
+            for _ in 0..n - 1 {
+                let t = px * x - py * y;
+                py = px * y + py * x;
+                px = t;
+            }
+            let (fx, fy) = (px * x - py * y - 1.0, px * y + py * x);
+            if fx * fx + fy * fy < 1e-12 {
+                return 1.0 - step as f64 / LIMIT as f64;
+            }
+            // z − f/f′, with f′ = n·zⁿ⁻¹.
+            let (dx, dy) = (f64::from(n) * px, f64::from(n) * py);
+            let den = dx * dx + dy * dy;
+            if den < 1e-24 {
+                return 0.0;
+            }
+            x -= (fx * dx + fy * dy) / den;
+            y -= (fy * dx - fx * dy) / den;
+            if !x.is_finite() || !y.is_finite() {
+                return 0.0;
+            }
+        }
+        0.0
+    })
+}
+
+/// The Markus–Hess Lyapunov fractal: the logistic map run with its
+/// growth rate alternating between two values in a repeating pattern,
+/// and the largest Lyapunov exponent of the result drawn over the
+/// plane of those two values.
+///
+/// Where the exponent is negative the population settles into a cycle,
+/// and those regions form the swirling, self-similar shapes the
+/// original paper called Zircon Zity. They rise here and the chaotic
+/// sea between them lies flat. The pattern is the knob: `AB` is the
+/// published one, `AABAB` and `BBBBBA` are different cities.
+fn lyapunov(sequence: &str) -> Vec<[f64; 3]> {
+    const TRANSIENT: usize = 100;
+    const MEASURE: usize = 300;
+    // Anything that is not an A is a B, and an empty pattern is AB.
+    let pattern: Vec<bool> = sequence
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.eq_ignore_ascii_case(&'a'))
+        .collect();
+    let pattern = if pattern.is_empty() { vec![true, false] } else { pattern };
+    escape_relief([2.0, 4.0], [2.0, 4.0], move |a, b| {
+        let mut x = 0.5;
+        let rate = |i: usize| if pattern[i % pattern.len()] { a } else { b };
+        for i in 0..TRANSIENT {
+            x = rate(i) * x * (1.0 - x);
+        }
+        let mut sum = 0.0;
+        for i in 0..MEASURE {
+            let r = rate(TRANSIENT + i);
+            x = r * x * (1.0 - x);
+            sum += (r * (1.0 - 2.0 * x)).abs().max(1e-12).ln();
+        }
+        let exponent = sum / MEASURE as f64;
+        if !exponent.is_finite() {
+            return 0.0;
+        }
+        // Order rises, chaos lies flat.
+        (-exponent).clamp(0.0, 1.5) / 1.5
+    })
+}
+
+/// Dini's surface: a pseudosphere dragged along a helix, so the whole
+/// thing is a twisted horn with constant negative curvature — the
+/// shape on which the angles of a triangle add to less than two right
+/// angles, everywhere and by the same amount.
+fn dini(twist: f64) -> Vec<[f64; 3]> {
+    let twist = twist.clamp(0.0, 1.0);
+    sheet(move |u, v| {
+        let u = u * 4.0 * PI;
+        // Away from the pole, where the logarithm runs to minus
+        // infinity and the horn has no end.
+        let v = 0.05 + v * 1.95;
+        let (sv, cv) = v.sin_cos();
+        orient(
+            [u.cos() * sv, u.sin() * sv, cv + (v * 0.5).tan().max(1e-6).ln() + twist * u],
+            Frame::ZUp,
+        )
+    })
+}
+
+/// Enneper's surface (1864): a minimal surface — soap-film shaped,
+/// zero mean curvature everywhere — written as two cubics and a
+/// difference of squares, and one of the first ever described. It runs
+/// through itself twice, which is exactly why it is interesting: a
+/// minimal surface need not be embedded.
+fn enneper() -> Vec<[f64; 3]> {
+    sheet(|u, v| {
+        let (u, v) = (u * 4.0 - 2.0, v * 4.0 - 2.0);
+        orient(
+            [
+                u - u * u * u / 3.0 + u * v * v,
+                v - v * v * v / 3.0 + v * u * u,
+                u * u - v * v,
+            ],
+            Frame::ZUp,
+        )
+    })
+}
+
+/// A hypotrochoid: the curve a pen traces through a hole in a small
+/// wheel rolling inside a big one. A spirograph, in other words, given
+/// a slow rise so it coils rather than lying flat. The curve closes
+/// after as many turns as the wheels' ratio needs, which is why the
+/// number of petals is arithmetic rather than design.
+fn spirograph(t: f64, big: f64, small: f64, pen: f64, wave: f64) -> [f64; 3] {
+    let big = big.clamp(1.0, 20.0);
+    let small = small.clamp(0.2, 19.0).min(big - 0.2);
+    let pen = pen.clamp(0.1, 20.0);
+    let k = (big - small) / small;
+    [
+        (big - small) * t.cos() + pen * (k * t).cos(),
+        (big + pen) * 0.25 * (wave.clamp(0.0, 8.0) * t / 12.0).sin(),
+        (big - small) * t.sin() - pen * (k * t).sin(),
+    ]
+}
+
+/// The figure-eight knot, the only knot with four crossings and the
+/// simplest one after the trefoil. Unlike the trefoil it is
+/// *amphichiral* — its mirror image can be deformed back into it —
+/// which is rare enough that it is worth having both in the bank.
+fn figure_eight(t: f64) -> [f64; 3] {
+    let ring = 2.0 + (2.0 * t).cos();
+    [ring * (3.0 * t).cos(), (4.0 * t).sin(), ring * (3.0 * t).sin()]
+}
+
+/// The three-dimensional Hilbert curve, at the given order: a single
+/// unbroken line that passes through every cell of a cube and never
+/// crosses itself, and which keeps points that are close along the
+/// line close in space as well.
+///
+/// That last property is the reason it is not a curiosity. It is how
+/// image tiles, database indexes and memory layouts are ordered when
+/// nearby data should be nearby in cache, and it is why this one is
+/// worth drawing here: the shader advances every particle's index
+/// together, so a cloud in Hilbert order crawls along a line that
+/// fills the whole cube.
+fn hilbert(order: f64) -> Vec<[f64; 3]> {
+    // The rewriting is Prusinkiewicz's; the turtle reads `\` and `/`
+    // as the rolls that the literature writes `<` and `>`.
+    const RULE: &str = "^\\XF^\\XFX-F^//XFX&F+//XFX-F/X-/";
+    let order = order.round().clamp(1.0, 5.0) as usize;
+    let mut s = String::from("X");
+    for _ in 0..order {
+        let mut next = String::with_capacity(s.len() * 8);
+        for c in s.chars() {
+            if c == 'X' {
+                next.push_str(RULE);
+            } else {
+                next.push(c);
+            }
+        }
+        s = next;
+    }
+    let delta = PI / 2.0;
+    let rot = |a: [f64; 3], b: [f64; 3], t: f64| -> ([f64; 3], [f64; 3]) {
+        let (s, c) = t.sin_cos();
+        (
+            [a[0] * c + b[0] * s, a[1] * c + b[1] * s, a[2] * c + b[2] * s],
+            [b[0] * c - a[0] * s, b[1] * c - a[1] * s, b[2] * c - a[2] * s],
+        )
+    };
+    let mut p = [0.0, 0.0, 0.0];
+    let (mut h, mut l, mut u) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    let mut path = vec![p];
+    for c in s.chars() {
+        match c {
+            'F' => {
+                p = [p[0] + h[0], p[1] + h[1], p[2] + h[2]];
+                path.push(p);
+            }
+            '+' => (h, l) = rot(h, l, delta),
+            '-' => (h, l) = rot(h, l, -delta),
+            '&' => (h, u) = rot(h, u, delta),
+            '^' => (h, u) = rot(h, u, -delta),
+            '\\' => (l, u) = rot(l, u, delta),
+            '/' => (l, u) = rot(l, u, -delta),
+            _ => {}
+        }
+    }
+    if path.len() < 2 {
+        return vec![[0.0; 3]; POINTS];
+    }
+    // Strewn evenly along the line, in order, so the cloud crawls.
+    let segments = path.len() - 1;
+    (0..POINTS)
+        .map(|i| {
+            let along = (i as f64 + 0.5) / POINTS as f64 * segments as f64;
+            let seg = (along as usize).min(segments - 1);
+            let t = along - seg as f64;
+            let (a, b) = (path[seg], path[seg + 1]);
+            [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+        })
+        .collect()
 }
 
 // --- Searched -----------------------------------------------------------
