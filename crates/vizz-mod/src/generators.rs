@@ -749,14 +749,6 @@ pub const SIMULATIONS: &[Generator] = &[
         params: &[],
     },
     Generator {
-        id: "sandpile",
-        name: "sandpile",
-        about: "Bak, Tang and Wiesenfeld: four grains on a cell and it gives one to each neighbour, which is enough to keep a table permanently on the edge of collapse; the kick tips a load on the middle",
-        family: Family::Shape,
-        group: Group::Field,
-        params: &[],
-    },
-    Generator {
         id: "crystal",
         name: "crystal",
         about: "Reiter's snow crystal on a hexagonal lattice — plates, sectored plates and stellar dendrites, sorted by the vapour the mids and highs set; each flake grows out and the next one starts",

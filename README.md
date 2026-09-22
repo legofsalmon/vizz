@@ -311,7 +311,6 @@ vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
 vizz --live-cloud sim:slime       # Physarum: a network from three rules
 vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
 vizz --live-cloud sim:cloth       # a sheet in the wind
-vizz --live-cloud sim:sandpile    # a table kept permanently on the edge of collapse
 vizz --live-cloud sim:cyclic      # states chasing each other round a ring: scroll waves
 vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
 vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
@@ -456,24 +455,6 @@ projecting them three times a frame onto the constraint that the density
 is right, and is stable at any step at the price of looking slightly soft.
 Gravity tilts and swings round once a bar, so the liquid pours from corner
 to corner in time with the music; a kick thumps it through the floor.
-
-**sandpile** is Bak, Tang and Wiesenfeld's, which is where the phrase
-"self-organised criticality" comes from. The rule is one line: a cell
-holding four grains gives one to each neighbour. Nothing tunes it and
-nothing decides how big a slide should be, and yet a pile fed grain by
-grain lives permanently on the edge of collapse, where the same single
-grain sets off a slide of four cells or of forty thousand. Everything is
-poured on the middle of an empty table, because that is the arrangement
-whose picture is worth having: the heights left behind are flat plateaus
-of nought, one, two and three grains with sharp seams between them, in a
-disc whose pattern is the same at every size — a fractal nobody designed,
-which falls out of that one line and out of the rule being *abelian*, so
-that the order the slides are resolved in cannot change what they leave
-behind. The four heights are read straight off as four greys and the live
-slide is a bright annulus at the disc's edge. The loudness is the rate of
-the pour, a kick is a load that makes the disc jump outward, and a snare
-drops a second pile off to one side, which merges into one pattern rather
-than two overlapping ones.
 
 **cyclic** is Fisch, Gravner and Griffeath's cyclic cellular automaton:
 states in a ring, each one waiting to be eaten by the next. A cell in

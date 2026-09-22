@@ -17,7 +17,7 @@
 //! crossed to, captured and lit like the others — that happens to be
 //! alive.
 //!
-//! Eighteen ship. Some are *fields on a grid*: **fluid** is Stam's
+//! Seventeen ship. Some are *fields on a grid*: **fluid** is Stam's
 //! stable solver for the incompressible Navier–Stokes equations
 //! (Stam, "Stable Fluids", 1999; "Real-Time Fluid Dynamics for Games",
 //! 2003) on a periodic sheet, with Fedkiw's vorticity confinement to
@@ -25,10 +25,8 @@
 //! heat to lift it; **reaction** is the Gray–Scott system in Pearson's
 //! parameterisation; **wind** is curl noise, a fluid with no solve at
 //! all; **life** is a cellular automaton on a cubic lattice;
-//! **cyclic** is another, whose states chase each other round a ring
-//! until the lattice fills with scroll waves; and **sandpile** is
-//! Bak, Tang and Wiesenfeld's, whose one line of rule pours a fractal
-//! disc out of a heap of grains.
+//! and **cyclic** is another, whose states chase each other round a
+//! ring until the lattice fills with scroll waves.
 //!
 //! Some are *many bodies*: **flock** is Reynolds' boids, **orbits** is
 //! gravity by direct summation, **liquid** is position-based fluids,
@@ -85,7 +83,7 @@ pub trait Simulation: Send {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sandpile", "cyclic", "tangle", "crystal", "vortex"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "cyclic", "tangle", "crystal", "vortex"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -117,7 +115,6 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "slime" => Some(Box::new(Slime::new())),
         "swarm" => Some(Box::new(Swarm::new())),
         "cloth" => Some(Box::new(Cloth::new())),
-        "sandpile" => Some(Box::new(Sandpile::new())),
         "cyclic" => Some(Box::new(Cyclic::new())),
         "tangle" => Some(Box::new(Tangle::new())),
         "crystal" => Some(Box::new(Crystal::new())),
@@ -3211,208 +3208,6 @@ impl Simulation for Cloth {
     }
 }
 
-// --- Sandpile ---------------------------------------------------------
-
-/// Cells along each side of the table: one cell per point.
-const PILE: usize = 256;
-
-/// Bak, Tang and Wiesenfeld's sandpile, which is where the phrase
-/// "self-organised criticality" comes from (1987).
-///
-/// The rule is one line: a cell holding four grains or more gives one
-/// to each of its four neighbours. Nothing tunes it and nothing
-/// decides how big a slide should be, yet dropping grains on it one at
-/// a time builds a pile that lives permanently on the edge of
-/// collapse, where a single grain sets off a slide of any size at all
-/// — the distribution has no scale, which is the whole point.
-///
-/// Everything is dropped on the middle of an empty table, because that
-/// is the arrangement whose *picture* is worth having. The heights
-/// left behind settle into flat plateaus of 0, 1, 2 and 3 grains with
-/// sharp seams between them, laid out in a disc whose pattern is the
-/// same at every size — a fractal nobody designed, which comes out of
-/// the one line above and out of the rule being *abelian*: the order
-/// the slides are resolved in cannot change what they leave behind.
-/// The disc grows as it is fed, with the live slide a bright annulus
-/// at its edge, and when it reaches the table's edge the table is
-/// swept and the next one starts.
-pub struct Sandpile {
-    /// Grains per cell. Wide enough that a whole bar's worth dropped on
-    /// one cell is still a number.
-    h: Vec<u32>,
-    /// Next frame's heights, so a frame's slides all see the same table.
-    next: Vec<u32>,
-    /// How recently each cell toppled, 0..1 — the slide, lit.
-    hot: Vec<f32>,
-    since_snare: f32,
-    time: f32,
-    since_kick: f32,
-    rng: Rng,
-}
-
-impl Sandpile {
-    /// Slides resolved a frame. A slide wider than this carries on
-    /// next frame, which is the right way round: the front crossing
-    /// the table is the thing worth watching. It has to be enough to
-    /// carry away what is being dropped, though — a table that is fed
-    /// faster than its slides can reach the edges is not critical, it
-    /// is simply over-full, and it boils everywhere at once instead of
-    /// sliding in places.
-    const PASSES: usize = 64;
-
-    pub fn new() -> Self {
-        let cells = PILE * PILE;
-        let mut s = Self {
-            h: vec![0; cells],
-            next: vec![0; cells],
-            hot: vec![0.0; cells],
-            since_snare: 10.0,
-            time: 0.0,
-            since_kick: 10.0,
-            rng: Rng::new(0x5A_4D_01),
-        };
-        // Enough on it already to be a disc on the first frame rather
-        // than a dot, and relaxed, so the first frame is the pattern.
-        s.drop_at(PILE / 2, PILE / 2, 20_000);
-        while s.relax() {}
-        s
-    }
-
-    /// Put `grains` on one cell.
-    fn drop_at(&mut self, x: usize, y: usize, grains: u32) {
-        let (x, y) = (x.min(PILE - 1), y.min(PILE - 1));
-        self.h[x + y * PILE] += grains;
-    }
-
-    /// Whether the disc has reached the edge of the table.
-    fn at_the_edge(&self) -> bool {
-        let last = PILE - 1;
-        (0..PILE).any(|i| {
-            self.h[i] > 0
-                || self.h[i + last * PILE] > 0
-                || self.h[i * PILE] > 0
-                || self.h[last + i * PILE] > 0
-        })
-    }
-
-    /// One pass of the rule over the whole table.
-    ///
-    /// Every cell that is over the threshold topples at once. Doing it
-    /// in parallel rather than one cell at a time is free, because the
-    /// pile is abelian: the same grains end up in the same places.
-    fn relax(&mut self) -> bool {
-        self.next.copy_from_slice(&self.h);
-        let mut any = false;
-        for y in 0..PILE {
-            for x in 0..PILE {
-                let i = x + y * PILE;
-                if self.h[i] < 4 {
-                    continue;
-                }
-                any = true;
-                let give = self.h[i] / 4;
-                self.next[i] -= give * 4;
-                self.hot[i] = 1.0;
-                // Off the edge is off the table.
-                if x > 0 {
-                    self.next[i - 1] += give;
-                }
-                if x + 1 < PILE {
-                    self.next[i + 1] += give;
-                }
-                if y > 0 {
-                    self.next[i - PILE] += give;
-                }
-                if y + 1 < PILE {
-                    self.next[i + PILE] += give;
-                }
-            }
-        }
-        std::mem::swap(&mut self.h, &mut self.next);
-        any
-    }
-}
-
-impl Default for Sandpile {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Simulation for Sandpile {
-    fn step(&mut self, dt: f32, drive: &Drive) {
-        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
-        self.time += dt;
-        self.since_kick += dt;
-        self.since_snare += dt;
-        // The trickle onto the middle. The disc's radius goes as the
-        // square root of what has been poured on it, so a steady rate
-        // grows it quickly at first and then settles into creeping
-        // outwards, which is the pace worth watching.
-        let rate = if drive.audio { 4_000.0 + 26_000.0 * drive.level } else { 14_000.0 };
-        self.drop_at(PILE / 2, PILE / 2, (rate * dt) as u32);
-        // The kick is a load rather than a trickle: the disc jumps
-        // outward, and the slide that does it crosses the whole of it.
-        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.3 {
-            self.since_kick = 0.0;
-            self.drop_at(PILE / 2, PILE / 2, 20_000);
-        }
-        // The snare drops a pile off to one side. Two piles merge into
-        // one pattern rather than two overlapping ones, which is what
-        // *abelian* means and is easier to watch than to state.
-        if drive.audio && drive.bands[1] > 0.55 && self.since_snare > 0.4 {
-            self.since_snare = 0.0;
-            let a = self.rng.f32() * std::f32::consts::TAU;
-            let r = PILE as f32 * 0.18;
-            self.drop_at(
-                (PILE as f32 * 0.5 + a.cos() * r) as usize,
-                (PILE as f32 * 0.5 + a.sin() * r) as usize,
-                6_000,
-            );
-        }
-        let fade = (-dt * 3.5).exp();
-        for c in &mut self.hot {
-            *c *= fade;
-        }
-        for _ in 0..Self::PASSES {
-            if !self.relax() {
-                break;
-            }
-        }
-        // Grown to the table's edge: from here on the pattern only
-        // leaks off the sides, so sweep it and start the next one.
-        if self.at_the_edge() {
-            self.h.iter_mut().for_each(|g| *g = 0);
-            self.hot.iter_mut().for_each(|c| *c = 0.0);
-            self.drop_at(PILE / 2, PILE / 2, 20_000);
-            while self.relax() {}
-        }
-    }
-
-    fn points(&self, out: &mut Vec<Point>) {
-        out.clear();
-        for y in 0..PILE {
-            for x in 0..PILE {
-                let i = x + y * PILE;
-                // Four heights, four greys: the flat plateaus of the
-                // steady state are the picture, so they are read
-                // straight off rather than smoothed into a ramp.
-                let level = self.h[i].min(3) as f32 / 3.0;
-                let shade = (40.0 + 150.0 * level + 65.0 * self.hot[i]).min(255.0) as u8;
-                out.push(Point {
-                    pos: [
-                        (x as f32 + 0.5) / PILE as f32 * 2.0 - 1.0,
-                        level * 0.45 - 0.2,
-                        (y as f32 + 0.5) / PILE as f32 * 2.0 - 1.0,
-                    ],
-                    normal: [0.0; 3],
-                    color: [shade, shade, shade],
-                });
-            }
-        }
-    }
-}
-
 // --- Cyclic -----------------------------------------------------------
 
 /// Cells along each side of the cyclic lattice.
@@ -5028,91 +4823,6 @@ mod tests {
         }
         let gusted: f32 = sim.pos.iter().zip(&sim.was).map(|(p, w)| (p[2] - w[2]).abs()).sum();
         assert!(gusted > quiet, "the gust did nothing: {quiet} then {gusted}");
-    }
-
-    /// Topple one cell at a time, in whatever order a stack gives, until
-    /// nothing is over the threshold. Returns how many topplings that
-    /// took, which is the size of the slide.
-    fn one_at_a_time(h: &mut [u32]) -> usize {
-        let mut over: Vec<usize> = (0..h.len()).filter(|&i| h[i] >= 4).collect();
-        let mut topplings = 0;
-        while let Some(i) = over.pop() {
-            while h[i] >= 4 {
-                h[i] -= 4;
-                topplings += 1;
-                let (x, y) = (i % PILE, i / PILE);
-                for (inside, n) in [
-                    (x > 0, i.wrapping_sub(1)),
-                    (x + 1 < PILE, i + 1),
-                    (y > 0, i.wrapping_sub(PILE)),
-                    (y + 1 < PILE, i + PILE),
-                ] {
-                    if inside {
-                        h[n] += 1;
-                        if h[n] >= 4 {
-                            over.push(n);
-                        }
-                    }
-                }
-            }
-        }
-        topplings
-    }
-
-    /// The model is *abelian*, which is the property everything else
-    /// about it rests on: the order the cells are toppled in cannot
-    /// change the table they leave behind. So the whole-table pass the
-    /// simulation runs and a one-cell-at-a-time settling of the same
-    /// load have to agree exactly, cell for cell.
-    #[test]
-    fn the_pile_does_not_care_what_order_it_slides_in() {
-        let mut sim = Sandpile::new();
-        sim.drop_at(PILE / 2, PILE / 2, 2_000);
-        let mut alone = sim.h.clone();
-        one_at_a_time(&mut alone);
-        let mut passes = 0;
-        while sim.relax() {
-            passes += 1;
-            assert!(passes < 20_000, "the table never came to rest");
-        }
-        assert!(sim.h == alone, "the two orders left different tables");
-    }
-
-    /// Slides have no size. That is the whole of self-organised
-    /// criticality and the reason the model is famous: on a pile that
-    /// has organised itself, the same single grain sets off a slide of
-    /// four cells or of forty thousand, and there is no typical one in
-    /// between to quote.
-    #[test]
-    fn slides_come_in_every_size() {
-        let mut sim = Sandpile::new();
-        sim.drop_at(PILE / 2, PILE / 2, 40_000);
-        while sim.relax() {}
-        let mut h = sim.h.clone();
-        let mut sizes = Vec::new();
-        let mut rng = Rng::new(0x0A51_12E5);
-        // Dropped on the disc, not on the bare table round it: a grain
-        // landing where there is no pile is not a test of anything.
-        let reach = PILE as f32 * 0.22;
-        for _ in 0..300 {
-            let a = rng.f32() * std::f32::consts::TAU;
-            let r = reach * rng.f32().sqrt();
-            let x = (PILE as f32 * 0.5 + a.cos() * r) as usize;
-            let y = (PILE as f32 * 0.5 + a.sin() * r) as usize;
-            h[x + y * PILE] += 1;
-            sizes.push(one_at_a_time(&mut h));
-        }
-        sizes.sort_unstable();
-        let median = sizes[sizes.len() / 2];
-        let biggest = *sizes.last().unwrap();
-        assert!(
-            biggest > 100 * median.max(1),
-            "the slides all came out the same size: median {median}, largest {biggest}"
-        );
-        assert!(
-            biggest > 1_000,
-            "nothing ever crossed the table: largest slide {biggest}"
-        );
     }
 
     /// The ring only ever turns one way. Every cell either stays where
