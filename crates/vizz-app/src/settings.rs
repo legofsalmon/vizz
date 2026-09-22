@@ -81,6 +81,50 @@ pub struct Settings {
     /// canvas opens where you were working, not at the origin with the
     /// name field blank.
     pub graph_view: Option<GraphCanvas>,
+    /// The window's last size in logical points, so it opens at the size
+    /// it was dragged to rather than at a default every launch. `None`
+    /// until it has been sized once; a first launch sizes itself to the
+    /// display.
+    pub window_size: Option<[u32; 2]>,
+    /// The first-launch card has been seen and dismissed. Once, ever:
+    /// the card teaches the keys and the screens, and the second launch
+    /// is not the first.
+    pub welcomed: bool,
+    /// The four analysis bands — edges and gains — and whether detected
+    /// tempo drives the clock. Tuned per venue with `fit`, against real
+    /// material, and forgotten every launch until this was remembered.
+    pub audio_bands: Option<[vizz_audio::Band; 4]>,
+    pub audio_auto_bpm: Option<bool>,
+    /// How takes are written, as last set in the recording section.
+    pub record: Option<RecordPrefs>,
+    /// Open on the performance layout: the screen that was up when the
+    /// app was last quit. A set that lives on the stage should not start
+    /// on the panel every night.
+    pub start_on_stage: bool,
+    /// The simulation running as the live cloud when the app was last
+    /// quit — `fluid`, `reaction` — so a set built on one comes back
+    /// alive. A network stream is not remembered: its sender is another
+    /// machine's business.
+    pub simulation: Option<String>,
+}
+
+/// How a take is written. A mirror of the recorder's settings that can be
+/// serialised, plus the countdown, which the app keeps beside them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RecordPrefs {
+    /// PNG when true, JPEG otherwise.
+    pub lossless: bool,
+    pub quality: u8,
+    pub fps: f32,
+    pub max_secs: Option<f32>,
+    pub countdown_secs: u32,
+}
+
+impl Default for RecordPrefs {
+    fn default() -> Self {
+        Self { lossless: false, quality: 92, fps: 30.0, max_secs: None, countdown_secs: 0 }
+    }
 }
 
 /// See [`Settings::clock_source`].
@@ -261,12 +305,12 @@ pub fn save_clouds(clouds: &[String]) -> Result<()> {
 }
 
 /// Remember the loaded palettes, same read-modify-write reason.
-/// Where a new recording lands: a fresh timestamped directory under the
-/// platform's video folder, falling back to the config directory when no
-/// home exists. UTC in the name — std has no timezone database, and a
-/// name that sorts correctly matters more than local wall time.
-pub fn take_dir() -> PathBuf {
-    let base = std::env::home_dir()
+/// Where every recording lands: the platform's video folder, falling
+/// back to the config directory when no home exists. Its own function
+/// because the panel shows it — a take's folder used to be named in a
+/// four-second notice and nowhere else in the app.
+pub fn takes_root() -> PathBuf {
+    std::env::home_dir()
         .map(|h| {
             if cfg!(target_os = "macos") {
                 h.join("Movies").join("vizz")
@@ -274,16 +318,41 @@ pub fn take_dir() -> PathBuf {
                 h.join("Videos").join("vizz")
             }
         })
-        .unwrap_or_else(|| {
-            vizz_mod::project::root().join("recordings")
-        });
+        .unwrap_or_else(|| vizz_mod::project::root().join("recordings"))
+}
+
+/// Where a new recording lands: a fresh timestamped directory under
+/// [`takes_root`]. UTC in the name — std has no timezone database, and a
+/// name that sorts correctly matters more than local wall time.
+pub fn take_dir() -> PathBuf {
+    take_dir_for(None)
+}
+
+/// Where the next take goes: `vizz-<look>-<date>-<time>`, the look
+/// being the recalled preset when there is one — so a folder says what
+/// was recorded, not only when. The stamp is UTC, as it always was.
+pub fn take_dir_for(look: Option<&str>) -> PathBuf {
+    let base = takes_root();
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let (y, m, d) = civil_from_unix(secs);
     let (hh, mm, ss) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
-    base.join(format!("vizz-{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}"))
+    let stamp = format!("{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}");
+    base.join(match take_label(look) {
+        Some(look) => format!("vizz-{look}-{stamp}"),
+        None => format!("vizz-{stamp}"),
+    })
+}
+
+/// A look's name as a folder name can carry it: the preset tidying,
+/// then spaces to dashes, so `night bus` records as `night-bus`.
+fn take_label(look: Option<&str>) -> Option<String> {
+    // Emptiness is checked first: the tidying names a blank "untitled",
+    // and a take of nothing recalled is filed under the stamp alone.
+    let look = look?.trim();
+    (!look.is_empty()).then(|| vizz_mod::library::sanitize(look).replace(' ', "-"))
 }
 
 /// Days-since-epoch to calendar date (Howard Hinnant's civil algorithm).
@@ -298,6 +367,42 @@ fn civil_from_unix(secs: u64) -> (i64, u64, u64) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u64;
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u64;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Remember the bands and the auto-tempo switch.
+pub fn save_audio(bands: [vizz_audio::Band; 4], auto_bpm: bool) -> Result<()> {
+    let mut s = load();
+    s.audio_bands = Some(bands);
+    s.audio_auto_bpm = Some(auto_bpm);
+    save(&s)
+}
+
+/// Remember how takes are written.
+pub fn save_record(prefs: RecordPrefs) -> Result<()> {
+    let mut s = load();
+    s.record = Some(prefs);
+    save(&s)
+}
+
+/// Remember which screen was up.
+pub fn save_start_on_stage(on_stage: bool) -> Result<()> {
+    let mut s = load();
+    s.start_on_stage = on_stage;
+    save(&s)
+}
+
+/// Which simulation is running as the live cloud, or none.
+pub fn save_simulation(id: Option<&str>) -> Result<()> {
+    let mut s = load();
+    s.simulation = id.map(str::to_string);
+    save(&s)
+}
+
+/// The first-launch card has done its job.
+pub fn save_welcomed() -> Result<()> {
+    let mut s = load();
+    s.welcomed = true;
+    save(&s)
 }
 
 /// Persist the fullscreen choice alone.
@@ -522,5 +627,63 @@ mod tests {
             let s = Settings { output_size: Some(size), ..Default::default() };
             assert_eq!(s.output_or([1920, 1080]), size, "{size:?} was resized");
         }
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    /// What a venue hand-tunes comes back the way it was left: the record
+    /// setup and the bands survive a write and a read, and a file from
+    /// before these fields loads with the shipped values rather than
+    /// failing.
+    #[test]
+    fn the_rig_settings_round_trip_and_older_files_still_load() {
+        let mut bands = vizz_audio::default_bands();
+        bands[0].set_gain_db(6.0);
+        let s = Settings {
+            record: Some(RecordPrefs {
+                lossless: true,
+                quality: 70,
+                fps: 25.0,
+                max_secs: Some(15.0),
+                countdown_secs: 3,
+            }),
+            audio_bands: Some(bands),
+            audio_auto_bpm: Some(true),
+            start_on_stage: true,
+            simulation: Some("fluid".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.record, None);
+        assert_eq!(old.audio_bands, None);
+        assert!(!old.start_on_stage);
+        assert_eq!(old.simulation, None);
+        assert_eq!(RecordPrefs::default().quality, 92);
+    }
+}
+
+#[cfg(test)]
+mod take_name_tests {
+    use super::*;
+
+    /// A take is filed under the look it recorded, tidied for a folder
+    /// name, and under the stamp alone when nothing was recalled.
+    #[test]
+    fn a_take_folder_names_the_look() {
+        assert_eq!(take_label(Some("night bus")).as_deref(), Some("night-bus"));
+        assert_eq!(take_label(Some("  ")), None);
+        assert_eq!(take_label(None), None);
+        let dir = take_dir_for(Some("night bus"));
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("vizz-night-bus-"), "{name}");
+        let plain = take_dir_for(None).file_name().unwrap().to_string_lossy().into_owned();
+        assert!(plain.starts_with("vizz-2"), "{plain}");
     }
 }

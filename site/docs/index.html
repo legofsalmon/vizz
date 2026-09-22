@@ -178,6 +178,7 @@
   <a href="/"><strong>vizz</strong></a>
   <span class="dim">documentation</span>
   <span class="sp"></span>
+  <a href="/clouds">Clouds</a>
   <a href="https://github.com/legofsalmon/vizz">GitHub</a>
 </div>
 
@@ -255,9 +256,13 @@ cd vizz
 cargo run --release</code></pre>
 
 <div class="note">
-<p><strong>What happens on first launch.</strong> A window opens at 1280&times;720
-showing a slowly turning sphere of particles, with the control panel on the
-left. OSC is listening on UDP 7000 and — on macOS — a Syphon source named
+<p><strong>What happens on first launch.</strong> A window opens sized to
+your display — 1440&times;900 on most laptops — already playing the look
+called Tunnel, with the control panel on the left and a card along the bottom
+naming the keys: the number keys fire the built-in looks, Space flashes,
+<kbd>P</kbd> is the screen you play from. A twenty-song demo set is installed on
+that screen; right-click the <strong>+</strong> beside its deck chips to remove
+it. OSC is listening on UDP 7000 and — on macOS — a Syphon source named
 <code>vizz</code> is already published, so Resolume or VDMX can see the output
 before you have touched anything.</p>
 </div>
@@ -389,6 +394,37 @@ resting at zero cannot fire anything on startup. Recall is edge-triggered: it
 fires when the slot changes, so a button parked on a slot does not re-apply
 its preset every frame and pin the controls you are trying to adjust.</p>
 
+<h3>Pictures and families</h3>
+
+<p>On the performance layout every look wears <strong>a picture of
+itself</strong>: the master output as it was when the look was saved, kept
+beside the presets in <code>presets/thumbs/*.png</code>. A preset is a list of
+numbers under a name somebody typed at 2am, and by the next gig the name is a
+guess — the only thing that reliably says what a look is, is the look.</p>
+
+<p>Pictures are taken without being asked for: <strong>on save</strong>, because
+what is on screen is the thing being saved; and <strong>the first time a look
+is fired</strong>, a second or so after so the morph has finished — which is
+what gives the built-ins, and everything saved before this existed, a tile
+worth looking at. A look that has a picture keeps it. <em>update picture</em>
+on a tile's right-click menu takes a new one from whatever is on the output
+now. They are a cache: throw the folder away and the app fills it back in as
+you play.</p>
+
+<p>Looks are also grouped by <strong>what they were built on</strong>, which
+each preset records when it is saved. Those sort into five families, each with
+its own colour on the tile's leading edge and as the heading in front of its
+group: <strong>clouds</strong> (a loaded scan, mesh or live stream),
+<strong>shapes</strong> (sphere, torus, knot, grid, shell),
+<strong>attractors</strong> (Lorenz, Aizawa), <strong>demo set</strong> (the
+shipped set's looks) and <strong>built in</strong>.
+Anything saved before looks recorded a source lands in <em>unsorted</em>, and
+the heading is dropped when a library has only one family.</p>
+
+<p>Grouping changes where a look sits on screen and never what fires it: the
+slot number stays on every tile, because that is what <code>/preset/recall</code>,
+the number keys and every MIDI binding address.</p>
+
 <h2 id="scenes">Scenes and transitions</h2>
 
 <p>A preset recalled by number is a cut. A <strong>scene</strong> is the other
@@ -460,7 +496,11 @@ what you are looking at.</p>
 <p><code>/deck/select</code> is an ordinary parameter, so a chip, a controller
 button and an OSC message are one gesture. Bindings name the <em>deck
 number</em>, exactly as the pads and preset slots do, so sixteen buttons address
-sixteen pages. Right-click a chip to learn one.</p>
+sixteen pages. Right-click a chip to learn one. Two buttons do instead of
+twenty-four: <code>/deck/next</code> and <code>/deck/prev</code> turn one page
+per press and stop at the ends, so a controller with a spare pair of pads leafs
+through a set list without a button per song. The <code>‹</code> <code>›</code>
+beside the set list are the same two.</p>
 
 <h3>Following Resolume's columns</h3>
 
@@ -556,7 +596,7 @@ different timings.</p>
 
 <h2 id="faders">Performance faders</h2>
 
-<p>The <strong>CONTROLS</strong> row is fourteen assignable faders plus the
+<p>The <strong>FADERS</strong> row is sixteen assignable faders plus the
 master. Click a fader's caption to assign it to any parameter; click
 <em>learn</em> beneath it and move a controller to bind MIDI.</p>
 
@@ -581,7 +621,10 @@ you reached for.</p>
 
 <p>The range wraps, so the top morphs the Aizawa attractor back into the sphere.
 <code>/shape/morph</code> adds an extra blend into the next form and
-<code>/shape/twist</code> shears the whole field.</p>
+<code>/shape/twist</code> shears the whole field. <code>/shape/wind</code> blows
+through it — an ABC flow, divergence-free and chaotic, read as a displacement
+so it works on a scan as on a sphere — and <code>/shape/wind_rate</code> is how
+fast it changes.</p>
 
 <p><strong>Lorenz and Aizawa are real strange attractors</strong>, integrated per
 particle rather than drawn as a static curve — the field genuinely flows along
@@ -605,6 +648,62 @@ file has it. A file that will not parse is a warning, never a startup failure.</
 with the app's own font into a cloud you can morph against any other slot.
 Typed clouds persist as <code>text:WORD</code> and come back after a restart.</p>
 
+<h3>From an equation</h3>
+<p>The clouds section's <em>generate…</em> menu, or <code>--cloud gen:thomas</code>,
+fills the next slot from a formula. Sixty-six of them, grouped in the menu by
+what they are — and <a href="/clouds">the whole catalogue is a page of its
+own</a>, with a picture of each and the paper it comes from:</p>
+<ul>
+<li><strong>flows</strong> — twenty-five strange attractors: Thomas, Halvorsen,
+Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw,
+Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant, Aizawa,
+Newton–Leipnik, Sakarya, Rikitake, Shimizu–Morioka, finance, Coullet,
+Genesio–Tesi, Lorenz-96 and the forced Duffing oscillator. Traced in time
+order, so the cloud crawls along itself.</li>
+<li><strong>maps</strong> — Clifford, de Jong, Hénon, Ikeda and Gumowski–Mira,
+lifted into depth by delay embedding, and Chirikov's standard map drawn on its
+torus.</li>
+<li><strong>searched</strong> — the two quadratic searches, over maps and over
+flows.</li>
+<li><strong>surfaces</strong> — a Gielis supershape, a harmonic-rippled sphere, a
+real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle,
+Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the
+gyroid with Schwarz' P and D.</li>
+<li><strong>curves</strong> — a Lissajous knot, a torus knot, the figure-eight
+knot, a spirograph and the three-dimensional Hilbert curve.</li>
+<li><strong>fractals</strong> — the Sierpinski tetrahedron, the Menger sponge, the
+Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's
+basins, the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as
+reliefs.</li>
+<li><strong>grown</strong> — four L-system plants and a diffusion-limited
+aggregate.</li>
+<li><strong>patterns</strong> — Chladni sand, a Voronoi foam, an icosahedral
+quasicrystal, and phyllotaxis.</li>
+</ul>
+<p><a href="/clouds">The whole catalogue is on its own page</a>, with a picture
+of each one, its knobs, and the paper it comes from.</p>
+
+<p>A generated cloud persists as <code>gen:name</code> and is remade on launch.
+Some take knobs — the supershape's exponents, a knot's windings, the orbital's
+degree and order, the gyroid's wall, the plant's rule, phyllotaxis' angle —
+which the menu opens a row for and writes into the spec:
+<code>gen:torus-knot?p=2;q=5</code>, <code>gen:orbital?l=5;m=3</code>,
+<code>gen:gyroid?kind=diamond;cells=3</code>.</p>
+
+<p>Two are searches. <strong>quadratic</strong> is Sprott's: random
+three-dimensional quadratic maps until one is chaotic, judged by a positive
+Lyapunov exponent. <strong>quadratic flow</strong> is the same search with an
+integrator inside it, over vector fields rather than maps, which gives smooth
+ribbons where the map gives dust. The knob is the seed: <em>roll</em> is an
+attractor nobody has seen, and the same seed is the same attractor on every
+machine.</p>
+
+<p>Every named flow is tested for chaos rather than for looks: a test
+integrates all twenty-three and measures the largest Lyapunov exponent. Two
+of the shipped ones failed it — Halvorsen and the Hadley circulation were on
+limit cycles, which fill the same box and look, in any still frame, exactly
+like attractors — and have been put back on their chaotic constants.</p>
+
 <h3>From an image</h3>
 <p>Drag a <code>.png</code> or <code>.jpg</code> on. Position comes from the pixel
 grid, colour from the pixel, and a shallow relief from luminance. Fully
@@ -621,6 +720,60 @@ vizz --live-cloud /tmp/live.ply             # re-read a file as it is rewritten<
 sender at that. It is only shown for a <code>listen://</code> address: if you
 are dialling out to <code>host:port</code> instead, the address that matters is
 the other machine's.</p>
+
+<h3>From a simulation</h3>
+<pre><code>vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
+vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
+vizz --live-cloud sim:smoke       # the same solver in three dimensions, with heat
+vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
+vizz --live-cloud sim:slime       # Physarum: a network from three rules
+vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
+vizz --live-cloud sim:cloth       # a sheet in the wind
+vizz --live-cloud sim:sand        # an Abelian sandpile, toppling
+vizz --live-cloud sim:spiral      # Belousov–Zhabotinsky waves</code></pre>
+
+<p>A simulation is a live cloud that needs no sender: it runs on its own thread
+at the frame rate and publishes through the stream's path. The panel's
+<em>simulate…</em> button beside <em>receive</em> starts one, and the one running
+is remembered across launches. <strong>fluid</strong> is Stam's stable solver for
+the Navier–Stokes equations on an endless sheet, with vorticity confinement and
+sixty-five thousand tracers as the cloud — the loudness stirs it, the kick
+bursts it, the snare spins it, the highs roughen it. <strong>reaction</strong> is
+Gray–Scott reaction–diffusion, one cell per point, where spots grow, split and
+heal; the kick plants new ones. <strong>flock</strong> is Reynolds' boids
+drawing streaks — the loudness their pace, the kick a predator, the snare a
+scatter. <strong>wind</strong> is curl noise: tracers in a divergence-free noise
+field, a fluid with no solve; the kick is a gust. <strong>kuramoto</strong> is
+Kuramoto's coupled oscillators on a torus — a loud passage locks them into a
+ribbon, quiet frees them. <strong>life</strong> is a three-dimensional cellular
+automaton in the Clouds rule, slow masses that keep reshaping; the kick drops a
+seed. <strong>orbits</strong> is five hundred bodies pulling on each other
+round a heavy centre, each drawing its last two seconds as an arc — the
+loudness is the clock, the kick a shockwave. <strong>pendulum</strong> hangs
+four thousand double pendulums in a sheet from neighbouring angles: it swings
+as one surface, creases, then tears. <strong>smoke</strong> is the fluid
+solver in three dimensions with heat, a plume that rises and rolls up.
+<strong>liquid</strong> is four thousand particles of water in a box that
+tilts, gravity swinging round once a bar so it pours corner to corner.
+<strong>slime</strong> is Physarum, one agent per point, each leaving a trail and
+following the strongest one it can see — a transport network out of three rules
+and no plan. <strong>swarmalators</strong> swarm and synchronise at once, each
+depending on the other, and walk between five states as the audio moves two
+numbers. <strong>cloth</strong> is a sheet of sixty-five thousand particles hung
+from its top edge in the same wind <code>/shape/wind</code> blows.
+<strong>sand</strong> is the Abelian sandpile — grains dropped and toppled, and a
+fractal nobody designed. <strong>spirals</strong> is the Belousov–Zhabotinsky
+reaction, whose rotating fronts annihilate where they meet.</p>
+
+<p>The automaton's rule is a knob, written <em>survive/born/states</em>. Past
+two states a cell that fails to survive counts down instead of dying, and only
+the top of the ramp counts as a neighbour — the ash left behind turns a flat
+rule into a solid that grows and crusts. It ships in
+<code>4-7/6-8/10</code>, Pyroclastic, which boils; <code>4/4/5</code> is a
+spiking crystal and <code>9-26/5-7,12-13,15/5</code> is Amoeba.
+<code>13-26/13-14,17-19</code> is Clouds, which grows lovely masses and then
+stops — so it, and any rule that stops, is started again after four dead
+generations.</p>
 
 <h3>Showing and crossing between them</h3>
 
@@ -910,6 +1063,13 @@ receives on top, what is arriving underneath. A red mark on the right means
 the band is pinned and the gain is too high.</li>
 </ol>
 
+<p><strong>The system default is usually the laptop's microphone</strong>, which
+hears the room — the crowd, the PA's slap-back — rather than the mix. For the
+music itself, take an interface input fed from the mixer, or a loopback device
+(BlackHole on macOS, VB-Cable on Windows) carrying what the DJ software plays.
+The panel says under the picker when the chosen input is a microphone, and the
+stage strip's device name is a click target with the same list behind it.</p>
+
 <p>Each band has editable low and high edges in Hz and a gain in dB. The defaults
 are low / lo-mid / hi-mid / high, but a kick-only band of 40–90 Hz driving
 size is often more musical than a broad one.</p>
@@ -1043,9 +1203,12 @@ while <a href="#decks">following</a> is on.</p>
 <div class="scroll">
 <table>
 <tr><td><kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd></td><td>Fire preset slot 1–10</td></tr>
-<tr><td><kbd>Space</kbd></td><td>Flash — white out while held</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Flash — white out while held; shift latches</td></tr>
+<tr><td><kbd>S</kbd> <kbd>B</kbd> <kbd>F</kbd> <kbd>I</kbd></td><td>Strobe, black, freeze, invert while held; shift latches</td></tr>
 <tr><td><kbd>Tab</kbd></td><td>Show or hide the control panel</td></tr>
 <tr><td><kbd>P</kbd></td><td>Performance layout</td></tr>
+<tr><td><kbd>V</kbd></td><td>Watch the output — the controls stand aside (performance layout)</td></tr>
+<tr><td><kbd>T</kbd></td><td>Tap the tempo — three taps set it</td></tr>
 <tr><td><kbd>G</kbd></td><td>Modulation canvas</td></tr>
 <tr><td><kbd>/</kbd></td><td>Filter the parameter list</td></tr>
 <tr><td><kbd>?</kbd></td><td>The shortcut list, on screen</td></tr>
@@ -1087,9 +1250,10 @@ texture's memory and is off by default.</p>
 
 <h2 id="recording">Recording</h2>
 
-<p>vizz records the master output as a <strong>PNG sequence</strong>. Every
-finished frame is a finished file, so a crash mid-take costs nothing already
-written.</p>
+<p>vizz records the master output as an <strong>image sequence</strong> —
+JPEG at quality 92 and 30 fps by default, PNG on request from the panel's
+<strong>recording</strong> section. Every finished frame is a finished file,
+so a crash mid-take costs nothing already written.</p>
 
 <ol class="steps">
 <li>Press the <strong>REC</strong> chip on the performance layout's status
@@ -1101,11 +1265,17 @@ dropped.</li>
 </ol>
 
 <p>Takes land in <code>~/Movies/vizz/vizz-&lt;timestamp&gt;/</code> on macOS and
-<code>~/Videos/vizz/…</code> elsewhere. Assemble one with ffmpeg:</p>
+<code>~/Videos/vizz/…</code> elsewhere; the recording section says so, and its
+<strong>reveal</strong> button opens the folder. Assemble one with ffmpeg:</p>
 
-<pre><code>ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4</code></pre>
+<pre><code>ffmpeg -framerate 30 -i frame_%06d.jpg -pix_fmt yuv420p take.mp4</code></pre>
 
-<p>Alongside the frames is a <code>frames.csv</code> of per-frame wall-clock
+<p>Use <code>.png</code> and the rate you recorded at if you changed either.</p>
+
+<p>Alongside the frames is a <code>take.json</code> naming the look that was
+recalled, the size, the rate, the format and the build that wrote it, and the
+folder is named for the look (<code>vizz-night-bus-…</code>) when one was on
+screen. Beside it is a <code>frames.csv</code> of per-frame wall-clock
 times, so a take that dropped frames can be assembled honestly instead of
 silently running fast.</p>
 
@@ -1164,6 +1334,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>
+    <tr><td><code>/shape/wind</code></td><td>0 – 1</td><td>0</td><td>a wind through the field — an ABC flow, divergence-free, blowing every form</td></tr>
+    <tr><td><code>/shape/wind_rate</code></td><td>0 – 2</td><td>0.3</td><td>how fast the wind changes</td></tr>
     <tr><td><code>/fx/trail</code></td><td>0 – 0.98</td><td>0</td><td>feedback: how much of last frame survives</td></tr>
     <tr><td><code>/fx/zoom</code></td><td>0.9 – 1.1</td><td>1</td><td>per-frame zoom of the feedback (tunnels)</td></tr>
     <tr><td><code>/fx/spin</code></td><td>-0.1 – 0.1</td><td>0</td><td>per-frame rotation of the feedback</td></tr>
@@ -1265,15 +1437,18 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/bg/green</code></td><td>0 – 1</td><td>0.004</td><td>background green</td></tr>
     <tr><td><code>/bg/blue</code></td><td>0 – 1</td><td>0.008</td><td>background blue</td></tr>
     <tr><td><code>/bg/alpha</code></td><td>0 – 1</td><td>1</td><td>background opacity; 0 delivers the field on nothing</td></tr>
-    <tr><td><code>/preset/recall</code></td><td>0 – 64</td><td>0</td><td>recall preset N on change; 0 = none</td></tr>
+    <tr><td><code>/preset/recall</code></td><td>0 – 512</td><td>0</td><td>recall preset N on change; 0 = none</td></tr>
     <tr><td><code>/scene/fire</code></td><td>0 – 16</td><td>0</td><td>fire scene 1–16 on change; 0 = none</td></tr>
     <tr><td><code>/scene/time</code></td><td>0 – 60</td><td>2</td><td>scene blend time, seconds</td></tr>
     <tr><td><code>/scene/curve</code></td><td>0 – 4</td><td>1</td><td>0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut</td></tr>
     <tr><td><code>/scene/auto</code></td><td>0 – 1</td><td>0</td><td>scene autopilot on/off</td></tr>
     <tr><td><code>/scene/bars</code></td><td>0.25 – 16</td><td>4</td><td>bars between scene autopilot steps</td></tr>
     <tr><td><code>/deck/select</code></td><td>0 – 24</td><td>0</td><td>turn to page 1–24 on change; 0 = none</td></tr>
+    <tr><td><code>/deck/next</code></td><td>0 – 1</td><td>0</td><td>turn to the next page on a rise; stops at the last</td></tr>
+    <tr><td><code>/deck/prev</code></td><td>0 – 1</td><td>0</td><td>turn to the previous page on a rise; stops at the first</td></tr>
     <tr><td><code>/column/fire</code></td><td>0 – 16</td><td>0</td><td>fire column 1–16 — the scene pad and the gravity pad of that number, together</td></tr>
-    <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to a PNG sequence; 1 starts, 0 stops</td></tr>
+    <tr><td><code>/record/active</code></td><td>0 – 1</td><td>0</td><td>record the master to an image sequence; 1 starts, 0 stops</td></tr>
+    <tr><td><code>/tempo/tap</code></td><td>0 – 1</td><td>0</td><td>tap the beat: each rise is one tap, and three set the tempo</td></tr>
     <tr><td><code>/master/dim</code></td><td>0 – 1</td><td>1</td><td>master fader</td></tr>
 </table>
 </div>
@@ -1367,6 +1542,9 @@ culprit.</p>
 press ending the show is the one destructive keystroke worth guarding.</p>
 
 <footer>
+<p>Where the generative systems here come from — the papers, algorithms
+and people behind them — is on the <a href="/clouds#sources">clouds
+page</a>, which cites every one of them.</p>
 <p>vizz is <a href="https://github.com/legofsalmon/vizz">open source</a>, MIT
 licensed. Found something wrong or missing in these docs?
 <a href="https://github.com/legofsalmon/vizz/issues">Open an issue</a>.</p>

@@ -283,7 +283,14 @@ impl GraphView {
                     // second for a list nobody was looking at.
                     let patches = library::all_names();
                     for name in &patches {
-                        if ui.selectable_label(false, name).clicked() {
+                        // A shipped patch says what it does before it is
+                        // loaded over whatever was there.
+                        let row = ui.selectable_label(false, name);
+                        let row = match library::about(name) {
+                            Some(about) => row.on_hover_text(about),
+                            None => row,
+                        };
+                        if row.clicked() {
                             match library::by_name(name) {
                                 Some(g) => {
                                     *graph = g;

@@ -160,3 +160,68 @@ the footer points at it instead of paraphrasing it. No open findings.
   one revert at a time, before this document was written.
 - `docs-panel.webp` and `docs-stage.webp` re-rendered from the
   offscreen examples after the changes.
+
+## Second pass — eight hands on the desk (0.26.0)
+
+A second review, run as eight personas (a first-night VJ, a touring
+operator, a Resolume user, a controller-first player, a print maker, a
+live-scan artist, a designer reading the tokens, a documentation
+reader) across the usual lenses. It produced 225 findings, clustered to
+120 issues, each fact-checked against the code before it was ranked:
+47 confirmed as written, 73 confirmed in part, none refuted outright.
+The report is a standalone page; this section is what came of it.
+
+### Shipped from it
+
+- **First launch and the window.** Opens on Tunnel with the play screen
+  up and a three-key card; 1440×900 by default, 1024×640 minimum, size
+  remembered; the layout stands down in measured steps with a hint
+  naming what a taller window would bring back.
+- **Keys.** Space · S · B · F · I for the punches, T to tap, V to hide
+  the desk, and no key repeats itself while held.
+- **Saying what happened.** Recall, capture, rename and delete are all
+  announced; audio and MIDI device loss and return are notices; an
+  output that failed at launch says why; a held file gets a caption
+  before it lands; fit says which bands it set.
+- **Looks.** Save keeps its name and offers the current look; rename
+  from either list with pads re-pointed on every page; `/preset/recall`
+  bindings follow their looks by name when the list re-sorts; storing
+  over a shared look forks by default (shift, or the armed menu item,
+  re-captures in place); tiles drag onto pads; the recall ceiling is
+  512; the shipped set has its own family, "demo set".
+- **The desk.** Per-parameter help from the README's own table; depth
+  in units; gate ticks on every band meter and a warning where the
+  shape was chosen; a tempo-source badge; the autopilot countdown; the
+  audio input picker on the strip; a MIDI bindings table with an armed
+  clear-all; page arrows and `/deck/next` · `/deck/prev`; alt-click
+  fires a column; the APC40 profile carries a blackout, a tap and the
+  pages; section rules say how each row plays.
+- **Recording.** JPEG/PNG said correctly everywhere, the spec on the
+  chip, the take folder named for the look, `take.json` beside the
+  frames, reveal, a cancellable countdown, and the setup persisted.
+- **Words.** The on-screen words are OSC aliases (`/look/…`,
+  `/song/…`, `/ink/…`, `/print/…`, `/background/…`); CONTROLS is
+  FADERS; "form" is "shape"; a learn says "knob or button".
+
+### Accepted behaviours added (do not re-file)
+
+- **A label shrinks and never ellipsises.** Truncating the fader name
+  was tried and reverted: the test that reads painted glyphs is the
+  rule, and a wrapped name is the lesser fault.
+- **Take stamps are UTC.** There is no local-time source in the
+  standard library worth a dependency; the folder now names the look,
+  which is the part that was actually missing.
+- **The panel's preset list groups by source; the stage by family.**
+  The panel heading is the cloud's own name, which is more specific
+  than the family and is what you called the thing when you loaded it.
+
+### Deliberately not attempted
+
+Subsystems the review rated large, left for their own releases: a
+second output window, video files as input, undo, OSC out, more
+controller profiles, quantised launches, show export/import, media
+layers, shader import, Ableton Link, Windows packaging, a docked
+panel, one picker for the three parameter menus, the panel as a real
+instrument face, and the demo-set-versus-starter-show model. Two
+small ones were left because they cannot be judged without a display:
+Confetti's re-tuning and the accent blue's desaturation.

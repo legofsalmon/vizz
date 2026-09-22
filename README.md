@@ -188,21 +188,29 @@ NDI frame is survivable and missing vsync is not.
 
 `/record/active` (the REC chip on the performance layout, a button in
 the panel's outputs section, OSC, or a learned MIDI button) records
-the master output as a **PNG sequence** — every finished frame is a
-finished file, so a crash mid-take costs nothing already written. Takes
-land in `~/Movies/vizz/vizz-<timestamp>/` (macOS) or `~/Videos/vizz/…`
-elsewhere, with a `frames.csv` of per-frame wall-clock times so a
-variable-rate capture assembles honestly:
+the master output as an **image sequence** — JPEG at quality 92 and
+30 fps by default, PNG on request from the panel's recording section —
+where every finished frame is a finished file, so a crash mid-take costs
+nothing already written. Takes land in `~/Movies/vizz/vizz-<timestamp>/`
+(macOS) or `~/Videos/vizz/…` elsewhere; the recording section says so
+and has a **reveal** button that opens the folder. Alongside the frames
+is a `take.json` naming the look that was recalled, the size, the rate,
+the format and the build that wrote it — what assembling a video needs to
+know — and the folder itself is named for the look (`vizz-night-bus-…`)
+when one was on screen. Beside them
+is a `frames.csv` of per-frame wall-clock times so a variable-rate
+capture assembles honestly:
 
 ```sh
-ffmpeg -r 60 -i frame_%06d.png -pix_fmt yuv420p take.mp4
+ffmpeg -framerate 30 -i frame_%06d.jpg -pix_fmt yuv420p take.mp4
 ```
 
-Recording never stalls the show: a slow disk drops frames on the
-recording only, the drops are counted and reported, and a full disk
-stops the take with a notice instead of retrying sixty times a second.
-Heavy resolutions will drop frames — PNG encoding at 1080p60 is at the
-edge of one core — and the counters say exactly how many.
+Use `.png` and the rate you recorded at if you changed either. Recording
+never stalls the show: a slow disk drops frames on the recording only,
+the drops are counted and reported, and a full disk stops the take with
+a notice instead of retrying sixty times a second. Heavy resolutions will
+drop frames — PNG encoding at 1080p60 is at the edge of one core — and
+the counters say exactly how many.
 
 ### Fullscreen
 
@@ -292,6 +300,189 @@ thing between a header change and silent memory corruption.
 
 **Not wired to the renderer yet.** Discovery, connection and frame capture
 work and are tested; drawing the received frame is the next step.
+
+### Simulations
+
+```sh
+vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
+vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
+vizz --live-cloud sim:smoke       # the same solver in three dimensions, with heat
+vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
+vizz --live-cloud sim:slime       # Physarum: a network from three rules
+vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
+vizz --live-cloud sim:cloth       # a sheet in the wind
+vizz --live-cloud sim:sand        # an Abelian sandpile, toppling
+vizz --live-cloud sim:spiral      # Belousov–Zhabotinsky waves
+```
+
+A simulation is a live cloud that needs no sender: it runs on its own
+thread, at the frame rate, and publishes through exactly the path a
+network stream does — the same slot, the same `try_lock`, the same
+first-frame show. The panel's *simulate…* button beside *receive* starts
+one, and the one running is remembered across launches (a network stream
+is not — its sender is another machine's business).
+
+**fluid** is Jos Stam's stable solver for the incompressible
+Navier–Stokes equations — semi-Lagrangian advection and a pressure
+projection, unconditionally stable at any frame rate — on a 128² periodic
+grid, with Fedkiw's vorticity confinement to keep the swirls alive and
+sixty-five thousand tracers riding the field as the cloud. The vorticity
+stands up as relief and brightens the point, so eddies read as eddies.
+Two stirrers orbit on their own, so it moves with no audio at all; with
+audio the loudness sets their reach, a kick bursts from the middle, a
+snare spins a vortex somewhere and the highs roughen the field.
+
+**reaction** is the Gray–Scott system in Pearson's parameterisation, one
+cell per point on a 256² grid, in the corner of the feed/kill map where
+spots divide like cells. Eight unit steps a frame is a division every few
+seconds. A kick plants a seed; left alone it re-seeds itself while it is
+sparse, so it never goes blank.
+
+**flock** is Reynolds' boids — four thousand of them in a periodic cube,
+separation, alignment and cohesion on a neighbour grid, each drawing its
+last sixteen positions as a fading streak. The loudness is their pace, a
+kick is a predator bursting through a random point, a snare scatters
+their headings.
+
+**wind** is curl noise (Bridson, Hourihan & Nordenstam, 2007): the curl of
+a smooth noise field is divergence-free, so tracers carried by it flow
+like a fluid with no solve at all. The field is sampled onto a 24³ grid
+every few frames and trilinearly interpolated, because sixty-five thousand
+tracers evaluating six noise gradients each would not make the frame. A
+kick is a gust — the field jumps to a new moment and the tracers run —
+and the highs roughen it with a finer octave.
+
+**kuramoto** is Kuramoto's coupled oscillators: every oscillator has its
+own pace, every one pulls every other towards the crowd's phase, and
+above a critical coupling they lock. Drawn as a torus — the ring is which
+oscillator, the tube is its phase, the trail is its recent past — so a
+locked crowd is a thin ribbon and a free one is the whole tube. The
+loudness is the coupling: a loud passage locks them; a kick scatters half.
+With no audio the coupling breathes across the threshold on its own.
+
+**life** is a three-dimensional cellular automaton on a 48³ lattice, a
+generation every three frames. It ships in the "Pyroclastic" rule
+(`4-7/6-8/10`), which boils: about a third of the lattice turns over
+every generation, for ever. A kick drops a new seed.
+
+It used to ship in "Clouds", which grows into lovely slow masses and
+then *stops* — sixty changed cells a generation out of a hundred and ten
+thousand, which in a live slot is a still image with a name on it. Every
+test passed, because the tests asked that it neither die out nor flood.
+One now measures the churn instead, and an automaton that stops, in any
+rule you type, is started again after four dead generations, because a
+frozen automaton is as dead as an empty one.
+
+The rule is a knob, written as *survive/born/states* in neighbour counts
+and ranges. The third field is the interesting one. With two states a cell
+is alive or dead; with more, a cell that fails to survive counts *down*
+through the intermediate states, one a generation, and only the top state
+counts as a live neighbour to anybody. Those counting-down cells are the
+ash a growing front leaves behind it, drawn dimmer than the front, and
+they turn a flat rule into a solid that grows, hollows and crusts.
+
+```sh
+vizz --live-cloud 'sim:life?rule=4/4/5'              # Bays' 4-4-5, a spiking crystal
+vizz --live-cloud 'sim:life?rule=4-7/6-8/10'         # Pyroclastic, which boils
+vizz --live-cloud 'sim:life?rule=9-26/5-7,12-13,15/5'  # Amoeba
+vizz --live-cloud 'sim:life?rule=2,6,9/4,6,8-9/10'   # a builder
+```
+
+**orbits** is gravity by direct summation: five hundred bodies, every one
+of the hundred and thirty thousand pairs of them summed honestly every
+frame, round a centre six times their total mass. They start as a disc on
+near-circular orbits — the one arrangement that holds together long enough
+to watch — and then do to each other whatever they do. Each keeps its last
+two seconds as an arc, so the cloud is orbits rather than dots. Plummer
+softening, because without it one close pass sends a body away at the
+speed of arithmetic, and a spring past nine tenths of the box, because
+nothing outside it can be seen. The loudness is the clock, a kick is a
+shockwave out of the centre and a snare knocks the disc out of its plane.
+
+**pendulum** hangs four thousand double pendulums in a sheet, each started
+a hair from its neighbour. One double pendulum is the standard
+demonstration that four numbers can be unpredictable; four thousand of
+them are the demonstration of *why*. For the first second they swing as
+one surface, then it creases, then it tears, and within ten seconds two
+that started indistinguishable point opposite ways. Nothing here is
+random: the same start gives the same tearing every time. The loudness is
+gravity — quiet is the moon, loud is a heavy planet — and a kick hangs the
+sheet again from a new place, so the tearing can be watched more than once.
+
+**smoke** is the fluid solver again in three dimensions, with heat. Thirty
+-two cells a side, where the sheet has a hundred and twenty-eight, because
+a cube of cells costs thirty-two times what a square of the same side
+does; the detail comes from the sixty-five thousand tracers, two per cell,
+drawing filaments finer than the field that carries them. Buoyancy is
+Boussinesq — proportional to how much hotter a cell is than the box's
+average, so the net force is zero and a periodic box does not accelerate
+away — and what rises is a plume with a mushroom on it. A vent wanders the
+floor on its own; a kick is a blast somewhere else, a snare a shove
+sideways, the highs the roughness.
+
+**slime** is Physarum polycephalum, which is a single cell the size of a
+dinner plate with no nervous system and a habit of solving mazes. Jones'
+model is three rules: leave a trail, look a short way ahead in a few
+directions, steer towards whichever has the most trail on it. Nothing in
+it knows about paths or networks; what comes out anyway is a transport
+network that keeps rebuilding itself, which is what the real organism
+does when it reproduces the Tokyo rail map out of oat flakes. One agent
+per point, so the cloud is the colony rather than a picture of it. The
+loudness is their speed, the highs widen the sensor cone, and a kick
+throws a share of them somewhere else to start a new front.
+
+**swarmalators** swarm and synchronise at once, and each depends on the
+other: how strongly two are drawn together depends on how close their
+phases are, and how strongly their phases pull depends on how close they
+are in space. Sperm do this, so do magnetic colloids and the Japanese
+tree frogs that arrange themselves in a pond by call. Five states come
+out of two numbers and the transitions are sharp — a ball in phase, a
+ball at random phase, a disc with phase running round the rim, a disc
+splintered into blocks of one phase, and the same disc circulating — so
+the loudness and the mids walk a set between them.
+
+**sand** is the Abelian sandpile of Bak, Tang and Wiesenfeld — the model
+that named self-organised criticality. Drop grains on a square; any
+square holding four or more topples, sending one to each neighbour,
+which may make them topple in turn. That is the whole rule, and two
+things about it are surprising: the arrangement it settles into does not
+depend on the order the grains were added in, which is what "Abelian"
+means here and is what a test checks; and a large pile is not a heap but
+a fractal of nested triangles that nobody designed and which is still
+not fully explained.
+
+**spirals** is the Belousov–Zhabotinsky reaction. Belousov found in the
+1950s that a dish of citric acid, bromate and a cerium salt would change
+colour back and forth rather than settling, and could not get it
+published — a chemical reaction that oscillates looked to every referee
+like a violation of the second law. Three chemicals chase each other
+round a cycle here, and the rotating fronts annihilate where they meet
+rather than interfering, which is why a spiral's arm is a front and not
+a ripple.
+
+**cloth** is a sheet of sixty-five thousand particles hung from its top
+edge, in the same Arnold–Beltrami–Childress wind that `/shape/wind`
+blows through the particle field. What makes mass-spring cloth behave is
+not the springs but how they are solved: integrating spring forces at a
+frame's step blows a stiff sheet apart, so the links are treated as
+constraints and satisfied by moving the particles, which cannot add
+energy. The loudness is the wind and a kick is a gust.
+
+**liquid** is smoothed-particle hydrodynamics — four thousand particles of
+water in a box, each drawn as a small cluster of points — solved by
+position-based fluids (Macklin & Müller, 2013) rather than the textbook
+weakly-compressible form. The textbook form is a spring system, and a
+spring stiff enough to look like water needs a time step far finer than a
+frame. The position-based solver works on the positions directly,
+projecting them three times a frame onto the constraint that the density
+is right, and is stable at any step at the price of looking slightly soft.
+Gravity tilts and swings round once a bar, so the liquid pours from corner
+to corner in time with the music; a kick thumps it through the floor.
+
+What a simulation gets from the app is deliberately narrow — the four
+bands, the loudness, where the bar is — because it is meant to be a
+*cloud*, chosen, crossed to, captured and lit like the others, that
+happens to be alive.
 
 ## Releasing
 
@@ -390,6 +581,14 @@ vizz --audio-device "Scarlett"           # substring match
 vizz --no-audio                          # off entirely
 ```
 
+**The system default is usually the laptop's microphone**, which hears the
+room — the crowd, the PA's slap-back — rather than the mix. For the music
+itself, take an interface input fed from the mixer, or a loopback device
+(BlackHole on macOS, VB-Cable on Windows) carrying what the DJ software
+plays. The panel says under the picker when the chosen input is a
+microphone, and the stage strip's device name is a click target with the
+same list behind it.
+
 Four bands, each with its own frequency range, gain and envelope timing,
 available as modulation sources alongside the LFOs. Defaults are kick/sub,
 bass, mids and highs; the edges are draggable in the panel because what
@@ -463,6 +662,15 @@ grid plane, hollow shell, Lorenz, Aizawa** — and fractional values sit
 flows from one shape into the next rather than being re-scattered. A
 swept knob is playable; a stepped one is not. The range wraps, so the top
 morphs the Aizawa attractor back into the sphere.
+
+`/shape/wind` blows through the field: an Arnold–Beltrami–Childress flow
+— a steady solution of Euler's equations, divergence-free by
+construction, chaotic in its streamlines — read as a displacement of
+where each point already is, so it costs no particle state and works on
+a scan exactly as on a sphere. Six trigonometric terms per octave, two
+octaves drifting at their own paces, which is why it can run per vertex
+where a noise curl could not. `/shape/wind_rate` is how fast it changes.
+Zero by default, so every look saved before it existed draws as it did.
 
 `/shape/twist` adds shear plus a height-dependent twist, and pairs well
 with a slow LFO.
@@ -581,10 +789,11 @@ mid-set.
 Eight is a deliberate limit — enough for the things worth reaching for,
 few enough that each stays large and unambiguous under stage lighting.
 
-The preset row sits above the faders, numbered to match the number keys,
-so it doubles as the legend for them. Presets were the largest thing
-missing from this layout: without them, changing look meant leaving it,
-which is the one thing the layout exists to avoid.
+The preset block sits above the faders as a grid of tiles, numbered to
+match the number keys, so it doubles as the legend for them. Presets were
+the largest thing missing from this layout: without them, changing look
+meant leaving it, which is the one thing the layout exists to avoid. See
+[Pictures and families](#pictures-and-families) for what is on a tile.
 
 ## Camera and room
 
@@ -714,15 +923,25 @@ typed a name you already know what you want.
 
 ```
 1 – 9, 0   fire preset slot 1–10
-Space      flash — white out while held
+Space      flash — white out while held; shift latches
+S B F I    strobe, black, freeze, invert while held; shift latches
 Tab        show or hide the control panel
 G          modulation canvas
 P          performance layout
+V          watch the output — the controls stand aside (performance layout)
+T          tap the tempo — three taps set it
 /          filter the parameter list
 ?          the shortcut list, on screen
 F11        fullscreen on the window's monitor
 Esc        leave fullscreen; otherwise quit (twice)
 ```
+
+The punch keys are the row's initials rather than its order, because a
+hand reaching for BLACK without looking wants B. They are handled by the
+window rather than the row, so they work whatever screen is up — including
+the window sizes at which the row has stood down for want of room. Holding
+a key repeats nothing: a held Escape used to deliver its own second press
+and end the show.
 
 `?` exists because a shortcut that lives only in a README is a shortcut
 nobody uses. The number keys write `/preset/recall` exactly as OSC or MIDI
@@ -767,6 +986,54 @@ because a preset containing it would fire another preset on load.
 Each preset sets only the parameters that matter to its look, so recalling
 one changes the thing you asked for and leaves everything else where you
 left it.
+
+### Pictures and families
+
+Every look on the performance layout wears a **picture of itself**: the
+master output as it was when the look was saved, shrunk to a 128-point
+thumbnail and kept beside the presets in `presets/thumbs/*.png`.
+
+A preset is a list of numbers under a name somebody typed at 2am, and by
+the next gig the name is a guess. Recognition beats recall, and the only
+thing that reliably says what a look is, is the look.
+
+Pictures are taken without being asked for:
+
+- **on save** — what is on screen is the thing being saved, so it is
+  photographed on the next frame;
+- **the first time a look is fired** — a second or so after, so the morph
+  has finished. That is what gives the built-ins, and every look saved
+  before this existed, a tile worth looking at with no migration.
+
+A look that has a picture keeps it; recalling it again does not replace
+it. **update picture** on a tile's right-click menu takes a new one from
+whatever is on the output now — the same item is on the panel's preset
+list. Deleting a preset deletes its picture with it.
+
+They are a cache, not part of the preset: throw the `thumbs` folder away
+and the app carries on, filling it back in as you play.
+
+Looks are also **grouped by what they were built on**, which each preset
+records when it is saved — the cloud slot's own name for a cloud look, the
+shape's name otherwise. Those sort into five families, each with its own
+colour on the tile's leading edge and as the heading in front of its
+group:
+
+| family | what is in it |
+| --- | --- |
+| clouds | a loaded scan, mesh or live stream |
+| shapes | sphere, torus, knot, grid, shell |
+| attractors | Lorenz, Aizawa |
+| demo set | the shipped set's looks, whose source ends in " set" |
+| built in | the looks that ship with the app |
+
+Anything saved before looks recorded a source lands in **unsorted**. The
+heading is dropped when a library has only one family, since a heading
+over the whole list says nothing.
+
+Grouping changes where a look sits on screen and never what fires it: the
+slot number stays on every tile, because that is what `/preset/recall`,
+the number keys and every MIDI binding address.
 
 ### Firing them from a controller
 
@@ -842,6 +1109,8 @@ gravity layer's own grid in `gravity-grid.json` next to it.
 
 ```
 /deck/select       0 = none, 1..24 = the pages
+/deck/next         a rise turns to the next page
+/deck/prev         a rise turns to the previous page
 /column/fire       0 = none, 1..16 = the columns
 ```
 
@@ -870,7 +1139,10 @@ looking at.
 an OSC message are one gesture. Bindings name the *deck number* rather than
 the address, exactly as the pads and the preset slots do, so sixteen
 buttons address sixteen pages rather than one button sweeping the lot.
-Right-click a chip to learn one.
+Right-click a chip to learn one. Two buttons do instead of twenty-four:
+`/deck/next` and `/deck/prev` turn one page per press and stop at the ends,
+so a controller with a spare pair of pads leafs through a set list without
+a button per song. The `‹` `›` beside the set list are the same two.
 
 Pages are saved to `decks.json` inside the open show, with the live page still
 mirrored into `grid.json` and `gravity-grid.json` — so losing that file
@@ -1130,6 +1402,97 @@ panel has a text field: the string is rasterized with the app's own font
 into a cloud, morphable against any other slot like any shape. Typed
 clouds come back after a restart — they persist as `text:WORD` entries
 in the settings and re-rasterize deterministically on launch.
+
+**Or make one from an equation.** The clouds section's *generate…* menu,
+or `--cloud gen:<name>`, fills the next slot from a formula rather than a
+file. The menu groups them by what they are, because sixty-six names
+under two headings is a wall. **[The whole catalogue is a page on the
+site](https://vizz.letissier.ie/clouds)**, with a picture of each one,
+its knobs, and the paper it comes from — and below it, where the rest of
+the picture came from, from the shader's own shapes to the beat
+detection:
+
+| group | what is in it |
+| --- | --- |
+| flows | twenty-five strange attractors: Thomas, Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet, Genesio–Tesi, Lorenz-96 and the forced Duffing oscillator |
+| maps | Clifford, de Jong, Hénon, Ikeda and Gumowski–Mira, lifted into depth by delay embedding, and Chirikov's standard map drawn on its torus |
+| searched | the two quadratic searches, one over maps and one over flows |
+| surfaces | a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the gyroid with Schwarz' P and D |
+| curves | a 3:4:7 Lissajous knot, a (3,7) torus knot, the figure-eight knot, a spirograph and the three-dimensional Hilbert curve |
+| fractals | the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's basins and the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as reliefs |
+| grown | four L-system plants — a generic one, a fern, a coral and a tree — and a diffusion-limited aggregate |
+| patterns | Chladni sand, a Voronoi foam, an icosahedral quasicrystal and phyllotaxis |
+
+Each is made once on the CPU — flows in time order, so the cloud crawls
+along itself; surfaces in scan order; fractals by the chaos game or by
+marching rays — and then it is a cloud like any other: chosen by name,
+crossed to with a scene change, recorded as a look's source and filed
+under *attractors* or *shapes*. A generated cloud persists as `gen:<name>`
+and is remade deterministically on launch, on the loader thread, so a
+fractal's search never delays the first frame.
+
+**Some take knobs.** Picking one of those from the menu opens its row —
+the supershape's fold and exponents, the knot's windings, the Chladni
+mode numbers, the orbital's degree and order, the Julia constant, the
+plant's rule and angle, the foam's cell count — and the row's *make*
+button writes them into the spec: `gen:plant?rule=F[+X]F;angle=22`,
+`gen:torus-knot?p=2;q=5`, `gen:orbital?l=5;m=3`. Settings left at their
+defaults are left out, so the saved line stays short.
+
+**Two of them are searches.** **quadratic** is Sprott's: random
+three-dimensional quadratic *maps* drawn on his coefficient grid until
+one is chaotic, judged by a positive Lyapunov exponent. **quadratic
+flow** is the same search with an integrator inside it — random quadratic
+*vector fields*, which is the smallest thing that can be chaotic at all,
+and gives smooth ribbons where the map gives dust. Perhaps one draw in a
+few hundred is a strange attractor; the rest run away to infinity or fall
+onto a point. The one knob is the seed: *roll* is an attractor nobody has
+seen, and `gen:quadratic?seed=7` is the same one on every machine.
+
+Deciding a candidate is worth keeping takes three things, and each was
+added after the previous one let something through. A positive exponent
+over a short run is not enough: a field still spiralling *in* towards a
+limit cycle pushes a neighbour off its trajectory while it settles, so
+it is measured again over twenty times as long. A positive exponent over
+a long run is not enough either: if it is barely positive, the orbit
+drawn over one slot separates by a factor of eighty and reads as a thick
+loop, so the candidate is kept only if what gets drawn stretches by e⁸.
+And being chaotic is not the same as being an *attractor*: a chaotic
+saddle holds an orbit for a long while and then lets it go, in a
+direction decided by the last bit of the arithmetic, so a candidate must
+also stay inside a box four times its own width for a further hundred
+thousand steps. Points are then placed evenly along the trajectory
+rather than evenly in time, because a field drawn at random changes
+speed as it goes round.
+
+**Some of them are worth knowing about.** The **gyroid** is one of three
+triply periodic minimal surfaces here, the family nature keeps building:
+two labyrinths that fill space, never touch, and have the same shape as
+each other. It turns up in butterfly wings and block copolymers, and
+Schwarz found the other two in 1865. The **quasicrystal** is six plane
+waves along the five-fold axes of an icosahedron; five-fold symmetry
+tiles no lattice, so the pattern never repeats and is nowhere random,
+which is what Shechtman was told for two years could not exist.
+**phyllotaxis** is the sunflower's packing, and its angle is the knob:
+the golden angle is the only one that never lines up, and a tenth of a
+degree either side of it the seamless packing falls into a fixed number
+of spiral arms. The **standard map** is a portrait rather than a path —
+two hundred and fifty-six orbits rather than one — because what there is
+to see is which starting points stay on a ring and which wander; at
+K = 0.971635 the last ring across the picture breaks. The **aggregate**
+grows by diffusion-limited aggregation, where nothing in the rules says
+anything about branching and a dendrite comes out anyway, because a
+wanderer is far likelier to meet a tip than to find its way into a
+fjord.
+
+**Every named flow is tested for chaos, not for looks.** A test
+integrates all twenty-three and measures the largest Lyapunov exponent by
+following a neighbour and renormalising. It earns its keep: two of the
+shipped attractors turned out to have constants that put them on a limit
+cycle — Halvorsen at *a* = 1.89 and the Hadley circulation at *a* = 0.2 —
+which fills the same box, crawls along itself, and looks from any still
+frame exactly like an attractor. They are now at 1.4 and Lorenz' own
+0.25.
 
 `/shape/mode 7` shows a **cloud**. Which one is chosen by clicking its
 name in the panel's clouds section — the names are there, and a slot
@@ -1431,6 +1794,12 @@ Send standard OSC messages (float, int, double, or bool args) to the UDP
 port. Unknown addresses and malformed packets are logged and ignored —
 control input can never crash the renderer.
 
+The words on screen are accepted on the wire as aliases: `/look/…` for
+`/preset/…`, `/song/…` for `/deck/…`, `/background/…` for `/bg/…`,
+`/ink/N/…` for `/pal/N/…` and `/print/N/…` for `/lN/…`. The stored
+addresses in the table stay canonical — presets and bindings hold them —
+and the aliases are read on the way in only.
+
 | Address | Range | Default | Meaning |
 |---------|-------|---------|---------|
 | `/particles/count` | 0 – 500000 | 60000 | live particle count |
@@ -1443,6 +1812,8 @@ control input can never crash the renderer.
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |
+| `/shape/wind` | 0 – 1 | 0 | a wind through the field — an ABC flow, divergence-free, blowing every form |
+| `/shape/wind_rate` | 0 – 2 | 0.3 | how fast the wind changes |
 | `/fx/trail` | 0 – 0.98 | 0 | feedback: how much of last frame survives |
 | `/fx/zoom` | 0.9 – 1.1 | 1 | per-frame zoom of the feedback (tunnels) |
 | `/fx/spin` | -0.1 – 0.1 | 0 | per-frame rotation of the feedback |
@@ -1544,15 +1915,18 @@ control input can never crash the renderer.
 | `/bg/green` | 0 – 1 | 0.004 | background green |
 | `/bg/blue` | 0 – 1 | 0.008 | background blue |
 | `/bg/alpha` | 0 – 1 | 1 | background opacity; 0 delivers the field on nothing |
-| `/preset/recall` | 0 – 64 | 0 | recall preset N on change; 0 = none |
+| `/preset/recall` | 0 – 512 | 0 | recall preset N on change; 0 = none |
 | `/scene/fire` | 0 – 16 | 0 | fire scene 1–16 on change; 0 = none |
 | `/scene/time` | 0 – 60 | 2 | scene blend time, seconds |
 | `/scene/curve` | 0 – 4 | 1 | 0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut |
 | `/scene/auto` | 0 – 1 | 0 | scene autopilot on/off |
 | `/scene/bars` | 0.25 – 16 | 4 | bars between scene autopilot steps |
 | `/deck/select` | 0 – 24 | 0 | turn to page 1–24 on change; 0 = none |
+| `/deck/next` | 0 – 1 | 0 | turn to the next page on a rise; stops at the last |
+| `/deck/prev` | 0 – 1 | 0 | turn to the previous page on a rise; stops at the first |
 | `/column/fire` | 0 – 16 | 0 | fire column 1–16 — the scene pad and the gravity pad of that number, together |
-| `/record/active` | 0 – 1 | 0 | record the master to a PNG sequence; 1 starts, 0 stops |
+| `/record/active` | 0 – 1 | 0 | record the master to an image sequence; 1 starts, 0 stops |
+| `/tempo/tap` | 0 – 1 | 0 | tap the beat: each rise is one tap, and three set the tempo |
 | `/master/dim` | 0 – 1 | 1 | master fader |
 
 The table is checked against the parameter registry by a test

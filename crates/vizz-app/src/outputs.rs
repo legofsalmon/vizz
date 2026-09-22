@@ -42,6 +42,8 @@ struct Slot {
     sender: Option<Box<dyn FrameSender>>,
     /// When a dead slot may next attempt to come back.
     next_try: std::time::Instant,
+    /// Why the sender is down, for the notice that says so on screen.
+    error: Option<String>,
 }
 
 /// Every output the user asked for, with liveness and self-repair.
@@ -125,6 +127,7 @@ impl Outputs {
                     slot.name
                 );
                 slot.sender = None;
+                slot.error = Some(format!("{e:#}"));
                 slot.next_try = now + self.retry;
             }
         }
@@ -137,11 +140,13 @@ impl Outputs {
                 Ok(sender) => {
                     log::info!("output '{}' is back", slot.name);
                     slot.sender = Some(sender);
+                    slot.error = None;
                 }
                 Err(e) => {
                     // Debug, not error: while the receiver is genuinely
                     // absent this fires every few seconds all night.
                     log::debug!("output '{}' still unavailable: {e:#}", slot.name);
+                    slot.error = Some(format!("{e:#}"));
                     slot.next_try = now + self.retry;
                 }
             }
@@ -151,6 +156,24 @@ impl Outputs {
     /// The roster as the panel shows it: every requested output, and
     /// whether it is actually carrying frames right now. This is what
     /// makes the dead-output warning in both UIs reachable at all.
+    /// Every requested output that is down right now, with the reason
+    /// its last attempt gave. Read once at launch for the notice: an
+    /// output asked for on the command line that never came up used to
+    /// leave one log line, and the first sign in the room was a receiver
+    /// with nothing in it.
+    pub fn failures(&self) -> Vec<(String, String)> {
+        self.slots
+            .iter()
+            .filter(|s| s.sender.is_none())
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.error.clone().unwrap_or_else(|| "no reason given".into()),
+                )
+            })
+            .collect()
+    }
+
     pub fn status(&self) -> Vec<vizz_ui::OutputStatus> {
         self.slots
             .iter()
@@ -166,17 +189,17 @@ impl Slot {
     /// Try to bring the sender up now; a failure leaves a dead slot that
     /// the publish loop will keep retrying.
     fn start(device: &wgpu::Device, opts: &OutputOpts, name: String, build: Builder) -> Self {
-        let sender = match build(device, opts) {
+        let (sender, error) = match build(device, opts) {
             Ok(sender) => {
                 log::info!("output '{name}' is live");
-                Some(sender)
+                (Some(sender), None)
             }
             Err(e) => {
                 log::warn!("output '{name}' unavailable: {e:#} — retrying in the background");
-                None
+                (None, Some(format!("{e:#}")))
             }
         };
-        Slot { name, build, sender, next_try: std::time::Instant::now() + RETRY }
+        Slot { name, build, sender, next_try: std::time::Instant::now() + RETRY, error }
     }
 }
 
@@ -309,6 +332,7 @@ mod tests {
                     as Box<dyn FrameSender>)
             }),
             next_try: std::time::Instant::now(),
+            error: None,
         };
         let mut outputs = Outputs {
             slots: vec![slot],
@@ -330,10 +354,16 @@ mod tests {
         assert!(!outputs.status()[0].live, "a failed output must report dead, not vanish");
         assert_eq!(outputs.status()[0].name, "test-output", "and must stay on the roster");
         assert_eq!(rebuilds.load(Ordering::Relaxed), 1);
+        // And says why, in the words the failed attempt gave.
+        let failures = outputs.failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, "test-output");
+        assert!(failures[0].1.contains("still gone"), "the reason is lost: {}", failures[0].1);
 
         outputs.publish(&device, &queue, &texture); // retry #2 succeeds
         assert!(outputs.status()[0].live, "a recovered output must report live again");
         assert_eq!(rebuilds.load(Ordering::Relaxed), 2);
+        assert!(outputs.failures().is_empty(), "a recovered output is not a failure");
 
         // And the recovered sender is actually the one publishing.
         let before = publishes.load(Ordering::Relaxed);

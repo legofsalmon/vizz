@@ -63,8 +63,15 @@ pub struct PanelActions {
     /// Remove the MIDI trigger for one value of a parameter, leaving the
     /// other values of it mapped.
     pub clear_slot_binding: Option<(String, f32)>,
+    /// Forget every binding on every device. Armed on screen; the app
+    /// also forgets which controllers were given their shipped layout,
+    /// so re-plugging one brings it back.
+    pub clear_all_bindings: bool,
     /// A word typed in the clouds section, to become a point cloud.
     pub text_cloud: Option<String>,
+    /// A generator picked in the clouds section, by its catalogue id, to
+    /// become a point cloud.
+    pub generate_cloud: Option<String>,
     /// Audio settings the user changed this frame.
     pub audio: AudioEdits,
     /// Recall this preset by name.
@@ -79,6 +86,12 @@ pub struct PanelActions {
     pub update_install: bool,
     /// Delete this user preset.
     pub preset_delete: Option<String>,
+    /// Take a fresh picture of this preset from what is on the output
+    /// now. See [`crate::thumbs`].
+    pub preset_rephoto: Option<String>,
+    /// Rename a user preset: `(old name, new name)`. The app moves the
+    /// file and re-points every pad that named it.
+    pub preset_rename: Option<(String, String)>,
     /// Slider working ranges changed and should be persisted.
     pub ranges_changed: bool,
     /// What the scene grid asks for this frame.
@@ -98,6 +111,13 @@ pub struct PanelActions {
     pub cloud_show: Option<usize>,
     /// Recording settings the user changed this frame.
     pub record_setup: Option<RecordSetup>,
+    /// Size the window to the output's shape, as large as the display
+    /// allows. The window is a preview and never follows the output on
+    /// its own; this is the one gesture that makes it.
+    pub fit_window: bool,
+    /// A line for the notices, from a gesture whose outcome the panel
+    /// itself decided — fit says which bands it set and which were silent.
+    pub notice: Option<String>,
     /// Connect the video input to this spec, or `Some(None)` to stop
     /// the one running. The app owns opening: it holds the GPU and the
     /// runtimes, and the panel only ever asks.
@@ -110,6 +130,14 @@ pub struct PanelActions {
     /// Open the modulation canvas window. The canvas was reachable only
     /// through `G`, which made it a feature you had to already know about.
     pub open_canvas: bool,
+    /// Show the folder every take lands in, in the platform's file
+    /// browser.
+    pub reveal_takes: bool,
+    /// Go to the performance layout — the panel's own button for what
+    /// only P did, on a strip that is always on screen.
+    pub open_performance: bool,
+    /// Open the shortcut list.
+    pub open_shortcuts: bool,
 }
 
 /// How big the output is and how hard it is worked.
@@ -145,6 +173,15 @@ pub struct PresetEntry {
     pub source: Option<String>,
 }
 
+/// The plainest entry there is: a user look with nothing recorded about
+/// it. Mockups and tests name a library by its names; the app builds
+/// entries properly in `preset_entries`.
+impl From<&str> for PresetEntry {
+    fn from(name: &str) -> Self {
+        Self { name: name.to_string(), builtin: false, about: None, source: None }
+    }
+}
+
 /// Everything the panel displays that it cannot read from the registry.
 pub struct PanelState {
     /// Newer version string, if the background check found one.
@@ -173,6 +210,9 @@ pub struct PanelState {
     /// This machine's address on the network, for the stream field to
     /// show. `None` when it is not on one — see `vizz_io::net`.
     pub local_address: Option<String>,
+    /// Where takes land, for the recording section to say so. A take's
+    /// folder used to be named in a four-second notice and nowhere else.
+    pub takes_root: Option<String>,
     /// The live point-cloud stream: `None` when nothing is running.
     pub live_cloud: Option<LiveCloudStatus>,
     /// Current analysis settings, mirrored here so the widgets have
@@ -201,6 +241,10 @@ pub struct PanelState {
     pub bar_phase: f32,
     /// Built-ins first, then user presets, matching `/preset/recall` slots.
     pub presets: Vec<PresetEntry>,
+    /// Bumped whenever the app writes a preset picture, so a look
+    /// re-photographed mid-set redraws rather than keeping the texture
+    /// egui already had. See [`crate::thumbs`].
+    pub thumb_revision: u64,
     /// The recalled slot (1-based), so the preset rows can show where the
     /// look on screen came from.
     pub preset_current: Option<usize>,
@@ -226,6 +270,8 @@ pub struct PanelState {
     pub focus_filter: bool,
     /// A recording in progress, if one is.
     pub recording: Option<RecordingView>,
+    /// Seconds left on a recording countdown, when one is running.
+    pub record_countdown: Option<u32>,
     /// Draw every collapsible section open.
     ///
     /// For offscreen rendering — tests and the preview example — where
@@ -245,6 +291,7 @@ impl Default for PanelState {
         Self {
             update_available: Default::default(),
             update: Default::default(),
+            thumb_revision: 0,
             health: Default::default(),
             outputs: Default::default(),
             frame_times_ms: Default::default(),
@@ -255,6 +302,8 @@ impl Default for PanelState {
             video_sources: Default::default(),
             video: Default::default(),
             local_address: Default::default(),
+            takes_root: None,
+            record_countdown: None,
             live_cloud: Default::default(),
             audio_bands: vizz_audio::default_bands(),
             audio_auto_bpm: Default::default(),
@@ -367,6 +416,14 @@ pub struct AudioView {
     /// Ticks are actually arriving right now — the difference between
     /// "following the wire" and "waiting for a wire that is silent".
     pub clock_ticking: bool,
+    /// The three "react" shapes are all attached — see
+    /// [`vizz_mod::shapes::reacting`].
+    pub reacting: bool,
+    /// Auto tempo is switched on, so the stage can say where the clock
+    /// comes from.
+    pub auto_bpm: bool,
+    /// Taps in the open series, for the button to count them off.
+    pub tap_count: usize,
 }
 
 /// Edits the panel wants applied to the audio settings, collected here
@@ -384,6 +441,9 @@ pub struct AudioEdits {
     /// Switch to this input device. `Some(None)` means the system
     /// default — distinct from `None`, which means "unchanged".
     pub device: Option<Option<String>>,
+    /// Make the picture follow the music, or stop — the same switch the
+    /// performance layout's audio strip carries.
+    pub react: Option<bool>,
 }
 
 pub fn draw(
@@ -423,14 +483,14 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| {
-                    outputs_section(ui, state, registry);
+                    outputs_section(ui, state);
                     ui.separator();
                     output_setup_section(ui, state, &mut actions);
                 });
             egui::CollapsingHeader::new("recording")
                 .id_salt("recording")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| recording_section(ui, state, &mut actions));
+                .show(ui, |ui| recording_section(ui, state, registry, &mut actions));
             egui::CollapsingHeader::new("video in")
                 .id_salt("video-in")
                 .default_open(state.expand_sections)
@@ -442,7 +502,7 @@ pub fn draw(
             egui::CollapsingHeader::new("midi")
                 .id_salt("midi")
                 .default_open(state.expand_sections)
-                .show(ui, |ui| midi_section(ui, state));
+                .show(ui, |ui| midi_section(ui, state, &mut actions));
 
             cluster(ui, "CONTENT");
             egui::CollapsingHeader::new("clouds")
@@ -490,6 +550,17 @@ pub fn draw(
     ui.small("Tab panel · G canvas · P performance · ? shortcuts · Esc quits, twice");
         });
     actions
+}
+
+/// What the tap button says: the count while a series is open, so the
+/// first two taps — which used to produce nothing at all — are seen to
+/// land, and plain "tap" otherwise.
+pub(crate) fn tap_label(count: usize) -> String {
+    match count {
+        1 => "tap 1/3".into(),
+        2 => "tap 2/3".into(),
+        _ => "tap".into(),
+    }
 }
 
 /// The always-visible line: health, outputs, audio, tempo.
@@ -547,8 +618,18 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         }
         // Same reason: 99.5 and 128.0 are different widths otherwise.
         ui.small(egui::RichText::new(format!("{:>5.1} bpm", state.bpm)).monospace());
-        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
+        if ui.small_button(tap_label(state.audio.tap_count)).on_hover_text("tap the beat — three taps set the tempo and switch auto off  ·  T on the keyboard").clicked() {
             actions.audio.tapped = true;
+        }
+        // The way to the screen you play from, and to the list of keys,
+        // as buttons: they were a nine-point footer that scrolls away
+        // once a couple of sections are open.
+        ui.add_space(6.0);
+        if ui.small_button("play").on_hover_text("the performance layout  (P)").clicked() {
+            actions.open_performance = true;
+        }
+        if ui.small_button("?").on_hover_text("every key and gesture").clicked() {
+            actions.open_shortcuts = true;
         }
     });
 }
@@ -642,7 +723,19 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                     };
                     actions.live_cloud = Some(Some(want));
                 }
+                // Or run one here: a simulation is a live source that
+                // needs no sender, and the bands drive it.
+                ui.menu_button("simulate…", |ui| {
+                    if let Some(id) = simulation_menu(ui, vizz_mod::generators::SIMULATIONS) {
+                        actions.live_cloud = Some(Some(format!("sim:{id}")));
+                    }
+                })
+                .response
+                .on_hover_text("a cloud that moves on its own, in the live slot, driven by the audio");
             });
+            if let Some(spec) = settings_row(ui, "sim", vizz_mod::generators::SIMULATIONS, "run") {
+                actions.live_cloud = Some(Some(format!("sim:{spec}")));
+            }
         }
     }
     send_here(ui, state, &addr);
@@ -772,6 +865,14 @@ pub struct UpdateView {
 fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     let Some(version) = &state.update_available else { return };
     let view = state.update.clone().unwrap_or_default();
+    // "later" hides the row until the next launch. Only while idle: a
+    // download in flight, a build ready to install or a failure is news
+    // that must not be hidden behind an earlier click.
+    let snoozed = egui::Id::new("update-snoozed");
+    let idle = matches!(view.stage, vizz_update::Stage::Idle);
+    if idle && ui.data(|d| d.get_temp::<bool>(snoozed)).unwrap_or(false) {
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
         ui.colored_label(WARN, format!("vizz {version} available"));
         match &view.stage {
@@ -829,6 +930,14 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
             }
         }
         ui.hyperlink_to("what changed", vizz_update::RELEASES_URL);
+        if idle
+            && ui
+                .small_button("later")
+                .on_hover_text("hide this until the next launch")
+                .clicked()
+        {
+            ui.data_mut(|d| d.insert_temp(snoozed, true));
+        }
     });
     ui.separator();
 }
@@ -921,6 +1030,157 @@ fn clouds_section(
         }
         ui.memory_mut(|m| m.data.insert_temp(id, draft));
     });
+    // Or make one from an equation. The catalogue is vizz-mod's so the
+    // panel can list it without the renderer; the mathematics is the
+    // renderer's, and a test in the app holds the two together.
+    ui.horizontal(|ui| {
+        ui.small("or from an equation:");
+        ui.menu_button("generate…", |ui| {
+            // Grouped by what a generator *is*, not by which shelf a
+            // look built on it files under. Fifty-odd names under two
+            // headings is a wall; under "flows", "surfaces" and
+            // "fractals" it is a place to look.
+            if let Some(id) = generator_menu(ui, vizz_mod::generators::CATALOGUE) {
+                actions.generate_cloud = Some(id);
+            }
+        })
+        .response
+        .on_hover_text("a cloud from an equation — attractors, knots, fractals; it takes the next free slot");
+    });
+    if let Some(spec) = settings_row(ui, "gen", vizz_mod::generators::CATALOGUE, "make") {
+        actions.generate_cloud = Some(spec);
+    }
+}
+
+/// The body of a generate or simulate menu: every entry under the
+/// heading for its group, in the catalogue's own order within each.
+/// Returns the id of one that can be made on the spot; one with knobs
+/// opens its row instead and returns nothing.
+fn menu_body(
+    ui: &mut egui::Ui,
+    list: &'static [vizz_mod::generators::Generator],
+    scope: &str,
+) -> Option<String> {
+    use vizz_mod::generators::Group;
+    let mut picked = None;
+    for group in Group::ALL {
+        let mut any = false;
+        for g in list.iter().filter(|g| g.group == *group) {
+            if !any {
+                any = true;
+                ui.label(
+                    egui::RichText::new(group.label())
+                        .size(10.0)
+                        .color(vizz_design::ink::TERTIARY)
+                        .monospace(),
+                );
+            }
+            if ui.button(g.name).on_hover_text(g.about).clicked() {
+                if g.params.is_empty() {
+                    picked = Some(g.id.to_string());
+                } else {
+                    ui.data_mut(|d| d.insert_temp(picked_id(scope), g.id.to_string()));
+                }
+                ui.close();
+            }
+        }
+    }
+    picked
+}
+
+fn generator_menu(
+    ui: &mut egui::Ui,
+    list: &'static [vizz_mod::generators::Generator],
+) -> Option<String> {
+    menu_body(ui, list, "gen")
+}
+
+fn simulation_menu(
+    ui: &mut egui::Ui,
+    list: &'static [vizz_mod::generators::Generator],
+) -> Option<String> {
+    menu_body(ui, list, "sim")
+}
+
+/// Which generator or simulation has its knobs out, per menu.
+fn picked_id(scope: &str) -> egui::Id {
+    egui::Id::new(("generator-picked", scope.to_string()))
+}
+
+/// The knobs of the picked generator or simulation, and the button
+/// that makes it. Returns the spec on a press. The values live in egui's
+/// memory keyed by generator and knob, so a rule typed once is there
+/// the next time the plant is picked.
+fn settings_row(
+    ui: &mut egui::Ui,
+    scope: &str,
+    list: &[vizz_mod::generators::Generator],
+    verb: &str,
+) -> Option<String> {
+    use vizz_mod::generators::Kind;
+    let picked: Option<String> = ui.data(|d| d.get_temp(picked_id(scope)));
+    let g = list.iter().find(|g| Some(g.id) == picked.as_deref())?;
+    let mut made = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(g.name).strong()).on_hover_text(g.about);
+        let mut settings: Vec<(&str, String)> = Vec::new();
+        for p in g.params {
+            let key = egui::Id::new(("generator-knob", scope.to_string(), g.id, p.key));
+            let mut value: String =
+                ui.data(|d| d.get_temp(key)).unwrap_or_else(|| p.default.to_string());
+            ui.small(p.label);
+            match p.kind {
+                Kind::Number { min, max } => {
+                    let mut v: f64 = value.parse().unwrap_or_else(|_| p.default.parse().unwrap_or(0.0));
+                    let step = if max - min <= 20.0 { 0.05 } else { 0.5 };
+                    if ui
+                        .add(egui::DragValue::new(&mut v).range(min..=max).speed(step).max_decimals(3))
+                        .on_hover_text(p.about)
+                        .changed()
+                    {
+                        value = trim_number(v);
+                    }
+                }
+                Kind::Seed => {
+                    let mut v: i64 = value.parse().unwrap_or(1);
+                    if ui
+                        .add(egui::DragValue::new(&mut v).range(0..=i64::MAX).speed(1.0))
+                        .on_hover_text(p.about)
+                        .changed()
+                    {
+                        value = v.to_string();
+                    }
+                    // A roll: any seed is as good as any other, and the
+                    // point of a search is not to type one.
+                    if ui.small_button("roll").on_hover_text("a new seed, a new search").clicked() {
+                        let t = ui.input(|i| i.time);
+                        value = ((t * 1000.0) as i64 % 100_000 + 1).to_string();
+                    }
+                }
+                Kind::Text => {
+                    ui.add(egui::TextEdit::singleline(&mut value).desired_width(200.0))
+                        .on_hover_text(p.about);
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(key, value.clone()));
+            settings.push((p.key, value));
+        }
+        if ui.button(verb).clicked() {
+            made = Some(vizz_mod::generators::spec(g, &settings));
+        }
+        if ui.small_button("×").on_hover_text("put the knobs away").clicked() {
+            ui.data_mut(|d| d.remove_temp::<String>(picked_id(scope)));
+        }
+    });
+    made
+}
+
+/// A number as short as it can be written back: `7` rather than
+/// `7.000`, so a spec reads like something a person typed.
+fn trim_number(v: f64) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-" { "0".to_string() } else { s.to_string() }
 }
 
 /// The colour ramps, by the index `/color/palette` uses.
@@ -1007,7 +1267,15 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
     // Say which state you are in rather than making it inferred from a
     // slider position — "why is my key not working" is the question this
     // line exists to answer.
-    if registry.target(a) <= 0.001 {
+    // A vector layer paints the whole frame at full alpha whatever the
+    // paper says, so with one on, "transparent" was a caption about a
+    // key that was not being sent.
+    let layer_on = (1..=8)
+        .map_while(|i| registry.id(&format!("/l{i}/kind")))
+        .any(|id| registry.target(id).round() >= 0.5);
+    if layer_on && registry.target(a) < 0.999 {
+        ui.small("opaque — a vector layer is painting the whole frame; turn the layers off for a transparent key");
+    } else if registry.target(a) <= 0.001 {
         ui.small("transparent — receivers get the field with an alpha channel");
     } else if registry.target(a) < 0.999 {
         ui.small("partly transparent");
@@ -1016,7 +1284,7 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
     }
 }
 
-fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
+fn midi_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     if !state.midi.available {
         ui.small("unavailable");
         return;
@@ -1044,6 +1312,53 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             }
         }
     }
+    // Every binding in one place. Before this the map could only be read
+    // one pad, one chip and one row at a time — forty bindings with no
+    // page that listed them and no way to clear a rig's worth at once.
+    let bindings = &state.midi.map.bindings;
+    if !bindings.is_empty() {
+        let n = bindings.len();
+        egui::CollapsingHeader::new(format!("{n} binding{}", if n == 1 { "" } else { "s" }))
+            .id_salt("midi-bindings")
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("midi-binding-rows")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("midi-binding-grid").striped(true).show(ui, |ui| {
+                            for b in bindings {
+                                ui.monospace(b.source.label());
+                                ui.label(binding_target(b));
+                                if ui.small_button("unmap").clicked() {
+                                    match b.value {
+                                        Some(v) => {
+                                            actions.clear_slot_binding =
+                                                Some((b.param.clone(), v));
+                                        }
+                                        None => actions.clear_binding = Some(b.param.clone()),
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });
+                if vizz_design::widgets::armed_button(
+                    ui,
+                    egui::Id::new("midi-clear-all"),
+                    0,
+                    vizz_design::widgets::Armed {
+                        idle_label: "clear all",
+                        armed_label: "clear every binding?",
+                        idle_hover: "forget every binding on every device (asks once) — \
+                                     re-plug a controller to get its shipped layout back",
+                        armed_hover: "click again to forget them all",
+                        small: true,
+                    },
+                ) {
+                    actions.clear_all_bindings = true;
+                }
+            });
+    }
     // While learning, echo whatever is arriving: the usual failure is a
     // controller that is not sending at all, and this distinguishes that
     // from a mapping problem immediately.
@@ -1057,8 +1372,26 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
             crate::theme::LEARN,
             // "move or press": sweeps are moved, triggers are pressed, and
             // this line is shown for both kinds of learn.
-            format!("learning {} — move or press a control (seen: {seen})", target.label),
+            format!("learning {} — move a knob or press a button (seen: {seen})", target.label),
         );
+    }
+}
+
+/// What a binding does, in the words the screen uses for it: a trigger
+/// names the pad, look or page it fires, a sweep names its parameter.
+fn binding_target(b: &vizz_midi::Binding) -> String {
+    match b.value {
+        Some(v) => {
+            let n = v.round() as i64;
+            match b.param.as_str() {
+                "/scene/fire" => format!("scene pad {n}"),
+                "/gravity/fire" => format!("gravity pad {n}"),
+                "/preset/recall" => format!("look {n}"),
+                "/deck/select" => format!("page {n}"),
+                p => format!("{p} = {v}"),
+            }
+        }
+        None => b.param.clone(),
     }
 }
 
@@ -1070,7 +1403,12 @@ fn midi_section(ui: &mut egui::Ui, state: &PanelState) {
 /// gain above 1 the envelope covers the raw signal completely, and the
 /// whole point of the meter is comparing the two to set the gain.
 fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(80.0, 12.0), egui::Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(80.0, 12.0), egui::Sense::hover());
+    response.on_hover_text(
+        "top: what modulation gets · bottom: what is arriving · the red mark means this band \
+         is pinned at full",
+    );
     let p = ui.painter();
     p.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(140));
     let h = rect.height() * 0.5;
@@ -1081,6 +1419,12 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
         ),
         1.0,
         vizz_design::accent::METER,
+    );
+    // The gate line on the envelope half — see the performance strip.
+    let gate_x = rect.left() + rect.width() * vizz_mod::shapes::GATE;
+    p.line_segment(
+        [egui::pos2(gate_x, rect.top()), egui::pos2(gate_x, rect.top() + h)],
+        (1.0, vizz_design::ink::TERTIARY),
     );
     p.rect_filled(
         egui::Rect::from_min_size(
@@ -1122,7 +1466,7 @@ const DEVICE_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(1);
 /// enumerations a second, on the render thread. Asking CoreAudio for the
 /// device list is not a cheap call, and the answer does not change sixty
 /// times a second.
-fn device_list(ui: &egui::Ui) -> Vec<String> {
+pub(crate) fn device_list(ui: &egui::Ui) -> Vec<String> {
     let id = egui::Id::new("audio-device-list");
     let cached: Option<(std::time::Instant, Vec<String>)> =
         ui.data(|d| d.get_temp(id));
@@ -1177,117 +1521,45 @@ fn device_picker(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     });
 }
 
-fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
-    let a = &state.audio;
-    // No bold "Audio" heading — the collapsing header the user just
-    // clicked already says so, and half the sections never restated
-    // theirs. The status dot lives on the input row instead.
-    device_picker(ui, state, actions);
-
-    if !a.connected {
-        ui.small("pick an input above, or start with --audio-device");
+/// The beat clock's controls: what is detected, whether it drives the
+/// clock, whether MIDI clock does, and tap. Its own row so it is drawn
+/// with or without an audio input.
+/// Which side of the desk the input is on. The system default is the
+/// built-in microphone on nearly every laptop, and a microphone hears
+/// the room — the crowd, the PA's slap-back — rather than the mix. Said
+/// under the picker, with the two things that hear the music instead.
+fn mic_note(ui: &mut egui::Ui, state: &PanelState) {
+    let name = state.audio.device.as_deref();
+    let mic = name.is_none_or(|n| {
+        let n = n.to_ascii_lowercase();
+        n.contains("microphone") || n.contains(" mic") || n.starts_with("mic")
+    });
+    if !mic {
         return;
     }
+    ui.small(
+        egui::RichText::new(match name {
+            None => "the system default is usually the built-in microphone — it hears the room, not the mix",
+            Some(_) => "a microphone hears the room, not the mix",
+        })
+        .color(vizz_design::ink::FAINT),
+    )
+    .on_hover_text(
+        "for the music itself, pick an interface input fed from the mixer, or a loopback \
+         device (BlackHole on macOS, VB-Cable on Windows) carrying what the DJ software plays",
+    );
+}
 
-    let mut bands = state.audio_bands;
-    for (i, band) in bands.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            // Named the way every modulation source list names them, so
-            // "Band 2" in a route can be found in this section without
-            // counting rows.
-            ui.small(format!("band {}", i + 1));
-            meter(ui, a.raw[i], a.bands[i]);
-            ui.add(
-                egui::DragValue::new(&mut band.lo_hz)
-                    .speed(2.0)
-                    .range(20.0..=18_000.0)
-                    .suffix(" Hz"),
-            );
-            ui.add(
-                egui::DragValue::new(&mut band.hi_hz)
-                    .speed(2.0)
-                    .range(20.0..=20_000.0)
-                    .suffix(" Hz"),
-            );
-            // Decibels, not a multiplier. "×10" is not a quantity anyone
-            // can act on — it does not say whether the band is hot or
-            // quiet, and it is not comparable with the number in the row
-            // above unless you do the arithmetic. Decibels are the unit
-            // every other gain control in a studio is read in, and they
-            // make the four rows comparable at a glance.
-            let mut db = band.gain_db();
-            if ui
-                .add(
-                    egui::DragValue::new(&mut db)
-                        .speed(0.5)
-                        .range(vizz_audio::MIN_GAIN_DB..=vizz_audio::MAX_GAIN_DB)
-                        .fixed_decimals(1)
-                        .suffix(" dB"),
-                )
-                .on_hover_text("sensitivity — how hard this band drives modulation")
-                .changed()
-            {
-                band.set_gain_db(db);
-            }
-        });
-    }
-    // One press, and every band is scaled to what is actually arriving.
-    //
-    // This is the honest answer to "what should the default gain be": it
-    // depends on the interface, the track and how hard it is being driven,
-    // and no shipped number is right for two rigs. A default can only be a
-    // starting point; this is the thing that finishes the job.
+fn tempo_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let a = &state.audio;
     ui.horizontal(|ui| {
-        if ui
-            .button("fit")
-            .on_hover_text("set every band's gain from the last few seconds of audio")
-            .clicked()
-        {
-            let mut fitted = bands;
-            for (i, band) in fitted.iter_mut().enumerate() {
-                // A silent band keeps whatever it had: dividing into
-                // nothing would ask for infinite gain, and a band nobody
-                // is feeding is not evidence of anything.
-                if let Some(db) = vizz_audio::fit_gain_db(a.raw_peak[i]) {
-                    band.set_gain_db(db);
-                }
-            }
-            bands = fitted;
+        if a.connected {
+            ui.small(format!(
+                "detected {:.1} bpm ({:.0}% sure)",
+                a.detected_bpm,
+                a.confidence * 100.0
+            ));
         }
-        // Armed, matching the other destructive clicks: this sits one
-        // button away from "fit" and throws away a gain setup that took
-        // real material to dial in.
-        if vizz_design::widgets::armed_button(
-            ui,
-            egui::Id::new("audio-reset-armed"),
-            0,
-            vizz_design::widgets::Armed {
-                idle_label: "reset",
-                armed_label: "reset?",
-                idle_hover: "back to the shipped bands and gains (asks once)",
-                armed_hover: "click again for the shipped bands and gains",
-                small: false,
-            },
-        ) {
-            bands = vizz_audio::default_bands();
-        }
-        ui.small("play something first — fit reads the last few seconds");
-    });
-    // A band whose high edge is under its low edge would silently read
-    // zero; clamp on edit rather than letting a drag produce a dead band.
-    for b in &mut bands {
-        b.hi_hz = b.hi_hz.max(b.lo_hz + 10.0);
-    }
-    if bands != state.audio_bands {
-        actions.audio.bands = Some(bands);
-    }
-
-    ui.horizontal(|ui| {
-        ui.small(format!(
-            "detected {:.1} bpm ({:.0}% sure)",
-            a.detected_bpm,
-            a.confidence * 100.0
-        ));
         let mut auto = state.audio_auto_bpm;
         if ui
             .checkbox(&mut auto, "auto")
@@ -1318,12 +1590,162 @@ fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         // Same words as the status strip's tap: three surfaces telling
         // three different stories about one behaviour reads as three
         // different behaviours.
-        if ui.small_button("tap").on_hover_text("tap the beat — three taps set the tempo and switch auto off").clicked() {
+        if ui.small_button(tap_label(state.audio.tap_count)).on_hover_text("tap the beat — three taps set the tempo and switch auto off  ·  T on the keyboard").clicked() {
             actions.audio.tapped = true;
         }
     });
+}
+
+fn audio_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+    let a = &state.audio;
+    // No bold "Audio" heading — the collapsing header the user just
+    // clicked already says so, and half the sections never restated
+    // theirs. The status dot lives on the input row instead.
+    device_picker(ui, state, actions);
+    mic_note(ui, state);
+
+    // The clock's controls, before the bands: they used to sit under the
+    // early return below, so with no interface plugged in — or after one
+    // was unplugged — the midi clock switch and auto were undrawn, while
+    // the stage's bpm hover pointed straight at them.
+    tempo_row(ui, state, actions);
+    if !a.connected {
+        ui.small("pick an input above, or start with --audio-device");
+        return;
+    }
+
+    let mut bands = state.audio_bands;
+    for (i, band) in bands.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            // Named the way every modulation source list names them, so
+            // "Band 2" in a route can be found in this section without
+            // counting rows.
+            ui.small(format!("band {} · {}", i + 1, vizz_mod::BAND_NAMES[i]));
+            meter(ui, a.raw[i], a.bands[i]);
+            ui.add(
+                egui::DragValue::new(&mut band.lo_hz)
+                    .speed(2.0)
+                    .range(20.0..=18_000.0)
+                    .suffix(" Hz"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut band.hi_hz)
+                    .speed(2.0)
+                    .range(20.0..=20_000.0)
+                    .suffix(" Hz"),
+            );
+            // Decibels, not a multiplier. "×10" is not a quantity anyone
+            // can act on — it does not say whether the band is hot or
+            // quiet, and it is not comparable with the number in the row
+            // above unless you do the arithmetic. Decibels are the unit
+            // every other gain control in a studio is read in, and they
+            // make the four rows comparable at a glance.
+            let mut db = band.gain_db();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut db)
+                        .speed(0.5)
+                        .range(vizz_audio::MIN_GAIN_DB..=vizz_audio::MAX_GAIN_DB)
+                        .fixed_decimals(1)
+                        .suffix(" dB"),
+                )
+                .on_hover_text(
+                    "sensitivity — how hard this band drives modulation. An analysis gain, not a \
+                     mixer gain: +18 dB is normal here",
+                )
+                .changed()
+            {
+                band.set_gain_db(db);
+            }
+        });
+    }
+    // One press, and every band is scaled to what is actually arriving.
+    //
+    // This is the honest answer to "what should the default gain be": it
+    // depends on the interface, the track and how hard it is being driven,
+    // and no shipped number is right for two rigs. A default can only be a
+    // starting point; this is the thing that finishes the job.
+    ui.horizontal(|ui| {
+        if ui
+            .button("fit")
+            .on_hover_text("set every band's gain from the last few seconds of audio")
+            .clicked()
+        {
+            let mut fitted = bands;
+            let mut silent = Vec::new();
+            for (i, band) in fitted.iter_mut().enumerate() {
+                // A silent band keeps whatever it had: dividing into
+                // nothing would ask for infinite gain, and a band nobody
+                // is feeding is not evidence of anything.
+                match vizz_audio::fit_gain_db(a.raw_peak[i]) {
+                    Some(db) => band.set_gain_db(db),
+                    None => silent.push(vizz_mod::BAND_NAMES[i]),
+                }
+            }
+            bands = fitted;
+            // Said, because the press used to be silent when nothing was
+            // playing and the gains it left alone looked like gains it
+            // had set.
+            actions.notice = Some(match silent.len() {
+                0 => "fit all four bands from the last few seconds".to_string(),
+                4 => "nothing arrived in the last few seconds — play something, then fit".to_string(),
+                n => format!(
+                    "fit {} band{} from the last few seconds — {} silent, left as set",
+                    4 - n,
+                    if n == 3 { "" } else { "s" },
+                    silent.join(" and ")
+                ),
+            });
+        }
+        // Armed, matching the other destructive clicks: this sits one
+        // button away from "fit" and throws away a gain setup that took
+        // real material to dial in.
+        if vizz_design::widgets::armed_button(
+            ui,
+            egui::Id::new("audio-reset-armed"),
+            0,
+            vizz_design::widgets::Armed {
+                idle_label: "reset",
+                armed_label: "reset?",
+                idle_hover: "back to the shipped bands and gains (asks once)",
+                armed_hover: "click again for the shipped bands and gains",
+                small: false,
+            },
+        ) {
+            bands = vizz_audio::default_bands();
+        }
+        ui.small("play something first — fit reads the last few seconds");
+    });
+    // The same one-press switch the performance strip has, here because
+    // this is the section a person opens when the meters move and the
+    // picture does not.
+    ui.horizontal(|ui| {
+        let reacting = a.reacting;
+        if ui
+            .button(if reacting { "reacting" } else { "react" })
+            .on_hover_text(if reacting {
+                "the kick, the loudness and the snare are moving the picture — click to stop"
+            } else {
+                "make the picture follow the music: kick → size, loudness → glow, snare → brightness"
+            })
+            .clicked()
+        {
+            actions.audio.react = Some(!reacting);
+        }
+        ui.small("one press, three ready-made modulators — shape them on the canvas (G)");
+    });
+    // A band whose high edge is under its low edge would silently read
+    // zero; clamp on edit rather than letting a drag produce a dead band.
+    for b in &mut bands {
+        b.hi_hz = b.hi_hz.max(b.lo_hz + 10.0);
+    }
+    if bands != state.audio_bands {
+        actions.audio.bands = Some(bands);
+    }
+
     if a.dropped > 0 {
-        ui.small(format!("{} samples dropped", a.dropped));
+        ui.small(format!("{} samples dropped", a.dropped))
+            .on_hover_text("analysis fell behind — the picture is fine, the modulation missed frames");
     }
 }
 
@@ -1554,8 +1976,89 @@ fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 /// with nothing said before or during. The headline here is therefore
 /// the *rate*, not the format: the number that tells you whether the
 /// take you are about to start fits on the disk you have.
-fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
+fn recording_section(
+    ui: &mut egui::Ui,
+    state: &PanelState,
+    registry: &ParamRegistry,
+    actions: &mut PanelActions,
+) {
     let mut next = state.record;
+    // The button, first, in the section that holds everything else about
+    // a take — it sat under "outputs" while its cost and its settings sat
+    // under the header named after the job. It writes /record/active
+    // exactly as OSC or a learned MIDI button would — one path.
+    if let Some(id) = registry.id("/record/active") {
+        ui.horizontal(|ui| {
+            let on = registry.target(id) >= 0.5;
+            let label = if on { "stop recording" } else { "record" };
+            let button = egui::Button::new(
+                egui::RichText::new(label).color(if on {
+                    vizz_design::feedback::ERR_TEXT
+                } else {
+                    vizz_design::ink::SECONDARY
+                }),
+            );
+            // Named by what it actually writes: the hover promised a
+            // PNG sequence for a year after JPEG became the default, on
+            // a live take that cannot be repeated.
+            let format = if state.record.lossless {
+                "PNG".to_string()
+            } else {
+                format!("JPEG q{}", state.record.quality)
+            };
+            if ui
+                .add(button)
+                .on_hover_text(format!(
+                    "{format} image sequence of the master output at {:.0} fps — \
+                     heavy resolutions drop frames rather than stall the show",
+                    state.record.fps
+                ))
+                .clicked()
+            {
+                registry.set(id, if on { 0.0 } else { 1.0 });
+            }
+            // What the take is: size, format and rate, the three facts
+            // that decide whether it is usable, in one line beside the
+            // button instead of across two collapsed sections.
+            ui.small(format!(
+                "{}×{} · {} · {:.0} fps",
+                state.output.width,
+                state.output.height,
+                format.to_lowercase(),
+                state.record.fps
+            ));
+            if let Some(rec) = &state.recording {
+                ui.small(format!(
+                    "{}:{:02} · {} frames{}",
+                    rec.secs / 60,
+                    rec.secs % 60,
+                    rec.frames,
+                    if rec.dropped > 0 {
+                        format!(" · {} dropped", rec.dropped)
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        });
+    }
+
+    // Where they go, permanently on screen. The stop notice named the
+    // folder for four seconds and then nothing in the app could say it;
+    // the folders are dated and sort newest-last, but only if you know
+    // where to look.
+    if let Some(root) = &state.takes_root {
+        ui.horizontal(|ui| {
+            ui.small(format!("takes go to {root}"));
+            if ui
+                .small_button("reveal")
+                .on_hover_text("open that folder in the file browser")
+                .clicked()
+            {
+                actions.reveal_takes = true;
+            }
+        });
+    }
 
     // The cost line first, because it is the reason this section exists.
     let per_sec = next.bytes_per_sec as f64 / 1_000_000.0;
@@ -1595,7 +2098,10 @@ fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelA
         }
         if ui
             .selectable_label(next.lossless, "png")
-            .on_hover_text("lossless and large — for compositing, not for long takes")
+            .on_hover_text(
+                "lossless and large — for compositing, not for long takes — \
+                 and the only format that keeps transparency",
+            )
             .clicked()
         {
             next.lossless = true;
@@ -1658,6 +2164,18 @@ fn recording_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelA
         .on_hover_text("time to get your hands to the controls before the first frame");
     });
 
+    // JPEG has no alpha. A take taken for a key, with the background
+    // transparent, silently records the field over the paper colour
+    // instead — discovered in the edit, which is too late.
+    if !next.lossless
+        && let Some(alpha) = registry.id("/bg/alpha")
+        && registry.target(alpha) < 0.999
+    {
+        ui.colored_label(
+            WARN,
+            "jpeg has no alpha — this take records the background as black; switch to png",
+        );
+    }
     ui.small("takes are stopped automatically if the disk gets close to full");
 
     if next != state.record {
@@ -1830,6 +2348,20 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
                 commit = true;
             }
         }
+        // The window follows the output only when asked: it is a
+        // preview, and a 4K output on a laptop must not open a 4K
+        // window. This sizes it to the output's shape, as large as the
+        // display allows.
+        if ui
+            .small_button("fit window")
+            .on_hover_text(
+                "size the window to the output's shape, as large as this display allows — the \
+                 window is only a preview; receivers and recordings get the full size",
+            )
+            .clicked()
+        {
+            actions.fit_window = true;
+        }
     });
     // Said out loud while it matters, not only on hover: rebuilding the
     // output tears down the recorder, and the first sign used to be a
@@ -1867,7 +2399,7 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
         // costs. Syphon and NDI are BGRA8 by definition, so this cannot
         // reach them without a conversion, and pretending otherwise would
         // be discovered as a black frame at a venue.
-        ui.small("Syphon and NDI still receive 8-bit; a conversion pass is added for them");
+        ui.small("Syphon, NDI and recordings still receive 8-bit; a conversion pass is added for them");
     }
 
     if commit {
@@ -1884,43 +2416,7 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     }
 }
 
-fn outputs_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegistry) {
-    // Record lives with the outputs: it is one more consumer of the
-    // master. The button writes /record/active exactly as OSC or a
-    // learned MIDI button would — one path.
-    if let Some(id) = registry.id("/record/active") {
-        ui.horizontal(|ui| {
-            let on = registry.target(id) >= 0.5;
-            let label = if on { "stop recording" } else { "record" };
-            let button = egui::Button::new(
-                egui::RichText::new(label).color(if on {
-                    vizz_design::feedback::ERR_TEXT
-                } else {
-                    vizz_design::ink::SECONDARY
-                }),
-            );
-            if ui
-                .add(button)
-                .on_hover_text("PNG sequence of the master output — heavy resolutions drop frames rather than stall the show")
-                .clicked()
-            {
-                registry.set(id, if on { 0.0 } else { 1.0 });
-            }
-            if let Some(rec) = &state.recording {
-                ui.small(format!(
-                    "{}:{:02} · {} frames{}",
-                    rec.secs / 60,
-                    rec.secs % 60,
-                    rec.frames,
-                    if rec.dropped > 0 {
-                        format!(" · {} dropped", rec.dropped)
-                    } else {
-                        String::new()
-                    }
-                ));
-            }
-        });
-    }
+fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
         return;
@@ -2018,11 +2514,37 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                     if button.clicked() {
                         actions.preset_load = Some(p.name.clone());
                     }
-                    // The same learn menu as the stage row: the two lists
+                    // The same menu as the stage row: the two lists
                     // address the same `/preset/recall` slots, so a
-                    // binding must be reachable from either.
-                    if state.midi.available {
-                        button.context_menu(|ui| match (&bound, waiting) {
+                    // binding must be reachable from either — and so must
+                    // a look's picture, which is the other thing you set
+                    // once and want from wherever you noticed it.
+                    button.context_menu(|ui| {
+                        if ui
+                            .button("update picture")
+                            .on_hover_text("photograph what is on the output now")
+                            .clicked()
+                        {
+                            actions.preset_rephoto = Some(p.name.clone());
+                            ui.close();
+                        }
+                        // A user look can be renamed from where it is
+                        // listed. Before this the only way was save-as
+                        // and delete, which left the pads naming a file
+                        // that was gone.
+                        if !p.builtin
+                            && ui
+                                .button("rename…")
+                                .on_hover_text("give this look a new name — pads that use it follow")
+                                .clicked()
+                        {
+                            begin_rename(ui.ctx(), p.name.clone());
+                            ui.close();
+                        }
+                        if !state.midi.available {
+                            return;
+                        }
+                        match (&bound, waiting) {
                             (Some(s), _) => {
                                 if ui.button(format!("unmap {}", s.label())).clicked() {
                                     actions.clear_slot_binding = Some((
@@ -2049,8 +2571,8 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
                                     ui.close();
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                     if p.builtin {
                         return;
                     }
@@ -2086,13 +2608,45 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
 
     let id = egui::Id::new("preset-save-name");
     let mut name: String = ui.memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
+    // While a rename is in progress this is the rename field: it holds
+    // the old name to edit and the button says so. One field rather than
+    // a second one, because the two are never wanted at once and the
+    // list above is already tall.
+    let renaming: Option<String> = ui.data(|d| d.get_temp(rename_from_id()));
+    // The look on screen is the one you are most likely editing, so its
+    // name is offered in the field the moment it is recalled — and only
+    // then, so a cleared field stays cleared. With it there the button
+    // already reads "replace", and re-saving is one click rather than
+    // retyping a name from memory under a list that has scrolled away.
+    let offered = egui::Id::new("preset-save-offered");
+    let last_offered: Option<usize> = ui.memory(|m| m.data.get_temp(offered));
+    if renaming.is_none() && last_offered != state.preset_current {
+        if let Some(entry) = state
+            .preset_current
+            .and_then(|slot| state.presets.get(slot.wrapping_sub(1)))
+            .filter(|e| !e.builtin)
+        {
+            name = entry.name.clone();
+        }
+        ui.memory_mut(|m| m.data.insert_temp(offered, state.preset_current));
+    }
     let clash = name_clash(&name, &state.presets);
     ui.horizontal(|ui| {
+        if let Some(from) = &renaming {
+            ui.small(format!("rename {from} to"));
+        }
         let editing = ui.add(
             egui::TextEdit::singleline(&mut name)
                 .hint_text("name")
                 .desired_width(140.0),
         );
+        // A rename begun from a menu lands in the field ready to type:
+        // the menu was on the row, and the field is a scroll away.
+        let focus = egui::Id::new("preset-rename-focus");
+        if ui.data(|d| d.get_temp::<bool>(focus)).unwrap_or(false) {
+            editing.request_focus();
+            ui.data_mut(|d| d.remove_temp::<bool>(focus));
+        }
         // Enter saves, so the whole thing is type-and-go rather than
         // type-then-aim.
         let entered = editing.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -2101,36 +2655,86 @@ fn presets_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
         // the failure this is here to prevent, and a confirmation dialog
         // is the wrong shape for it — this screen is used with one hand
         // while something is on the projector.
-        let (label, hover) = match clash {
-            Some(Clash::Builtin(n)) => (
-                "save",
-                format!("{n} is a built-in and cannot be replaced — choose another name"),
-            ),
-            Some(Clash::User(n)) => ("replace", format!("overwrite the saved look {n}")),
-            None => ("save", "store the current look".to_string()),
-        };
         // Blocked rather than warned when it would be useless: a preset
         // saved under a built-in's name is written to disk successfully
         // and can then never be recalled, because `by_name` prefers the
         // built-in. Succeeding and doing nothing is worse than refusing.
-        let blocked = matches!(clash, Some(Clash::Builtin(_)));
+        // A rename is blocked one case further: it never replaces, so an
+        // existing look's name is a wall rather than a warning.
+        let (label, hover, blocked) = match (&renaming, &clash) {
+            (_, Some(Clash::Builtin(n))) => (
+                if renaming.is_some() { "rename" } else { "save" },
+                format!("{n} is a built-in and cannot be replaced — choose another name"),
+                true,
+            ),
+            (Some(from), Some(Clash::User(n))) if n != from => (
+                "rename",
+                format!("a look called {n} already exists — a rename does not replace"),
+                true,
+            ),
+            (Some(from), _) => (
+                "rename",
+                format!("rename {from} — the pads that use it follow"),
+                name.trim() == from,
+            ),
+            (None, Some(Clash::User(n))) => {
+                ("replace", format!("overwrite the saved look {n}"), false)
+            }
+            (None, None) => ("save", "store the current look".to_string(), false),
+        };
         let button = ui.add_enabled(!blocked, egui::Button::new(label)).on_hover_text(hover);
+        // The name stays after a save. Cleared, the edit-and-save-again
+        // loop meant retyping it exactly each time, and a typo made a
+        // near-duplicate instead of a replacement.
         if (entered || button.clicked()) && !blocked && !name.trim().is_empty() {
-            actions.preset_save = Some(name.clone());
+            match &renaming {
+                Some(from) => {
+                    actions.preset_rename = Some((from.clone(), name.clone()));
+                    ui.data_mut(|d| d.remove_temp::<String>(rename_from_id()));
+                }
+                None => actions.preset_save = Some(name.clone()),
+            }
+        }
+        if renaming.is_some()
+            && (ui.small_button("cancel").on_hover_text("leave the name as it is").clicked()
+                || ui.input(|i| i.key_pressed(egui::Key::Escape)))
+        {
+            ui.data_mut(|d| d.remove_temp::<String>(rename_from_id()));
             name.clear();
         }
     });
-    match clash {
-        Some(Clash::Builtin(n)) => ui.colored_label(
+    match (&renaming, &clash) {
+        (_, Some(Clash::Builtin(n))) => ui.colored_label(
             WARN_COLOR,
             format!("{n} is a built-in — saving over it would hide your look, not replace it"),
         ),
-        Some(Clash::User(n)) => {
+        (Some(from), Some(Clash::User(n))) if n != from => {
+            ui.colored_label(WARN_COLOR, format!("a look called {n} already exists"))
+        }
+        (Some(_), _) => ui.small("Enter renames; the pads that use it follow"),
+        (None, Some(Clash::User(n))) => {
             ui.colored_label(WARN_COLOR, format!("this replaces the saved look {n}"))
         }
-        None => ui.small("names are tidied for the filesystem, so \"a/b\" becomes \"a_b\""),
+        (None, None) => ui.small("names are tidied for the filesystem, so \"a/b\" becomes \"a_b\""),
     };
     ui.memory_mut(|m| m.data.insert_temp(id, name));
+}
+
+/// The look a rename is in progress on, if any. Set from either list's
+/// menu; the save field is the rename field while it is set.
+fn rename_from_id() -> egui::Id {
+    egui::Id::new("preset-rename-from")
+}
+
+/// Start renaming `name`: the save field takes the old name, becomes the
+/// rename field and takes focus. Called from either list's menu, and by
+/// the stage, whose tiles cannot hold a text field.
+pub(crate) fn begin_rename(ctx: &egui::Context, name: String) {
+    ctx.data_mut(|d| {
+        d.insert_temp(rename_from_id(), name.clone());
+        d.insert_temp(egui::Id::new("preset-save-name"), name);
+        d.insert_temp(egui::Id::new("preset-rename-focus"), true);
+    });
 }
 
 /// What an existing preset of the same name is.
@@ -2559,7 +3163,7 @@ const SECTIONS: &[SectionSpec] = &[
             ),
             (
                 &["shape"],
-                "form",
+                "shape",
                 "which shape the points take, and the morph between two of them",
             ),
             (
@@ -2981,7 +3585,13 @@ fn param_row(
             egui::FontId::proportional(12.5),
             ui.visuals().text_color(),
         );
-        name_resp.on_hover_text(&def.addr);
+        // The address and what it does: the address alone was the only
+        // hover on every row, and it taught nothing a newcomer could use.
+        name_resp.on_hover_text(if def.help.is_empty() {
+            def.addr.clone()
+        } else {
+            format!("{}  —  {}", def.addr, def.help)
+        });
         let mut slider =
             egui::Slider::new(&mut value, lo..=hi).clamping(egui::SliderClamping::Always);
         if def.labels.is_some() {
@@ -3109,11 +3719,21 @@ fn param_row(
         let learning = state.midi.learning(&def.addr);
         match state.midi.map.source_for(&def.addr) {
             Some(source) => {
-                if ui
-                    .small_button(source.label())
-                    .on_hover_text("click to clear this MIDI binding")
-                    .clicked()
-                {
+                // Armed, like every other unmap: this was the one binding
+                // in the app that a single click threw away.
+                let label = source.label();
+                if vizz_design::widgets::armed_button(
+                    ui,
+                    egui::Id::new(("panel-midi-chip", &def.addr)),
+                    0,
+                    vizz_design::widgets::Armed {
+                        idle_label: &label,
+                        armed_label: "unmap?",
+                        idle_hover: "the control bound to this — click twice to unmap it",
+                        armed_hover: "click again to unmap",
+                        small: true,
+                    },
+                ) {
                     actions.clear_binding = Some(def.addr.clone());
                 }
             }
@@ -3286,6 +3906,15 @@ fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, def: &vizz_pa
                             "how much of the parameter's range it swings, either side of \
                              wherever the fader is — negative inverts",
                         );
+                        // And the same swing in the parameter's own
+                        // units, beside it. "0.33 of the range" is a
+                        // sum, and the number you had in mind was never
+                        // a fraction.
+                        ui.small(
+                            egui::RichText::new(swing_text(&route.source, route.depth, width))
+                                .color(vizz_design::ink::FAINT),
+                        )
+                        .on_hover_text("the same swing in the parameter's own units");
                         if ui
                             .small_button("range…")
                             .on_hover_text(
@@ -3831,5 +4460,78 @@ mod layout_tests {
                 );
             }
         }
+    }
+}
+
+/// A depth as the swing it amounts to in the parameter's own units. A
+/// bipolar source (an LFO) swings either side of the fader; a unipolar
+/// one (an audio band, the level) only ever adds, or with a negative
+/// depth only ever takes away, and the text says which.
+fn swing_text(source: &vizz_mod::Source, depth: f32, width: f32) -> String {
+    let swing = depth.abs() * width;
+    let amount = if swing >= 10.0 {
+        format!("{swing:.0}")
+    } else if swing >= 1.0 {
+        format!("{swing:.1}")
+    } else {
+        format!("{swing:.2}")
+    };
+    match (source.is_bipolar(), depth < 0.0) {
+        (true, _) => format!("±{amount}"),
+        (false, false) => format!("up to +{amount}"),
+        (false, true) => format!("down to −{amount}"),
+    }
+}
+
+#[cfg(test)]
+mod swing_tests {
+    use super::*;
+    use vizz_mod::Source;
+
+    /// The number beside the depth slider is in the parameter's units,
+    /// signed the way the source moves.
+    #[test]
+    fn a_depth_reads_as_a_swing_in_the_parameters_units() {
+        assert_eq!(swing_text(&Source::Lfo(0), 0.25, 36.0), "±9.0");
+        assert_eq!(swing_text(&Source::Lfo(0), -0.5, 200.0), "±100");
+        assert_eq!(swing_text(&Source::Audio(0), 0.5, 1.0), "up to +0.50");
+        assert_eq!(swing_text(&Source::Level, -0.1, 12.0), "down to −1.2");
+    }
+}
+
+#[cfg(test)]
+mod binding_table_tests {
+    use super::*;
+
+    /// A row says what the control fires in the screen's own words, not
+    /// as an address and a float.
+    #[test]
+    fn a_binding_row_names_what_it_fires() {
+        let src = Source::Note { channel: 0, note: 36 };
+        let row = |param: &str, value: Option<f32>| {
+            binding_target(&vizz_midi::Binding { source: src, param: param.into(), value })
+        };
+        assert_eq!(row("/scene/fire", Some(4.0)), "scene pad 4");
+        assert_eq!(row("/gravity/fire", Some(1.0)), "gravity pad 1");
+        assert_eq!(row("/preset/recall", Some(12.0)), "look 12");
+        assert_eq!(row("/deck/select", Some(2.0)), "page 2");
+        assert_eq!(row("/punch/black", Some(1.0)), "/punch/black = 1");
+        assert_eq!(row("/fx/glow", None), "/fx/glow");
+    }
+}
+
+#[cfg(test)]
+mod knob_tests {
+    use super::*;
+
+    /// A knob's value goes into the spec the way a person would write
+    /// it.
+    #[test]
+    fn numbers_are_written_short() {
+        assert_eq!(trim_number(7.0), "7");
+        assert_eq!(trim_number(0.156), "0.156");
+        assert_eq!(trim_number(-0.8), "-0.8");
+        assert_eq!(trim_number(2.5), "2.5");
+        assert_eq!(trim_number(0.0), "0");
     }
 }

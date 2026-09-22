@@ -46,7 +46,8 @@ struct Uniforms {
     lamp: array<vec4<f32>, 2>,
     // rgb the lamp's colour, w its radius.
     lamp_tint: array<vec4<f32>, 2>,
-    // x ambient, y how much surface orientation counts, zw spare.
+    // x ambient, y how much surface orientation counts, z the wind
+    // amount, w its rate (see abc_wind).
     light: vec4<f32>,
     // xyz towards the sun, w its level.
     sun_dir: vec4<f32>,
@@ -363,6 +364,26 @@ fn sample_shape(mode: u32, h1: f32, h2: f32, h3: f32, h4: f32, t: f32) -> vec3<f
 
 const SHAPE_COUNT: u32 = 8u;
 
+// --- Wind -------------------------------------------------------------
+
+// The Arnold–Beltrami–Childress flow with A = B = C = 1: a steady
+// solution of the Euler equations, divergence-free by construction, and
+// chaotic in its streamlines — the classic example of a simple field
+// that mixes. Six trigonometric terms, which is why it can run per
+// vertex where a noise curl could not.
+fn abc_flow(q: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(sin(q.z) + cos(q.y), sin(q.x) + cos(q.z), sin(q.y) + cos(q.x));
+}
+
+// Two octaves of it, each drifting through the field at its own pace so
+// the wind never settles into a pattern the eye can lock onto. The
+// amplitude is chosen so full wind is a visible lean, not a scatter.
+fn abc_wind(p: vec3<f32>, t: f32) -> vec3<f32> {
+    let coarse = abc_flow(p * 2.2 + vec3<f32>(t, t * 0.7, t * 1.3));
+    let fine = abc_flow(p * 5.1 + vec3<f32>(-t * 1.1, t * 1.7, t * 0.5));
+    return (coarse + 0.4 * fine) * 0.22;
+}
+
 // How much a mode's rotation should be rigid rather than per-particle.
 //
 // Giving each particle its own spin rate shears the field into ribbons,
@@ -555,6 +576,13 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // Slow breathing keeps the field alive with every control parked.
     let radius = length(p);
     p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
+
+    // Wind, when there is any: the field blown through by an ABC flow.
+    // Read as a displacement of where the point already is, so it costs
+    // no state and works on a scan as it does on a sphere.
+    if (u.light.z > 0.0) {
+        p += abc_wind(p, u.time * u.light.w) * u.light.z;
+    }
 
     // Gravity. Applied after the shape is final and before the room, so
     // it deforms the object rather than the set: a well that dragged the

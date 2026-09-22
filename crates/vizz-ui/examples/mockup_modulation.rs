@@ -431,6 +431,9 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
         dropped: 0,
         clock_midi: false,
         clock_ticking: false,
+        reacting: false,
+        tap_count: 0,
+        auto_bpm: false,
     };
     // A grid part-way through a blend, so the preview shows the pad fill
     // and the two highlights doing something rather than sixteen blanks.
@@ -453,6 +456,7 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
     let midi = vizz_ui::MidiView::default();
     let state = vizz_ui::PerformanceState {
         project: "Show 1",
+        record_countdown: None,
         decks: &[],
         active_deck: 0,
         follow_columns: None,
@@ -482,6 +486,7 @@ fn draw_performance(ctx: &egui::Context, _w: f32, _h: f32) {
             "Confetti".into(),
             "Ribbon".into(),
         ],
+        thumb_revision: 0,
     };
     vizz_ui::performance::draw(ctx, &reg, &state, &mut macros);
 }

@@ -58,6 +58,8 @@ fn main() {
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",
+        "/shape/wind",
+        "/shape/wind_rate",
         "/fx/trail",
         "/fx/zoom",
         "/fx/spin",
@@ -155,6 +157,8 @@ fn main() {
         // is: the harness mirrors the registry outright, so a transport
         // parameter costs a line here and nothing on screen.
         "/deck/select",
+        "/deck/next",
+        "/deck/prev",
         "/column/fire",
         // Transport, and hidden from the parameter list — but the
         // outputs section draws a record button only when this exists,
@@ -248,6 +252,7 @@ fn main() {
         "/video/depth",
         "/video/relief",
         "/record/active",
+        "/tempo/tap",
         "/punch/strobe_div",
         "/gravity/fire",
         "/gravity/time",
@@ -317,6 +322,8 @@ fn main() {
     let state = PanelState {
         project: "Show 1".into(),
         local_address: Some("192.168.1.42".into()),
+        takes_root: None,
+        record_countdown: None,
         decks: Vec::new(),
         active_deck: 0,
         follow_columns: None,
@@ -386,6 +393,7 @@ fn main() {
         grid: preview_grid(),
         gravity_grid: None,
         expand_sections: expand,
+        thumb_revision: 0,
         presets: vec![
             PresetEntry { name: "Slow bloom".into(), builtin: true, about: None , source: None},
             PresetEntry { name: "Butterfly".into(), builtin: true, about: None , source: None},
@@ -608,6 +616,9 @@ fn audio_view() -> vizz_ui::AudioView {
         dropped: 0,
         clock_midi: false,
         clock_ticking: false,
+        reacting: false,
+        tap_count: 0,
+        auto_bpm: false,
     }
 }
 

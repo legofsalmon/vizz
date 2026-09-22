@@ -38,6 +38,11 @@ pub struct ParamDef {
     /// After `smooth` seconds the value has covered ~63% of the distance
     /// to the target; after `3 * smooth` it is ~95% there.
     pub smooth: f32,
+    /// One line on what the parameter does, in the words the README's
+    /// reference table uses — the same string, so the hover and the
+    /// manual cannot disagree. Empty until [`ParamRegistryBuilder::fill_help`]
+    /// runs; a registry row without one is a test failure, not a blank.
+    pub help: &'static str,
     /// Names for a stepped parameter's positions, indexed by the rounded
     /// value.
     ///
@@ -108,12 +113,19 @@ impl ParamDef {
             max,
             default,
             smooth: 0.0,
+            help: "",
             labels: None,
             transport: false,
             gesture: false,
             listed: true,
             driven: false,
         }
+    }
+
+    /// Say what this parameter does. See [`ParamDef::help`].
+    pub fn help(mut self, help: &'static str) -> Self {
+        self.help = help;
+        self
     }
 
     /// Name this parameter's discrete positions. See [`ParamDef::labels`].
@@ -197,6 +209,19 @@ impl ParamRegistryBuilder {
         );
         self.defs.push(def);
         ParamId(self.defs.len() - 1)
+    }
+
+    /// Give every parameter that has none its one line of help, looked up
+    /// by address. Called once, after the last `add`, by the code that
+    /// owns the table — the builder does not know what a parameter is for.
+    pub fn fill_help(&mut self, help_for: impl Fn(&str) -> Option<&'static str>) {
+        for def in &mut self.defs {
+            if def.help.is_empty()
+                && let Some(help) = help_for(&def.addr)
+            {
+                def.help = help;
+            }
+        }
     }
 
     pub fn build(self) -> ParamRegistry {

@@ -115,6 +115,30 @@ impl MidiMap {
             .retain(|b| b.param != param || b.value != Some(value));
     }
 
+    /// Move the triggers on `param` from one value to another, all at
+    /// once: `moves` is `(from, to)` pairs applied together, so a swap
+    /// is a swap rather than a merge. Returns how many bindings moved.
+    ///
+    /// For a parameter that addresses a sorted list — `/preset/recall`
+    /// — the numbers move under the bindings whenever the list does,
+    /// and this is how the bindings keep up.
+    pub fn repoint_values(&mut self, param: &str, moves: &[(f32, f32)]) -> usize {
+        let mut n = 0;
+        for b in &mut self.bindings {
+            if b.param != param {
+                continue;
+            }
+            if let Some(v) = b.value
+                && let Some((_, to)) = moves.iter().find(|(from, _)| *from == v)
+                && *to != v
+            {
+                b.value = Some(*to);
+                n += 1;
+            }
+        }
+        n
+    }
+
     pub fn param_for(&self, source: &Source) -> Option<&str> {
         self.binding(source).map(|b| b.param.as_str())
     }
@@ -562,5 +586,32 @@ mod tests {
         let fader = Source::ControlChange { channel: 0, controller: 20 };
         map.bind(fader, "/scene/fire");
         assert_eq!(map.source_for("/scene/fire"), Some(fader));
+    }
+}
+
+#[cfg(test)]
+mod repoint_tests {
+    use super::*;
+
+    fn note(n: u8) -> Source {
+        Source::Note { channel: 0, note: n }
+    }
+
+    /// The moves land together: two bindings swapping numbers each end
+    /// on the other's, and a binding on a parameter that did not move
+    /// stays where it was.
+    #[test]
+    fn repointing_applies_every_move_at_once() {
+        let mut map = MidiMap::default();
+        map.bind_value(note(1), "/preset/recall", 3.0);
+        map.bind_value(note(2), "/preset/recall", 4.0);
+        map.bind_value(note(3), "/preset/recall", 9.0);
+        map.bind_value(note(4), "/scene/fire", 3.0);
+        assert_eq!(map.repoint_values("/preset/recall", &[(3.0, 4.0), (4.0, 3.0)]), 2);
+        assert_eq!(map.source_for_value("/preset/recall", 4.0), Some(note(1)));
+        assert_eq!(map.source_for_value("/preset/recall", 3.0), Some(note(2)));
+        assert_eq!(map.source_for_value("/preset/recall", 9.0), Some(note(3)), "an unmoved slot stays");
+        assert_eq!(map.source_for_value("/scene/fire", 3.0), Some(note(4)), "another parameter is untouched");
+        assert_eq!(map.repoint_values("/preset/recall", &[(9.0, 9.0)]), 0, "a move to itself is not a move");
     }
 }

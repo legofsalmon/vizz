@@ -79,15 +79,24 @@ pub struct PerformanceState<'a> {
     /// A recording in progress: the strip wears a red chip, because
     /// forgetting a recording is how disks fill mid-set.
     pub recording: Option<crate::RecordingView>,
+    /// Seconds left on a recording countdown, when one is running.
+    pub record_countdown: Option<u32>,
     pub outputs: &'a [OutputStatus],
     pub audio: &'a AudioView,
     pub fps: f32,
     pub over_budget: bool,
     pub bpm: f32,
     pub bar_phase: f32,
-    /// Preset names in slot order, so the row can be numbered to match
-    /// `/preset/recall` and the number keys.
-    pub presets: &'a [String],
+    /// The preset library in slot order, so the row can be numbered to
+    /// match `/preset/recall` and the number keys.
+    ///
+    /// The whole entry rather than the name: the row groups and colours
+    /// by what each look was built on, and a list of names cannot say.
+    pub presets: &'a [crate::PresetEntry],
+    /// Bumped whenever the app writes a preset picture, so a look
+    /// re-photographed mid-set redraws rather than keeping the handle
+    /// egui already had. See [`crate::thumbs`].
+    pub thumb_revision: u64,
     /// The recalled slot (1-based): the one button that should look
     /// different from the other nine.
     pub preset_current: Option<usize>,
@@ -180,8 +189,20 @@ pub struct PerformanceActions {
     /// Put a ready-made modulator on this parameter, or take it off with
     /// `None`. Indexes [`vizz_mod::shapes::SHAPES`].
     pub set_mod_shape: Option<(String, Option<usize>)>,
+    /// Make the picture follow the music (`Some(true)`), or stop
+    /// (`Some(false)`): the three [`vizz_mod::shapes::REACT`] shapes at
+    /// once.
+    pub react: Option<bool>,
     /// What the deck row asks for this frame.
     pub decks: DeckActions,
+    /// Take a fresh picture of this preset from what is on screen now.
+    pub preset_rephoto: Option<String>,
+    /// Begin renaming this preset. A tile cannot hold a text field, so
+    /// the stage hands the name to the panel's field and the panel opens.
+    pub preset_rename_start: Option<String>,
+    /// The audio input picked on the strip: a device by name, or `None`
+    /// inside the `Some` for the system default. Takes the panel's path.
+    pub audio_device: Option<Option<String>>,
 }
 
 /// What the deck row asks the app to do.
@@ -328,19 +349,73 @@ fn scene_h_id() -> egui::Id {
     egui::Id::new("performance-scene-h")
 }
 
-/// Below this window height the sections between the status strip and
-/// the desk stay stood down once they have been stood down.
-///
-/// Hysteresis, not a second opinion. Standing the sections down frees
-/// exactly the room that would say they can come back, so a single
-/// measurement makes the flag oscillate every frame — a screen that
-/// flickers between two layouts. This is the "and it is still a short
-/// window" half of the test.
-const CRAMPED_UNDER: f32 = 780.0;
+/// Below this window height the preset block shows one row of tiles and
+/// a glimpse of the next rather than two rows. Purely about the tiles;
+/// what stands down and when is [`StandDown`]'s business.
+const SHORT_WINDOW: f32 = 780.0;
 
-/// Where the cramped flag lives between frames. See the layout body.
-fn cramped_id() -> egui::Id {
-    egui::Id::new("performance-cramped")
+/// How the sections between the status strip and the desk stand down
+/// when the faders would otherwise starve, and come back when there is
+/// room again.
+///
+/// Measured, not predicted, and in two steps: first LAYERS and the
+/// preset tiles, then PUNCH — the punches are the last thing a hand
+/// wants to lose. `cost` is what each step freed, measured on the frame
+/// after it was taken, and a step is only undone once the room to spare
+/// exceeds what undoing it will cost. That is the hysteresis. Standing a
+/// section down frees exactly the room that would say it can return, so
+/// a single test oscillates at frame rate; the fixed height floor that
+/// used to stand in for this only held below one window size, and above
+/// it — 1280x800 with a filled gravity grid — the top of the screen
+/// flickered between two layouts every frame.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct StandDown {
+    /// 0: everything drawn; 1: LAYERS and PRESETS down; 2: PUNCH too.
+    level: u8,
+    /// Points each step freed, indexed by the level it led to, minus one.
+    cost: [f32; 2],
+    /// The block's height on the frame before a step, so the frame after
+    /// can measure what the step freed.
+    measuring_from: Option<f32>,
+}
+
+impl StandDown {
+    const MAX: u8 = 2;
+    /// A little more than the cost, so a section returns with room to
+    /// spare rather than at exactly the point it starved.
+    const SLACK: f32 = 8.0;
+
+    /// Settle the level for the next frame from what this one measured:
+    /// `above` is the height of the block that stands down, `room` what
+    /// the faders were left, `floor` what they need.
+    fn step(&mut self, above: f32, room: f32, floor: f32) {
+        if let Some(before) = self.measuring_from.take()
+            && self.level > 0
+        {
+            self.cost[usize::from(self.level) - 1] = (before - above).max(0.0);
+        }
+        if room < floor {
+            if self.level < Self::MAX {
+                self.measuring_from = Some(above);
+                self.level += 1;
+            }
+        } else if self.level > 0 && room - floor >= self.cost[usize::from(self.level) - 1] + Self::SLACK {
+            self.level -= 1;
+        }
+    }
+
+    fn hides_layers(self) -> bool {
+        self.level >= 1
+    }
+
+    fn hides_punch(self) -> bool {
+        self.level >= Self::MAX
+    }
+}
+
+/// Where the stand-down state lives between frames. See the layout body.
+fn stand_id() -> egui::Id {
+    egui::Id::new("performance-stand-down")
 }
 
 /// Where the peek toggle's state lives between frames.
@@ -409,7 +484,10 @@ pub fn draw(
             // every section here, which is the kind of second copy that
             // drifts. One frame late is invisible on a resize and the
             // layout settles immediately.
-            let cramped = ui.ctx().data_mut(|d| *d.get_temp_mut_or(cramped_id(), false));
+            let stand: StandDown =
+                ui.ctx().data_mut(|d| *d.get_temp_mut_or(stand_id(), StandDown::default()));
+            // How tall the block that stands down came to this frame.
+            let mut above_h = 0.0_f32;
             // The scrim is painted *around* the output pane, not over it,
             // so the picture comes through at full strength while every
             // label keeps its opaque ground. Four rects — above, below,
@@ -466,21 +544,40 @@ pub fn draw(
                     // sixteen-pad grid is still a sixteen-pad grid over
                     // the picture. The two rows that stay are the two a
                     // hand is already on.
-                    if !peeking && !cramped {
+                    let above_top = ui.cursor().top();
+                    if !peeking && !stand.hides_punch() {
                         section(ui, "PUNCH");
                         punch_row(ui, registry, state, &mut actions);
                         ui.add_space(10.0);
                     }
 
-                    if !peeking && !cramped && layer_strip(ui, registry, col_w) {
+                    if !peeking && !stand.hides_layers() && layer_strip(ui, registry, col_w) {
                         ui.add_space(10.0);
                     }
 
-                    if !state.presets.is_empty() && !peeking && !cramped {
-                        section(ui, "PRESETS");
-                        preset_row(ui, state, &mut actions, col_w);
+                    if !state.presets.is_empty() && !peeking && !stand.hides_layers() {
+                        section(ui, "PRESETS · cut");
+                        preset_row(ui, state, &mut actions, col_w, full.y);
                         ui.add_space(10.0);
                     }
+
+                    // What stood down, said. A row that vanishes when the
+                    // window shrinks reads as a bug unless something says
+                    // a taller window brings it back. Inside the measured
+                    // block, so the same budget pays for it.
+                    if !peeking && stand.hides_layers() {
+                        ui.label(
+                            egui::RichText::new(if stand.hides_punch() {
+                                "taller window → punch, layers and preset tiles"
+                            } else {
+                                "taller window → layers and preset tiles"
+                            })
+                            .size(11.0)
+                            .color(INK_3),
+                        );
+                        ui.add_space(6.0);
+                    }
+                    above_h = ui.cursor().top() - above_top;
 
                     });
                     // The bottom of the desk: the pads and the faders, both
@@ -574,7 +671,7 @@ pub fn draw(
                     // against a theoretical one.
                     deck_row(ui, state, &mut actions);
                     if let Some(gravity) = state.gravity.filter(|_| !peeking) {
-                        section(ui, "GRAVITY");
+                        section(ui, "GRAVITY · blend");
                         // Sixteen empty pads for a layer nobody has touched
                         // is a lot of screen spent saying nothing — but
                         // hiding the row entirely hid its *store* button
@@ -596,7 +693,7 @@ pub fn draw(
 
 
 
-                        section(ui, "SCENES");
+                        section(ui, "SCENES · blend");
                         let mut scenes = state.grid.clone();
                         scenes.width = Some(inner_w);
                         actions.grid = crate::grid_view::draw(ui, &scenes);
@@ -632,7 +729,7 @@ pub fn draw(
                         // that is where you are already looking when you
                         // decide there are too few or too many.
                         ui.horizontal(|ui| {
-                            section(ui, "CONTROLS");
+                            section(ui, "FADERS");
                             ui.add_space(6.0);
                             let count = macros.count();
                             let minus = ui
@@ -711,19 +808,13 @@ pub fn draw(
                     let fader_top = ui.cursor().top();
                     let floor = FADER_ABS_MIN + FADER_CHROME + 6.0;
                     let room = full.y - fader_top - PAD;
-                    // Next frame's `cramped`: the sections above stand
-                    // down when the room left cannot hold the block.
-                    // Hysteresis on the way back, because standing them
-                    // down frees exactly the room that would say they
-                    // can return — a single test makes it oscillate.
+                    // Next frame's stand-down: the sections above give
+                    // way, a step at a time, when the room left cannot
+                    // hold the block, and come back once there is room
+                    // to spare for what coming back costs.
                     ui.ctx().data_mut(|d| {
-                        let was: bool = *d.get_temp_mut_or(cramped_id(), false);
-                        let starved = room < floor;
-                        d.insert_temp(cramped_id(), if was {
-                            starved || full.y < CRAMPED_UNDER
-                        } else {
-                            starved
-                        });
+                        d.get_temp_mut_or(stand_id(), StandDown::default())
+                            .step(above_h, room, floor);
                     });
                     faders(ui, registry, macros, state, &mut actions, inner_w, room.max(floor));
 
@@ -842,6 +933,12 @@ fn gravity_ghost(ui: &mut egui::Ui, actions: &mut PerformanceActions) {
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
+    // "SCENES · blend": the tail says how the row plays, in the fainter
+    // ink. A recall lands at once and a pad blends, and the rule is the
+    // one line every glance at the row passes over.
+    let (title, tail) = title
+        .split_once(" · ")
+        .map_or((title, None), |(t, tail)| (t, Some(tail)));
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(title)
@@ -850,6 +947,14 @@ fn section(ui: &mut egui::Ui, title: &str) {
                 .strong()
                 .monospace(),
         );
+        if let Some(tail) = tail {
+            ui.label(
+                egui::RichText::new(tail)
+                    .size(10.5)
+                    .color(vizz_design::ink::FAINT)
+                    .monospace(),
+            );
+        }
         let rect = ui.available_rect_before_wrap();
         let y = rect.center().y;
         ui.painter().line_segment(
@@ -867,12 +972,22 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// rather than by id, since they outlive the process.
 const DECK_SELECT: &str = "/deck/select";
 
-/// Preset buttons are 30 points tall; the row shows about three of them
-/// before it scrolls. Three because two reads as an accident of layout and
-/// four is most of the column — and because a library worth scrolling is
-/// one you are not reading during a song anyway.
-const PRESET_BUTTON_H: f32 = 30.0;
-const PRESET_ROWS_SHOWN: f32 = 3.0;
+/// A preset tile, 16:9 because the picture on it is.
+///
+/// Wide enough that a name is readable across a table and small enough
+/// that four fit a desk column — which is what makes the block a *grid*
+/// you scan rather than a list you read.
+const TILE_W: f32 = 92.0;
+const TILE_H: f32 = 52.0;
+/// The gap between tiles, and between rows of them.
+const TILE_GAP: f32 = 4.0;
+/// How many rows of tiles the block shows before it scrolls, on a window
+/// with room for them. Two, and not by taste — see [`block_cap`].
+const PRESET_ROWS_SHOWN: f32 = 2.0;
+/// And on one without: a row and a quarter, so the cut row says there is
+/// more without costing a second one. See [`block_cap`] for where the
+/// number comes from — it is measured, not chosen.
+const PRESET_ROWS_CRAMPED: f32 = 1.25;
 
 /// Longest deck name a chip will show before it starts shrinking. Wide
 /// enough for a song title, narrow enough that eight of them fit a row.
@@ -898,6 +1013,38 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
     let editing: Option<(usize, String)> = ui.data(|d| d.get_temp(editing_id));
 
     ui.horizontal_wrapped(|ui| {
+        // Named, like every other row on the desk — it was the one
+        // unlabelled section, and everything you can do to a page lives
+        // in a menu nothing pointed at. Inline rather than a rule above:
+        // a rule costs eighteen points, and at 1280x720 that was enough
+        // to stand the preset tiles down.
+        ui.label(
+            egui::RichText::new("SET LIST")
+                .size(10.5)
+                .strong()
+                .monospace()
+                .color(INK_3),
+        )
+        .on_hover_text("one page of pads per song — right-click a chip to rename, duplicate or delete it");
+        ui.add_space(6.0);
+        // A page either way, for a set list longer than the chips are
+        // legible: the two buttons a controller with a spare pair of
+        // pads gets, on screen as well. Walls at the ends, not a wrap.
+        if state.decks.len() > 1 {
+            let last = state.decks.len() - 1;
+            let prev = ui
+                .add_enabled(state.active_deck > 0, egui::Button::new("‹").min_size(vec2(22.0, 26.0)))
+                .on_hover_text("previous page  ·  /deck/prev");
+            if prev.clicked() {
+                actions.decks.select = Some(state.active_deck - 1);
+            }
+            let next = ui
+                .add_enabled(state.active_deck < last, egui::Button::new("›").min_size(vec2(22.0, 26.0)))
+                .on_hover_text("next page  ·  /deck/next");
+            if next.clicked() {
+                actions.decks.select = Some(state.active_deck + 1);
+            }
+        }
         for (i, deck) in state.decks.iter().enumerate() {
             let live = i == state.active_deck;
             let (text, size) = fit_label(ui, &deck.name, CHIP_NAME_W);
@@ -929,12 +1076,15 @@ fn deck_row(ui: &mut egui::Ui, state: &PerformanceState<'_>, actions: &mut Perfo
                 (_, true) => "press a button on your controller".to_string(),
                 (Some(s), _) => format!("{}  ·  {s}", deck.name),
                 (None, _) => {
-                    if state.follow_columns == Some(true) {
+                    let base = if state.follow_columns == Some(true) {
                         format!("{}  ·  follows Resolume columns {}–{}", deck.name, deck.origin,
                             deck.origin + crate::grid_view::SLOTS as u32 - 1)
                     } else {
                         deck.name.clone()
-                    }
+                    };
+                    // The menu is the only door to renaming a page, and a
+                    // door nothing points at is a wall.
+                    format!("{base}  ·  right-click to rename, duplicate or delete")
                 }
             };
             let response = response.on_hover_text(hint);
@@ -1179,103 +1329,436 @@ fn deck_rename_row(
     });
 }
 
-/// Presets as a row of buttons, numbered to match the keyboard.
+/// Preset tiles: a picture of each look, grouped by what it was built on.
 ///
 /// `width` is the column's, and has to be passed in — see
 /// [`column_width`]. Bounded in height as well, because a library is no
-/// longer necessarily a handful: installing a set puts a hundred and sixty
-/// looks in it, and a wrapped row of that many is taller than the screen.
-/// Scrolling keeps every one of them reachable while the block stays the
-/// size the layout budgeted for it.
+/// longer necessarily a handful: installing a set puts a hundred and
+/// sixty looks in it, and a wrapped grid of that many is taller than the
+/// screen. Scrolling keeps every one of them reachable while the block
+/// stays the size the layout budgeted for it.
+///
+/// **Why pictures.** A preset is a list of numbers under a name somebody
+/// typed at 2am, and by the next gig the name is a guess. Recognition
+/// beats recall, and the only thing that reliably says what a look is,
+/// is the look. Each tile carries what was on the master when the look
+/// was saved or last fired — see [`vizz_mod::thumb`].
+///
+/// **Why groups.** A library sorted by name puts a scan between two
+/// attractors. Grouped by family — clouds, shapes, attractors, built-ins
+/// — it matches how a set is actually built, and unlike a per-file
+/// grouping it survives a night of loading files without turning into
+/// nine groups of one. The heading is dropped entirely when there is
+/// only one family, because a heading over the whole list says nothing.
+///
+/// The slot number stays on every tile: it is what `/preset/recall` and
+/// therefore a MIDI button addresses. Grouping changes where a look sits
+/// on screen, never what fires it.
 fn preset_row(
     ui: &mut egui::Ui,
     state: &PerformanceState<'_>,
     actions: &mut PerformanceActions,
     width: f32,
+    full_h: f32,
 ) {
-    ui.scope(|ui| {
-    ui.set_max_width(width);
-    egui::ScrollArea::vertical()
-        .max_height(PRESET_ROWS_SHOWN * (PRESET_BUTTON_H + 4.0))
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-    ui.set_max_width(width);
-    ui.horizontal_wrapped(|ui| {
-        for (i, name) in state.presets.iter().enumerate() {
-            let slot = i as u32 + 1;
-            // Only the first ten have a key; showing a number beside the
-            // eleventh would promise a shortcut that does not exist.
-            let label = if slot <= 10 {
-                egui::RichText::new(format!("{}  {name}", slot % 10))
-                    .size(14.0)
-                    .color(INK)
+    let present: Vec<vizz_mod::preset::Family> = vizz_mod::preset::Family::ALL
+        .iter()
+        .copied()
+        .filter(|f| state.presets.iter().any(|p| entry_family(p) == *f))
+        .collect();
+    // One family is not a grouping, it is a caption on the whole list. A
+    // fresh install has only built-ins.
+    let headed = present.len() > 1;
+    // Last frame's content height, because this frame's is not knowable
+    // before laying it out and the block has to be *given* a height.
+    //
+    // A `ScrollArea` sizes itself from the space its parent has left, and
+    // this column is an explicitly allocated zero-height region — the
+    // only form that stops the layer strip and the gravity grid reading
+    // the parent's width. Zero height means the scroll area asked for
+    // room and was told there was none, so `max_height` never applied and
+    // the block was whatever egui's floor happened to be: measured at 64
+    // points, a row and a half however many rows were asked for.
+    //
+    // Measured rather than modelled, because the content is a wrapped
+    // flow of tiles and headings, and any formula for its height would be
+    // a second implementation of egui's wrapping — wrong in exactly the
+    // cases that matter. One frame late is the same trade `StandDown` and
+    // the scene block already make further down.
+    let id = ui.make_persistent_id("preset-block-h");
+    let measured: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+    let want = measured.max(TILE_H + TILE_GAP).min(block_cap(full_h));
+    ui.allocate_ui_with_layout(
+        vec2(width, want),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_max_width(width);
+            let out = egui::ScrollArea::vertical()
+                .max_height(want)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_max_width(width);
+                    ui.spacing_mut().item_spacing = vec2(TILE_GAP, TILE_GAP);
+                    // One wrapped flow, headings and all.
+                    //
+                    // A heading on its own line is easier to scan and
+                    // costs a row of the desk each — four families would
+                    // spend sixty points on four words, in a block the
+                    // faders can only spare about a hundred. Measured:
+                    // stacked headings starved them, and the desk answers
+                    // that by standing punch, layers and presets down
+                    // together. A heading that flows with the tiles it
+                    // labels costs nothing and still puts the word where
+                    // the group starts.
+                    ui.horizontal_wrapped(|ui| {
+                        for family in present {
+                            if headed {
+                                ui.label(
+                                    egui::RichText::new(family.label())
+                                        .size(9.0)
+                                        .monospace()
+                                        .color(family_tint(family)),
+                                );
+                            }
+                            for (i, entry) in state.presets.iter().enumerate() {
+                                if entry_family(entry) != family {
+                                    continue;
+                                }
+                                preset_tile(ui, state, actions, i, entry, family);
+                            }
+                        }
+                    });
+                });
+            ui.data_mut(|d| d.insert_temp(id, out.content_size.y));
+        },
+    );
+}
+
+/// The most room the tile block may take, by window height.
+///
+/// Not a taste decision. The desk stands its entire upper half down —
+/// punch, layers and presets together — the moment what is left cannot
+/// hold the faders, so a block that asked for more would take punch and
+/// layers off the screen with it rather than simply scrolling.
+///
+/// Measured on a 1440x900 window carrying a deck row and both grids: the
+/// faders have about 140 points of slack over the row of text buttons
+/// this replaced, and two rows of tiles spend 112 of it. On 1280x720
+/// there is room for one row and a glimpse of the next. Fewer looks on
+/// screen than the text row showed, and more of them *recognised* —
+/// which is the trade the tile is for, and why the block scrolls.
+fn block_cap(full_h: f32) -> f32 {
+    let rows = if full_h >= SHORT_WINDOW { PRESET_ROWS_SHOWN } else { PRESET_ROWS_CRAMPED };
+    rows * (TILE_H + TILE_GAP)
+}
+
+/// A whole starting layer, not one field.
+///
+/// Writing only the generator left ink 1 — a five-percent grey, the
+/// black ink for white paper — on near-black paper at normal blend:
+/// rings at thirteen out of two hundred and fifty-five, and a frame that
+/// read as having gone slightly darker. The button exists so that one
+/// press producing a picture teaches that the row means anything, and
+/// it produced a change. Now it writes a red ink, added, at full opacity
+/// and a readable frequency; the blend is found by its name so a
+/// reordered list cannot silently repoint it.
+fn start_first_layer(
+    registry: &ParamRegistry,
+    (kind, blend, opacity, freq, color): (
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+        vizz_params::ParamId,
+    ),
+    first: f32,
+) {
+    registry.set(kind, first);
+    registry.set(color, 1.0);
+    registry.set(opacity, 1.0);
+    registry.set(freq, 12.0);
+    let def = &registry.defs()[blend.index()];
+    if let Some(add) = (def.min.round() as i32..=def.max.round() as i32)
+        .map(|i| i as f32)
+        .find(|v| def.label_for(*v) == Some("add"))
+    {
+        registry.set(blend, add);
+    }
+}
+
+/// What a listed look was built on. A built-in says so itself, whatever
+/// the source cache has to say about a user file of the same name.
+fn entry_family(entry: &crate::PresetEntry) -> vizz_mod::preset::Family {
+    if entry.builtin {
+        return vizz_mod::preset::Family::Builtin;
+    }
+    vizz_mod::preset::family(entry.source.as_deref())
+}
+
+/// The colour that stands for a family.
+///
+/// Chosen apart from the state colours rather than from them: a tile can
+/// be recalled (blue), learning (amber) or armed at the same time as it
+/// is a cloud, and a family that borrowed one of those would be read as
+/// a state. These are hues none of the five states use.
+fn family_tint(family: vizz_mod::preset::Family) -> egui::Color32 {
+    use vizz_mod::preset::Family;
+    match family {
+        Family::Cloud => egui::Color32::from_rgb(96, 186, 158),
+        Family::Shape => egui::Color32::from_rgb(150, 134, 214),
+        Family::Attractor => egui::Color32::from_rgb(206, 114, 168),
+        Family::Set => egui::Color32::from_rgb(214, 164, 92),
+        Family::Builtin => egui::Color32::from_rgb(126, 134, 150),
+        Family::Unknown => egui::Color32::from_rgb(86, 92, 106),
+    }
+}
+
+/// The name under the pointer while a tile is dragged, so the hand knows
+/// what it is holding and where it will land.
+fn drag_ghost(ui: &egui::Ui, name: &str) {
+    let Some(pos) = ui.ctx().pointer_latest_pos() else { return };
+    let p = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("preset-drag-ghost"),
+    ));
+    let galley = p.layout_no_wrap(name.to_string(), egui::FontId::proportional(12.0), INK);
+    let rect = egui::Rect::from_min_size(pos + vec2(14.0, 10.0), galley.size())
+        .expand2(vec2(8.0, 5.0));
+    p.rect_filled(rect, 4.0, vizz_design::surface::RAISED);
+    p.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, crate::theme::CURRENT),
+        egui::StrokeKind::Outside,
+    );
+    p.galley(rect.min + vec2(8.0, 5.0), galley, INK);
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+}
+
+/// One preset, as a tile.
+fn preset_tile(
+    ui: &mut egui::Ui,
+    state: &PerformanceState<'_>,
+    actions: &mut PerformanceActions,
+    index: usize,
+    entry: &crate::PresetEntry,
+    family: vizz_mod::preset::Family,
+) {
+    let slot = index as u32 + 1;
+    let name = &entry.name;
+    // A preset addresses a slot exactly as a scene pad does, so it maps
+    // the same way: the binding names the slot, and the tile only says
+    // when. A plain binding on `/preset/recall` would spread a button
+    // across a 64-slot range and recall the last one every time.
+    let bound = state.midi.map.source_for_value(RECALL, slot as f32);
+    let waiting = state.midi.learning_value(RECALL, slot as f32);
+    // The recalled slot is the answer to "where did the look on screen
+    // come from" — the one tile that should not look like the others.
+    let current = state.preset_current == Some(slot as usize);
+
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(TILE_W, TILE_H), egui::Sense::click_and_drag());
+    // A tile can be dragged onto a scene pad. The payload is the name
+    // and the pad does the assigning, through the same action the menu
+    // uses — so SCENES can be filled from the pictures rather than from
+    // a flat list of words.
+    response.dnd_set_drag_payload(crate::grid_view::DragLook(name.clone()));
+    if response.dragged() {
+        drag_ghost(ui, name);
+    }
+    // Asked before the painter is borrowed: reading a picture wants the
+    // context's data map mutably, and a `Ui` cannot lend both at once.
+    // Skipped entirely when the tile is scrolled out of sight, which is
+    // what keeps a library of a hundred and sixty off the disk.
+    let picture = if ui.is_rect_visible(rect) {
+        crate::thumbs::texture(ui, name, state.thumb_revision)
+    } else {
+        None
+    };
+
+    if ui.is_rect_visible(rect) {
+        let tint = family_tint(family);
+        let p = ui.painter();
+        // The bed. A look with no picture yet is drawn in its family's
+        // colour, deeply dimmed: enough to sort it by eye, not enough to
+        // compete with the tiles that do have one.
+        let bed = if waiting {
+            LEARN
+        } else {
+            tint.gamma_multiply(0.34).blend(vizz_design::surface::WELL)
+        };
+        p.rect_filled(rect, 3.0, bed);
+        if let Some(tex) = &picture {
+            let [w, h] = tex.size();
+            let fitted = letterbox(rect, w as f32 / (h.max(1)) as f32);
+            p.image(
+                tex.id(),
+                fitted,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        // The family, as a bar down the leading edge. Over the picture
+        // rather than behind it, because a picture fills the tile and a
+        // code you can only see on the looks that have no picture is a
+        // code for the wrong half of the library.
+        p.rect_filled(
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 3.0, rect.bottom())),
+            egui::CornerRadius { nw: 3, ne: 0, sw: 3, se: 0 },
+            tint,
+        );
+        // The name, over the picture rather than under it: under it would
+        // cost a fifth of the column for something the picture mostly
+        // already says.
+        //
+        // Two lines when one will not do, and the strip grows to fit. A
+        // set list names its looks "01 Song Title Here - Intro", where
+        // every distinguishing word is at the *end* — clipped to one
+        // line, sixteen tiles in a row read "01 Song Title…" and the row
+        // is worse than useless. A fixed two-line strip would instead
+        // spend half of every tile on the short names.
+        let job = {
+            let mut job = egui::text::LayoutJob::simple(
+                name.clone(),
+                egui::FontId::proportional(10.0),
+                INK,
+                rect.width() - 12.0,
+            );
+            job.wrap.max_rows = 2;
+            job.wrap.overflow_character = Some('…');
+            job
+        };
+        let galley = ui.fonts_mut(|f| f.layout_job(job));
+        let p = ui.painter();
+        let caption = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - galley.size().y - 4.0),
+            rect.max,
+        );
+        // A scrim under the name, so it stays readable over a white-out
+        // frame as well as a dark one.
+        p.rect_filled(
+            caption,
+            egui::CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 },
+            egui::Color32::from_black_alpha(190),
+        );
+        p.galley(
+            egui::pos2(caption.left() + 6.0, caption.center().y - galley.size().y * 0.5),
+            galley,
+            INK,
+        );
+        // The slot. A badge for the ten that have a key on the keyboard,
+        // a plain dim number for the rest — showing the eleventh the same
+        // way would promise a shortcut that does not exist, which is the
+        // reason the old row showed no number past ten at all.
+        let keyed = slot <= 10;
+        let corner = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 5.0, rect.top() + 3.0),
+            vec2(14.0, 12.0),
+        );
+        if keyed {
+            p.rect_filled(corner, 2.0, egui::Color32::from_black_alpha(190));
+        }
+        p.text(
+            corner.center(),
+            egui::Align2::CENTER_CENTER,
+            if keyed { (slot % 10).to_string() } else { slot.to_string() },
+            egui::FontId::monospace(9.0),
+            if keyed { INK } else { vizz_design::ink::FAINT },
+        );
+        if response.hovered() {
+            p.rect_filled(rect, 3.0, egui::Color32::from_white_alpha(16));
+        }
+        p.rect_stroke(
+            rect,
+            3.0,
+            if current {
+                egui::Stroke::new(1.5, crate::theme::CURRENT)
             } else {
-                egui::RichText::new(name).size(14.0).color(INK)
-            };
-            // A preset addresses a slot exactly as a scene pad does, so it
-            // maps the same way: the binding names the slot, and the
-            // button only says when. A plain binding on `/preset/recall`
-            // would spread a button across a 64-slot range and recall the
-            // last one every time.
-            let bound = state.midi.map.source_for_value(RECALL, slot as f32);
-            let waiting = state.midi.learning_value(RECALL, slot as f32);
-            // The recalled slot is the answer to "where did the look on
-            // screen come from" — the one button that should not look
-            // like the other nine. Blue, matching the grid's CURRENT.
-            let current = state.preset_current == Some(slot as usize);
-            let button = egui::Button::new(label)
-                .min_size(vec2(0.0, 30.0))
-                .fill(if waiting {
-                    LEARN
-                } else {
-                    vizz_design::surface::RAISED
-                })
-                // An edge, so the row reads as buttons rather than as a
-                // line of caption text — which is what it was mistaken
-                // for when the fills sat 13 points off the background.
-                .stroke(if current {
-                    egui::Stroke::new(1.5, crate::theme::CURRENT)
-                } else {
-                    egui::Stroke::new(1.0, vizz_design::surface::EDGE)
-                });
-            let response = ui.add(button);
-            if response.clicked() {
-                actions.preset_slot = Some(slot);
+                egui::Stroke::new(1.0, vizz_design::surface::EDGE)
+            },
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    if response.clicked() {
+        actions.preset_slot = Some(slot);
+    }
+    // The source by name as well as by family: the family says "a cloud",
+    // and which cloud is the thing you actually wanted to know.
+    let response = if waiting {
+        response.on_hover_text("press a button on your controller")
+    } else {
+        let mut hover = format!("recall {name}");
+        if let Some(source) = entry.source.as_deref().filter(|s| *s != "built in") {
+            hover = format!("{hover}  ·  on {source}");
+        }
+        if let Some(s) = &bound {
+            hover = format!("{hover}  ·  {}", s.label());
+        }
+        response.on_hover_text(format!("{hover}  ·  drag onto a scene pad"))
+    };
+    response.context_menu(|ui| {
+        // Always offered, MIDI or no MIDI: a picture is the tile's whole
+        // point, and a look saved before pictures existed has no other
+        // way to get one.
+        if ui
+            .button("update picture")
+            .on_hover_text("photograph what is on the output now")
+            .clicked()
+        {
+            actions.preset_rephoto = Some(name.clone());
+            ui.close();
+        }
+        if !entry.builtin
+            && ui
+                .button("rename…")
+                .on_hover_text("give this look a new name — pads that use it follow")
+                .clicked()
+        {
+            actions.preset_rename_start = Some(name.clone());
+            ui.close();
+        }
+        // The menu route to a pad, beside the drag: the same action, for
+        // a hand that would rather pick a number than aim.
+        ui.menu_button("put on a scene pad", |ui| {
+            for (i, held) in state.grid.names.iter().enumerate() {
+                let label = match held {
+                    Some(held) => format!("{}   {held}", i + 1),
+                    None => format!("{}   —", i + 1),
+                };
+                if ui.button(label).clicked() {
+                    actions.grid.assign = Some((i, name.clone()));
+                    ui.close();
+                }
             }
-            let response = match (&bound, waiting) {
-                (_, true) => response.on_hover_text("press a button on your controller"),
-                (Some(s), _) => response.on_hover_text(format!("recall {name}  ·  {}", s.label())),
-                (None, _) => response.on_hover_text(format!("recall {name}")),
-            };
-            if state.midi.available {
-                response.context_menu(|ui| match (&bound, waiting) {
-                    (Some(s), _) => {
-                        if ui.button(format!("unmap {}", s.label())).clicked() {
-                            actions.clear_slot_binding = Some((RECALL.to_string(), slot as f32));
-                            ui.close();
-                        }
-                    }
-                    (None, true) => {
-                        if ui.button("cancel MIDI learn").clicked() {
-                            actions.set_learn_target = Some(None);
-                            ui.close();
-                        }
-                    }
-                    (None, false) => {
-                        if ui.button("MIDI learn").clicked() {
-                            actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::value(
-                                RECALL,
-                                slot as f32,
-                                format!("preset {slot}"),
-                            )));
-                            ui.close();
-                        }
-                    }
-                });
+        });
+        if !state.midi.available {
+            return;
+        }
+        match (&bound, waiting) {
+            (Some(s), _) => {
+                if ui.button(format!("unmap {}", s.label())).clicked() {
+                    actions.clear_slot_binding = Some((RECALL.to_string(), slot as f32));
+                    ui.close();
+                }
+            }
+            (None, true) => {
+                if ui.button("cancel MIDI learn").clicked() {
+                    actions.set_learn_target = Some(None);
+                    ui.close();
+                }
+            }
+            (None, false) => {
+                if ui.button("MIDI learn").clicked() {
+                    actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::value(
+                        RECALL,
+                        slot as f32,
+                        format!("preset {slot}"),
+                    )));
+                    ui.close();
+                }
             }
         }
-    });
-        });
     });
 }
 
@@ -1369,7 +1852,8 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
     // opening something, because one press producing a picture is what
     // teaches that the row means anything.
     if !any_on {
-        let (kind, ..) = layer_ids[0];
+        let ids = layer_ids[0];
+        let (kind, ..) = ids;
         let def = &registry.defs()[kind.index()];
         // The first position past "off", whatever it happens to be
         // called — read from the definition rather than hardcoded, so
@@ -1393,7 +1877,7 @@ fn layer_strip(ui: &mut egui::Ui, registry: &ParamRegistry, width: f32) -> bool 
                 )
                 .clicked()
             {
-                registry.set(kind, first);
+                start_first_layer(registry, ids, first);
             }
             ui.label(
                 egui::RichText::new("flat shapes over the point field")
@@ -1604,9 +2088,16 @@ fn punch_button(
             }
         });
     if is_latched {
-        // The latch pip: a small ARMED corner square, the one visual
-        // that says "this stays on when you let go".
+        // A rim round the whole button and the corner pip: a latched
+        // punch stays on when you let go, and a 6x6 pip alone was too
+        // little to tell that from a held one across a desk.
         let r = response.rect;
+        ui.painter().rect_stroke(
+            r,
+            4.0,
+            egui::Stroke::new(2.0, crate::theme::ARMED),
+            egui::StrokeKind::Inside,
+        );
         ui.painter().rect_filled(
             egui::Rect::from_min_size(
                 egui::pos2(r.right() - 8.0, r.top() + 2.0),
@@ -1733,7 +2224,10 @@ fn status_strip(
                      the punch, scene and preset rows come back when you switch it off",
                 )
                 .clicked()
-                || ui.ctx().input(|i| i.key_pressed(egui::Key::V))
+                // Not while typing: a "v" in a pad's new name used to hide
+                // the rename row mid-word.
+                || (!ui.ctx().egui_wants_keyboard_input()
+                    && ui.ctx().input(|i| i.key_pressed(egui::Key::V)))
             {
                 ui.ctx().data_mut(|d| d.insert_temp(peek_id(), !peeking));
             }
@@ -1754,9 +2248,11 @@ fn status_strip(
 
             if ui
                 .add(egui::Button::new(
-                    egui::RichText::new("tap").size(13.0).color(INK),
+                    egui::RichText::new(crate::panel::tap_label(state.audio.tap_count))
+                        .size(13.0)
+                        .color(INK),
                 ))
-                .on_hover_text("tap the beat — three taps set the tempo and switch auto off")
+                .on_hover_text("tap the beat — three taps set the tempo and switch auto off  ·  T on the keyboard")
                 .clicked()
             {
                 actions.tapped = true;
@@ -1773,9 +2269,44 @@ fn status_strip(
             // exists and one anybody finds.
             .on_hover_text(if state.audio.clock_midi {
                 "following MIDI clock — panel ▸ audio ▸ midi clock to go back to the internal one"
+            } else if state.audio.auto_bpm {
+                "detected from the audio — tap to override, or panel ▸ audio ▸ auto to switch it off"
             } else {
                 "internal clock — tap to set it, or panel ▸ audio ▸ midi clock to follow your mixer"
             });
+            // The source, as a badge beside the number: MIDI when the
+            // clock is followed, AUTO when detection drives it, and a
+            // question mark on either when it is set but not actually
+            // steering — no ticks arriving, or a detection too unsure
+            // to be trusted, with the clock coasting on its last tempo.
+            // The internal clock gets nothing: it is the state that
+            // needs no explaining.
+            let sure = state.audio.confidence >= vizz_audio::MIN_CONFIDENCE;
+            let source = match (state.audio.clock_midi, state.audio.clock_ticking, state.audio.auto_bpm) {
+                (true, true, _) => Some(("MIDI", LIVE, "following MIDI clock from the controller")),
+                (true, false, _) => Some((
+                    "MIDI?",
+                    WARN,
+                    "set to follow MIDI clock, but no ticks are arriving — running free on the last tempo",
+                )),
+                (false, _, true) if sure => Some(("AUTO", LIVE, "the tempo is detected from the audio")),
+                (false, _, true) => Some((
+                    "AUTO?",
+                    WARN,
+                    "auto is on but the detection is not sure — the clock is coasting on its last tempo; tap to set it",
+                )),
+                _ => None,
+            };
+            if let Some((badge, ink, hover)) = source {
+                ui.label(
+                    egui::RichText::new(badge)
+                        .size(10.5)
+                        .strong()
+                        .monospace()
+                        .color(ink),
+                )
+                .on_hover_text(hover);
+            }
             // Recording, both ways round. This chip used to appear only
             // once a take was already running, which made it a stop
             // button wearing a record button's name: the only way to
@@ -1784,8 +2315,8 @@ fn status_strip(
             // take you cannot begin from the screen you play on is a
             // take that does not get begun.
             if let Some(id) = registry.id("/record/active") {
-                let (text, fill, ink, hover) = match &state.recording {
-                    Some(rec) => (
+                let (text, fill, ink, hover) = match (&state.recording, state.record_countdown) {
+                    (Some(rec), _) => (
                         format!(
                             "REC {}:{:02} · {}f{}",
                             rec.secs / 60,
@@ -1801,15 +2332,25 @@ fn status_strip(
                         Color32::WHITE,
                         "recording the master — click to stop",
                     ),
+                    // A countdown is the parameter already on and no
+                    // frames yet: said as such, and the click cancels
+                    // it. The chip used to ignore the parameter, so a
+                    // countdown could only be stopped from the panel.
+                    (None, Some(left)) => (
+                        format!("REC in {left}…"),
+                        vizz_design::accent::REC_BED,
+                        Color32::WHITE,
+                        "counting down to the take — click to cancel",
+                    ),
                     // Idle sits dark with the word in a dimmed red, so it
                     // reads as armed-and-waiting rather than as another
                     // status light, and cannot be mistaken at a glance
                     // for a take in progress.
-                    None => (
+                    (None, None) => (
                         "REC".to_string(),
                         vizz_design::accent::REC_BED,
                         vizz_design::accent::REC_INK,
-                        "record the master as a PNG sequence — click to start",
+                        "record the master as an image sequence — click to start · the panel's recording section sets the format and rate",
                     ),
                 };
                 let chip = ui.add(
@@ -1817,19 +2358,12 @@ fn status_strip(
                         .fill(fill),
                 );
                 if chip.on_hover_text(hover).clicked() {
-                    registry.set(id, if state.recording.is_some() { 0.0 } else { 1.0 });
+                    // Reads the parameter, as the panel's button does:
+                    // during a countdown it is already on, and the
+                    // click has to be the cancel.
+                    let on = registry.target(id) >= 0.5;
+                    registry.set(id, if on { 0.0 } else { 1.0 });
                 }
-            }
-            if state.audio.clock_midi {
-                // Following the wire — or supposed to be. Green while
-                // ticks arrive, warning-amber while the wire is silent
-                // and the clock is running free on its last tempo.
-                let (word, colour) = if state.audio.clock_ticking {
-                    ("MIDI", LIVE)
-                } else {
-                    ("MIDI?", WARN)
-                };
-                ui.label(egui::RichText::new(word).size(13.0).strong().color(colour));
             }
             // Beat indicator: brightest on the downbeat, so tempo is
             // visible without reading a number.
@@ -1847,7 +2381,8 @@ fn status_strip(
         });
     });
 
-    audio_strip(ui, state.audio, width);
+    let reacting = state.graph.is_some_and(vizz_mod::shapes::reacting);
+    audio_strip(ui, state.audio, reacting, actions, width);
 }
 
 /// Audio across the full width, labelled.
@@ -1856,19 +2391,70 @@ fn status_strip(
 /// visuals stop reacting the first question is whether audio is still
 /// arriving and at what level — which the stubs could not answer, because
 /// nothing said which band was which or what "full" looked like.
-fn audio_strip(ui: &mut egui::Ui, audio: &AudioView, width: f32) {
-    const BANDS: [&str; 4] = ["low", "lo-mid", "hi-mid", "high"];
+fn audio_strip(
+    ui: &mut egui::Ui,
+    audio: &AudioView,
+    reacting: bool,
+    actions: &mut PerformanceActions,
+    width: f32,
+) {
+    const BANDS: [&str; 4] = vizz_mod::BAND_NAMES;
     ui.horizontal(|ui| {
-        if !audio.connected {
-            ui.label(
-                egui::RichText::new("audio: not connected")
+        // One press and the picture follows the music: the kick on the
+        // size, the loudness on the glow, the snare on the brightness.
+        // The same three ready-made modulators a hand would pick from the
+        // fader menus, attached together — because a first listener does
+        // not know those menus exist, and "why does nothing move with the
+        // music" is the first question the meters beside this raise.
+        if ui
+            .add(egui::Button::new(
+                egui::RichText::new(if reacting { "reacting" } else { "react" })
                     .size(12.0)
-                    .color(WARN),
-            );
+                    .color(if reacting { LIVE } else { INK_2 }),
+            ))
+            .on_hover_text(if reacting {
+                "the kick, the loudness and the snare are moving the picture — click to stop"
+            } else {
+                "make the picture follow the music: kick → size, loudness → glow, snare → brightness"
+            })
+            .clicked()
+        {
+            actions.react = Some(!reacting);
+        }
+        ui.add_space(8.0);
+        // The input, as a click target: choosing it used to mean the
+        // panel, two screens from the meters that say it is needed. A
+        // dropped device keeps its name here, so the line says which
+        // interface went rather than only that one did.
+        let (text, ink) = match (audio.connected, audio.device.as_deref()) {
+            (true, name) => (name.unwrap_or("input").to_string(), INK_3),
+            (false, Some(name)) => (format!("{name} — not capturing"), WARN),
+            (false, None) => ("audio: not connected".to_string(), WARN),
+        };
+        let label = ui
+            .add(
+                egui::Label::new(egui::RichText::new(text).size(12.0).color(ink))
+                    .sense(Sense::click()),
+            )
+            .on_hover_text("the audio input  ·  click to change it");
+        egui::Popup::menu(&label).show(|ui| {
+            if ui
+                .selectable_label(audio.device.is_none(), "system default")
+                .clicked()
+            {
+                actions.audio_device = Some(None);
+            }
+            ui.separator();
+            for name in crate::panel::device_list(ui) {
+                let selected = audio.device.as_deref() == Some(name.as_str());
+                if ui.selectable_label(selected, &name).clicked() {
+                    actions.audio_device = Some(Some(name.clone()));
+                }
+            }
+        });
+        if !audio.connected {
             return;
         }
-        let name = audio.device.as_deref().unwrap_or("input");
-        ui.label(egui::RichText::new(name).size(12.0).color(INK_3));
         ui.add_space(8.0);
 
         // Meters share out the width rather than taking a fixed size, so
@@ -1878,6 +2464,12 @@ fn audio_strip(ui: &mut egui::Ui, audio: &AudioView, width: f32) {
         let each = ((width - 160.0) / 4.0).clamp(60.0, 130.0);
         for (i, label) in BANDS.iter().enumerate() {
             let v = audio.bands[i].clamp(0.0, 1.0);
+            // When this band last cleared the gate, for the modulator
+            // popup's warning; see `gate_silence`.
+            if v >= vizz_mod::shapes::GATE {
+                let now = ui.input(|inp| inp.time);
+                ui.data_mut(|d| d.insert_temp(gate_crossed_id(i), now));
+            }
             let (r, _) = ui.allocate_exact_size(vec2(each, 12.0), Sense::hover());
             ui.painter().rect_filled(r, 2.0, TRACK);
             // The track was 15 RGB points off the background — invisible,
@@ -1895,6 +2487,14 @@ fn audio_strip(ui: &mut egui::Ui, audio: &AudioView, width: f32) {
                 // Warm at the top of the range: a band pinned at 1.0 is
                 // clipping its modulation and should not look healthy.
                 if v > 0.97 { WARN } else { LIVE },
+            );
+            // The gate line: where Kick and Snare open. A band that never
+            // reaches it leaves its shape inert with the fader still
+            // reading amber, and this makes that one glance.
+            let gate_x = r.left() + r.width() * vizz_mod::shapes::GATE;
+            ui.painter().line_segment(
+                [egui::pos2(gate_x, r.top() + 1.0), egui::pos2(gate_x, r.bottom() - 1.0)],
+                (1.0, vizz_design::ink::TERTIARY),
             );
             ui.painter().text(
                 r.left_center() + vec2(5.0, 0.0),
@@ -2212,7 +2812,7 @@ fn fader(
                 ui.label(number);
             }
             midi_chip(ui, state, actions, addr);
-            mod_popup(ui, addr, slot, shape, actions);
+            mod_popup(ui, addr, slot, shape, state.audio.connected, actions);
         }
         _ => {
             // Unassigned, or pointing at a parameter this build no longer
@@ -2272,12 +2872,17 @@ fn fader(
 /// variant that loses least.
 fn fit_label(ui: &egui::Ui, name: &str, w: f32) -> (String, f32) {
     const STEPS: [f32; 4] = [13.0, 11.5, 10.0, 9.0];
+    // Measured against the button's inner width, not the column: the
+    // button pads four points a side, so a label that fit the column
+    // exactly wrapped inside it — two half-width rows that pushed the
+    // binding line under the lane's clip.
+    let inner = w - 8.0;
     let fits = |text: &str, size: f32| {
         ui.painter()
             .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), INK_2)
             .rect
             .width()
-            <= w
+            <= inner
     };
     for size in STEPS {
         if fits(name, size) {
@@ -2351,7 +2956,7 @@ fn midi_chip(
                     egui::Label::new(egui::RichText::new("learn").size(11.0).color(INK_4))
                         .sense(Sense::click()),
                 )
-                .on_hover_text("bind the next control you move to this fader")
+                .on_hover_text("bind the next knob or fader you move to this fader")
                 .clicked()
             {
                 actions.set_learn_target = Some(Some(vizz_midi::LearnTarget::param(addr)));
@@ -2371,6 +2976,7 @@ fn mod_popup(
     addr: &str,
     slot: usize,
     current: Option<usize>,
+    audio_connected: bool,
     actions: &mut PerformanceActions,
 ) {
     if !is_mod_open(ui, slot) {
@@ -2422,6 +3028,24 @@ fn mod_popup(
                             }
                         }
                     });
+                // A gated shape whose band never opens the gate is inert
+                // with its fader still reading amber. Said here, where
+                // the shape was chosen, with the thing that fixes it.
+                if audio_connected
+                    && let Some(band) = current.and_then(|i| vizz_mod::shapes::SHAPES[i].band)
+                {
+                    let silent = gate_silence(ui, band);
+                    if silent > GATE_PATIENCE {
+                        ui.small(
+                            egui::RichText::new(format!(
+                                "the {} band has not crossed the gate for {silent:.0} s — \
+                                 press fit in the panel's audio section",
+                                vizz_mod::BAND_NAMES[band]
+                            ))
+                            .color(WARN),
+                        );
+                    }
+                }
             });
         });
     if let Some(pick) = chosen {
@@ -2435,6 +3059,22 @@ fn mod_popup(
 
 fn mod_key(slot: usize) -> egui::Id {
     egui::Id::new(("mod-open", slot))
+}
+
+/// How long a band may sit under the gate before the popup says so. A
+/// breakdown is not a fault; a whole verse without a kick reaching the
+/// line is a gain to fit.
+const GATE_PATIENCE: f64 = 10.0;
+
+fn gate_crossed_id(band: usize) -> egui::Id {
+    egui::Id::new(("band-gate-crossed", band))
+}
+
+/// Seconds since `band` last cleared the gate, or since launch if it
+/// never has. The strip records the crossings; this reads them.
+fn gate_silence(ui: &egui::Ui, band: usize) -> f64 {
+    let now = ui.input(|i| i.time);
+    now - ui.data(|d| d.get_temp::<f64>(gate_crossed_id(band))).unwrap_or(0.0)
 }
 fn open_mod(ui: &egui::Ui, slot: usize) {
     ui.memory_mut(|m| m.data.insert_temp(mod_key(slot), true));
@@ -2917,6 +3557,12 @@ fn glide(
 /// loudest object on a screen where it is not the thing being played. Same
 /// size as its neighbours now; it stays findable by being red and by always
 /// sitting at the end of the first row.
+/// What the master is for, said on the fader that is the last thing
+/// between the picture and the room. The panel's OUTPUT group already
+/// called it the panic fader; the screen you play from did not.
+const MASTER_HOVER: &str = "the panic fader — dims everything on the output, and at the \
+                            bottom of its travel the output is black  ·  right-click resets it";
+
 fn master(
     ui: &mut egui::Ui,
     registry: &ParamRegistry,
@@ -2972,12 +3618,16 @@ fn master(
     }
     let _ = state;
 
+    // The state said in a word, not only in a rim: "0.00" is a number,
+    // "BLACK" is why the projector is dark.
+    let dark = t < 0.02;
     ui.label(
-        egui::RichText::new(format!("{value:.2}"))
+        egui::RichText::new(if dark { "BLACK".to_string() } else { format!("{value:.2}") })
             .size(13.0)
             .monospace()
-            .color(if t < 0.02 { WARN } else { INK }),
-    );
+            .color(if dark { WARN } else { INK }),
+    )
+    .on_hover_text(MASTER_HOVER);
     // Shrunk to the column like every other fader name, rather than
     // drawn at a fixed size and allowed to overhang. At a 1024-point
     // window the master's column is 55 points wide and this caption
@@ -3001,7 +3651,8 @@ fn master(
             .size(master_size.min(11.0))
             .strong()
             .color(vizz_design::accent::MASTER_INK),
-    );
+    )
+    .on_hover_text(MASTER_HOVER);
     ui.label(egui::RichText::new(" ").size(11.0));
 }
 
@@ -3100,12 +3751,12 @@ mod tests {
             const { std::cell::RefCell::new(Vec::new()) };
         /// The preset library the shared harness draws, for the tests that
         /// care what happens when it is large.
-        static SHEET_PRESETS: std::cell::RefCell<Vec<String>> =
+        static SHEET_PRESETS: std::cell::RefCell<Vec<crate::PresetEntry>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
     /// Run `f` with a large preset library loaded.
-    fn with_presets<T>(names: Vec<String>, f: impl FnOnce() -> T) -> T {
+    fn with_presets<T>(names: Vec<crate::PresetEntry>, f: impl FnOnce() -> T) -> T {
         SHEET_PRESETS.with(|d| *d.borrow_mut() = names);
         let out = f();
         SHEET_PRESETS.with(|d| d.borrow_mut().clear());
@@ -3113,12 +3764,12 @@ mod tests {
     }
 
     /// What the built-in set puts in the library: twenty songs of eight.
-    fn a_set_of_presets() -> Vec<String> {
+    fn a_set_of_presets() -> Vec<crate::PresetEntry> {
         (1..=20)
             .flat_map(|n| {
                 SECTION_NAMES
                     .iter()
-                    .map(move |s| format!("{n:02} Song Title Here - {s}"))
+                    .map(move |s| crate::PresetEntry::from(&*format!("{n:02} Song Title Here - {s}")))
             })
             .collect()
     }
@@ -3155,7 +3806,7 @@ mod tests {
         // Wide: everything is still there, because nothing had to stand
         // down to make room for the picture.
         let text = render_at(&mut macros, &reg, &MidiView::default(), None, None, 1440.0);
-        for want in ["SCENES", "PUNCH", "CONTROLS", "size"] {
+        for want in ["SCENES", "PUNCH", "FADERS", "size"] {
             assert!(text.contains(want), "{want} went missing on a wide window: {text}");
         }
 
@@ -3185,7 +3836,7 @@ mod tests {
         // is its own problem and not the width fallback under test here.
         // Asserting a name would be asserting that bug instead of this
         // one, and would go on failing after this one was fixed.
-        assert!(text.contains("CONTROLS"), "the narrow layout lost the desk: {text}");
+        assert!(text.contains("FADERS"), "the narrow layout lost the desk: {text}");
     }
 
 
@@ -3203,7 +3854,7 @@ mod tests {
 
         let text = render(&mut macros, &reg);
         assert!(
-            text.contains("CONTROLS"),
+            text.contains("FADERS"),
             "the desk lost its caption: {text}"
         );
         // The count is shown, not only implied by counting faders.
@@ -3307,11 +3958,12 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string()];
+        let names = [crate::PresetEntry::from("Slow bloom")];
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -3324,6 +3976,7 @@ mod tests {
             bpm: 128.0,
             bar_phase: 0.1,
             presets: &names,
+            thumb_revision: 0,
             grid: &grid,
             gravity: None,
             midi: &midi,
@@ -3407,7 +4060,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string()];
+        let names = [crate::PresetEntry::from("Slow bloom")];
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let size = vec2(1440.0, 900.0);
@@ -3428,6 +4081,7 @@ mod tests {
          -> (PerformanceActions, Vec<(String, egui::Rect)>) {
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
             decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -3440,6 +4094,7 @@ mod tests {
                 bpm: 128.0,
                 bar_phase: 0.1,
                 presets: &names,
+                thumb_revision: 0,
                 grid: &grid,
                 gravity: None,
                 midi: &midi,
@@ -3573,7 +4228,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string()];
+        let names = [crate::PresetEntry::from("Slow bloom")];
         let mut grid = crate::grid_view::GridView::default();
         grid.names[0] = Some("intro".into());
         grid.curve_names = vec!["linear".into(), "smooth".into()];
@@ -3587,6 +4242,7 @@ mod tests {
          -> Vec<(String, egui::Pos2)> {
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
             decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -3599,6 +4255,7 @@ mod tests {
                 bpm: 128.0,
                 bar_phase: 0.1,
                 presets: &names,
+                thumb_revision: 0,
                 grid: &grid,
                 gravity: None,
                 midi: &midi,
@@ -3668,6 +4325,398 @@ mod tests {
             actions.grid.clear,
             Some(0),
             "arming clear and pressing a pad on the desk produced no clear"
+        );
+    }
+
+
+    /// A look with a source, for the grouping tests.
+    fn look(name: &str, source: &str) -> crate::PresetEntry {
+        crate::PresetEntry {
+            name: name.to_string(),
+            builtin: false,
+            about: None,
+            source: Some(source.to_string()),
+        }
+    }
+
+    /// A library spanning three families.
+    ///
+    /// Three rather than all five: the block is capped at three headings
+    /// on a 1440x900 window — see [`block_cap`] — so a fourth group is
+    /// correctly below the fold, and a test that asserted it was on
+    /// screen would be asserting the cap does not work.
+    fn a_mixed_library() -> Vec<crate::PresetEntry> {
+        vec![
+            look("Scanned torso", "torso-scan.ply"),
+            look("Bloom", "sphere"),
+            look("Butterfly", "Aizawa"),
+        ]
+    }
+
+    /// The other three families, small enough to all fit.
+    fn a_shipped_library() -> Vec<crate::PresetEntry> {
+        vec![
+            crate::PresetEntry {
+                name: "Slow bloom".into(),
+                builtin: true,
+                about: Some("opener".into()),
+                source: Some("built in".into()),
+            },
+            look("Drop", "electronic set"),
+            crate::PresetEntry::from("Ancient look"),
+        ]
+    }
+
+    /// A mixed library is grouped by what each look was built on.
+    ///
+    /// The whole reason a preset records a source: a set built on scans,
+    /// generated shapes and attractors is three different kinds of thing,
+    /// and a flat alphabetical row makes you read every name to find the
+    /// three that go together.
+    #[test]
+    fn a_mixed_library_is_grouped_by_what_the_looks_were_built_on() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let sheet = with_presets(a_mixed_library(), || {
+            sheet_sized(
+                &mut macros,
+                &reg,
+                &MidiView::default(),
+                None,
+                None,
+                vec2(1440.0, 900.0),
+            )
+        });
+        let text = sheet.text();
+        for heading in ["clouds", "shapes", "attractors"] {
+            assert!(text.contains(heading), "no '{heading}' heading: {text}");
+        }
+        // Each heading above the look it labels, or it is labelling the
+        // wrong group — which a substring search cannot tell.
+        let at = |t: &str| {
+            sheet
+                .items
+                .iter()
+                .find(|p| p.text.trim() == t)
+                .unwrap_or_else(|| panic!("'{t}' was not painted: {text}"))
+                .rect
+        };
+        // Each heading ahead of the look it labels, and behind the one
+        // before it. The headings flow with the tiles rather than sitting
+        // over them, so "ahead" is reading order — left to right, then
+        // down.
+        //
+        // Compared on trailing edges, and that is not arbitrary: egui
+        // lays a label inside a wrapped row out as a galley anchored at
+        // the *row's* origin with the indentation as leading space, so
+        // every heading in a row reports the same `left` and only its
+        // `right` says where the words actually end. Measured: the three
+        // headings all come back starting at x=14.
+        //
+        // Same-row is a tolerance rather than an exact edge, because a
+        // tile's name sits along its bottom and a heading at the middle
+        // of the row — the same row, a couple of points apart. A row is
+        // fifty-six, so the tolerance separates the two cases easily.
+        let before = |a: &str, b: &str| {
+            let (a, b) = (at(a), at(b));
+            if (a.bottom() - b.bottom()).abs() < TILE_H {
+                a.right() < b.right()
+            } else {
+                a.bottom() < b.bottom()
+            }
+        };
+        assert!(before("clouds", "Scanned torso"), "the clouds heading is not before its look");
+        assert!(before("Scanned torso", "shapes"), "a cloud look is not before the shapes");
+        assert!(before("shapes", "Bloom"), "the shapes heading is not before its look");
+        assert!(before("Bloom", "attractors"), "a shape is not before the attractors");
+        assert!(before("attractors", "Butterfly"), "the attractors heading is not before its look");
+
+        // The two families the first library has none of.
+        let shipped = with_presets(a_shipped_library(), || {
+            sheet_sized(
+                &mut macros,
+                &reg,
+                &MidiView::default(),
+                None,
+                None,
+                vec2(1440.0, 900.0),
+            )
+        });
+        let text = shipped.text();
+        for heading in ["demo set", "built in", "unsorted"] {
+            assert!(text.contains(heading), "no '{heading}' heading: {text}");
+        }
+    }
+
+    /// One family is a caption on the whole list, not a grouping — so it
+    /// is not drawn. A fresh install ships built-ins and nothing else,
+    /// and a lone "built in" heading over every look is a row of
+    /// vertical space spent saying nothing.
+    #[test]
+    fn one_family_gets_no_heading() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        let library = vec![look("Bloom", "sphere"), look("Knotted", "knot")];
+        let sheet = with_presets(library, || {
+            sheet_sized(
+                &mut macros,
+                &reg,
+                &MidiView::default(),
+                None,
+                None,
+                vec2(1440.0, 900.0),
+            )
+        });
+        let text = sheet.text();
+        assert!(text.contains("Bloom"), "the looks are missing: {text}");
+        assert!(
+            !sheet.items.iter().any(|p| p.text.trim() == "shapes"),
+            "a lone family was still given a heading: {text}"
+        );
+    }
+
+    /// Grouping must not renumber anything. The slot is what
+    /// `/preset/recall`, the number keys and every MIDI binding address;
+    /// re-sorting the list to make the groups tidy would silently remap
+    /// a controller mid-set.
+    #[test]
+    fn grouping_does_not_renumber_the_slots() {
+        let reg = registry();
+        let mut macros = Macros::default();
+        // Slot 1 is a cloud, so grouping moves it below the shapes and
+        // attractors it would otherwise sit above.
+        let sheet = with_presets(a_mixed_library(), || {
+            sheet_sized(
+                &mut macros,
+                &reg,
+                &MidiView::default(),
+                None,
+                None,
+                vec2(1440.0, 900.0),
+            )
+        });
+        let text = sheet.text();
+        let name = sheet
+            .items
+            .iter()
+            .find(|p| p.text.trim() == "Scanned torso")
+            .unwrap_or_else(|| panic!("the first preset is missing: {text}"));
+        let tile = egui::Rect::from_min_max(
+            egui::pos2(name.rect.left() - 8.0, name.rect.bottom() - TILE_H),
+            egui::pos2(name.rect.left() - 8.0 + TILE_W, name.rect.bottom() + 6.0),
+        );
+        assert!(
+            sheet
+                .items
+                .iter()
+                .any(|p| p.text.trim() == "1" && tile.contains_rect(p.rect)),
+            "the first slot lost its number when the list was grouped: {text}"
+        );
+    }
+
+    /// Every tile paints its family's colour, so the coding is there for
+    /// the looks that have a picture as well as the ones that do not.
+    ///
+    /// Painted over the picture rather than behind it: a bar you can only
+    /// see on the looks with no photograph is a code for the wrong half
+    /// of the library.
+    #[test]
+    fn every_family_paints_its_own_colour() {
+        use vizz_mod::preset::Family;
+        let reg = registry();
+        let mut macros = Macros::default();
+        let mut fills = Vec::new();
+        for library in [a_mixed_library(), a_shipped_library()] {
+            let sheet = with_presets(library, || {
+                sheet_sized(
+                    &mut macros,
+                    &reg,
+                    &MidiView::default(),
+                    None,
+                    None,
+                    vec2(1440.0, 900.0),
+                )
+            });
+            fills.extend(sheet.fills);
+        }
+        for family in Family::ALL {
+            assert!(
+                fills.contains(&family_tint(family)),
+                "{family:?} has no tile wearing its colour"
+            );
+        }
+        // And no two families share one, or the code says nothing.
+        let mut tints: Vec<_> = Family::ALL.iter().map(|f| family_tint(*f)).collect();
+        tints.sort_by_key(|c| c.to_array());
+        tints.dedup();
+        assert_eq!(tints.len(), Family::ALL.len(), "two families share a colour");
+    }
+
+    /// A picture, when the look has one.
+    ///
+    /// The whole point of the tile. Asserted by counting painted images
+    /// rather than by reading text: a thumbnail draws nothing a string
+    /// search can see, which is exactly how a broken one would go
+    /// unnoticed.
+    #[test]
+    fn a_look_with_a_picture_paints_it() {
+        let _guard = crate::project_bar::tests::scoped_config("perf-thumbs");
+        let picture = vizz_mod::thumb::Thumb {
+            width: 8,
+            height: 5,
+            rgba: vec![255; 8 * 5 * 4],
+        };
+        vizz_mod::thumb::save("Bloom", &picture).expect("saving a picture");
+        let reg = registry();
+        let mut macros = Macros::default();
+        let library = vec![look("Bloom", "sphere"), look("Knotted", "knot")];
+        let images = |sheet: &Sheet| -> usize { sheet.images };
+        let with = with_presets(library.clone(), || {
+            sheet_sized(
+                &mut macros,
+                &reg,
+                &MidiView::default(),
+                None,
+                None,
+                vec2(1440.0, 900.0),
+            )
+        });
+        vizz_mod::thumb::remove("Bloom");
+        // A fresh context, or the cached handle from the first pass would
+        // answer for the second — see [`crate::thumbs`].
+        let without = with_presets(library, || {
+            sheet_sized(
+                &mut macros,
+                &reg,
+                &MidiView::default(),
+                None,
+                None,
+                vec2(1440.0, 900.0),
+            )
+        });
+        assert_eq!(
+            images(&with),
+            images(&without) + 1,
+            "the look with a picture painted {} images, the one without {}",
+            images(&with),
+            images(&without)
+        );
+    }
+
+    /// Every look can be photographed from its own tile, whether or not
+    /// there is a controller plugged in. A look saved before pictures
+    /// existed has no other way to get one.
+    #[test]
+    fn a_tile_offers_to_take_a_fresh_picture() {
+        let reg = registry();
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut macros = Macros::default();
+        let library = vec![look("Bloom", "sphere")];
+        let audio = AudioView::default();
+        let grid = crate::grid_view::GridView::default();
+        let size = vec2(1440.0, 900.0);
+
+        let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            });
+            let state = PerformanceState {
+                project: "Show 1",
+                record_countdown: None,
+                decks: &[],
+                active_deck: 0,
+                follow_columns: None,
+                recording: None,
+                preset_current: None,
+                outputs: &[],
+                audio: &audio,
+                fps: 60.0,
+                over_budget: false,
+                bpm: 128.0,
+                bar_phase: 0.1,
+                presets: &library,
+                thumb_revision: 0,
+                grid: &grid,
+                gravity: None,
+                midi: &MidiView::default(),
+                values: None,
+                output_texture: None,
+                output_aspect: 16.0 / 9.0,
+                graph: None,
+            };
+            let actions = draw(&ctx, &reg, &state, &mut macros);
+            let out = ctx.end_pass();
+            let mut runs = Vec::new();
+            for c in &out.shapes {
+                let mut found = Vec::new();
+                collect_text(&c.shape, &mut found);
+                runs.extend(found.into_iter().map(|p| (p.text, p.rect.center())));
+            }
+            (actions, runs)
+        };
+
+        // A few passes first: a scroll area does not know its content on
+        // the frame it is created, and the tile is inside one.
+        for _ in 0..4 {
+            frame(Vec::new());
+        }
+        let (_, runs) = frame(Vec::new());
+        let tile = runs
+            .iter()
+            .find(|(t, _)| t.trim() == "Bloom")
+            .map(|(_, at)| *at)
+            .expect("the preset tile was not painted");
+        // Right-click the tile: the name sits on the tile, so its centre
+        // is inside it.
+        frame(vec![
+            egui::Event::PointerMoved(tile),
+            egui::Event::PointerButton {
+                pos: tile,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: tile,
+                button: egui::PointerButton::Secondary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        // The menu is opened by the click and drawn on the frame after.
+        let (_, runs) = frame(vec![egui::Event::PointerMoved(tile)]);
+        let item = runs
+            .iter()
+            .find(|(t, _)| t.trim() == "update picture")
+            .map(|(_, at)| *at)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no way to photograph a look: {:?}",
+                    runs.iter().map(|(t, _)| t.trim()).collect::<Vec<_>>()
+                )
+            });
+        let (actions, _) = frame(vec![
+            egui::Event::PointerMoved(item),
+            egui::Event::PointerButton {
+                pos: item,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: item,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        assert_eq!(
+            actions.preset_rephoto.as_deref(),
+            Some("Bloom"),
+            "the menu item paints but does nothing"
         );
     }
 
@@ -3750,6 +4799,31 @@ mod tests {
 
 
 
+    /// The starting layer is a picture, not a change.
+    ///
+    /// The button used to write the generator alone, leaving the black
+    /// ink on the black paper at normal blend — rings at thirteen out of
+    /// two hundred and fifty-five. A first press has to produce something
+    /// a person can see, or the row it teaches teaches nothing.
+    #[test]
+    fn the_starting_layer_is_visible_on_the_default_paper() {
+        let reg = registry();
+        let ids = (
+            reg.id("/l1/kind").unwrap(),
+            reg.id("/l1/blend").unwrap(),
+            reg.id("/l1/opacity").unwrap(),
+            reg.id("/l1/freq").unwrap(),
+            reg.id("/l1/color").unwrap(),
+        );
+        start_first_layer(&reg, ids, 1.0);
+        assert_eq!(reg.target(ids.0), 1.0, "the generator");
+        assert_eq!(reg.target(ids.4), 1.0, "ink 1 is the black ink; the layer needs another");
+        assert_eq!(reg.target(ids.2), 1.0, "opacity");
+        assert!(reg.target(ids.3) >= 8.0, "a frequency that reads");
+        let blend = &reg.defs()[ids.1.index()];
+        assert_eq!(blend.label_for(reg.target(ids.1)), Some("add"), "the blend that shows on black");
+    }
+
     /// A layer can be started from the screen you play on.
     ///
     /// The strip used to return early when every layer was off, so the
@@ -3774,11 +4848,12 @@ mod tests {
 
         let mut frame = |click: Option<egui::Pos2>| -> Vec<(String, egui::Rect)> {
             let audio = AudioView::default();
-            let names = ["Slow bloom".to_string()];
+            let names = [crate::PresetEntry::from("Slow bloom")];
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
             decks: &[],
                 active_deck: 0,
                 follow_columns: None,
@@ -3791,6 +4866,7 @@ mod tests {
                 bpm: 128.0,
                 bar_phase: 0.1,
                 presets: &names,
+                thumb_revision: 0,
                 grid: &grid,
                 gravity: None,
                 midi: &midi,
@@ -4171,11 +5247,12 @@ mod tests {
 
         let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
             let audio = AudioView::default();
-            let names = ["Slow bloom".to_string()];
+            let names = [crate::PresetEntry::from("Slow bloom")];
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -4188,6 +5265,7 @@ mod tests {
                 bpm: 128.0,
                 bar_phase: 0.1,
                 presets: &names,
+                thumb_revision: 0,
                 grid: &grid,
                 gravity: None,
                 midi: &midi,
@@ -4312,11 +5390,12 @@ mod tests {
         // where they actually landed rather than where they were meant to.
         let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
             let audio = AudioView::default();
-            let names = ["Slow bloom".to_string()];
+            let names = [crate::PresetEntry::from("Slow bloom")];
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -4329,6 +5408,7 @@ mod tests {
                 bpm: 128.0,
                 bar_phase: 0.1,
                 presets: &names,
+                thumb_revision: 0,
                 grid: &grid,
                 gravity: None,
                 midi: &midi,
@@ -4446,11 +5526,12 @@ mod tests {
 
         let mut frame = |events: Vec<egui::Event>| -> (PerformanceActions, Vec<(String, egui::Pos2)>) {
             let audio = AudioView::default();
-            let names = ["Slow bloom".to_string()];
+            let names = [crate::PresetEntry::from("Slow bloom")];
             let grid = crate::grid_view::GridView::default();
             let midi = MidiView::default();
             let state = PerformanceState {
                 project: "Show 1",
+                record_countdown: None,
                 decks: &decks,
                 active_deck: 0,
                 follow_columns: Some(false),
@@ -4463,6 +5544,7 @@ mod tests {
                 bpm: 128.0,
                 bar_phase: 0.1,
                 presets: &names,
+                thumb_revision: 0,
                 grid: &grid,
                 gravity: None,
                 midi: &midi,
@@ -4582,7 +5664,7 @@ mod tests {
             let shown = sheet
                 .items
                 .iter()
-                .filter(|p| library.iter().any(|n| p.text.contains(n.as_str())))
+                .filter(|p| library.iter().any(|n| p.text.contains(n.name.as_str())))
                 .count();
             assert!(
                 shown > 0,
@@ -4630,7 +5712,7 @@ mod tests {
             let spilled: Vec<&str> = sheet
                 .items
                 .iter()
-                .filter(|p| library.iter().any(|n| p.text.contains(n.as_str())))
+                .filter(|p| library.iter().any(|n| p.text.contains(n.name.as_str())))
                 .filter(|p| p.rect.right() > right + 1.0)
                 .map(|p| p.text.trim())
                 .take(6)
@@ -4663,6 +5745,15 @@ mod tests {
     struct Sheet {
         items: Vec<Painted>,
         screen: egui::Rect,
+        /// How many images the pass painted. A thumbnail draws nothing a
+        /// string search can see, so the count is the only way a test can
+        /// tell a tile with a picture from one without.
+        images: usize,
+        /// Every rectangle fill the pass painted. The layout's colour
+        /// claims — a family's own tint, a state colour — are invisible
+        /// to a string search, which is exactly how a code that stopped
+        /// being painted would go unnoticed.
+        fills: Vec<egui::Color32>,
     }
 
     impl Sheet {
@@ -4687,6 +5778,29 @@ mod tests {
                 .filter(|p| !p.text.trim().is_empty())
                 .filter(|p| !self.screen.contains_rect(p.rect))
                 .collect()
+        }
+    }
+
+    /// Collect every rectangle fill, nested groups included.
+    fn collect_fills(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_fills(s, out)),
+            egui::Shape::Rect(r) => out.push(r.fill),
+            _ => {}
+        }
+    }
+
+    /// Count painted images, nested groups included.
+    ///
+    /// An image reaches the paint list as a mesh carrying a texture, so
+    /// the test is the texture rather than the shape: everything egui
+    /// draws itself — text, rectangles, strokes — is a mesh on the font
+    /// atlas, which is managed texture zero.
+    fn count_images(shape: &egui::Shape, out: &mut usize) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| count_images(s, out)),
+            egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::Managed(0) => *out += 1,
+            _ => {}
         }
     }
 
@@ -4735,7 +5849,7 @@ mod tests {
         let names = SHEET_PRESETS.with(|f| {
             let extra = f.borrow().clone();
             if extra.is_empty() {
-                vec!["Slow bloom".to_string(), "Butterfly".to_string()]
+                vec![crate::PresetEntry::from("Slow bloom"), crate::PresetEntry::from("Butterfly")]
             } else {
                 extra
             }
@@ -4744,6 +5858,7 @@ mod tests {
         let decks = SHEET_DECKS.with(|f| f.borrow().clone());
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &decks,
             active_deck: 1,
             follow_columns: (!decks.is_empty()).then_some(false),
@@ -4759,6 +5874,7 @@ mod tests {
             bpm: 128.0,
             bar_phase: 0.1,
             presets: &names,
+            thumb_revision: 0,
             grid: &grid,
             gravity: None,
             midi,
@@ -4769,6 +5885,8 @@ mod tests {
         };
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         let mut items = Vec::new();
+        let mut images = 0usize;
+        let mut fills = Vec::new();
         // Eight passes so the layout's own animations settle; only the
         // last is read, for the same reason a photograph of a fader
         // mid-glide tells you nothing about where it came to rest.
@@ -4781,11 +5899,15 @@ mod tests {
             draw(&ctx, reg, &state, macros);
             let out = ctx.end_pass();
             items.clear();
+            images = 0;
+            fills.clear();
             for p in &out.shapes {
                 collect_text(&p.shape, &mut items);
+                count_images(&p.shape, &mut images);
+                collect_fills(&p.shape, &mut fills);
             }
         }
-        Sheet { items, screen }
+        Sheet { items, screen, images, fills }
     }
 
     /// Every painted run with the colour it was painted in.
@@ -4803,11 +5925,12 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string(), "Butterfly".to_string()];
+        let names = [crate::PresetEntry::from("Slow bloom"), crate::PresetEntry::from("Butterfly")];
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -4820,6 +5943,7 @@ mod tests {
             bpm: 128.0,
             bar_phase: 0.1,
             presets: &names,
+            thumb_revision: 0,
             grid: &grid,
             gravity: None,
             midi: &midi,
@@ -4877,11 +6001,12 @@ mod tests {
             });
         }
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string()];
+        let names = [crate::PresetEntry::from("Slow bloom")];
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -4894,6 +6019,7 @@ mod tests {
             bpm: 128.0,
             bar_phase: 0.1,
             presets: &names,
+            thumb_revision: 0,
             grid: &grid,
             gravity: None,
             midi: &midi,
@@ -4931,17 +6057,149 @@ mod tests {
         count
     }
 
+    /// The on-screen text of each of `frames` consecutive passes, with a
+    /// deck row and, when given, a gravity grid — the state the app is
+    /// actually in once a show is set up, which the shared harness leaves
+    /// out so the other tests do not all find chip names in their sheets.
+    fn frames_with(
+        reg: &ParamRegistry,
+        gravity: Option<&crate::grid_view::GridView>,
+        size: Vec2,
+        frames: usize,
+    ) -> Vec<String> {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        let audio = AudioView::default();
+        let names = [crate::PresetEntry::from("Slow bloom"), crate::PresetEntry::from("Butterfly")];
+        let grid = crate::grid_view::GridView::default();
+        let midi = MidiView::default();
+        let decks = vec![
+            DeckChip { name: "opener".into(), ..Default::default() },
+            DeckChip { name: "encore".into(), ..Default::default() },
+        ];
+        let state = PerformanceState {
+            project: "Show 1",
+            record_countdown: None,
+            decks: &decks,
+            active_deck: 0,
+            follow_columns: Some(false),
+            recording: None,
+            preset_current: None,
+            outputs: &[],
+            audio: &audio,
+            fps: 60.0,
+            over_budget: false,
+            bpm: 128.0,
+            bar_phase: 0.1,
+            presets: &names,
+            thumb_revision: 0,
+            grid: &grid,
+            gravity,
+            midi: &midi,
+            values: None,
+            output_texture: None,
+            output_aspect: 16.0 / 9.0,
+            graph: None,
+        };
+        let mut macros = Macros::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        (0..frames)
+            .map(|i| {
+                ctx.begin_pass(egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(i as f64 * 0.05),
+                    ..Default::default()
+                });
+                draw(&ctx, reg, &state, &mut macros);
+                let out = ctx.end_pass();
+                out.shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if on_screen(t, screen) => Some(painted(&t.galley)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    /// Standing sections down must settle, and must keep the punches.
+    ///
+    /// The old rule stood PUNCH, LAYERS and PRESETS down together the
+    /// frame the faders starved, and brought them back on a fixed height
+    /// floor — so above that floor, with a filled gravity grid and a deck
+    /// row, the flag flipped every frame and the top of the screen
+    /// flickered between two layouts. And at the size the app used to
+    /// open at, the punches went with everything else. Now the layers and
+    /// the tiles go first and the punch row last, each step measured and
+    /// only undone once there is room to spare — so this runs the layout
+    /// for a dozen frames at the sizes that misbehaved and asks that the
+    /// last frames agree with each other, that PUNCH stayed, and that
+    /// something on screen says what a taller window would bring back.
+    #[test]
+    fn standing_down_settles_and_keeps_the_punch_row() {
+        let reg = registry();
+        let gravity = crate::grid_view::GridView {
+            names: (0..16).map(|i| Some(format!("well {i}"))).collect(),
+            missing: vec![false; 16],
+            midi: vec![None; 16],
+            ..Default::default()
+        };
+        // The punch row holds down to the size the app used to open at.
+        // At the floor the layout is asked to hold, 1024x640, it cannot:
+        // a deck row, two full grids and the faders leave no room for it,
+        // and then the one thing owed is a line saying so.
+        for (w, h, punch) in [
+            (1280.0, 800.0, true),
+            (1366.0, 768.0, true),
+            (1280.0, 720.0, true),
+            (1024.0, 640.0, false),
+        ] {
+            let frames = frames_with(&reg, Some(&gravity), vec2(w, h), 12);
+            let tail = &frames[6..];
+            assert!(
+                tail.windows(2).all(|p| p[0] == p[1]),
+                "at {w}x{h} the layout never settled:\n{}\n---\n{}",
+                tail[0],
+                tail[1]
+            );
+            let last = tail.last().unwrap();
+            assert!(last.contains("MASTER"), "at {w}x{h} the master stood down: {last}");
+            if punch {
+                assert!(last.contains("PUNCH"), "at {w}x{h} the punch row stood down: {last}");
+            } else {
+                assert!(
+                    last.contains("taller window → punch"),
+                    "at {w}x{h} the punch row stood down and nothing said so: {last}"
+                );
+            }
+            if !last.contains("PRESETS") {
+                assert!(
+                    last.contains("taller window"),
+                    "at {w}x{h} the tiles stood down and nothing said so: {last}"
+                );
+            }
+        }
+        // And with room to spare, nothing stands down at all.
+        let full = frames_with(&reg, Some(&gravity), vec2(1440.0, 900.0), 12);
+        let last = full.last().unwrap();
+        assert!(last.contains("PRESETS") && last.contains("PUNCH"), "{last}");
+        assert!(!last.contains("taller window"), "a roomy window still apologised: {last}");
+    }
+
     /// Draw the layout with a gravity grid in a given state, and return
     /// what was painted.
     fn render_with_gravity(reg: &ParamRegistry, gravity: &crate::grid_view::GridView) -> String {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
         let audio = AudioView::default();
-        let names = ["Slow bloom".to_string()];
+        let names = [crate::PresetEntry::from("Slow bloom")];
         let grid = crate::grid_view::GridView::default();
         let midi = MidiView::default();
         let state = PerformanceState {
             project: "Show 1",
+            record_countdown: None,
             decks: &[],
             active_deck: 0,
             follow_columns: None,
@@ -4954,6 +6212,7 @@ mod tests {
             bpm: 128.0,
             bar_phase: 0.1,
             presets: &names,
+            thumb_revision: 0,
             grid: &grid,
             gravity: Some(gravity),
             midi: &midi,
@@ -5165,6 +6424,26 @@ mod tests {
         );
     }
 
+    /// A master at the bottom of its travel says so in a word.
+    ///
+    /// "0.00" is a number; "BLACK" is why the projector has gone dark
+    /// with everything else apparently fine — the classic mid-set panic,
+    /// answered on the one fader whose job is to be found without
+    /// looking. The word replaces the readout only while the output is
+    /// actually black.
+    #[test]
+    fn a_dimmed_out_master_reads_black() {
+        let reg = registry();
+        let dim = reg.id("/master/dim").expect("master dim");
+        let mut macros = Macros::default();
+        let lit = render_at_size(&mut macros, &reg, vec2(1440.0, 900.0));
+        assert!(!lit.contains("BLACK"), "a lit master says BLACK: {lit}");
+        reg.set(dim, 0.0);
+        let dark = render_at_size(&mut macros, &reg, vec2(1440.0, 900.0));
+        assert!(dark.contains("BLACK"), "a dimmed-out master does not say so: {dark}");
+        assert!(dark.contains("MASTER"), "the caption went with the number: {dark}");
+    }
+
     /// The fader labels must be on the window, not merely drawn.
     ///
     /// The layout reserves room for three label lines under each track
@@ -5251,18 +6530,43 @@ mod tests {
     /// Presets must be on the performance surface and numbered to match
     /// the keyboard. Without them, changing look means leaving the layout
     /// — the one thing the layout exists to avoid.
+    ///
+    /// The number is a badge in the corner of the tile rather than a word
+    /// in front of the name, so the claim is spatial: this asserts the
+    /// "1" is painted *on the first preset's own tile*, which a substring
+    /// search cannot tell from the sixteen scene pads also numbered 1.
     #[test]
     fn the_performance_layout_offers_presets_by_number() {
         let reg = registry();
         let mut macros = Macros::default();
-        let text = render(&mut macros, &reg);
+        let sheet = sheet_sized(
+            &mut macros,
+            &reg,
+            &MidiView::default(),
+            None,
+            None,
+            vec2(1440.0, 900.0),
+        );
+        let text = sheet.text();
         assert!(text.contains("Slow bloom"), "preset missing: {text}");
         assert!(text.contains("Butterfly"), "preset missing: {text}");
-        // Numbered, because the number keys fire the same slots and this
-        // row is the only place that says so.
+        let name = sheet
+            .items
+            .iter()
+            .find(|p| p.text.trim() == "Slow bloom")
+            .unwrap_or_else(|| panic!("the first preset's name was not painted: {text}"));
+        // The caption sits along the bottom of the tile, so the tile is
+        // the box of TILE_W x TILE_H that ends just under the name.
+        let tile = egui::Rect::from_min_max(
+            egui::pos2(name.rect.left() - 8.0, name.rect.bottom() - TILE_H),
+            egui::pos2(name.rect.left() - 8.0 + TILE_W, name.rect.bottom() + 6.0),
+        );
         assert!(
-            text.contains("1  Slow bloom"),
-            "slot numbers missing: {text}"
+            sheet
+                .items
+                .iter()
+                .any(|p| p.text.trim() == "1" && tile.contains_rect(p.rect)),
+            "slot 1 is not numbered on its own tile: {text}"
         );
     }
 

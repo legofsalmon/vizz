@@ -58,6 +58,14 @@ pub struct FrameEngine {
     /// than in the UI because it writes parameter targets every frame and
     /// has to keep doing so with the panel hidden.
     pub grid: vizz_mod::scene::Grid,
+    /// The look recalled on the last tick, waiting to be collected. See
+    /// [`Engine::take_recalled`].
+    recalled: Option<String>,
+    /// The last recall edge, for saying so on screen: the slot, and the
+    /// look's name — or `None` for a slot with nothing in it, which used
+    /// to be a debug line and nothing else. See
+    /// [`Engine::take_recall_announcement`].
+    announce: Option<(usize, Option<String>)>,
     /// Last `/scene/fire` slot acted on, edge-triggered like recall.
     last_scene: Option<usize>,
     /// A zero-second scene change landed this frame and the smoothing
@@ -94,6 +102,10 @@ pub struct FrameEngine {
     /// 0 while deck 3 is live, and anything asking it "which deck am I on"
     /// gets the wrong answer the moment a finger comes off a button.
     last_deck: Option<usize>,
+    /// Whether `/deck/next` and `/deck/prev` were up last frame. Each
+    /// turns one page per rise, so a button held through a bar does not
+    /// leaf through the whole set.
+    deck_step_up: [bool; 2],
     /// What Resolume's column launches arrive through. Shared with the
     /// OSC listener; see [`vizz_osc::ColumnSync`].
     columns: Arc<vizz_osc::ColumnSync>,
@@ -153,6 +165,8 @@ impl FrameEngine {
             last_frame: None,
             last_log: Instant::now(),
             last_preset: None,
+            recalled: None,
+            announce: None,
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
             cut_pending: false,
@@ -164,6 +178,7 @@ impl FrameEngine {
             last_gravity: None,
             decks: vizz_mod::deck::Book::default(),
             last_deck: None,
+            deck_step_up: [false; 2],
             columns: Arc::new(vizz_osc::ColumnSync::default()),
             last_column: None,
             last_column_fires: 0,
@@ -438,6 +453,23 @@ impl FrameEngine {
             }
         }
 
+        // A page at a time, on a rise, and the ends are walls rather than
+        // a wrap — a wrap is a surprise in the dark, and a set list is
+        // not a loop. `switch_deck` re-arms the select parameter and its
+        // latch on the way through, so a step and a numbered select never
+        // disagree about which page is live.
+        for (i, (id, step)) in [(p.deck_next, 1isize), (p.deck_prev, -1)].into_iter().enumerate() {
+            let up = reg.target(id) >= 0.5;
+            let rose = up && !self.deck_step_up[i];
+            self.deck_step_up[i] = up;
+            if rose {
+                let want = self.decks.active() as isize + step;
+                if want >= 0 && (want as usize) < self.decks.len() {
+                    turned |= self.switch_deck(want as usize);
+                }
+            }
+        }
+
         // A column launch is a scene pad and a gravity pad of the same
         // number, fired together — which is what a column *is* in the
         // program this follows.
@@ -586,10 +618,34 @@ impl FrameEngine {
                 // The recall is edge-triggered, so reaching here means it
                 // is the thing most recently touched; it wins.
                 self.grid.halt();
+                self.recalled = Some(name.clone());
+                self.announce = Some((slot, Some(name.clone())));
                 log::info!("recalled preset {slot}: {name} ({applied} parameters)");
             }
-            None => log::debug!("no preset in slot {slot}"),
+            None => {
+                self.announce = Some((slot, None));
+                log::debug!("no preset in slot {slot}");
+            }
         }
+    }
+
+    /// The look recalled since this was last asked, if any.
+    ///
+    /// A one-shot rather than a flag on `current_preset`: the app
+    /// photographs a look the first time it is fired, and "which slot is
+    /// showing" is true every frame while "a recall just happened" is
+    /// true on one. Reading them off the same value meant re-shooting the
+    /// picture sixty times a second.
+    pub fn take_recalled(&mut self) -> Option<String> {
+        self.recalled.take()
+    }
+
+    /// The last recall edge since this was last asked — slot and name,
+    /// or slot and `None` for an empty one — so the app can say what
+    /// fired. Every recall path used to end in a log line and a stroke
+    /// on a tile that may be off-screen or stood down.
+    pub fn take_recall_announcement(&mut self) -> Option<(usize, Option<String>)> {
+        self.announce.take()
     }
 
     /// Forget the last recall edge, so the next tick re-applies whatever
@@ -608,6 +664,16 @@ impl FrameEngine {
     /// look was on screen or not.
     pub fn current_preset(&self) -> Option<usize> {
         self.last_preset.filter(|s| *s > 0)
+    }
+
+    /// Move the mark on the current look to `slot` without recalling
+    /// it: the list re-sorted under a rename and the look on screen did
+    /// not change, only its number. Both halves, as a page turn does for
+    /// the deck, so the next frame does not read the new number as a
+    /// recall and stamp the saved values over the edits since.
+    pub fn mark_preset(&mut self, slot: usize) {
+        self.params.registry.set(self.params.preset_recall, slot as f32);
+        self.last_preset = Some(slot);
     }
 
     /// Advance time and parameters; returns everything the scene needs.
@@ -898,11 +964,13 @@ impl FrameEngine {
                     let c = lamp_colour(self.snapshot.get(l.hue), self.snapshot.get(l.tint));
                     [c[0], c[1], c[2], self.snapshot.get(l.radius)]
                 }),
+                // The wind rides in the light block's spare lanes: a new
+                // field would move every one after it.
                 light: [
                     self.snapshot.get(p.light_ambient),
                     self.snapshot.get(p.light_shape),
-                    0.0,
-                    0.0,
+                    self.snapshot.get(p.wind),
+                    self.snapshot.get(p.wind_rate),
                 ],
                 sun_dir: {
                     let az = self.snapshot.get(p.sun_az);
@@ -1652,6 +1720,39 @@ mod tests {
             17,
             "the listener is still following the page that was left"
         );
+    }
+
+    /// Two buttons in place of twenty-four: a rise on `/deck/next` turns
+    /// one page, holding it turns no more, and the ends are walls.
+    #[test]
+    fn next_and_prev_turn_one_page_per_rise_and_stop_at_the_ends() {
+        let mut e = engine();
+        two_decks(&mut e);
+        let dt = Some(Duration::from_millis(16));
+        assert_eq!(e.decks.active(), 0);
+        e.params.registry.set(e.params.deck_next, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 1, "a rise turns the page");
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 1, "held, it turns no further");
+        assert_eq!(
+            e.params.registry.target(e.params.deck_select),
+            2.0,
+            "the select parameter names the page that is live"
+        );
+        e.params.registry.set(e.params.deck_next, 0.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        e.params.registry.set(e.params.deck_next, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 1, "the last page is a wall, not a wrap");
+        e.params.registry.set(e.params.deck_prev, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 0, "and one back");
+        e.params.registry.set(e.params.deck_prev, 0.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        e.params.registry.set(e.params.deck_prev, 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.decks.active(), 0, "the first page is a wall too");
     }
 
     /// A page turn is worth writing to disk, and being asked clears the

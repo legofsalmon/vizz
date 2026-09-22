@@ -63,11 +63,15 @@ pub const EXCLUDED: &[&str] = &[
     // A preset with a recording embedded would start disk writes on
     // recall. Transport, like the fire controls.
     "/record/active",
+    // A tap is a moment, not a look.
+    "/tempo/tap",
     // Which page of pads is loaded, and the column that loaded it. Worse
     // than a self-firing scene: a captured deck select would turn the page
     // out from under the pad that was just pressed, so the look would
     // arrive and the grid it came from would be gone.
     "/deck/select",
+    "/deck/next",
+    "/deck/prev",
     "/column/fire",
 ];
 
@@ -262,6 +266,100 @@ pub fn list_kind(kind: Kind) -> Vec<String> {
     names
 }
 
+/// The generated shapes, by the names [`Preset::source`] records them
+/// under. Pinned to the `/shape/mode` labels by a test in vizz-app —
+/// this crate cannot see that list, and a shape added there without a
+/// family here would quietly file itself under "clouds".
+pub const GENERATED: &[&str] = &["sphere", "torus", "knot", "grid", "shell"];
+
+/// The strange attractors. Their own family because they do not look
+/// remotely like the generated solids: filaments and sheets, not volumes.
+pub const ATTRACTORS: &[&str] = &["Lorenz", "Aizawa"];
+
+/// What kind of material a look was built on.
+///
+/// [`Preset::source`] records a *name* — "torso-scan.ply", "Lorenz",
+/// "built in" — because a name is what the person who saved it would
+/// think in, and it is the right thing to show. But a name is a poor
+/// thing to *sort* by: a set built on nine scans has nine groups of one,
+/// which is a list with headings rather than a grouped list.
+///
+/// A family is that name sorted into the handful of kinds a performer
+/// actually reaches for — "the scans", "the attractor ones" — few enough
+/// to be a colour and a heading, and stable enough to still mean the same
+/// thing after a night of loading files.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+pub enum Family {
+    /// A loaded point cloud: a scan, a mesh, a live stream.
+    Cloud,
+    /// One of the shapes the app generates.
+    Shape,
+    /// A strange attractor.
+    Attractor,
+    /// One of a shipped set of looks — the demo set's hundred and sixty,
+    /// whose source ends in " set". Its own shelf: filed under clouds
+    /// they were most of that shelf and none of what the word promised.
+    Set,
+    /// Shipped with the app.
+    Builtin,
+    /// Saved before looks recorded what they were built on, or built on
+    /// nothing. Last, because it is the group you look in only after the
+    /// others have failed you.
+    Unknown,
+}
+
+impl Family {
+    /// Every family, in the order a grouped list shows them.
+    pub const ALL: [Family; 6] = [
+        Family::Cloud,
+        Family::Shape,
+        Family::Attractor,
+        Family::Set,
+        Family::Builtin,
+        Family::Unknown,
+    ];
+
+    /// A group heading. Plural, because it labels a set of looks rather
+    /// than one of them.
+    pub fn label(self) -> &'static str {
+        match self {
+            Family::Cloud => "clouds",
+            Family::Shape => "shapes",
+            Family::Attractor => "attractors",
+            Family::Set => "demo set",
+            Family::Builtin => "built in",
+            Family::Unknown => "unsorted",
+        }
+    }
+}
+
+/// Sort a recorded source into a [`Family`].
+///
+/// Anything unrecognised is a cloud, and that is the deliberate default:
+/// the recognised names are a closed list the app owns, and every other
+/// source is a slot name — which is to say a file somebody loaded.
+pub fn family(source: Option<&str>) -> Family {
+    let Some(s) = source else {
+        return Family::Unknown;
+    };
+    let is = |set: &[&str]| set.iter().any(|k| k.eq_ignore_ascii_case(s));
+    match s {
+        "built in" => Family::Builtin,
+        // A blank is the absence of a look. It has no material.
+        "blank" => Family::Unknown,
+        _ if is(ATTRACTORS) => Family::Attractor,
+        _ if is(GENERATED) => Family::Shape,
+        // "electronic set", and whatever set ships next.
+        _ if s.to_ascii_lowercase().ends_with(" set") => Family::Set,
+        // A cloud made from an equation files under what the equation is;
+        // anything else is a file somebody loaded.
+        _ => match crate::generators::by_name(s) {
+            Some(g) => g.family,
+            None => Family::Cloud,
+        },
+    }
+}
+
 /// How long a cached listing is trusted before the directory is read
 /// again. Only external changes — a file dropped into the folder by hand —
 /// need this at all; anything the app does refreshes the cache itself.
@@ -354,6 +452,16 @@ impl Library {
         self.look_sources.get(name)?.as_deref()
     }
 
+    /// What kind of material a look was built on. A built-in is one, even
+    /// though it has no cached source — [`by_name`] prefers built-ins, so
+    /// a name that is one is one whatever the cache says.
+    pub fn family_of(&self, name: &str) -> Family {
+        if BUILTINS.iter().any(|b| b.name == name) {
+            return Family::Builtin;
+        }
+        family(self.source_of(name))
+    }
+
     /// User preset names for one layer, alphabetical.
     pub fn user(&self, kind: Kind) -> &[String] {
         match kind {
@@ -429,9 +537,46 @@ pub fn load_kind(kind: Kind, name: &str) -> Result<Preset> {
     serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
 }
 
+/// Rename a user preset on disk, picture included. Returns the name as
+/// written, which is the tidied one. Refuses a built-in's name (it could
+/// never be recalled) and a name already in use (a rename is not a way
+/// to overwrite). The pads that name the old look are the caller's to
+/// re-point — see `deck::Book::repoint` — because a preset does not know
+/// who plays it.
+pub fn rename(from: &str, to: &str) -> Result<String> {
+    let to = crate::library::sanitize(to);
+    anyhow::ensure!(!to.is_empty(), "a look needs a name");
+    anyhow::ensure!(
+        !BUILTINS.iter().any(|b| b.name == to),
+        "{to} is a built-in's name, and a look under it could never be recalled"
+    );
+    let (src, dst) = (path_for(from), path_for(&to));
+    if src == dst {
+        return Ok(to);
+    }
+    anyhow::ensure!(!dst.exists(), "a look called {to} already exists");
+    std::fs::rename(&src, &dst)
+        .with_context(|| format!("renaming {} to {}", src.display(), dst.display()))?;
+    // The picture follows, as a copy under the new name; a stale one
+    // under the old would be inherited by the next look saved there.
+    if let Some(thumb) = crate::thumb::read(from) {
+        if let Err(e) = crate::thumb::save(&to, &thumb) {
+            log::warn!("the picture of {from} did not follow its rename: {e:#}");
+        }
+        crate::thumb::remove(from);
+    }
+    Ok(to)
+}
+
 pub fn delete(name: &str) -> Result<()> {
     let path = path_for(name);
-    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))
+    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    // And its picture, which is a cache of a look that no longer exists.
+    // Left behind it would be inherited by the next preset saved under
+    // the same name — a tile showing a look nobody would recognise, with
+    // nothing anywhere to explain it.
+    crate::thumb::remove(name);
+    Ok(())
 }
 
 /// A name a capture can actually be recalled under.
@@ -1349,5 +1494,145 @@ mod tests {
         assert_eq!(after.len(), before.len() + 1);
         assert_eq!(by_index(0).unwrap().0, BUILTINS[0].name);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod family_tests {
+    use super::*;
+
+    /// A slot name is a cloud. This is the case the whole feature exists
+    /// for: a look built on a scan should sit with the other scans.
+    #[test]
+    fn a_loaded_file_is_a_cloud() {
+        assert_eq!(family(Some("torso-scan.ply")), Family::Cloud);
+        assert_eq!(family(Some("live")), Family::Cloud);
+        // The shape when its slot is empty. Still a cloud look — it is
+        // the cloud renderer with nothing in it, not a generated solid.
+        assert_eq!(family(Some("cloud pair")), Family::Cloud);
+    }
+
+    #[test]
+    fn the_app_s_own_shapes_are_not_clouds() {
+        for name in GENERATED {
+            assert_eq!(family(Some(name)), Family::Shape, "{name}");
+        }
+        for name in ATTRACTORS {
+            assert_eq!(family(Some(name)), Family::Attractor, "{name}");
+        }
+    }
+
+    /// Case, because the labels are written the way they are pronounced —
+    /// "Lorenz" with a capital, "sphere" without — and a source recorded
+    /// by a build that spelled one differently must still land right.
+    #[test]
+    fn the_spelling_of_a_shape_does_not_decide_its_family() {
+        assert_eq!(family(Some("lorenz")), Family::Attractor);
+        assert_eq!(family(Some("SPHERE")), Family::Shape);
+    }
+
+    /// A look saved before sources existed has nothing to say, and says
+    /// nothing — rather than claiming to be a cloud.
+    #[test]
+    fn a_look_with_nothing_recorded_is_unsorted() {
+        assert_eq!(family(None), Family::Unknown);
+        assert_eq!(family(Some("blank")), Family::Unknown);
+    }
+
+    /// A shipped set is its own shelf, whatever it is called, and a
+    /// scan whose name happens to end in the word is not.
+    #[test]
+    fn a_shipped_set_is_its_own_family() {
+        assert_eq!(family(Some("electronic set")), Family::Set);
+        assert_eq!(family(Some("Ambient Set")), Family::Set);
+        assert_eq!(family(Some("sunset")), Family::Cloud);
+        assert_eq!(Family::Set.label(), "demo set");
+    }
+
+    /// A built-in is a built-in whatever is on disk.
+    ///
+    /// The source cache only covers *user* looks — `read_sources` walks
+    /// the directory listing — so asking it about a shipped preset
+    /// returns nothing, and nothing is "unsorted". Every built-in landing
+    /// in the unsorted pile is exactly what happened before `family_of`
+    /// checked the shipped list first.
+    #[test]
+    fn a_builtin_is_never_unsorted() {
+        let (_guard, _tmp) = crate::test_env::scoped("preset-family-builtin");
+        let lib = Library::new();
+        for b in BUILTINS {
+            assert_eq!(lib.family_of(b.name), Family::Builtin, "{}", b.name);
+        }
+    }
+
+    /// The order groups are shown in, and that it covers every family —
+    /// a family missing from `ALL` is a group of looks that simply never
+    /// draws, with nothing failing.
+    #[test]
+    fn every_family_is_in_the_display_order() {
+        let mut seen: Vec<Family> = Family::ALL.to_vec();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), Family::ALL.len(), "a family is listed twice");
+        // The enum's own order is the display order, so a family added in
+        // the middle of the enum without being added to ALL is caught.
+        let mut sorted = Family::ALL;
+        sorted.sort();
+        assert_eq!(sorted, Family::ALL, "ALL is not in the enum's own order");
+        assert_eq!(Family::ALL.last(), Some(&Family::Unknown), "unsorted is not last");
+    }
+}
+
+#[cfg(test)]
+mod thumb_lifecycle_tests {
+    use super::*;
+
+    /// A deleted look takes its picture with it.
+    ///
+    /// Otherwise the next look saved under the same name inherits it: a
+    /// tile showing something nobody would recognise, with nothing
+    /// anywhere to say why.
+    #[test]
+    fn deleting_a_look_forgets_its_picture() {
+        let (_guard, _tmp) = crate::test_env::scoped("preset-delete-thumb");
+        let name = "night bus";
+        save(name, &Preset { values: Default::default(), source: None }).unwrap();
+        crate::thumb::save(
+            name,
+            &crate::thumb::Thumb { width: 2, height: 2, rgba: vec![255; 16] },
+        )
+        .unwrap();
+        assert!(crate::thumb::exists(name));
+        delete(name).unwrap();
+        assert!(!crate::thumb::exists(name), "the picture outlived the look");
+    }
+
+    /// A rename moves the file and its picture, tidies the new name the
+    /// way a save would, and refuses the two names it must: a built-in's
+    /// (never recallable) and one already in use (a rename is not a way
+    /// to replace).
+    #[test]
+    fn a_rename_moves_the_look_and_its_picture_and_refuses_to_replace() {
+        let (_guard, _tmp) = crate::test_env::scoped("preset-rename");
+        let empty = Preset { values: Default::default(), source: None };
+        save("night bus", &empty).unwrap();
+        save("taken", &empty).unwrap();
+        crate::thumb::save(
+            "night bus",
+            &crate::thumb::Thumb { width: 2, height: 2, rgba: vec![255; 16] },
+        )
+        .unwrap();
+
+        let err = rename("night bus", BUILTINS[0].name).unwrap_err().to_string();
+        assert!(err.contains("built-in"), "{err}");
+        let err = rename("night bus", "taken").unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(by_name("night bus").is_some(), "a refused rename must change nothing");
+
+        assert_eq!(rename("night bus", "last/bus").unwrap(), "last_bus");
+        assert!(by_name("night bus").is_none(), "the old name still recalls");
+        assert!(by_name("last_bus").is_some(), "the new name does not recall");
+        assert!(!crate::thumb::exists("night bus"), "the picture stayed behind");
+        assert!(crate::thumb::exists("last_bus"), "the picture did not follow");
     }
 }

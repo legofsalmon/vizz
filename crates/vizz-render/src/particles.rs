@@ -101,8 +101,10 @@ pub struct Uniforms {
     pub lamp_tint: [[f32; 4]; LAMPS],
     /// `.x` ambient — the light everywhere, 1.0 by default so an unlit
     /// scene is exactly the picture this renderer drew before there were
-    /// lamps at all. `.y` how much surface orientation counts. `.z` and
-    /// `.w` are spare and written zero.
+    /// lamps at all. `.y` how much surface orientation counts. `.z` the
+    /// wind amount and `.w` its rate — the shape's, not the light's,
+    /// carried here because the lanes were spare and a new field would
+    /// move every one after it. Zero in `UNLIT`, which is no wind.
     pub light: [f32; 4],
     /// Direction *towards* the sun in `xyz`, its level in `w`.
     pub sun_dir: [f32; 4],

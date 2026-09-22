@@ -117,10 +117,22 @@ impl Notices {
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .corner_radius(5.0)
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(&n.text).size(13.0).color(ink));
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&n.text).size(13.0).color(ink));
+                                // The dismiss, said: a row that only
+                                // *could* be clicked away advertised
+                                // nothing, and read as something to wait
+                                // out.
+                                ui.label(
+                                    egui::RichText::new("×")
+                                        .size(13.0)
+                                        .color(ink.gamma_multiply(0.6)),
+                                );
+                            });
                         })
                         .response
-                        .interact(egui::Sense::click());
+                        .interact(egui::Sense::click())
+                        .on_hover_text("click to dismiss");
                     if r.clicked() {
                         dismissed = Some(i);
                     }

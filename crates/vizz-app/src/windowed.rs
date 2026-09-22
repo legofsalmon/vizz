@@ -205,6 +205,26 @@ struct App {
     /// receiving redraw events entirely and the Syphon/NDI feed must not
     /// stop with it.
     presentable: bool,
+    /// Said on the first frame, from the code that runs before there is
+    /// a screen to say it on — the demo set's arrival, for one.
+    startup_notes: Notes,
+    /// Show the first-launch card on the first frame.
+    welcome_pending: bool,
+    /// Open on the performance layout on the first frame — the screen
+    /// that was up at the last quit.
+    start_on_stage_pending: bool,
+    /// Where takes land, as the panel shows it. Asked once: the home
+    /// directory does not move during a set.
+    takes_root: String,
+    /// Whether the audio input was connected last frame, so its going
+    /// away is a notice and not only a hollow dot in a collapsed section.
+    /// `None` until first seen: a mic that is simply there at launch is
+    /// not news.
+    audio_live: Option<bool>,
+    /// The controllers seen last frame, so one arriving or leaving is
+    /// said on screen — the APC's forty-one chips used to appear with no
+    /// word, and a controller unplugged mid-set vanished with none.
+    midi_ports_seen: Vec<String>,
     /// The render scale in effect, mirrored from settings so the panel
     /// can show it without a settings-file read on every frame.
     render_scale: f32,
@@ -214,12 +234,24 @@ struct App {
     /// A recording in flight. Present exactly while /record/active is up;
     /// the reconcile in `redraw` keeps the two honest with each other.
     recorder: Option<vizz_io::recorder::Recorder>,
+    /// Takes the pictures the preset tiles wear. See [`crate::thumbshot`].
+    thumbs: crate::thumbshot::Shutter,
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
 struct PendingCloud {
     path: std::path::PathBuf,
     rx: std::sync::mpsc::Receiver<anyhow::Result<Vec<vizz_render::pointcloud::Point>>>,
+    /// What the slot will be called.
+    name: String,
+    /// What the saved cloud list records: a path for a file, `gen:<id>`
+    /// for a generated one.
+    stored: String,
+    /// Put the result straight into this slot rather than adopting it
+    /// into the next free one — the restore of a saved `gen:` entry,
+    /// which already has its position and must not be shown, re-saved
+    /// or moved.
+    restore: Option<usize>,
 }
 
 /// The file's own name, for a notice — the full path is for the log.
@@ -255,11 +287,58 @@ const MODULATION_AUTOSAVE: std::time::Duration = std::time::Duration::from_secs(
 /// in a minute are never the same gesture.
 const QUIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// The look a first launch opens on. The one built-in that fills the
+/// frame and moves on its own — a first impression, not a neutral bed.
+const OPENER: &str = "Tunnel";
+
+/// The window a first launch opens with, in logical points, unless the
+/// display is smaller. Chosen for the performance layout: with a deck row
+/// and both pad grids up, this is the size at which the punch row, the
+/// layer strip and two rows of preset tiles all fit above the faders.
+const DEFAULT_WINDOW: [u32; 2] = [1440, 900];
+
+/// The smallest window the layout is asked to hold. The layout tests
+/// sweep down to it, and the desk keeps its faders and its master there.
+const MIN_WINDOW: [u32; 2] = [1024, 640];
+
 impl App {
+    /// How big to open the window.
+    ///
+    /// An explicit --width/--height is a request and wins. Otherwise the
+    /// size it was last dragged to; and on a first launch, a size the
+    /// performance layout can actually use — 1440x900, or nine tenths of
+    /// the display when that is smaller. It used to open at the output
+    /// size, 1280x720, a window at which the play screen stood its punch
+    /// row, layer strip and preset tiles down for want of room and never
+    /// said why. What receivers get and what the window is are different
+    /// decisions; this is the second one.
+    fn window_size(&self, event_loop: &ActiveEventLoop) -> [u32; 2] {
+        if self.opts.size_from_cli {
+            return [self.opts.width, self.opts.height];
+        }
+        if let Some(size) = crate::settings::load().window_size {
+            return [size[0].max(MIN_WINDOW[0]), size[1].max(MIN_WINDOW[1])];
+        }
+        let display = event_loop.primary_monitor().map(|m| {
+            let s = m.size().to_logical::<f64>(m.scale_factor());
+            [s.width, s.height]
+        });
+        let fit = |want: u32, have: Option<f64>| match have {
+            Some(px) if px > 0.0 => (f64::from(want)).min(px * 0.9) as u32,
+            _ => want,
+        };
+        [
+            fit(DEFAULT_WINDOW[0], display.map(|d| d[0])).max(MIN_WINDOW[0]),
+            fit(DEFAULT_WINDOW[1], display.map(|d| d[1])).max(MIN_WINDOW[1]),
+        ]
+    }
+
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<RenderState> {
+        let [w, h] = self.window_size(event_loop);
         let mut attrs = Window::default_attributes()
             .with_title(self.opts.title.clone())
-            .with_inner_size(LogicalSize::new(self.opts.width, self.opts.height));
+            .with_inner_size(LogicalSize::new(w, h))
+            .with_min_inner_size(LogicalSize::new(MIN_WINDOW[0], MIN_WINDOW[1]));
         // The flag forces fullscreen for this run; otherwise the last
         // toggle is remembered — a venue machine that always runs
         // fullscreen should not need retelling every launch.
@@ -396,6 +475,22 @@ impl App {
                 }
             }
         }
+        // Generated clouds restore the same way, deterministically — but
+        // on the loader thread, because a fractal's search is a good
+        // fraction of a second and launch must not wait on it. They land
+        // in their slots a few frames in.
+        let generated: Vec<(usize, String)> = self
+            .clouds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                let id = entry.strip_prefix("gen:")?;
+                ParticleScene::loadable_slot(i).map(|slot| (slot, id.to_string()))
+            })
+            .collect();
+        for (slot, id) in generated {
+            self.make_generated_cloud(&id, Some(slot));
+        }
         // Palettes come back in the order they were dropped, so the
         // indices a preset saved still point at the same colours.
         for path in &self.palettes {
@@ -424,7 +519,14 @@ impl App {
                 Err(e) => log::warn!("could not open the video input: {e:#}"),
             }
         }
-        if let Some(source) = self.opts.live_cloud.clone() {
+        // A remembered simulation comes back unless the command line
+        // named a stream: the stream is the explicit ask.
+        let live_source = self.opts.live_cloud.clone().or_else(|| {
+            crate::settings::load()
+                .simulation
+                .map(vizz_render::plystream::Source::Simulate)
+        });
+        if let Some(source) = live_source {
             match vizz_render::plystream::LiveCloud::start(source) {
                 Ok(live) => {
                     log::info!("live cloud: {}", live.label());
@@ -456,6 +558,16 @@ impl App {
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
         let senders = outputs::Outputs::new(&ctx.device, &self.opts.outputs);
+        // An output asked for that did not come up is said on screen,
+        // once, with its reason. The slot keeps retrying; until now the
+        // only record was a log line, and the first sign in the room was
+        // a receiver with nothing in it.
+        for (name, why) in senders.failures() {
+            self.startup_notes.push((
+                true,
+                format!("output '{name}' did not start — {why}; retrying in the background"),
+            ));
+        }
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
         let mut gui = Gui::new(&window, &ctx.device, config.format);
@@ -717,7 +829,14 @@ impl App {
                 let _ = tx.send(result);
             });
         match spawned {
-            Ok(_) => self.pending_clouds.push(PendingCloud { path, rx }),
+            Ok(_) => {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "cloud".into());
+                let stored = path.display().to_string();
+                self.pending_clouds.push(PendingCloud { path, rx, name, stored, restore: None });
+            }
             Err(e) => {
                 log::error!("could not start the cloud loader: {e}");
                 if let Some(state) = &mut self.state {
@@ -755,7 +874,10 @@ impl App {
         let Some(state) = &mut self.state else { return };
         state
             .gui
-            .notify_info(format!("cloud '{name}' loaded into slot {slot} and shown"));
+            .notify_info(format!(
+                "cloud '{name}' loaded into slot {slot} and shown — {}",
+                cloud_size_note(points.len())
+            ));
     }
 
     /// Put a cloud slot on screen: point `/cloud/a` at it, park the morph
@@ -815,32 +937,80 @@ impl App {
             return;
         }
         let mut done = Vec::new();
-        self.pending_clouds.retain(|p| match p.rx.try_recv() {
-            Ok(result) => {
-                done.push((p.path.clone(), result));
-                false
-            }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => {
-                done.push((p.path.clone(), Err(anyhow::anyhow!("the loader thread died"))));
-                false
-            }
-        });
-        for (path, result) in done {
-            match result {
-                Ok(points) => {
-                    let name = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "cloud".into());
-                    self.adopt_cloud(&points, &name, path.display().to_string());
+        let pending = std::mem::take(&mut self.pending_clouds);
+        for p in pending {
+            match p.rx.try_recv() {
+                Ok(result) => done.push((p, result)),
+                Err(TryRecvError::Empty) => self.pending_clouds.push(p),
+                Err(TryRecvError::Disconnected) => {
+                    done.push((p, Err(anyhow::anyhow!("the loader thread died"))));
                 }
+            }
+        }
+        for (pending, result) in done {
+            match result {
+                Ok(points) => match pending.restore {
+                    // A saved entry coming back: into its own slot,
+                    // quietly, the way a file's restore is.
+                    Some(slot) => {
+                        if let Some(state) = &mut self.state {
+                            state.scene.set_cloud(&state.ctx, slot, &points, &pending.name);
+                        }
+                        log::info!("restored {} into cloud slot {slot}", pending.name);
+                    }
+                    None => self.adopt_cloud(&points, &pending.name, pending.stored),
+                },
                 Err(e) => {
-                    log::warn!("could not load {}: {e:#}", path.display());
+                    log::warn!("could not load {}: {e:#}", pending.path.display());
                     let Some(state) = &mut self.state else { return };
                     state
                         .gui
-                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&path)));
+                        .notify_error(format!("could NOT load cloud {}: {e}", file_name(&pending.path)));
+                }
+            }
+        }
+    }
+
+    /// Make a cloud from an equation, on the loader thread — a fractal
+    /// takes a good fraction of a second to search, and that is exactly
+    /// the frame stall the thread exists to avoid. `restore` names the
+    /// slot a saved `gen:` entry goes back into; `None` adopts the result
+    /// as a drop would.
+    fn make_generated_cloud(&mut self, spec: &str, restore: Option<usize>) {
+        let Some(generator) = vizz_mod::generators::by_id(spec) else {
+            log::warn!("no generator called {spec}");
+            if let Some(state) = &mut self.state {
+                state.gui.notify_error(format!("no generator called '{spec}'"));
+            }
+            return;
+        };
+        let name = vizz_mod::generators::slot_name(spec).unwrap_or_else(|| generator.name.to_string());
+        if restore.is_none()
+            && let Some(state) = &mut self.state
+        {
+            state.gui.notify_info(format!("making {name}…"));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spec_owned = spec.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("vizz-cloud-generate".into())
+            .spawn(move || {
+                let result = vizz_render::generate::generate(&spec_owned)
+                    .ok_or_else(|| anyhow::anyhow!("no generator called {spec_owned}"));
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => self.pending_clouds.push(PendingCloud {
+                path: std::path::PathBuf::from(format!("gen:{spec}")),
+                rx,
+                name,
+                stored: format!("gen:{spec}"),
+                restore,
+            }),
+            Err(e) => {
+                log::error!("could not start the cloud generator: {e}");
+                if let Some(state) = &mut self.state {
+                    state.gui.notify_error(format!("could NOT make {}: {e}", generator.name));
                 }
             }
         }
@@ -885,6 +1055,15 @@ impl App {
         // revision moved: re-uploading an unchanged cloud every frame
         // would cost a texture write for nothing.
         if let Some(live) = &self.live {
+            // What the room sounds like, for a simulation; a stream
+            // ignores it.
+            let st = &self.engine.audio.state;
+            live.drive(vizz_render::simulate::Drive {
+                bands: std::array::from_fn(|i| st.band(i)),
+                level: st.level(),
+                bar: self.engine.modulation.clock.bar_phase(4.0),
+                audio: st.connected(),
+            });
             let revision = live.revision();
             if revision != self.live_revision {
                 // Taken out of the slot rather than borrowed in place.
@@ -937,6 +1116,24 @@ impl App {
             }
         }
         let inputs = self.engine.begin_frame(state.output.aspect(), None);
+        // A look fired from anywhere — a tile, a number key, a MIDI
+        // button, OSC — gets its picture taken the first time, once the
+        // morph has settled. That is what gives the built-ins and every
+        // look saved before pictures existed a tile worth looking at,
+        // without a migration and without asking.
+        if let Some(name) = self.engine.take_recalled() {
+            self.thumbs.if_missing(&name);
+        }
+        // And said. A key, a tile, a note, an OSC message: every path
+        // ended in a log line and a stroke on a tile that may be off the
+        // screen or stood down, and an empty slot did nothing at all,
+        // silently — which reads as the key being broken.
+        if let Some((slot, name)) = self.engine.take_recall_announcement() {
+            state.gui.notify_info(match name {
+                Some(name) => format!("{slot} · {name}"),
+                None => format!("slot {slot} is empty — save a look to fill it"),
+            });
+        }
         let mut encoder = state
             .ctx
             .device
@@ -1102,12 +1299,40 @@ impl App {
         // The preset key is taken outside, because a number key fires a slot
         // whether or not the panel is up — that is most of the point of it.
         let preset_key = state.gui.preset_key.take();
-        // Space writes the flash exactly as a MIDI note or the punch
-        // button would — one parameter, however it is played.
-        if let Some(pressed) = state.gui.flash_key.take() {
-            self.params
-                .registry
-                .set(self.params.punch_flash, if pressed { 1.0 } else { 0.0 });
+        // The first-launch card, and what it leaves behind: once it has
+        // been seen, it has been seen.
+        if std::mem::take(&mut self.welcome_pending) {
+            state.gui.welcome = true;
+        }
+        // The screen you were on is the screen you get back.
+        if std::mem::take(&mut self.start_on_stage_pending) {
+            state.gui.performance = true;
+        }
+        if std::mem::take(&mut state.gui.face_changed)
+            && let Err(e) = crate::settings::save_start_on_stage(state.gui.performance)
+        {
+            log::warn!("could not remember which screen was up: {e:#}");
+        }
+        if std::mem::take(&mut state.gui.welcome_dismissed)
+            && let Err(e) = crate::settings::save_welcomed()
+        {
+            log::warn!("could not remember that the welcome was seen: {e:#}");
+        }
+        // T taps through the parameter, like a note would.
+        if std::mem::take(&mut state.gui.tap_key) {
+            self.params.registry.set(self.params.tempo_tap, 1.0);
+        }
+        // The punch keys write their parameters exactly as a MIDI note or
+        // the punch button would — one parameter, however it is played.
+        for (punch, engaged) in state.gui.punch_keys.drain(..) {
+            let id = match punch {
+                vizz_ui::Punch::Flash => self.params.punch_flash,
+                vizz_ui::Punch::Strobe => self.params.punch_strobe,
+                vizz_ui::Punch::Black => self.params.punch_black,
+                vizz_ui::Punch::Freeze => self.params.punch_freeze,
+                vizz_ui::Punch::Invert => self.params.punch_invert,
+            };
+            self.params.registry.set(id, if engaged { 1.0 } else { 0.0 });
         }
         // What the UI costs, measured rather than argued about. It is
         // CPU work on the render thread and it scales with what is on
@@ -1122,6 +1347,25 @@ impl App {
             let mut unseen = Notes::new();
             save_deck_state(&self.engine, &mut unseen);
         }
+        // The audio input, as a transition: losing it mid-set used to be
+        // a hollow dot inside a collapsed section while the picture
+        // quietly stopped reacting. The same notice an output gets.
+        {
+            let live = self.engine.audio.state.connected();
+            if let Some(was) = self.audio_live
+                && was != live
+            {
+                let name = self.engine.audio.device_name.clone().unwrap_or_else(|| "audio input".into());
+                if live {
+                    state.gui.notify_info(format!("audio input '{name}' is back"));
+                } else {
+                    state.gui.notify_error(format!(
+                        "audio input '{name}' stopped — the picture is no longer reacting"
+                    ));
+                }
+            }
+            self.audio_live = Some(live);
+        }
         let ui_start = Instant::now();
         let actions = if let Some(preview) = &preview
             && state.gui.will_draw()
@@ -1133,6 +1377,22 @@ impl App {
             // both UIs carefully draw unreachable code.
             let outputs_status: Vec<OutputStatus> = state.outputs.status();
             refresh_midi_view(&self.midi, &self.midi_shared, &mut self.midi_view);
+            // Controllers, as transitions — including the first one seen,
+            // because a controller the app recognised and mapped in
+            // silence is a set of forty-one chips with no explanation.
+            if self.midi_view.connected != self.midi_ports_seen {
+                for gone in &self.midi_ports_seen {
+                    if !self.midi_view.connected.contains(gone) {
+                        state.gui.notify_error(format!("MIDI device '{gone}' disconnected"));
+                    }
+                }
+                for came in &self.midi_view.connected {
+                    if !self.midi_ports_seen.contains(came) {
+                        state.gui.notify_info(format!("MIDI device '{came}' connected"));
+                    }
+                }
+                self.midi_ports_seen = self.midi_view.connected.clone();
+            }
             if self.midi.is_some() {
                 publish_midi_surface(
                     &self.midi_shared,
@@ -1189,6 +1449,11 @@ impl App {
                 // Cached in vizz-io, so this is a lock and a clone rather
                 // than a syscall per frame.
                 local_address: vizz_io::net::local_ip().map(|ip| ip.to_string()),
+                takes_root: Some(self.takes_root.clone()),
+                record_countdown: record_countdown_left(
+                    self.record_countdown_secs,
+                    self.record_countdown_from,
+                ),
                 decks: deck_chips(&self.engine.decks, &self.midi_view),
                 active_deck: self.engine.decks.active(),
                 // Always on offer. Following is off by default, so a
@@ -1210,6 +1475,9 @@ impl App {
                     vizz_ui::AudioView {
                         connected: st.connected(),
                         device: self.engine.audio.device_name.clone(),
+                        reacting: vizz_mod::shapes::reacting(&self.engine.modulation.graph),
+                        tap_count: self.tap.pending(),
+                        auto_bpm: self.audio_auto_bpm,
                         bands: std::array::from_fn(|i| st.band(i)),
                         raw: std::array::from_fn(|i| st.raw(i)),
                         raw_peak: std::array::from_fn(|i| st.raw_peak(i)),
@@ -1266,6 +1534,7 @@ impl App {
                     .map(|(id, _)| self.engine.snapshot.get(id))
                     .collect(),
                 presets: preset_entries(&self.library),
+                thumb_revision: self.thumbs.revision,
             preset_current: self.engine.current_preset(),
                 grid: {
                     let mut v = grid_view(
@@ -1273,9 +1542,8 @@ impl App {
                         self.engine.modulation.clock.beats,
                         &self.midi_view,
                         &self.library,
-                        vizz_mod::preset::Kind::Look,
-                        SCENE_FIRE,
-                        "scene",
+                        &self.engine.decks,
+                        &GridBinding::scenes(&self.params),
                     );
                     // The scenes lead, so the pair of sequencer controls
                     // lives on their row.
@@ -1292,6 +1560,8 @@ impl App {
                     self.engine.modulation.clock.beats,
                     &self.midi_view,
                     &self.library,
+                    &self.engine.decks,
+                    &self.params,
                 )),
                 // The Gui owns the `/` shortcut and overwrites this before
                 // the panel reads it; the app has nothing to add.
@@ -1321,6 +1591,7 @@ impl App {
         let mut pending_output = None;
         let mut pending_device = None;
         let mut pending_text_cloud = None;
+        let mut pending_generate = None;
         match actions {
             Ok(actions) => {
                 apply_audio_actions(
@@ -1366,14 +1637,23 @@ impl App {
                             // holding — which is every rescan, since a
                             // rescan is the same address twice.
                             self.live = None;
+                            let simulation = match &source {
+                                vizz_render::plystream::Source::Simulate(id) => Some(id.clone()),
+                                _ => None,
+                            };
                             match vizz_render::plystream::LiveCloud::start(source) {
                                 Ok(live) => {
-                                    state
-                                        .gui
-                                        .notify_info(format!("receiving from {}", live.label()));
+                                    state.gui.notify_info(match &simulation {
+                                        Some(id) => format!("simulating {id} — the bands drive it"),
+                                        None => format!("receiving from {}", live.label()),
+                                    });
                                     state.scene.reset_stream_fit();
                                     self.live_shown = false;
                                     self.live = Some(live);
+                                    // Remembered, so a set built on it comes back alive.
+                                    if let Err(e) = crate::settings::save_simulation(simulation.as_deref()) {
+                                        log::warn!("could not remember the simulation: {e:#}");
+                                    }
                                 }
                                 Err(e) => {
                                     state.gui.notify_error(format!("live cloud: {e:#}"))
@@ -1385,6 +1665,9 @@ impl App {
                     Some(None) => {
                         self.live = None;
                         state.gui.notify_info("live cloud stopped");
+                        if let Err(e) = crate::settings::save_simulation(None) {
+                            log::warn!("could not forget the simulation: {e:#}");
+                        }
                     }
                     None => {}
                 }
@@ -1400,6 +1683,15 @@ impl App {
                         ..self.record_settings
                     };
                     self.record_countdown_secs = setup.countdown_secs;
+                    if let Err(e) = crate::settings::save_record(crate::settings::RecordPrefs {
+                        lossless: setup.lossless,
+                        quality: setup.quality,
+                        fps: setup.fps,
+                        max_secs: setup.max_secs,
+                        countdown_secs: setup.countdown_secs,
+                    }) {
+                        log::warn!("could not remember the recording setup: {e:#}");
+                    }
                 }
                 if let Some(want) = actions.video_open.clone() {
                     match want {
@@ -1432,7 +1724,25 @@ impl App {
                         }
                     }
                 }
-                let mut notes: Notes = Vec::new();
+                let mut notes: Notes = std::mem::take(&mut self.startup_notes);
+                if let Some(text) = &actions.notice {
+                    notes.push((false, text.clone()));
+                }
+                if actions.fit_window {
+                    fit_window(&state.window, [self.opts.outputs.width, self.opts.outputs.height]);
+                }
+                // The panel's react switch, applied here where the graph
+                // and the notices both are; the stage's goes through the
+                // Gui, which owns the modulation borrow on that path.
+                if let Some(on) = actions.audio.react {
+                    let done = vizz_mod::shapes::react(&mut self.engine.modulation.graph, on);
+                    notes.push((false, vizz_mod::shapes::react_notice(on, &done)));
+                }
+                if actions.reveal_takes
+                    && let Err(e) = reveal_folder(&crate::settings::takes_root())
+                {
+                    notes.push((true, format!("could not open the takes folder: {e}")));
+                }
                 // The two sequencers, together. Read from the scene
                 // grid's actions only — the controls are drawn there
                 // because they act on both, so the gravity grid's copy
@@ -1478,13 +1788,35 @@ impl App {
                     &mut self.quit_for_update,
                     &mut notes,
                 );
+                // The slot numbers a controller's preset buttons were
+                // learned against move whenever the list re-sorts, so
+                // the list is read before and after and the bindings
+                // follow their looks by name. See `follow_recall_bindings`.
+                let reorders = actions.preset_save.is_some()
+                    || actions.preset_delete.is_some()
+                    || actions.preset_rename.is_some();
+                let looks_before = reorders.then(|| look_names(&self.library));
                 apply_preset_actions(
                     &actions,
                     &self.params.registry,
                     &mut self.library,
                     &mut notes,
                     &self.clouds,
+                    &mut self.thumbs,
                 );
+                let renamed = actions.preset_rename.as_ref().and_then(|(from, to)| {
+                    apply_preset_rename(from, to, &mut self.engine, &mut self.library, &mut notes)
+                        .map(|saved| (from.clone(), saved))
+                });
+                if let Some(before) = looks_before {
+                    follow_recall_bindings(
+                        &before,
+                        &look_names(&self.library),
+                        renamed.as_ref().map(|(f, t)| (f.as_str(), t.as_str())),
+                        &self.midi_shared,
+                        &mut notes,
+                    );
+                }
                 // Before the grids: a page turn and a pad press landing on
                 // the same frame have to happen in that order, or the pad
                 // is applied to the deck being left.
@@ -1497,7 +1829,7 @@ impl App {
                 apply_grid_actions(
                     &actions.grid,
                     &self.params,
-                    &mut self.engine.grid,
+                    &mut self.engine,
                     &GridBinding::scenes(&self.params),
                     &self.midi_shared,
                     &mut self.library,
@@ -1506,7 +1838,7 @@ impl App {
                 apply_grid_actions(
                     &actions.gravity,
                     &self.params,
-                    &mut self.engine.gravity_grid,
+                    &mut self.engine,
                     &GridBinding::gravity(&self.params),
                     &self.midi_shared,
                     &mut self.library,
@@ -1530,6 +1862,7 @@ impl App {
                 // references.
                 pending_output = actions.output_setup;
                 pending_text_cloud = actions.text_cloud.clone();
+                pending_generate = actions.generate_cloud.clone();
                 // Same deferral, for the same reason: see the bottom of
                 // this function.
                 pending_device = actions.audio.device.clone();
@@ -1597,10 +1930,34 @@ impl App {
         state
             .outputs
             .publish(&state.ctx.device, &state.ctx.queue, publish);
+        // The preset tiles' pictures come off the same eight-bit master,
+        // after it has been published rather than before: a photograph is
+        // a convenience and the feed is not.
+        self.thumbs.tick(&state.ctx.device, &state.ctx.queue, publish);
         // Recording rides the same eight-bit master the senders get. The
         // parameter is the source of truth: up with no recorder running
         // starts one, down with one running stops it — which is what lets
         // OSC, MIDI and both buttons share one control.
+        // Tap tempo as a parameter: a MIDI note, an OSC message or the T
+        // key raises it, and each rise is one tap. Reset here so the next
+        // press is a fresh edge — a tap is a moment, like a punch — and
+        // applied through the same path as the buttons, so it switches
+        // auto off and saves the clock source exactly as they do.
+        if self.params.registry.target(self.params.tempo_tap) >= 0.5 {
+            self.params.registry.set(self.params.tempo_tap, 0.0);
+            let tap = vizz_ui::PanelActions {
+                audio: vizz_ui::AudioEdits { tapped: true, ..Default::default() },
+                ..Default::default()
+            };
+            apply_audio_actions(
+                &tap,
+                &mut self.engine,
+                &mut self.audio_bands,
+                &mut self.audio_auto_bpm,
+                &mut self.tap,
+                &mut self.clock_source,
+            );
+        }
         let want_recording = self.params.registry.target(self.params.record_active) >= 0.5;
         match (&mut self.recorder, want_recording) {
             (slot @ None, true) => {
@@ -1626,7 +1983,8 @@ impl App {
                     self.record_countdown_from = None;
                     self.record_countdown_last = None;
                 }
-                let dir = crate::settings::take_dir();
+                let look = current_look_name(&self.engine, &self.library);
+                let dir = crate::settings::take_dir_for(look.as_deref());
                 match vizz_io::recorder::Recorder::new(
                     &state.ctx.device,
                     &dir,
@@ -1635,6 +1993,12 @@ impl App {
                     self.record_settings,
                 ) {
                     Ok(rec) => {
+                        write_take_sidecar(
+                            &dir,
+                            look.as_deref(),
+                            [publish.width(), publish.height()],
+                            &self.record_settings,
+                        );
                         state.gui.notify_info(format!("recording to {}", dir.display()));
                         log::info!("recording to {}", dir.display());
                         *slot = Some(rec);
@@ -1764,6 +2128,9 @@ impl App {
         if let Some(text) = pending_text_cloud {
             self.make_text_cloud(&text);
         }
+        if let Some(id) = pending_generate {
+            self.make_generated_cloud(&id, None);
+        }
         // Deferred for a different reason, to the same place. Closing one
         // audio device and opening another is not a fast call — CoreAudio
         // takes a good fraction of a second over it — and it was being
@@ -1857,11 +2224,27 @@ impl ApplicationHandler for App {
         if let Some(state) = &self.state {
             let mem: crate::settings::GraphCanvas = state.gui.graph_view_memory().into();
             let mut s = crate::settings::load();
+            let mut changed = false;
             if s.graph_view.as_ref() != Some(&mem) {
                 s.graph_view = Some(mem);
-                if let Err(e) = crate::settings::save(&s) {
-                    log::warn!("could not remember the canvas view: {e:#}");
+                changed = true;
+            }
+            // The window's size, so it opens where it was dragged to. Not
+            // while fullscreen: that size is the monitor's, and it is
+            // remembered by the fullscreen flag instead.
+            if state.window.fullscreen().is_none() {
+                let size = state.window.inner_size().to_logical::<u32>(state.window.scale_factor());
+                let size = [size.width, size.height];
+                if size[0] >= MIN_WINDOW[0]
+                    && size[1] >= MIN_WINDOW[1]
+                    && s.window_size != Some(size)
+                {
+                    s.window_size = Some(size);
+                    changed = true;
                 }
+            }
+            if changed && let Err(e) = crate::settings::save(&s) {
+                log::warn!("could not remember the canvas view and window size: {e:#}");
             }
         }
     }
@@ -1893,7 +2276,9 @@ impl ApplicationHandler for App {
             // the platform's own quit. Nothing to confirm.
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::F11) && event.state.is_pressed() =>
+                if event.logical_key == Key::Named(NamedKey::F11)
+                    && event.state.is_pressed()
+                    && !event.repeat =>
             {
                 if let Some(state) = &self.state {
                     let going_full = state.window.fullscreen().is_none();
@@ -1905,8 +2290,14 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            // Not on a repeat: a held Escape used to deliver its own
+            // second press well inside the confirmation window, so leaning
+            // on one key ended the show — the very thing the two-step
+            // quit exists to prevent.
             WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::Escape) && event.state.is_pressed() =>
+                if event.logical_key == Key::Named(NamedKey::Escape)
+                    && event.state.is_pressed()
+                    && !event.repeat =>
             {
                 // In fullscreen the first Escape leaves fullscreen — the
                 // standard meaning, and strictly safer than arming quit.
@@ -1957,6 +2348,26 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// Show a folder in the platform's file browser, making it first if no
+/// take has been recorded yet — "reveal" on a folder that does not exist
+/// is an error nobody can act on.
+fn reveal_folder(path: &std::path::Path) -> Result<()> {
+    use anyhow::Context as _;
+    std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(path)
+        .spawn()
+        .with_context(|| format!("running {program}"))?;
+    Ok(())
 }
 
 /// Copy MIDI state for the panel. Non-blocking by design: if the MIDI
@@ -2161,6 +2572,13 @@ fn apply_audio_actions(
         s.bands = *bands;
         s.auto_bpm = *auto_bpm;
     }
+    // Remembered: the bands are the one thing tuned per venue, against
+    // real material, and used to be re-fitted every launch.
+    if (a.bands.is_some() || a.auto_bpm.is_some())
+        && let Err(e) = crate::settings::save_audio(*bands, *auto_bpm)
+    {
+        log::warn!("could not remember the audio bands: {e:#}");
+    }
 }
 
 /// The preset list the panel shows: built-ins first, then whatever is on
@@ -2229,16 +2647,10 @@ fn gravity_grid_view(
     beats: f64,
     midi: &MidiView,
     library: &vizz_mod::preset::Library,
+    book: &vizz_mod::deck::Book,
+    params: &crate::params::AppParams,
 ) -> vizz_ui::grid_view::GridView {
-    let mut view = grid_view(
-        grid,
-        beats,
-        midi,
-        library,
-        vizz_mod::preset::Kind::Gravity,
-        GRAVITY_FIRE,
-        "gravity",
-    );
+    let mut view = grid_view(grid, beats, midi, library, book, &GridBinding::gravity(params));
     // Gravity pads are violet; scene pads keep the default blue-grey.
     // The two grids are otherwise the same widget sixteen times over,
     // stacked one above the other, and firing the wrong one is not
@@ -2254,6 +2666,9 @@ const SCENE_FIRE: &str = "/scene/fire";
 const GRAVITY_FIRE: &str = "/gravity/fire";
 /// The address a deck chip writes. Same reason as the two above.
 const DECK_SELECT: &str = "/deck/select";
+/// The address a preset tile writes, and that a controller's preset
+/// buttons are learned against.
+const PRESET_RECALL: &str = "/preset/recall";
 
 /// The set list as the chip row needs to see it.
 ///
@@ -2285,6 +2700,59 @@ fn fire_value(slot: usize) -> f32 {
     slot as f32 + 1.0
 }
 
+/// Where else a look is played from: pads, and the pages they are on,
+/// not counting `except` on the open page. The live grid is the truth for
+/// the open page and the book for the others — the book's copy of the
+/// open page is only as fresh as the last turn.
+fn used_elsewhere(
+    live: &vizz_mod::scene::Grid,
+    book: &vizz_mod::deck::Book,
+    kind: vizz_mod::preset::Kind,
+    name: &str,
+    except: usize,
+) -> (usize, usize) {
+    let here = live
+        .cells()
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i != except && c.as_ref().is_some_and(|c| c.preset == name))
+        .count();
+    let (mut pads, mut pages) = (here, usize::from(here > 0));
+    for (i, deck) in book.decks().iter().enumerate() {
+        if i == book.active() {
+            continue;
+        }
+        let cells = match kind {
+            vizz_mod::preset::Kind::Look => &deck.scenes,
+            vizz_mod::preset::Kind::Gravity => &deck.gravity,
+        };
+        let n = cells.iter().flatten().filter(|c| c.preset == name).count();
+        if n > 0 {
+            pads += n;
+            pages += 1;
+        }
+    }
+    (pads, pages)
+}
+
+/// The next free "name 2", "name 3" … so a fork of a shared look lands
+/// beside it rather than on top of it. "drop 2" forked again is "drop
+/// 3", not "drop 2 2".
+fn free_variant(
+    library: &vizz_mod::preset::Library,
+    kind: vizz_mod::preset::Kind,
+    base: &str,
+) -> String {
+    let stem = base
+        .rsplit_once(' ')
+        .filter(|(_, n)| n.parse::<u32>().is_ok())
+        .map_or(base, |(stem, _)| stem);
+    (2..)
+        .map(|i| format!("{stem} {i}"))
+        .find(|n| !library.has(kind, n))
+        .unwrap_or_else(|| format!("{stem} 2"))
+}
+
 /// The scene grid as the panel needs to see it.
 ///
 /// `beats` is the musical clock, so the autopilot switch can show how far
@@ -2294,11 +2762,11 @@ fn grid_view(
     beats: f64,
     midi: &MidiView,
     library: &vizz_mod::preset::Library,
-    kind: vizz_mod::preset::Kind,
-    fire: &str,
-    noun: &'static str,
+    book: &vizz_mod::deck::Book,
+    b: &GridBinding,
 ) -> vizz_ui::grid_view::GridView {
     use vizz_mod::scene::Curve;
+    let (kind, fire, noun) = (b.kind, b.addr, b.noun);
     vizz_ui::grid_view::GridView {
         // Off by default; the scene grid's call site turns it on. The
         // controls act on both sequencers, so exactly one grid draws
@@ -2340,6 +2808,14 @@ fn grid_view(
             .map(|c| c.as_ref().is_some_and(|c| !library.has(kind, &c.preset)))
             .collect(),
         presets: library.all(kind),
+        // Where else each pad's look is played from, for the store hover
+        // and the fork-or-replace decision. See `used_elsewhere`.
+        shared: (0..vizz_ui::grid_view::SLOTS)
+            .map(|slot| {
+                grid.cell(slot)
+                    .map_or((0, 0), |c| used_elsewhere(grid, book, kind, &c.preset, slot))
+            })
+            .collect(),
         current: grid.current(),
         in_flight: grid.in_flight(),
         duration: grid.duration,
@@ -2700,16 +3176,28 @@ fn save_deck_state(engine: &crate::engine::FrameEngine, notes: &mut Notes) {
 fn apply_grid_actions(
     actions: &vizz_ui::grid_view::GridActions,
     params: &crate::params::AppParams,
-    grid: &mut vizz_mod::scene::Grid,
+    engine: &mut crate::engine::FrameEngine,
     b: &GridBinding,
     midi: &SharedMidi,
     library: &mut vizz_mod::preset::Library,
     notes: &mut Notes,
 ) {
     let reg = &params.registry;
+    // The grid this binding plays, and the book beside it for the
+    // question "where else is this look" — disjoint borrows of the engine.
+    let crate::engine::FrameEngine { grid, gravity_grid, decks: book, .. } = engine;
+    let grid = match b.kind {
+        vizz_mod::preset::Kind::Look => grid,
+        vizz_mod::preset::Kind::Gravity => gravity_grid,
+    };
     let mut dirty = false;
     if let Some(slot) = actions.fire {
         reg.set(b.fire, fire_value(slot));
+    }
+    // A column is both grids' pad of one number, the thing Arena's
+    // launches land on; alt-click is its hand gesture.
+    if let Some(slot) = actions.fire_column {
+        reg.set(params.column_fire, fire_value(slot));
     }
     // Learning a pad rather than the parameter. A binding on `/scene/fire`
     // alone would be one button for all sixteen pads, which is what this
@@ -2764,10 +3252,21 @@ fn apply_grid_actions(
         // the library under the pad's name and then referenced — rather
         // than a copy hidden inside the grid. One gesture, and the result
         // is a look you can also recall, edit and put on another pad.
-        let wanted = grid
-            .cell(slot)
-            .map(|c| c.preset.clone())
-            .unwrap_or_else(|| format!("{} {}", b.noun, slot + 1));
+        let existing = grid.cell(slot).map(|c| c.preset.clone());
+        // A look on other pads is shared, and re-capturing it changes
+        // every one of them, on pages you cannot see from here. So the
+        // default forks: what is on screen is saved as a new look on this
+        // pad only, and the shared one stays where it was. Shift-click,
+        // or the menu's "in place", is the other way round.
+        let elsewhere = existing
+            .as_deref()
+            .map_or(0, |n| used_elsewhere(grid, book, b.kind, n, slot).0);
+        let fork = elsewhere > 0 && !actions.store_in_place;
+        let wanted = match (&existing, fork) {
+            (Some(n), true) => free_variant(library, b.kind, n),
+            (Some(n), false) => n.clone(),
+            (None, _) => format!("{} {}", b.noun, slot + 1),
+        };
         // Stepped aside from a built-in's name if needed: a capture saved
         // under one succeeded and could then never be recalled, because
         // built-ins win the name — the look was silently discarded.
@@ -2781,6 +3280,25 @@ fn apply_grid_actions(
         let captured = vizz_mod::preset::Preset::capture_kind(reg, b.kind);
         match vizz_mod::preset::save_kind(b.kind, &name, &captured) {
             Ok(saved) => {
+                // Said, whichever way it went: the one gesture that
+                // invents a name is the one that never reported it.
+                let pads = |n: usize| if n == 1 { "pad" } else { "pads" };
+                notes.push((
+                    false,
+                    match (&existing, fork) {
+                        (Some(old), true) => format!(
+                            "captured as '{saved}' — '{old}' stays on its other {elsewhere} {}",
+                            pads(elsewhere)
+                        ),
+                        (Some(_), false) if elsewhere > 0 => format!(
+                            "re-captured '{saved}' on all {} {}",
+                            elsewhere + 1,
+                            pads(elsewhere + 1)
+                        ),
+                        (Some(_), false) => format!("re-captured '{saved}'"),
+                        (None, _) => format!("captured as '{saved}'"),
+                    },
+                ));
                 grid.assign(slot, saved);
                 // The pad now names a preset that did not exist a moment
                 // ago; without this the cache says it is missing and the
@@ -2899,6 +3417,8 @@ fn apply_preset_actions(
     // What each cloud slot currently holds, so a saved look can record
     // what it was built on.
     clouds: &[String],
+    // Takes the picture that goes on the look's tile.
+    thumbs: &mut crate::thumbshot::Shutter,
 ) {
     use vizz_mod::preset;
     if let Some(name) = &actions.preset_load {
@@ -2923,7 +3443,21 @@ fn apply_preset_actions(
                 // at the moment of the click: the name box cleared either
                 // way and a full disk silently ate the look.
                 notes.push((false, format!("saved '{saved}'")));
+                // Photographed under the name that was actually written,
+                // not the one that was typed: `save` sanitises, and a
+                // picture filed under the raw name would never be found.
+                thumbs.now(&saved);
                 library.refresh();
+                // And it is the current look now, on both lists: saving
+                // used to leave nothing marked, so the edit-and-save-again
+                // loop had no anchor. Set through the recall parameter so
+                // the tile and the panel row agree with every other path.
+                if let (Some(recall), Some(i)) = (
+                    registry.id("/preset/recall"),
+                    preset_entries(library).iter().position(|e| e.name == saved),
+                ) {
+                    registry.set(recall, i as f32 + 1.0);
+                }
             }
             Err(e) => {
                 log::error!("could not save preset {name}: {e:#}");
@@ -2932,6 +3466,13 @@ fn apply_preset_actions(
                 notes.push((true, format!("could NOT save '{name}': {e}")));
             }
         }
+    }
+    // Asked for from a tile's menu. The only way a look saved before
+    // pictures existed, or one whose picture no longer resembles it, can
+    // get a new one.
+    if let Some(name) = &actions.preset_rephoto {
+        thumbs.now(name);
+        notes.push((false, format!("photographing '{name}'")));
     }
     if let Some(name) = &actions.preset_delete {
         match preset::delete(name) {
@@ -2946,6 +3487,205 @@ fn apply_preset_actions(
             }
         }
     }
+}
+
+/// A look renamed from either list. The file moves, every pad on every
+/// page that named it follows, and the mark on the current look stays
+/// on the same look — the list re-sorts under a rename, so the slot
+/// number that marked it moves.
+fn apply_preset_rename(
+    from: &str,
+    to: &str,
+    engine: &mut crate::engine::FrameEngine,
+    library: &mut vizz_mod::preset::Library,
+    notes: &mut Notes,
+) -> Option<String> {
+    // Which look is marked current, by name, before the numbers move.
+    let current = engine
+        .current_preset()
+        .and_then(|slot| preset_entries(library).into_iter().nth(slot - 1))
+        .map(|e| e.name);
+    let saved = match vizz_mod::preset::rename(from, to) {
+        Ok(saved) => saved,
+        Err(e) => {
+            log::error!("could not rename preset {from}: {e:#}");
+            notes.push((true, format!("could NOT rename '{from}': {e}")));
+            return None;
+        }
+    };
+    log::info!("renamed preset {from} to {saved}");
+    // The live grids are the truth for the page that is open, and the
+    // book holds every other page; the book's copy of the open page is
+    // only as fresh as the last turn. Stored first, so the count is of
+    // pads rather than of pads plus a stale copy of some of them.
+    engine.decks.store(&engine.grid, &engine.gravity_grid);
+    let followed = engine.decks.repoint(from, &saved);
+    engine.grid.repoint(from, &saved);
+    engine.gravity_grid.repoint(from, &saved);
+    if followed > 0 {
+        save_deck_state(engine, notes);
+    }
+    library.refresh();
+    if let Some(current) = current {
+        let current = if current == from { saved.clone() } else { current };
+        if let Some(i) = preset_entries(library).iter().position(|e| e.name == current) {
+            engine.mark_preset(i + 1);
+        }
+    }
+    let pads = match followed {
+        0 => String::new(),
+        1 => "  ·  one pad follows".to_string(),
+        n => format!("  ·  {n} pads follow"),
+    };
+    notes.push((false, format!("renamed '{from}' to '{saved}'{pads}")));
+    Some(saved)
+}
+
+/// The preset list in slot order: index plus one is the number
+/// `/preset/recall` fires it by.
+fn look_names(library: &vizz_mod::preset::Library) -> Vec<String> {
+    preset_entries(library).into_iter().map(|e| e.name).collect()
+}
+
+/// Keep a controller's preset buttons on the looks they were learned
+/// against when the list re-sorts under them. `/preset/recall` addresses
+/// a slot and the slots are the sorted list, so saving "aurora" used to
+/// shift every later look up by one, and the button learned for "drop"
+/// fired whatever now sat in its number. A binding whose look was
+/// deleted is dropped rather than left to fire a stranger.
+fn follow_recall_bindings(
+    before: &[String],
+    after: &[String],
+    renamed: Option<(&str, &str)>,
+    shared: &SharedMidi,
+    notes: &mut Notes,
+) {
+    let mut moves = Vec::new();
+    let mut gone = Vec::new();
+    for (old, name) in before.iter().enumerate() {
+        let now = match renamed {
+            Some((from, to)) if name == from => to,
+            _ => name.as_str(),
+        };
+        match after.iter().position(|n| n == now) {
+            Some(new) if new != old => moves.push((fire_value(old), fire_value(new))),
+            Some(_) => {}
+            None => gone.push(fire_value(old)),
+        }
+    }
+    if moves.is_empty() && gone.is_empty() {
+        return;
+    }
+    // `try_lock`, as every other touch of the map from this thread: the
+    // render loop never waits on the MIDI thread.
+    let Ok(mut state) = shared.try_lock() else { return };
+    let had = state.map.bindings.len();
+    for v in &gone {
+        state.map.unbind_value(PRESET_RECALL, *v);
+    }
+    let dropped = had - state.map.bindings.len();
+    let moved = state.map.repoint_values(PRESET_RECALL, &moves);
+    if moved + dropped > 0 {
+        state.revision += 1;
+    }
+    drop(state);
+    let buttons = |n: usize| if n == 1 { "button" } else { "buttons" };
+    if moved > 0 {
+        notes.push((
+            false,
+            format!("{moved} MIDI preset {} followed the looks they were learned on", buttons(moved)),
+        ));
+    }
+    if dropped > 0 {
+        notes.push((
+            false,
+            format!("{dropped} MIDI preset {} unmapped — the look was deleted", buttons(dropped)),
+        ));
+    }
+}
+
+/// Seconds left on a recording countdown, for the REC chip. Free of
+/// `self` because it is asked while the render state is borrowed.
+fn record_countdown_left(secs: u32, from: Option<std::time::Instant>) -> Option<u32> {
+    let left = secs as f32 - from?.elapsed().as_secs_f32();
+    (left > 0.0).then(|| left.ceil() as u32)
+}
+
+/// The look on screen by name, when one was recalled.
+fn current_look_name(
+    engine: &crate::engine::FrameEngine,
+    library: &vizz_mod::preset::Library,
+) -> Option<String> {
+    let slot = engine.current_preset()?;
+    preset_entries(library).into_iter().nth(slot.checked_sub(1)?).map(|e| e.name)
+}
+
+/// Size the window to the output's shape, as large as the display allows
+/// with room for the chrome. Only when asked — the window is a preview,
+/// and a remembered 4K output must not open a 4K window on a laptop.
+fn fit_window(window: &winit::window::Window, output: [u32; 2]) {
+    let scale = window.scale_factor();
+    let room = window
+        .current_monitor()
+        .map(|m| m.size().to_logical::<f32>(scale))
+        .map_or([1440.0, 900.0], |s| [s.width - 80.0, s.height - 120.0]);
+    let [ow, oh] = [output[0].max(1) as f32, output[1].max(1) as f32];
+    let k = (room[0] / ow).min(room[1] / oh).min(1.0);
+    let w = (ow * k).max(MIN_WINDOW[0] as f32);
+    let h = (oh * k).max(MIN_WINDOW[1] as f32);
+    let _ = window.request_inner_size(LogicalSize::new(w, h));
+}
+
+/// `take.json` beside the frames: what was recorded, at what size and
+/// rate, by which build — what assembling a video needs to know and what
+/// a folder of numbered frames cannot say for itself.
+fn write_take_sidecar(
+    dir: &std::path::Path,
+    look: Option<&str>,
+    size: [u32; 2],
+    settings: &vizz_io::recorder::Settings,
+) {
+    let json = serde_json::json!({
+        "vizz": env!("CARGO_PKG_VERSION"),
+        "look": look,
+        "width": size[0],
+        "height": size[1],
+        "fps": settings.fps,
+        "format": settings.format.extension(),
+        "max_secs": settings.max_secs,
+    });
+    match serde_json::to_string_pretty(&json) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(dir.join("take.json"), text) {
+                log::warn!("could not write take.json: {e}");
+            }
+        }
+        Err(e) => log::warn!("could not encode take.json: {e}"),
+    }
+}
+
+/// How big a loaded cloud is, and whether it was sampled down to fit a
+/// slot: a four-million-point scan silently became sixty-five thousand,
+/// and the app never said a number.
+fn cloud_size_note(points: usize) -> String {
+    let cap = vizz_render::attractor::POINTS;
+    if points > cap {
+        format!("{} points, sampled to {}", thousands(points), thousands(cap))
+    } else {
+        format!("{} points", thousands(points))
+    }
+}
+
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn apply_panel_actions(
@@ -2980,6 +3720,15 @@ fn apply_panel_actions(
     if let Some((param, value)) = actions.clear_slot_binding {
         state.map.unbind_value(&param, value);
         state.revision += 1;
+    }
+    if actions.clear_all_bindings {
+        let n = state.map.bindings.len();
+        state.map.bindings.clear();
+        // And the memory of which controllers were given their shipped
+        // layout, so re-plugging one brings it back.
+        state.profiled.clear();
+        state.revision += 1;
+        notes.push((false, format!("cleared {n} MIDI binding{}", if n == 1 { "" } else { "s" })));
     }
     // Persist as soon as a mapping changes: a crash mid-set should not
     // cost the mappings that were just set up.
@@ -3051,7 +3800,11 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // honest empty slot.
     let hold_places = |mut paths: Vec<String>, what: &str| {
         for p in &mut paths {
-            if !p.is_empty() && !p.starts_with("text:") && !std::path::Path::new(p).exists() {
+            if !p.is_empty()
+                && !p.starts_with("text:")
+                && !p.starts_with("gen:")
+                && !std::path::Path::new(p).exists()
+            {
                 log::warn!("{what} {p} is gone — its position is kept so the others stay put");
                 p.clear();
             }
@@ -3073,9 +3826,9 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     opts.clouds = cloud_paths
         .iter()
         .map(|p| {
-            // Text entries hold their slot as holes here; init
-            // re-rasterizes them after the files have loaded.
-            if p.starts_with("text:") {
+            // Text and generated entries hold their slot as holes here;
+            // init re-makes them after the files have loaded.
+            if p.starts_with("text:") || p.starts_with("gen:") {
                 std::path::PathBuf::new()
             } else {
                 std::path::PathBuf::from(p)
@@ -3091,6 +3844,17 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // locked pair is locked from launch rather than from the first time
     // the toggle is touched.
     engine.autopilot_lock = crate::settings::load().autopilot_lock;
+    // The bands and the auto-tempo switch, as they were left. Pushed to
+    // the analysis thread now, so the first frame analyses with them
+    // rather than with the shipped defaults until somebody touches one.
+    let restored = crate::settings::load();
+    let restored_bands = restored.audio_bands.unwrap_or_else(vizz_audio::default_bands);
+    let restored_auto = restored.audio_auto_bpm.unwrap_or(false);
+    if let Ok(mut s) = engine.audio.settings.lock() {
+        s.bands = restored_bands;
+        s.auto_bpm = restored_auto;
+    }
+    let restored_record = restored.record.unwrap_or_default();
     // Taken before the engine moves into the app: the autosave compares
     // against what was restored, so a launch that changes nothing leaves
     // the file alone.
@@ -3120,13 +3884,36 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // is for. Strictly guarded — see `sets::is_fresh_install` — because
     // installing over somebody's own decks would be unforgivable.
     let mut installed = false;
+    let mut startup_notes: Notes = Vec::new();
     if vizz_mod::sets::is_fresh_install(&book, saved) {
-        match install_set(&vizz_mod::sets::electronic()) {
+        let set = vizz_mod::sets::electronic();
+        match install_set(&set) {
             Ok(fresh) => {
                 book = fresh;
                 installed = true;
+                // Said on screen, not only in the log: a double-click
+                // launch has no log, and a set list nobody asked for on
+                // a screen that is off by default is a mystery twice.
+                startup_notes.push((
+                    false,
+                    format!(
+                        "a demo set of {} songs is on the play screen (P) — right-click + there to remove it",
+                        set.decks.len()
+                    ),
+                ));
             }
             Err(e) => log::error!("could not install the built-in set: {e:#} — starting empty"),
+        }
+        // A first launch used to open on the parameter defaults — a soft
+        // blue sphere — with nothing on screen pointing at the looks or
+        // the keys that fire them. It opens playing a designed look
+        // instead, set on the parameter so the first frame recalls it
+        // exactly as a number key would; `startup_does_not_recall_a_preset`
+        // still pins that an ordinary launch rests at nothing.
+        if let Some(slot) = vizz_mod::preset::BUILTINS.iter().position(|b| b.name == OPENER) {
+            params.registry.set(params.preset_recall, slot as f32 + 1.0);
+        } else {
+            log::warn!("the opener {OPENER:?} is not a built-in — opening on the defaults");
         }
     }
     engine.adopt_decks(book);
@@ -3147,21 +3934,31 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         }
     }
     engine.adopt_column_sync(Arc::clone(&opts.columns));
+    let opts_show_gui = opts.show_gui;
     let mut app = App {
         engine,
         params,
         opts,
         state: None,
-        audio_bands: vizz_audio::default_bands(),
-        audio_auto_bpm: false,
+        audio_bands: restored_bands,
+        audio_auto_bpm: restored_auto,
         tap: vizz_audio::TapTempo::new(),
         live: None,
         live_revision: 0,
         live_points: Vec::new(),
         live_shown: false,
         video: None,
-        record_settings: Default::default(),
-        record_countdown_secs: 0,
+        record_settings: vizz_io::recorder::Settings {
+            format: if restored_record.lossless {
+                vizz_io::recorder::Format::Png
+            } else {
+                vizz_io::recorder::Format::Jpeg { quality: restored_record.quality }
+            },
+            fps: restored_record.fps,
+            max_secs: restored_record.max_secs,
+            ..Default::default()
+        },
+        record_countdown_secs: restored_record.countdown_secs,
         record_countdown_from: None,
         record_countdown_last: None,
         video_sources: Default::default(),
@@ -3170,8 +3967,16 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         video_live: false,
         // Clouds named on the command line win; otherwise restore whatever
         // was last dropped, so a set survives a restart.
+        // The cursor starts at the first empty slot rather than at zero:
+        // it used to restart every launch, so the first drop after a
+        // restart landed on the first restored cloud — the one a saved
+        // look most likely names — and replaced it.
+        next_cloud: cloud_paths
+            .iter()
+            .position(String::is_empty)
+            .unwrap_or(cloud_paths.len())
+            % ParticleScene::LOADABLE,
         clouds: cloud_paths,
-        next_cloud: 0,
         palettes: palette_paths,
         quit_armed: None,
         quit_for_update: false,
@@ -3181,6 +3986,12 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         saved_modulation: restored_modulation,
         modulation_checked: Instant::now(),
         presentable: true,
+        startup_notes,
+        welcome_pending: !restored.welcomed && opts_show_gui,
+        start_on_stage_pending: restored.start_on_stage && opts_show_gui,
+        takes_root: crate::settings::takes_root().display().to_string(),
+        audio_live: None,
+        midi_ports_seen: Vec::new(),
         midi_save_backoff: None,
         modulation_save_failing: false,
         output_status: Vec::new(),
@@ -3189,6 +4000,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         render_scale: crate::settings::load().scale(),
         clock_source: crate::settings::load().clock_source,
         recorder: None,
+        thumbs: Default::default(),
         midi,
         midi_shared,
         midi_view: MidiView::default(),
@@ -3198,4 +4010,173 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cloud_note_tests {
+    use super::*;
+
+    /// The notice says the number, with separators, and says when the
+    /// slot could not hold all of it.
+    #[test]
+    fn a_loaded_cloud_is_reported_by_size() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(65_536), "65,536");
+        assert_eq!(thousands(4_190_233), "4,190,233");
+        assert_eq!(cloud_size_note(12_000), "12,000 points");
+        assert_eq!(cloud_size_note(4_190_233), "4,190,233 points, sampled to 65,536");
+    }
+}
+
+#[cfg(test)]
+mod generator_catalogue_tests {
+    /// The site's catalogue page is generated from the catalogue, by
+    /// `cargo run --example clouds_page -p vizz-mod`, and its plates by
+    /// `cargo run --release --example plates -p vizz-render`. Neither
+    /// runs on its own, so this is the thing that notices when somebody
+    /// adds a cloud and forgets: every id has to be on the page, and
+    /// every plate beside it has to exist.
+    #[test]
+    fn the_site_catalogue_lists_every_cloud() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = std::fs::read_to_string(root.join("site/clouds/index.html"))
+            .expect("site/clouds/index.html");
+        for g in vizz_mod::generators::CATALOGUE {
+            assert!(
+                page.contains(&format!("<code>gen:{}</code>", g.id)),
+                "'{}' is not on the site's catalogue page — regenerate it",
+                g.id
+            );
+            assert!(
+                root.join(format!("site/img/clouds/{}.webp", g.id)).exists(),
+                "'{}' has no plate — rerun the plates example",
+                g.id
+            );
+        }
+        for g in vizz_mod::generators::SIMULATIONS {
+            assert!(
+                page.contains(&format!("<code>sim:{}</code>", g.id)),
+                "the simulation '{}' is not on the site's catalogue page",
+                g.id
+            );
+            assert!(
+                root.join(format!("site/img/clouds/sim-{}.webp", g.id)).exists(),
+                "the simulation '{}' has no plate",
+                g.id
+            );
+        }
+        // And the credit, which is the reason the page exists at all.
+        for g in vizz_mod::generators::CATALOGUE.iter().chain(vizz_mod::generators::SIMULATIONS) {
+            let cite = g.cite.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            assert!(page.contains(&cite), "'{}' is on the page without its source", g.id);
+        }
+        // The second half of the page — everything a frame is made of
+        // that is not a cloud. It used to be a page of its own; a check
+        // that its sections are still here is what stops the merge
+        // being quietly undone by a regeneration from an older example.
+        for part in [
+            "engine", "shapes", "layers", "colour", "light", "randomness", "audio", "frame",
+        ] {
+            assert!(
+                page.contains(&format!("<h2 id=\"{part}\">")),
+                "the '{part}' section is missing from the clouds page — regenerate it"
+            );
+        }
+    }
+
+    /// The bug this exists for: a link was added to the landing page for
+    /// a page that had not been written yet, and the only thing that
+    /// noticed was a person clicking it on the live site. Every internal
+    /// link now has to land on a file that is in the repository, or on a
+    /// redirect that is configured in `vercel.json`.
+    #[test]
+    fn every_internal_link_on_the_site_goes_somewhere() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site");
+        let config = std::fs::read_to_string(root.join("vercel.json")).expect("site/vercel.json");
+        // Enough of a parse for the question being asked: which paths
+        // does the host answer for that have no file behind them.
+        let redirects: Vec<String> = config
+            .split("\"source\": \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next().map(str::to_string))
+            .collect();
+
+        let mut pages = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read the site directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "html") {
+                    pages.push(path);
+                }
+            }
+        }
+        assert!(pages.len() >= 3, "the site has gone missing");
+
+        for page in &pages {
+            let html = std::fs::read_to_string(page).expect("read a site page");
+            for (from, _) in html.match_indices("href=\"/") {
+                // `href="/` is six characters before the slash, and the
+                // slash is part of the path.
+                let rest = &html[from + 6..];
+                let Some(end) = rest.find('"') else { continue };
+                // The fragment is a place on a page, not a page.
+                let target = rest[..end].split('#').next().unwrap_or("");
+                // The landing page, and protocol-relative URLs, which
+                // are somebody else's host.
+                if target == "/" || target.starts_with("//") {
+                    continue;
+                }
+                let trimmed = target.trim_matches('/');
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let found = root.join(format!("{trimmed}.html")).exists()
+                    || root.join(trimmed).join("index.html").exists()
+                    || root.join(trimmed).is_file()
+                    || redirects.iter().any(|r| r.trim_start_matches('/') == trimmed);
+                assert!(
+                    found,
+                    "{} links to /{trimmed}, which is neither a file in site/ nor a redirect",
+                    page.display()
+                );
+            }
+        }
+    }
+
+    /// The catalogue the panel lists and the maths the renderer holds are
+    /// two lists in two crates that cannot see each other. This is the
+    /// one place that sees both.
+    #[test]
+    fn every_catalogued_generator_generates_and_vice_versa() {
+        for g in vizz_mod::generators::CATALOGUE {
+            assert!(
+                vizz_render::generate::generate(g.id).is_some(),
+                "the catalogue lists '{}' but nothing makes it",
+                g.id
+            );
+        }
+        for id in vizz_render::generate::IDS {
+            assert!(
+                vizz_mod::generators::by_id(id).is_some(),
+                "'{id}' can be made but the catalogue does not list it"
+            );
+        }
+        for g in vizz_mod::generators::SIMULATIONS {
+            assert!(
+                vizz_render::simulate::start(g.id).is_some(),
+                "the catalogue lists the simulation '{}' but nothing runs it",
+                g.id
+            );
+        }
+        for id in vizz_render::simulate::IDS {
+            assert!(
+                vizz_mod::generators::simulation_by_id(id).is_some(),
+                "the simulation '{id}' runs but the catalogue does not list it"
+            );
+        }
+    }
 }

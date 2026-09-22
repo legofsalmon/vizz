@@ -227,16 +227,60 @@ pub struct BuiltinPatch {
     pub build: fn() -> crate::graph::NodeGraph,
 }
 
-/// The shipped patches. One for now: the patch that makes the vector
-/// layers move with music the moment it is loaded, because a modulation
-/// system whose first patch you must wire yourself is a system most
-/// people never hear.
-pub const BUILTIN_PATCHES: &[BuiltinPatch] = &[BuiltinPatch {
-    name: "Pulse",
-    about: "Kick gates a snap envelope into layer 2's opacity; a four-beat \
-            phasor drifts layer 1's phase. The vector layers, on the beat.",
-    build: pulse,
-}];
+/// The shipped patches: the ones that make the picture move with music
+/// the moment they are loaded, because a modulation system whose first
+/// patch you must wire yourself is a system most people never hear.
+/// One for the vector layers, one for the field itself.
+pub const BUILTIN_PATCHES: &[BuiltinPatch] = &[
+    BuiltinPatch {
+        name: "Pulse",
+        about: "Kick gates a snap envelope into layer 2's opacity; a four-beat \
+                phasor drifts layer 1's phase. The vector layers, on the beat.",
+        build: pulse,
+    },
+    BuiltinPatch {
+        name: "Breathe",
+        about: "Kick gates a snap envelope into the particle size; the loudness \
+                opens the glow; a sixteen-beat phasor swings the camera. The \
+                field itself, on the beat — what the react chip builds.",
+        build: breathe,
+    },
+];
+
+/// The one-line description of a shipped patch, for the load menu.
+pub fn about(name: &str) -> Option<&'static str> {
+    BUILTIN_PATCHES.iter().find(|p| p.name == name).map(|p| p.about)
+}
+
+/// Kick band -> gate -> envelope -> /particles/size, level -> /fx/glow,
+/// and a slow phasor into /camera/orbit: the chain the "react" chip
+/// builds, as a patch that can be opened and read.
+fn breathe() -> crate::graph::NodeGraph {
+    use crate::graph::{NodeGraph, NodeKind};
+    let mut g = NodeGraph::default();
+    let band = g.add(NodeKind::Band(0), [40.0, 60.0]);
+    let gate = g.add(NodeKind::Gate { threshold: 0.5 }, [220.0, 60.0]);
+    let env = g.add(NodeKind::Envelope { attack: 0.005, decay: 0.18 }, [400.0, 60.0]);
+    let size = g.add(
+        NodeKind::Param { addr: "/particles/size".into(), depth: 0.6 },
+        [580.0, 60.0],
+    );
+    g.connect(band, gate, 0);
+    g.connect(gate, env, 0);
+    g.connect(env, size, 0);
+
+    let level = g.add(NodeKind::Level, [40.0, 220.0]);
+    let glow = g.add(NodeKind::Param { addr: "/fx/glow".into(), depth: 0.5 }, [220.0, 220.0]);
+    g.connect(level, glow, 0);
+
+    let phasor = g.add(NodeKind::Phasor { beats: 16.0 }, [40.0, 380.0]);
+    let orbit = g.add(
+        NodeKind::Param { addr: "/camera/orbit".into(), depth: 0.15 },
+        [220.0, 380.0],
+    );
+    g.connect(phasor, orbit, 0);
+    g
+}
 
 /// Kick band -> gate -> envelope -> /l2/opacity, and a slow phasor into
 /// /l1/phase. Laid out left-to-right on the canvas the way a hand-built

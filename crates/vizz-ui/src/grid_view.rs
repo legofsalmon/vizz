@@ -99,6 +99,11 @@ pub struct GridView {
     pub missing: Vec<bool>,
     /// Presets available to put on a pad, for the assign menu.
     pub presets: Vec<String>,
+    /// Per slot: how many *other* pads play this pad's look, and how many
+    /// pages those pads are on. A look on other pads is shared, and
+    /// re-capturing it changes every one of them — the store hover says
+    /// so, and the app forks rather than replaces unless told otherwise.
+    pub shared: Vec<(usize, usize)>,
     /// The cell arrived at.
     pub current: Option<usize>,
     /// The cell being moved to, and how far along, 0..1.
@@ -156,6 +161,7 @@ impl Default for GridView {
             names: vec![None; SLOTS],
             missing: vec![false; SLOTS],
             presets: Vec::new(),
+            shared: vec![(0, 0); SLOTS],
             current: None,
             in_flight: None,
             duration: 2.0,
@@ -175,6 +181,11 @@ impl Default for GridView {
         }
     }
 }
+
+/// A look being dragged from a preset tile, for a scene pad to take.
+/// Carried by name: the pad assigns it through the same action the menu
+/// uses, so a drop and a menu pick are one path.
+pub struct DragLook(pub String);
 
 /// Persisted between frames: which mode the next pad press means.
 ///
@@ -201,8 +212,17 @@ pub struct GridActions {
     /// Fire this slot (0-based). The app turns it into a `/scene/fire`
     /// write so a click and a MIDI pad take the same path.
     pub fire: Option<usize>,
+    /// Fire this column (0-based): the scene pad and the gravity pad of
+    /// the same number, together — alt-click. The column was a real
+    /// parameter with no hand gesture anywhere on the screen you play.
+    pub fire_column: Option<usize>,
     /// Capture the live parameters into this slot, as a new preset.
     pub store: Option<usize>,
+    /// With `store`: re-capture the pad's look in place even when other
+    /// pads play it. Shift-click, or the menu's "in place" — the default
+    /// forks, because changing a look on every pad that plays it is the
+    /// one thing a store should not do by accident.
+    pub store_in_place: bool,
     /// Store a blank into this slot: every preset-scoped parameter at
     /// the bottom of its range.
     ///
@@ -332,6 +352,13 @@ fn pad(
 ) {
     let name = view.names.get(slot).and_then(|n| n.as_deref());
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    // A look dragged from a tile lands here. Scene pads only: a look is
+    // not a gravity preset, and the gravity grid is this same widget.
+    let takes_drops = view.noun == "scene";
+    let dropping = takes_drops && response.dnd_hover_payload::<DragLook>().is_some();
+    if takes_drops && let Some(look) = response.dnd_release_payload::<DragLook>() {
+        actions.assign = Some((slot, look.0.clone()));
+    }
     let p = ui.painter();
     let base = if name.is_some() {
         view.accent.unwrap_or(FILLED)
@@ -339,6 +366,9 @@ fn pad(
         EMPTY
     };
     p.rect_filled(rect, 3.0, base);
+    if dropping {
+        p.rect_filled(rect, 3.0, CURRENT.gamma_multiply(0.35));
+    }
 
     // The blend, filling left to right. Drawn under the label so a long
     // name stays readable while it fills.
@@ -356,7 +386,9 @@ fn pad(
     let broken = view.missing.get(slot).copied().unwrap_or(false);
     let waiting = view.learning == Some(slot);
     let armed_clear = state.clear_armed == Some(slot);
-    let outline = if armed_clear {
+    let outline = if dropping {
+        Some(CURRENT)
+    } else if armed_clear {
         Some(ARMED)
     } else if waiting {
         Some(LEARN)
@@ -419,10 +451,11 @@ fn pad(
         );
     }
 
+    let shared = view.shared.get(slot).copied().unwrap_or((0, 0));
     let response = response.on_hover_text(tooltip(
         state.mode,
         slot,
-        Pad { name, noun: view.noun, broken, waiting, bound, armed_clear },
+        Pad { name, noun: view.noun, broken, waiting, bound, armed_clear, shared },
     ));
     // Double-click to rename, which is where a name gets edited in every
     // other program. The context menu keeps its entry: this is a second
@@ -452,10 +485,17 @@ fn pad(
             // Firing an empty pad is a no-op in the grid itself, so this
             // does not need a guard — but offering a rename on it is the
             // useful thing to do with a click on nothing.
-            PadMode::Fire if name.is_some() => actions.fire = Some(slot),
+            PadMode::Fire if name.is_some() => {
+                if response.ctx.input(|i| i.modifiers.alt) {
+                    actions.fire_column = Some(slot);
+                } else {
+                    actions.fire = Some(slot);
+                }
+            }
             PadMode::Fire => {}
             PadMode::Store => {
                 actions.store = Some(slot);
+                actions.store_in_place = response.ctx.input(|i| i.modifiers.shift);
                 state.mode = PadMode::Fire;
             }
             PadMode::Clear => {
@@ -468,13 +508,23 @@ fn pad(
             }
         }
     }
-    response.context_menu(|ui| {
+    // Closed by its items rather than by any click, so an item that arms
+    // can ask its question with the menu still open — see the deck row.
+    egui::Popup::context_menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
         // Assignment first: a scene names a preset, so choosing which
         // preset is the primary thing you do to a pad. Capture is below
         // it, as the shortcut it now is.
         ui.menu_button("assign preset…", |ui| {
             if view.presets.is_empty() {
-                ui.label("no presets saved yet");
+                // A pull is not a look, and the gravity pool has no list
+                // of its own: say where one comes from.
+                ui.label(if view.noun == "gravity" {
+                    "no pulls saved yet — shape the wells in the panel's gravity group, then capture one here"
+                } else {
+                    "no looks saved yet"
+                });
                 return;
             }
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
@@ -488,10 +538,38 @@ fn pad(
         });
         if ui
             .button("capture current look")
-            .on_hover_text("save what is on screen as a preset and play it here")
+            .on_hover_text(if shared.0 > 0 {
+                "save what is on screen as a new look and play it here — the look this \
+                 pad has now stays on its other pads"
+            } else {
+                "save what is on screen as a preset and play it here"
+            })
             .clicked()
         {
             actions.store = Some(slot);
+            ui.close();
+        }
+        // The other way, for when every pad that plays the look should
+        // change with it. Armed: it rewrites a look on pads you cannot
+        // see from here.
+        if let Some(name) = name
+            && shared.0 > 0
+            && vizz_design::widgets::armed_button(
+                ui,
+                egui::Id::new("pad-recapture-armed"),
+                slot as u64,
+                vizz_design::widgets::Armed {
+                    idle_label: "re-capture in place",
+                    armed_label: "re-capture on every pad?",
+                    idle_hover: "replace this look with what is on screen, on every pad that plays it (asks once)",
+                    armed_hover: "click again — every pad and page that plays it changes",
+                    small: false,
+                },
+            )
+        {
+            let _ = name;
+            actions.store = Some(slot);
+            actions.store_in_place = true;
             ui.close();
         }
         if name.is_some() {
@@ -568,6 +646,8 @@ struct Pad<'a> {
     waiting: bool,
     bound: Option<&'a str>,
     armed_clear: bool,
+    /// Other pads playing this look, and the pages they are on.
+    shared: (usize, usize),
 }
 
 /// What a pad says on hover.
@@ -577,7 +657,7 @@ struct Pad<'a> {
 /// hardcoded "scene" described the wrong layer on every gravity pad, which
 /// is worse than describing nothing.
 fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
-    let Pad { name, noun, broken, waiting, bound, armed_clear } = pad;
+    let Pad { name, noun, broken, waiting, bound, armed_clear, shared } = pad;
     let n = slot + 1;
     if armed_clear {
         return format!("armed — press to empty {noun} {n}, press anything else to keep it");
@@ -595,13 +675,24 @@ fn tooltip(mode: PadMode, slot: usize, pad: Pad<'_>) -> String {
             // names the gesture is the cheapest possible fix, and the
             // double-click is the gesture people try first.
             |name| match bound {
-                Some(m) => format!("fire {name}  ·  {m}  ·  double-click to rename"),
-                None => format!("fire {name}  ·  double-click to rename"),
+                Some(m) => format!("fire {name}  ·  {m}  ·  alt-click fires the column  ·  double-click to rename"),
+                None => format!("fire {name}  ·  alt-click fires the column  ·  double-click to rename"),
             },
         ),
-        PadMode::Store => format!("capture the current look into {noun} {n}"),
+        // A shared look is named as such: the store forks, so the pads
+        // elsewhere keep what they had, and the hover says how to change
+        // them all instead.
+        PadMode::Store => match (name, shared) {
+            (Some(name), (pads, pages)) if pads > 0 => format!(
+                "capture the current look into {noun} {n} as a new look — {name} is on \
+                 {pads} other pad{}{}; shift-click re-captures it there too",
+                if pads == 1 { "" } else { "s" },
+                if pages > 1 { format!(" across {pages} pages") } else { String::new() },
+            ),
+            _ => format!("capture the current look into {noun} {n}"),
+        },
         PadMode::Clear => format!("empty {noun} {n}"),
-        PadMode::Learn => format!("bind the next control you press to firing {noun} {n}"),
+        PadMode::Learn => format!("bind the next button you press to firing {noun} {n}"),
     }
 }
 
@@ -793,16 +884,23 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
     let name = view
         .upcoming
         .and_then(|s| view.names.get(s).cloned().flatten());
+    let size = vec2(ui.available_width().clamp(120.0, 210.0), 26.0);
+    // Bars to the next step, when there is room for the number: the
+    // sweep says something is coming, this says when. The panel's
+    // narrow copy keeps the short form rather than clipping it.
+    let left = view
+        .auto_phase
+        .map(|ph| (1.0 - ph.clamp(0.0, 1.0)) * view.bars)
+        .filter(|_| size.x >= 190.0);
     // ASCII only. egui's default font has no arrow glyph, so "→" renders
     // as a tofu box — which on the one control that says whether the show
     // is running itself reads as a bug.
-    let text = match (view.autopilot, name) {
-        (true, Some(n)) => format!("{label}  >  {n}"),
-        (true, None) => format!("{label}  >  (empty grid)"),
-        (false, _) => label.to_string(),
+    let text = match (view.autopilot, name, left) {
+        (true, Some(n), Some(b)) => format!("{label}  {b:.1} bars  >  {n}"),
+        (true, Some(n), None) => format!("{label}  >  {n}"),
+        (true, None, _) => format!("{label}  >  (empty grid)"),
+        (false, ..) => format!("{label} off"),
     };
-
-    let size = vec2(ui.available_width().clamp(120.0, 210.0), 26.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter();
     p.rect_filled(rect, 4.0, if view.autopilot { AUTO_BED } else { EMPTY });
@@ -817,17 +915,19 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
             AUTO_ON,
         );
     }
-    // A lit border as well as a fill: at phase 0 the sweep is zero pixels
-    // wide, and without this the control would blink to looking off once
-    // per cycle.
-    if view.autopilot {
-        p.rect_stroke(
-            rect,
-            4.0,
-            egui::Stroke::new(1.5, AUTO_ON),
-            egui::StrokeKind::Inside,
-        );
-    }
+    // A border in every state. Lit, so that at phase 0 — the sweep is
+    // zero pixels wide — the control does not blink to looking off once
+    // per cycle; and off, because without one it borrowed the empty pad's
+    // fill and read as dead surface rather than a switch. The rest of
+    // the desk answers hover the same way the fader wells do.
+    let rim = if view.autopilot {
+        AUTO_ON
+    } else if response.hovered() {
+        vizz_design::surface::FOCUS
+    } else {
+        vizz_design::surface::EDGE
+    };
+    p.rect_stroke(rect, 4.0, egui::Stroke::new(1.5, rim), egui::StrokeKind::Inside);
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -840,10 +940,13 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
         },
     );
 
-    if response
-        .on_hover_text("walk the filled pads in time with the clock")
-        .clicked()
-    {
+    let hover = match view.auto_phase.map(|ph| (1.0 - ph.clamp(0.0, 1.0)) * view.bars) {
+        Some(b) if view.autopilot => format!(
+            "walking the filled pads in time with the clock — {b:.1} bars to the next step; click to stop"
+        ),
+        _ => "walk the filled pads in time with the clock".to_string(),
+    };
+    if response.on_hover_text(hover).clicked() {
         actions.set_autopilot = Some(!view.autopilot);
     }
 }
@@ -1134,6 +1237,7 @@ mod tests {
             waiting: false,
             bound: None,
             armed_clear: false,
+            shared: (0, 0),
         };
         for mode in [PadMode::Fire, PadMode::Store, PadMode::Clear, PadMode::Learn] {
             let text = tooltip(mode, 2, pad("gravity"));
@@ -1159,6 +1263,7 @@ mod tests {
                 waiting: false,
                 bound: Some("ch1 note36"),
                 armed_clear: false,
+                shared: (0, 0),
             },
         );
         assert!(text.contains("ch1 note36"), "binding not named on hover: {text}");
@@ -1228,9 +1333,46 @@ mod tests {
                 waiting: false,
                 bound: None,
                 armed_clear: true,
+                shared: (0, 0),
             },
         );
         assert!(text.contains("armed"), "the hover does not name the armed state: {text}");
+    }
+
+    /// A store on a shared look says it forks, how many pads keep the
+    /// old look, and how to change them all instead.
+    #[test]
+    fn the_store_hover_names_a_shared_look() {
+        let text = tooltip(
+            PadMode::Store,
+            3,
+            Pad {
+                name: Some("drop"),
+                noun: "scene",
+                broken: false,
+                waiting: false,
+                bound: None,
+                armed_clear: false,
+                shared: (3, 2),
+            },
+        );
+        assert!(text.contains("as a new look"), "the fork is not said: {text}");
+        assert!(text.contains("3 other pads across 2 pages"), "the count is not said: {text}");
+        assert!(text.contains("shift-click"), "the in-place route is not said: {text}");
+        let alone = tooltip(
+            PadMode::Store,
+            3,
+            Pad {
+                name: Some("drop"),
+                noun: "scene",
+                broken: false,
+                waiting: false,
+                bound: None,
+                armed_clear: false,
+                shared: (0, 0),
+            },
+        );
+        assert!(!alone.contains("new look"), "an unshared look must not claim a fork: {alone}");
     }
 
     /// A broken pad is a warning, not an armed action: nothing about it

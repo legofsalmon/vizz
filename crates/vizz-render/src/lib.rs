@@ -11,6 +11,7 @@ pub mod attractor;
 pub mod blit;
 pub mod camera;
 pub mod cameramove;
+pub mod generate;
 
 /// Re-exported so callers can build the vector types this crate's public
 /// API takes without depending on `glam` themselves — and, more to the
@@ -24,6 +25,7 @@ pub mod plystream;
 pub mod pointcloud;
 pub mod post;
 pub mod room;
+pub mod simulate;
 pub mod vector;
 pub mod video;
 

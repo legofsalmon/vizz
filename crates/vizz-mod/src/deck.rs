@@ -149,6 +149,22 @@ impl Book {
         book
     }
 
+    /// Every pad on every page that names `from` now names `to`. Returns
+    /// how many followed, for the notice: a renamed look must not leave
+    /// its pads dangling on a name that no longer exists.
+    pub fn repoint(&mut self, from: &str, to: &str) -> usize {
+        let mut n = 0;
+        for deck in &mut self.decks {
+            for cell in deck.scenes.iter_mut().chain(deck.gravity.iter_mut()).flatten() {
+                if cell.preset == from {
+                    cell.preset = to.to_string();
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     pub fn decks(&self) -> &[Deck] {
         &self.decks
     }
@@ -735,5 +751,41 @@ mod tests {
         assert_eq!(back.decks()[0].scenes[0].as_ref().map(|c| c.preset.as_str()), Some("a"));
         assert_eq!(back.decks()[1].name, "encore");
         assert_eq!(back.decks()[1].origin, 33);
+    }
+}
+
+#[cfg(test)]
+mod repoint_tests {
+    use super::*;
+
+    /// A rename re-points every pad on every page that named the old
+    /// look, on both grids, and leaves the rest alone.
+    #[test]
+    fn repoint_follows_a_rename_across_every_page() {
+        let mut book = Book::default();
+        let cell = |name: &str| Some(crate::scene::Cell { preset: name.to_string(), label: None });
+        let a = Deck {
+            name: "a".into(),
+            scenes: vec![cell("drop"), cell("break"), None],
+            gravity: vec![cell("drop"), None],
+            origin: 1,
+        };
+        let b = Deck {
+            name: "b".into(),
+            scenes: vec![None, cell("drop")],
+            gravity: vec![],
+            origin: 1,
+        };
+        book.decks = vec![a, b];
+        assert_eq!(book.repoint("drop", "Cathedral"), 3);
+        assert_eq!(book.repoint("drop", "Cathedral"), 0, "nothing left to follow");
+        let names: Vec<_> = book
+            .decks
+            .iter()
+            .flat_map(|d| d.scenes.iter().chain(d.gravity.iter()))
+            .flatten()
+            .map(|c| c.preset.clone())
+            .collect();
+        assert_eq!(names, ["Cathedral", "break", "Cathedral", "Cathedral"]);
     }
 }

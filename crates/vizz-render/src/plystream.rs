@@ -466,6 +466,11 @@ pub enum Source {
     /// a `.ply` in place, including over a shared folder, and needs no
     /// network at all.
     Watch(std::path::PathBuf),
+    /// Run a simulation and stream its frames — `sim:fluid`. Every
+    /// per-frame source needs the same thread, slot and revision, so a
+    /// simulation is one more source rather than a second stack; see
+    /// [`crate::simulate`].
+    Simulate(String),
 }
 
 impl std::str::FromStr for Source {
@@ -484,6 +489,15 @@ impl std::str::FromStr for Source {
         }
         if let Some(rest) = s.strip_prefix("file://") {
             return Ok(Source::Watch(rest.into()));
+        }
+        if let Some(spec) = s.strip_prefix("sim:") {
+            let id = spec.split('?').next().unwrap_or(spec);
+            anyhow::ensure!(
+                crate::simulate::IDS.contains(&id),
+                "no simulation called {id} — there are {}",
+                crate::simulate::IDS.join(", ")
+            );
+            return Ok(Source::Simulate(spec.to_string()));
         }
         // `host:port` with a numeric port, and nothing that looks like a
         // path. A Windows path such as C:\clouds\a.ply also contains a
@@ -506,6 +520,8 @@ struct Slot {
     revision: std::sync::atomic::AtomicU64,
     connected: std::sync::atomic::AtomicBool,
     dropped: std::sync::atomic::AtomicU64,
+    /// What the app last told a simulation; a network source ignores it.
+    drive: std::sync::Mutex<crate::simulate::Drive>,
 }
 
 /// A running live point-cloud input.
@@ -529,7 +545,12 @@ impl LiveCloud {
         use std::sync::Arc;
         let slot = Arc::new(Slot::default());
         let stop = Arc::new(AtomicBool::new(false));
-        let label = format!("{source:?}");
+        let label = match &source {
+            Source::Simulate(spec) => {
+                format!("{} — simulation", spec.split('?').next().unwrap_or(spec))
+            }
+            other => format!("{other:?}"),
+        };
         let (s, st) = (Arc::clone(&slot), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("ply-stream".into())
@@ -539,6 +560,16 @@ impl LiveCloud {
 
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Tell a running simulation what the room sounds like this frame.
+    /// A network source has nothing to do with it. `try_lock`, as
+    /// everything on the render side: a frame's worth of stale drive is
+    /// nothing, a wait is a missed vsync.
+    pub fn drive(&self, drive: crate::simulate::Drive) {
+        if let Ok(mut held) = self.slot.drive.try_lock() {
+            *held = drive;
+        }
     }
 
     pub fn connected(&self) -> bool {
@@ -657,6 +688,43 @@ mod handover_tests {
     }
 }
 
+/// Step a simulation at the frame rate and publish every frame. The
+/// points are copied into the slot rather than moved, so the simulation
+/// keeps its buffer and neither side allocates per frame.
+fn simulate_loop(
+    id: &str,
+    slot: &std::sync::Arc<Slot>,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    let mut sim = crate::simulate::start(id)
+        .ok_or_else(|| anyhow::anyhow!("no simulation called {id}"))?;
+    slot.connected.store(true, Ordering::Relaxed);
+    let period = std::time::Duration::from_micros(16_667);
+    let mut buf = Vec::with_capacity(crate::attractor::POINTS);
+    let mut last = std::time::Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        let now = std::time::Instant::now();
+        let dt = (now - last).as_secs_f32();
+        last = now;
+        let drive = slot.drive.try_lock().map(|d| *d).unwrap_or_default();
+        sim.step(dt, &drive);
+        sim.points(&mut buf);
+        if let Ok(mut held) = slot.points.try_lock() {
+            held.clear();
+            held.extend_from_slice(&buf);
+            drop(held);
+            slot.revision.fetch_add(1, Ordering::Release);
+        } else {
+            slot.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(rest) = period.checked_sub(now.elapsed()) {
+            std::thread::sleep(rest);
+        }
+    }
+    Ok(())
+}
+
 fn publish(slot: &std::sync::Arc<Slot>, points: Vec<Point>) {
     use std::sync::atomic::Ordering;
     let Ok(mut held) = slot.points.try_lock() else {
@@ -678,6 +746,7 @@ fn source_loop(
             Source::Connect(addr) => stream_from_connect(addr, slot, stop),
             Source::Listen(addr) => stream_from_listen(addr, slot, stop),
             Source::Watch(path) => watch_file(path, slot, stop),
+            Source::Simulate(id) => simulate_loop(id, slot, stop),
         };
         slot.connected.store(false, Ordering::Relaxed);
         if stop.load(Ordering::Relaxed) {

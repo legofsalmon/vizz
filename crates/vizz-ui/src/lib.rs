@@ -13,6 +13,7 @@ pub mod panel;
 pub mod theme;
 pub mod performance;
 pub mod project_bar;
+pub mod thumbs;
 mod renderer;
 
 /// Exposed for the offscreen panel-preview example; the app uses [`Gui`].
@@ -66,18 +67,21 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
         .show(ctx, |ui| {
             for (key, what) in [
                 ("1 – 9, 0", "fire preset slot 1–10"),
-                ("Space", "flash — white out while held"),
+                ("Space", "flash — white out while held · shift latches"),
+                ("S · B · F · I", "strobe · black · freeze · invert while held · shift latches"),
                 ("Tab", "show or hide the control panel"),
                 ("G", "modulation canvas"),
                 ("P", "performance layout"),
+                ("V", "watch the output — the controls stand aside (performance layout)"),
+                ("T", "tap the tempo — three taps set it"),
                 ("/", "filter the parameter list"),
                 ("?", "this list"),
-                ("F11", "fullscreen — Esc leaves it"),
-                ("Esc", "quit — twice, to mean it"),
+                ("F11", "fullscreen"),
+                ("Esc", "quit — twice, to mean it · in fullscreen the first Esc only leaves it"),
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(
-                        [72.0, 18.0],
+                        [96.0, 18.0],
                         egui::Label::new(egui::RichText::new(key).strong().monospace()),
                     );
                     ui.label(what);
@@ -88,7 +92,7 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
             // were harder to find: none of these appeared anywhere but the
             // README (or nowhere at all) until this block.
             for (gesture, what) in [
-                ("right-click", "reset a slider · menus on pads, presets and the canvas"),
+                ("right-click", "reset a slider · menus on pads, presets, decks, punches and the canvas"),
                 ("shift-click", "latch a punch button until the next click"),
                 ("double-click", "rename a pad"),
                 ("scroll", "zoom the modulation canvas"),
@@ -96,13 +100,56 @@ fn shortcuts_overlay(ctx: &egui::Context, open: &mut bool) {
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(
-                        [92.0, 18.0],
+                        [96.0, 18.0],
                         egui::Label::new(egui::RichText::new(gesture).strong().monospace()),
                     );
                     ui.label(what);
                 });
             }
         });
+}
+
+/// What a first launch says, once, along the bottom of the screen.
+///
+/// Three things and a gesture, because nothing else in the app teaches
+/// the number keys, the play screen or the drop until the `?` overlay is
+/// found — and finding it was the thing nobody did. Any key dismisses it,
+/// as does a click on it; the app remembers, so the second launch is
+/// not the first. Returns true when clicked.
+fn welcome_card(ctx: &egui::Context) -> bool {
+    let mut clicked = false;
+    egui::Area::new(egui::Id::new("welcome-card"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let r = egui::Frame::NONE
+                .fill(vizz_design::surface::RAISED)
+                .stroke(egui::Stroke::new(1.0, vizz_design::surface::EDGE))
+                .inner_margin(egui::Margin::symmetric(16, 10))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "1 – 9 fire a look  ·  Space flashes  ·  P is the screen you play from  ·  ? lists every key",
+                            )
+                            .size(13.0)
+                            .color(vizz_design::ink::PRIMARY),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "drop a photo or a scan on the window and it becomes the field  ·  any key, or a click here, carries on",
+                            )
+                            .size(12.0)
+                            .color(vizz_design::ink::TERTIARY),
+                        );
+                    });
+                })
+                .response
+                .interact(egui::Sense::click());
+            clicked = r.clicked();
+        });
+    clicked
 }
 
 /// "Press Escape again to quit."
@@ -162,7 +209,7 @@ fn learn_banner(ctx: &egui::Context, label: &str) -> bool {
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "MIDI learn armed: the next control you move or press binds to {label} — click to cancel"
+                            "MIDI learn armed: the next knob or button you move or press binds to {label} — click to cancel"
                         ))
                         .size(13.0)
                         .color(vizz_design::feedback::ON_LEARN_BED),
@@ -269,6 +316,52 @@ impl PointerWatch {
     }
 }
 
+/// The five punch gestures, in the order the performance row draws them.
+///
+/// Each has a key as well as a button, handled in the shell so it works
+/// whatever screen is up — including the window sizes at which the row
+/// itself has stood down for want of room. Space is the flash; the other
+/// four go by their initial, because mnemonic beats row order when a hand
+/// is reaching for BLACK without looking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Punch {
+    Flash,
+    Strobe,
+    Black,
+    Freeze,
+    Invert,
+}
+
+impl Punch {
+    pub const ALL: [Punch; 5] =
+        [Punch::Flash, Punch::Strobe, Punch::Black, Punch::Freeze, Punch::Invert];
+
+    /// The parameter the gesture writes.
+    pub fn addr(self) -> &'static str {
+        match self {
+            Punch::Flash => "/punch/flash",
+            Punch::Strobe => "/punch/strobe",
+            Punch::Black => "/punch/black",
+            Punch::Freeze => "/punch/freeze",
+            Punch::Invert => "/punch/invert",
+        }
+    }
+
+    /// Which punch a key is, if it is one. Case-insensitive, like G and
+    /// P: Caps Lock must not be able to disarm a blackout.
+    fn from_key(key: &winit::keyboard::Key) -> Option<Punch> {
+        use winit::keyboard::{Key, NamedKey};
+        match key.as_ref() {
+            Key::Named(NamedKey::Space) => Some(Punch::Flash),
+            Key::Character(c) if c.eq_ignore_ascii_case("s") => Some(Punch::Strobe),
+            Key::Character(c) if c.eq_ignore_ascii_case("b") => Some(Punch::Black),
+            Key::Character(c) if c.eq_ignore_ascii_case("f") => Some(Punch::Freeze),
+            Key::Character(c) if c.eq_ignore_ascii_case("i") => Some(Punch::Invert),
+            _ => None,
+        }
+    }
+}
+
 pub struct Gui {
     ctx: egui::Context,
     state: egui_winit::State,
@@ -298,13 +391,30 @@ pub struct Gui {
     pub focus_filter: bool,
     /// A number key was pressed: fire this preset slot.
     pub preset_key: Option<u32>,
-    /// Space went down (`Some(true)`) or up (`Some(false)`) this frame:
-    /// the flash gesture, taken by the app like `preset_key` so there is
-    /// one path writing the parameter. Held state is tracked here so a
-    /// release is only reported for a press this handler saw — a space
-    /// typed into a text field must not end as a flash release.
-    pub flash_key: Option<bool>,
-    space_flashing: bool,
+    /// Punch keys that went down or came up this frame — (which,
+    /// engaged). Taken by the app like `preset_key`, so there is one path
+    /// writing the parameter whether it came from a key, a note or the
+    /// button. Held state is tracked here so a release is only reported
+    /// for a press this handler saw — a space typed into a text field
+    /// must not end as a flash release.
+    pub punch_keys: Vec<(Punch, bool)>,
+    /// Draw the first-launch card. Set by the app on a launch nobody has
+    /// been welcomed on; cleared by the first key or a click on the card.
+    pub welcome: bool,
+    /// The card was just dismissed, so the app can remember that it was.
+    /// Taken by the app like `preset_key`.
+    pub welcome_dismissed: bool,
+    /// The performance layout was just entered or left, so the app can
+    /// remember which screen to open on. Taken by the app.
+    pub face_changed: bool,
+    /// T was pressed: one tap of the tempo. Taken by the app, which
+    /// raises /tempo/tap exactly as a note would.
+    pub tap_key: bool,
+    /// What a key is holding down, per punch, and whether shift latched
+    /// it. A latched punch survives the key coming up and the window
+    /// losing focus; the next plain press of its key releases it, as a
+    /// plain click releases a latched button.
+    punch_held: [Option<bool>; 5],
     /// What egui has been told is held down. See [`PointerWatch`].
     pointer: PointerWatch,
     graph_view: graph_view::GraphView,
@@ -342,8 +452,12 @@ impl Gui {
             quit_armed: false,
             focus_filter: false,
             preset_key: None,
-            flash_key: None,
-            space_flashing: false,
+            punch_keys: Vec::new(),
+            welcome: false,
+            welcome_dismissed: false,
+            face_changed: false,
+            tap_key: false,
+            punch_held: [None; 5],
             pointer: PointerWatch::default(),
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
@@ -440,6 +554,14 @@ impl Gui {
     /// in which case the caller should not act on it (so dragging a
     /// slider does not also trigger app shortcuts).
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        // The first key of a first launch is the card's cue to go: the
+        // person is doing the thing it said, or knows better.
+        if self.welcome
+            && let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state.is_pressed()
+        {
+            self.dismiss_welcome();
+        }
         // Tab is ours whenever nothing is being typed into: the panel
         // must be dismissible even while egui has mouse focus. While a
         // text field IS focused, Tab goes to egui as the focus-next it
@@ -447,6 +569,7 @@ impl Gui {
         // typing a preset name.
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
+            && !event.repeat
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
             && !self.ctx.egui_wants_keyboard_input()
         {
@@ -456,29 +579,49 @@ impl Gui {
             }
             return true;
         }
-        // Space is the flash. Press and release both matter — it is the
-        // one held gesture on the keyboard — so it is handled before the
-        // pressed-only block below.
+        // The punch keys. Press and release both matter — these are the
+        // held gestures on the keyboard — so they are handled before the
+        // pressed-only block below. Shift on the press latches, exactly
+        // as shift-click does on the button, and the next plain press
+        // releases it.
         if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+            && let Some(punch) = Punch::from_key(&event.logical_key)
         {
+            let slot = punch as usize;
             if event.state.is_pressed()
                 && !event.repeat
                 && !self.ctx.egui_wants_keyboard_input()
-                && !self.space_flashing
             {
-                self.space_flashing = true;
-                self.flash_key = Some(true);
+                match self.punch_held[slot] {
+                    Some(true) => {
+                        self.punch_held[slot] = None;
+                        self.set_row_latch(punch, false);
+                        self.punch_keys.push((punch, false));
+                    }
+                    Some(false) => {}
+                    None => {
+                        let latch = self.ctx.input(|i| i.modifiers.shift);
+                        self.punch_held[slot] = Some(latch);
+                        if latch {
+                            self.set_row_latch(punch, true);
+                        }
+                        self.punch_keys.push((punch, true));
+                    }
+                }
                 return true;
             }
-            if !event.state.is_pressed() && self.space_flashing {
-                self.space_flashing = false;
-                self.flash_key = Some(false);
+            if !event.state.is_pressed() && self.punch_held[slot] == Some(false) {
+                self.punch_held[slot] = None;
+                self.punch_keys.push((punch, false));
                 return true;
             }
         }
+        // Pressed once, not held: a key repeat is the OS saying the same
+        // thing again, and a toggle that toggles on every repeat flickers
+        // the screen it is on and, for Escape, quits the show.
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state.is_pressed()
+            && !event.repeat
             && !self.ctx.egui_wants_keyboard_input()
         {
             match event.logical_key.as_ref() {
@@ -489,8 +632,13 @@ impl Gui {
                     self.graph_open = !self.graph_open;
                     return true;
                 }
+                winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("t") => {
+                    self.tap_key = true;
+                    return true;
+                }
                 winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("p") => {
                     self.performance = !self.performance;
+                    self.face_changed = true;
                     if !self.performance {
                         self.drop_text_focus();
                     }
@@ -528,6 +676,16 @@ impl Gui {
         // keeps believing the button is held.
         if matches!(event, WindowEvent::Focused(false)) {
             self.release_held("the window lost focus");
+            // The keys too: switching away with Space down used to leave
+            // the output white with no key held anywhere. A latched punch
+            // is the exception — a blackout somebody chose to keep has to
+            // survive the window losing focus.
+            for punch in Punch::ALL {
+                if self.punch_held[punch as usize] == Some(false) {
+                    self.punch_held[punch as usize] = None;
+                    self.punch_keys.push((punch, false));
+                }
+            }
         }
         // A breadcrumb, deliberately not an action: dragging a fader past
         // the bottom of the window is normal and must keep working, so
@@ -554,6 +712,19 @@ impl Gui {
         }
         self.pointer.note(event);
         self.state.on_window_event(window, event).consumed
+    }
+
+    fn dismiss_welcome(&mut self) {
+        self.welcome = false;
+        self.welcome_dismissed = true;
+    }
+
+    /// Keep the performance row's latch pip in step with a key latch, so
+    /// a blackout latched from the keyboard reads LATCHED on its button
+    /// too, and a plain click on that button releases it.
+    fn set_row_latch(&self, punch: Punch, latched: bool) {
+        let id = egui::Id::new(("punch-latch", punch.addr()));
+        self.ctx.data_mut(|d| d.insert_temp(id, latched));
     }
 
     /// Tell egui every button it thinks is down has come up.
@@ -665,9 +836,15 @@ impl Gui {
         if self.shortcuts_open {
             shortcuts_overlay(&self.ctx, &mut self.shortcuts_open);
         }
+        // Likewise the welcome: on every face, or a first launch that
+        // pressed P before reading it would lose it.
+        if self.welcome && welcome_card(&self.ctx) {
+            self.dismiss_welcome();
+        }
         if self.quit_armed {
             quit_prompt(&self.ctx);
         }
+        drop_hint(&self.ctx);
         self.notices.draw(&self.ctx);
         if self.performance {
             return self
@@ -690,6 +867,14 @@ impl Gui {
         // The panel's button and the G key take the same door.
         if actions.open_canvas {
             self.graph_open = true;
+        }
+        if actions.open_performance {
+            self.performance = true;
+            self.face_changed = true;
+            self.drop_text_focus();
+        }
+        if actions.open_shortcuts {
+            self.shortcuts_open = true;
         }
         if self.graph_open {
             let mut open = true;
@@ -742,16 +927,17 @@ impl Gui {
         size_px: [u32; 2],
     ) -> Result<PanelActions> {
         let health = state.health.as_ref();
-        let preset_names: Vec<String> = state.presets.iter().map(|p| p.name.clone()).collect();
         let perf_state = performance::PerformanceState {
             recording: state.recording,
+            record_countdown: state.record_countdown,
             outputs: &state.outputs,
             audio: &state.audio,
             fps: health.map(|h| h.fps).unwrap_or(0.0),
             over_budget: health.map(|h| h.over_budget_window_pct > 1.0).unwrap_or(false),
             bpm: state.bpm,
             bar_phase: state.bar_phase,
-            presets: &preset_names,
+            presets: &state.presets,
+            thumb_revision: state.thumb_revision,
             preset_current: state.preset_current,
             grid: &state.grid,
             // Only shown when the layer is in use.
@@ -775,6 +961,7 @@ impl Gui {
         }
         if perf.exit {
             self.performance = false;
+            self.face_changed = true;
         }
         // Growing or shrinking the fader set, saved like any other
         // assignment change. Warned about when it costs something: the
@@ -794,6 +981,10 @@ impl Gui {
         // panel's route toggle rather than round-tripped through the
         // app. They *are* graph edits — the shortcut builds the same
         // nodes a hand would — so the canvas is the one place they live.
+        if let Some(on) = perf.react.take() {
+            let done = vizz_mod::shapes::react(&mut modulation.graph, on);
+            self.notices.info(vizz_mod::shapes::react_notice(on, &done));
+        }
         if let Some((addr, shape)) = perf.set_mod_shape.take() {
             match shape {
                 Some(i) => {
@@ -844,6 +1035,20 @@ impl Gui {
         actions.set_learn_target = perf.set_learn_target;
         actions.clear_binding = perf.clear_binding;
         actions.clear_slot_binding = perf.clear_slot_binding;
+        // Photographing a look is the same job wherever it is asked for,
+        // so it takes the panel's path rather than growing a second one.
+        actions.preset_rephoto = perf.preset_rephoto;
+        // A rename needs a text field, which a tile cannot hold: the
+        // stage hands the name to the panel's field and shows the panel.
+        if let Some(name) = perf.preset_rename_start {
+            self.performance = false;
+            self.face_changed = true;
+            panel::begin_rename(&self.ctx, name);
+        }
+        // The input picked on the stage strip takes the panel's path.
+        if let Some(device) = perf.audio_device {
+            actions.audio.device = Some(device);
+        }
         // Routed through the same one-shot the number keys use, so a
         // click and a keystroke take an identical path to the recall
         // parameter — one way to fire a preset, not two that can drift.
@@ -854,8 +1059,137 @@ impl Gui {
     }
 }
 
+/// The rim and caption while a file is held over the window. A dragged
+/// file used to get nothing until it landed — which is the moment it was
+/// too late to learn whether this was the right window, or a file the
+/// app could take. The caption says what the drop will do, or why it
+/// will do nothing, before the hand lets go.
+fn drop_hint(ctx: &egui::Context) {
+    let files = ctx.input(|i| i.raw.hovered_files.clone());
+    if files.is_empty() {
+        return;
+    }
+    let ext = files
+        .iter()
+        .filter_map(|f| f.path.as_ref())
+        .filter_map(|p| p.extension())
+        .filter_map(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .next();
+    let caption = match ext.as_deref() {
+        Some("ply" | "xyz" | "pts" | "csv" | "png" | "jpg" | "jpeg") => "drop to load it as a cloud",
+        Some("gpl" | "hex" | "txt") => "drop to add the palette",
+        Some(_) => {
+            "not a file vizz can load — clouds are .ply .xyz .pts .csv .png .jpg, palettes .gpl .hex .txt"
+        }
+        None => "drop to load — clouds and palettes",
+    };
+    let rect = ctx.content_rect();
+    let p = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("drop-hint"),
+    ));
+    p.rect_stroke(
+        rect.shrink(3.0),
+        6.0,
+        egui::Stroke::new(3.0, theme::CURRENT),
+        egui::StrokeKind::Inside,
+    );
+    let ink = vizz_design::ink::PRIMARY;
+    let galley = p.layout_no_wrap(caption.to_string(), egui::FontId::proportional(15.0), ink);
+    let size = galley.size() + egui::vec2(28.0, 16.0);
+    let card = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.bottom() - 60.0),
+        size,
+    );
+    p.rect_filled(card, 6.0, vizz_design::surface::RAISED);
+    p.rect_stroke(card, 6.0, egui::Stroke::new(1.0, theme::CURRENT), egui::StrokeKind::Inside);
+    p.galley(card.min + egui::vec2(14.0, 8.0), galley, ink);
+}
+
+#[cfg(test)]
+mod drop_hint_tests {
+    use super::*;
+
+    fn painted(files: Vec<egui::HoveredFile>) -> String {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(800.0, 600.0),
+            )),
+            hovered_files: files,
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        drop_hint(&ctx);
+        let out = ctx.end_pass();
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => out.push_str(t.galley.text()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for s in &out.shapes {
+            walk(&s.shape, &mut text);
+        }
+        text
+    }
+
+    /// A file held over the window is answered before it lands: a
+    /// cloud, a palette, or a refusal with the list — and nothing at all
+    /// when nothing is held.
+    #[test]
+    fn a_hovered_file_gets_a_caption_before_it_lands() {
+        let file = |name: &str| egui::HoveredFile { path: Some(name.into()), mime: String::new() };
+        assert_eq!(painted(vec![]), "", "a caption with nothing held");
+        assert!(painted(vec![file("scan.ply")]).contains("as a cloud"));
+        assert!(painted(vec![file("dusk.gpl")]).contains("palette"));
+        let refused = painted(vec![file("notes.docx")]);
+        assert!(refused.contains("not a file vizz can load"), "{refused}");
+        assert!(refused.contains(".ply"), "the refusal should list what is loadable: {refused}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Every punch answers to one key, and the letters are the row's
+    /// initials whatever the case — Caps Lock must not disarm a blackout.
+    /// Nothing else on the keyboard is a punch, so G and P keep their
+    /// own meanings.
+    #[test]
+    fn every_punch_has_a_key_and_the_letters_ignore_case() {
+        use super::Punch;
+        use winit::keyboard::{Key, NamedKey};
+        let key = |c: &str| Key::Character(c.into());
+        assert_eq!(Punch::from_key(&Key::Named(NamedKey::Space)), Some(Punch::Flash));
+        for (lower, upper, want) in [
+            ("s", "S", Punch::Strobe),
+            ("b", "B", Punch::Black),
+            ("f", "F", Punch::Freeze),
+            ("i", "I", Punch::Invert),
+        ] {
+            assert_eq!(Punch::from_key(&key(lower)), Some(want), "{lower}");
+            assert_eq!(Punch::from_key(&key(upper)), Some(want), "{upper}");
+        }
+        for other in ["g", "p", "v", "1", "/", "?"] {
+            assert_eq!(Punch::from_key(&key(other)), None, "{other} is not a punch");
+        }
+        assert_eq!(Punch::from_key(&Key::Named(NamedKey::Escape)), None);
+        // The order the row draws them in, so `punch as usize` indexes
+        // the held-state array the way the row reads left to right.
+        assert_eq!(Punch::ALL.map(|p| p as usize), [0, 1, 2, 3, 4]);
+        assert_eq!(Punch::ALL.map(Punch::addr), [
+            "/punch/flash",
+            "/punch/strobe",
+            "/punch/black",
+            "/punch/freeze",
+            "/punch/invert",
+        ]);
+    }
+
     use super::*;
     use vizz_params::ParamDef;
 
@@ -988,6 +1322,8 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1014,6 +1350,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1041,6 +1378,8 @@ mod tests {
             // the looks it happens to be listing.
             project: "Basement".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1069,6 +1408,7 @@ mod tests {
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
+        thumb_revision: 0,
         presets: vec![
                 PresetEntry { name: "Slow bloom".into(), builtin: true, about: Some("opener".into()) , source: None},
                 PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
@@ -1103,6 +1443,8 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1129,6 +1471,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1158,6 +1501,8 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1184,6 +1529,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1205,6 +1551,8 @@ mod tests {
         let mut state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1229,6 +1577,9 @@ mod tests {
                 dropped: 0,
                 clock_midi: false,
                 clock_ticking: false,
+                reacting: false,
+                tap_count: 0,
+                auto_bpm: false,
             },
             video: None,
             live_cloud: None,
@@ -1243,6 +1594,7 @@ mod tests {
             output: Default::default(),
             bpm: 128.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1306,6 +1658,8 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1341,6 +1695,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1362,6 +1717,8 @@ mod tests {
         let base = |update: Option<String>| PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1388,6 +1745,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
@@ -1525,6 +1883,8 @@ mod tests {
         let state = |current: Option<usize>| PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1553,6 +1913,7 @@ mod tests {
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,
+            thumb_revision: 0,
             presets: vec![
                 PresetEntry { name: "Slow bloom".into(), builtin: true, about: None , source: None},
                 PresetEntry { name: "Warehouse 2".into(), builtin: false, about: None , source: None},
@@ -1576,6 +1937,8 @@ mod tests {
         PanelState {
             project: "Show 1".into(),
             local_address: None,
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1605,6 +1968,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         }
     }
@@ -1656,6 +2020,8 @@ mod tests {
         let mut state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1685,6 +2051,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: false,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         let without = run_panel(&ctx, &reg, &state);
@@ -1713,6 +2080,8 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1747,6 +2116,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -1780,6 +2150,8 @@ mod tests {
         let state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1809,6 +2181,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         let text = run_panel(&ctx, &reg, &state);
@@ -1845,6 +2218,8 @@ mod tests {
         let mut state = PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1874,6 +2249,7 @@ mod tests {
             grid: Default::default(),
             expand_sections: true,
             presets: Vec::new(),
+            thumb_revision: 0,
             bar_phase: 0.0,
         };
         // Idle: there is a way in, and the default address is offered
@@ -1967,6 +2343,8 @@ mod tests {
         PanelState {
             project: "Show 1".into(),
             local_address: Some("192.168.1.42".into()),
+            takes_root: None,
+            record_countdown: None,
             decks: Vec::new(),
             active_deck: 0,
             follow_columns: None,
@@ -1993,6 +2371,7 @@ mod tests {
             output: Default::default(),
             bpm: 120.0,
             presets: Vec::new(),
+            thumb_revision: 0,
             focus_filter: false,
             grid: Default::default(),
             expand_sections: true,

@@ -86,6 +86,8 @@ pub struct AppParams {
     pub shape: ParamId,
     pub morph: ParamId,
     pub twist: ParamId,
+    pub wind: ParamId,
+    pub wind_rate: ParamId,
     pub trail: ParamId,
     pub zoom: ParamId,
     pub spin: ParamId,
@@ -99,6 +101,7 @@ pub struct AppParams {
     pub punch_strobe: ParamId,
     pub punch_strobe_div: ParamId,
     pub record_active: ParamId,
+    pub tempo_tap: ParamId,
     pub palette: ParamId,
     pub color_spread: ParamId,
     pub color_drive: ParamId,
@@ -159,17 +162,188 @@ pub struct AppParams {
     pub scene_auto: ParamId,
     pub scene_bars: ParamId,
     pub deck_select: ParamId,
+    pub deck_next: ParamId,
+    pub deck_prev: ParamId,
     pub column_fire: ParamId,
 }
 
 pub const MAX_PARTICLES: f32 = 500_000.0;
+
+/// What every parameter does, in one line each — the README's reference
+/// table, verbatim, so the row hover in the panel and the manual are one
+/// string rather than two that drift. The README test below checks the
+/// two agree row for row. Repeated instances are compacted the way the
+/// README writes them: `/gravity/N/x` covers the four wells, `/lN/kind`
+/// the four layers.
+const HELP: &[(&str, &str)] = &[
+    ("/particles/count", "live particle count"),
+    ("/particles/size", "sprite size"),
+    ("/particles/speed", "motion rate (phase-continuous)"),
+    ("/particles/spread", "field radius"),
+    ("/particles/hue", "base hue"),
+    ("/particles/saturation", "color saturation"),
+    ("/particles/brightness", "value multiplier"),
+    ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
+    ("/shape/morph", "extra blend into the next form"),
+    ("/shape/twist", "shear and vertical twist"),
+    ("/shape/wind", "a wind through the field — an ABC flow, divergence-free, blowing every form"),
+    ("/shape/wind_rate", "how fast the wind changes"),
+    ("/fx/trail", "feedback: how much of last frame survives"),
+    ("/fx/zoom", "per-frame zoom of the feedback (tunnels)"),
+    ("/fx/spin", "per-frame rotation of the feedback"),
+    ("/fx/mirror", "0 off · 1 mirror · 2 quad · 3 kaleido"),
+    ("/fx/glow", "bloom lift"),
+    ("/fx/shift", "radial RGB split (chromatic aberration)"),
+    ("/punch/flash", "white-out while held — Space, a punch button, or a learned MIDI note"),
+    ("/punch/black", "blackout while held; rgb only, coverage stays"),
+    ("/punch/invert", "invert the finished picture while held"),
+    ("/punch/freeze", "hold the picture; the set keeps moving underneath"),
+    ("/punch/strobe", "beat-synced strobe while held"),
+    ("/punch/strobe_div", "beats per strobe cycle"),
+    ("/color/palette", "palette row: 0 hsv · 1 warm · 2 ember · 3 ice · 4 neon · 5+ loaded palettes"),
+    ("/color/spread", "how much of the palette the field spans"),
+    ("/color/drive", "what picks the colour: 0 index · 1 radius · 2 depth · 3 height"),
+    ("/cloud/a", "which cloud this look shows; set by clicking a name, not listed as a row"),
+    ("/cloud/b", "the cloud a transition is crossing *to* — driven by the transition, refused from OSC/MIDI/modulation"),
+    ("/cloud/morph", "where that crossing has got to — driven by the transition, refused from OSC/MIDI/modulation"),
+    ("/video/depth", "how far the picture's relief pushes along z; 0 is flat"),
+    ("/video/relief", "what pushes it: 0 luminance · 1 hue · 2 saturation · 3 chroma"),
+    ("/lN/kind", "layer generator: off · rings · stripes · checker · polygon · star · rays · dots"),
+    ("/lN/freq", "pattern frequency"),
+    ("/lN/phase", "pattern phase offset; unsmoothed, so steps snap"),
+    ("/lN/drift", "how fast the pattern walks on its own, turns/sec of visual time; 0 is still, negative reverses"),
+    ("/lN/duty", "ink/paper ratio within a period"),
+    ("/lN/sides", "polygon/star sides; a sweep, fractional counts morph"),
+    ("/lN/inset", "star valley depth"),
+    ("/lN/fold", "kaleidoscope wedges; below 2 is off"),
+    ("/lN/invert", "0 fill · 1 invert"),
+    ("/lN/x", "layer centre, sideways"),
+    ("/lN/y", "layer centre, vertical"),
+    ("/lN/rot", "layer rotation, turns"),
+    ("/lN/scale", "layer scale"),
+    ("/lN/color", "which ink the layer prints with"),
+    ("/lN/blend", "normal · multiply · screen · add · difference · exclusion · subtract"),
+    ("/lN/opacity", "layer opacity"),
+    ("/pal/0/r", "ink 0 (near-black), r channel"),
+    ("/pal/0/g", "ink 0 (near-black), g channel"),
+    ("/pal/0/b", "ink 0 (near-black), b channel"),
+    ("/pal/1/r", "ink 1 (red), r channel"),
+    ("/pal/1/g", "ink 1 (red), g channel"),
+    ("/pal/1/b", "ink 1 (red), b channel"),
+    ("/pal/2/r", "ink 2 (blue), r channel"),
+    ("/pal/2/g", "ink 2 (blue), g channel"),
+    ("/pal/2/b", "ink 2 (blue), b channel"),
+    ("/pal/3/r", "ink 3 (yellow), r channel"),
+    ("/pal/3/g", "ink 3 (yellow), g channel"),
+    ("/pal/3/b", "ink 3 (yellow), b channel"),
+    ("/vec/place", "where the stack renders: 0 scene (behind particles, in the feedback chain) · 1 print (after post, exact ink)"),
+    ("/camera/distance", "orbit distance from the field"),
+    ("/camera/orbit", "orbit angle around the field"),
+    ("/camera/elevation", "height angle of the orbit"),
+    ("/camera/fov", "field of view, radians"),
+    ("/camera/focus", "focus distance"),
+    ("/camera/defocus", "depth-of-field blur amount"),
+    ("/camera/pan_x", "sideways pan of the view"),
+    ("/camera/pan_y", "vertical pan of the view"),
+    ("/camera/at_x", "where in the world the camera is aimed, X"),
+    ("/camera/at_y", "where in the world the camera is aimed, Y"),
+    ("/camera/at_z", "where in the world the camera is aimed, Z"),
+    ("/camera/move", "canned path: off, orbit, sway, push, pull, crane, spiral, look around, fly through, walkthrough, drift"),
+    ("/camera/move_bars", "bars per cycle of the move"),
+    ("/camera/move_size", "how far the move travels"),
+    ("/room/brightness", "wireframe room visibility"),
+    ("/room/depth", "how deep the room extends"),
+    ("/room/fade", "distance fade of the room lines"),
+    ("/room/converge", "perspective convergence of the grid"),
+    ("/room/vanish_x", "vanishing point, sideways"),
+    ("/room/vanish_y", "vanishing point, vertical"),
+    ("/room/anchor", "where the cloud sits between front and back"),
+    ("/room/embed", "how much the room's perspective bends the cloud"),
+    ("/light/ambient", "how much light there is everywhere; 1 is the unlit picture"),
+    ("/light/shape", "how much a surface's own orientation counts (needs normals)"),
+    ("/light/torch", "lamp 1 rides the camera"),
+    ("/light/N/x", "lamp N position, X"),
+    ("/light/N/y", "lamp N position, Y"),
+    ("/light/N/z", "lamp N position, Z"),
+    ("/light/N/radius", "lamp N reach"),
+    ("/light/N/level", "lamp N brightness"),
+    ("/light/N/hue", "lamp N colour"),
+    ("/light/N/tint", "how much of lamp N's colour to use; 0 is white"),
+    ("/sun/level", "directional key brightness (needs normals)"),
+    ("/sun/azimuth", "which way the sun is, around"),
+    ("/sun/elevation", "which way the sun is, up"),
+    ("/sun/hue", "sun colour"),
+    ("/sun/tint", "how much of the sun's colour to use; 0 is white"),
+    ("/gravity/amount", "master depth of the gravity layer"),
+    ("/gravity/N/x", "well N position, X"),
+    ("/gravity/N/y", "well N position, Y"),
+    ("/gravity/N/z", "well N position, Z"),
+    ("/gravity/N/strength", "pull (positive) or push (negative)"),
+    ("/gravity/N/radius", "well reach"),
+    ("/gravity/fire", "fire gravity scene 1–16 on change; 0 = none"),
+    ("/gravity/time", "gravity blend time, seconds"),
+    ("/gravity/curve", "0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut"),
+    ("/gravity/auto", "gravity autopilot on/off"),
+    ("/gravity/bars", "bars between gravity autopilot steps"),
+    ("/bg/red", "background red"),
+    ("/bg/green", "background green"),
+    ("/bg/blue", "background blue"),
+    ("/bg/alpha", "background opacity; 0 delivers the field on nothing"),
+    ("/preset/recall", "recall preset N on change; 0 = none"),
+    ("/scene/fire", "fire scene 1–16 on change; 0 = none"),
+    ("/scene/time", "scene blend time, seconds"),
+    ("/scene/curve", "0 linear · 1 smooth · 2 ease in · 3 ease out · 4 cut"),
+    ("/scene/auto", "scene autopilot on/off"),
+    ("/scene/bars", "bars between scene autopilot steps"),
+    ("/deck/select", "turn to page 1–24 on change; 0 = none"),
+    ("/deck/next", "turn to the next page on a rise; stops at the last"),
+    ("/deck/prev", "turn to the previous page on a rise; stops at the first"),
+    ("/column/fire", "fire column 1–16 — the scene pad and the gravity pad of that number, together"),
+    ("/record/active", "record the master to an image sequence; 1 starts, 0 stops"),
+    ("/tempo/tap", "tap the beat: each rise is one tap, and three set the tempo"),
+    ("/master/dim", "master fader"),
+];
+
+/// The help line for an address, trying the compacted form for a
+/// repeated instance when the exact one is not listed.
+fn help_for(addr: &str) -> Option<&'static str> {
+    let exact = HELP.iter().find(|(a, _)| *a == addr).map(|(_, h)| *h);
+    if exact.is_some() {
+        return exact;
+    }
+    let compacted = addr
+        .split('/')
+        .map(|seg| {
+            if !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) {
+                "N".to_string()
+            } else if seg.len() == 2
+                && seg.starts_with('l')
+                && seg.as_bytes()[1].is_ascii_digit()
+            {
+                "lN".to_string()
+            } else {
+                seg.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    HELP.iter().find(|(a, _)| *a == compacted).map(|(_, h)| *h)
+}
 
 /// Highest slot `/preset/recall` will address. Slot 0 is "none" and
 /// presets run from 1, so this is one more than the number of presets
 /// reachable. Fixed rather than sized from the preset list, because the
 /// parameter set is built once at startup and saving a preset must not
 /// reshape the registry underneath a running show.
-pub const MAX_PRESET_SLOT: f32 = 64.0;
+///
+/// Sized for a library, not for the built-ins. It was 64 — nine
+/// built-ins and a grid's worth of headroom — while a fresh install put
+/// a hundred and sixty looks on top of the nine, so every tile from the
+/// sixty-fifth up wrote a value that clamped to 64 and recalled the same
+/// look, with the current stroke landing on tile 64 rather than the one
+/// clicked. The panel's list had the same arithmetic. The test below
+/// counts the shipped set now, not only the built-ins.
+pub const MAX_PRESET_SLOT: f32 = 512.0;
 
 /// Highest slot `/scene/fire` will address. Slot 0 is "none" and the grid
 /// runs from 1, exactly as preset recall does, so a control resting at
@@ -223,6 +397,15 @@ impl AppParams {
         );
         let morph = b.add(ParamDef::new("/shape/morph", 0.0, 1.0, 0.0).smooth(0.3));
         let twist = b.add(ParamDef::new("/shape/twist", 0.0, 2.0, 0.0).smooth(0.25));
+        // Wind: an Arnold–Beltrami–Childress flow read as a displacement —
+        // a steady solution of Euler's equations, divergence-free by
+        // construction, chaotic in its streamlines — so every form, the
+        // scans included, can be blown through without a particle state
+        // to keep. Stateless like the rest of the shader: the field
+        // drifts with time at its own rate. Zero by default, so every
+        // look saved before it existed draws exactly as it did.
+        let wind = b.add(ParamDef::new("/shape/wind", 0.0, 1.0, 0.0).smooth(0.3));
+        let wind_rate = b.add(ParamDef::new("/shape/wind_rate", 0.0, 2.0, 0.3).smooth(0.3));
         // Feedback: the effect that turns a particle field into VJ
         // material. Capped below 1.0 because at 1.0 nothing ever decays
         // and the frame saturates to white within seconds.
@@ -274,6 +457,16 @@ impl AppParams {
         let record_active = b.add(
             ParamDef::new("/record/active", 0.0, 1.0, 0.0)
                 .labels(&["off", "rec"])
+                .transport(),
+        );
+        // Tap tempo as a parameter, so a MIDI note, an OSC message and
+        // the T key all tap through one door — it was the one live
+        // control with a single input route, the mouse. Transport rather
+        // than gesture: an LFO wired to it would be nonsense, and a
+        // preset must never tap.
+        let tempo_tap = b.add(
+            ParamDef::new("/tempo/tap", 0.0, 1.0, 0.0)
+                .labels(&["rest", "tap"])
                 .transport(),
         );
         // Colour. Palette 0 is the original HSV behaviour, so the defaults
@@ -653,6 +846,11 @@ impl AppParams {
         // there into each other. That is not a wrong picture, it is a lost
         // set list.
         let deck_select = b.add(ParamDef::new("/deck/select", 0.0, MAX_DECKS, 0.0).transport());
+        // Two buttons instead of twenty-four: a controller with a spare
+        // pair of pads turns pages one at a time, either way, and stops
+        // at the ends rather than wrapping.
+        let deck_next = b.add(ParamDef::new("/deck/next", 0.0, 1.0, 0.0).transport());
+        let deck_prev = b.add(ParamDef::new("/deck/prev", 0.0, 1.0, 0.0).transport());
         // A column: the scene pad and the gravity pad of the same number,
         // fired together. This is what a Resolume column launch lands on,
         // and it is an ordinary address so anything else that speaks OSC —
@@ -661,6 +859,8 @@ impl AppParams {
             b.add(ParamDef::new(vizz_osc::COLUMN_FIRE, 0.0, SCENE_SLOTS, 0.0).transport());
         // Master dim is the "oh no" fader: fast but still click-free.
         let dim = b.add(ParamDef::new("/master/dim", 0.0, 1.0, 1.0).smooth(0.05));
+        // Last, so every row registered above gets its line.
+        b.fill_help(help_for);
         Self {
             registry: Arc::new(b.build()),
             count,
@@ -674,6 +874,8 @@ impl AppParams {
             shape,
             morph,
             twist,
+            wind,
+            wind_rate,
             trail,
             punch_flash,
             punch_black,
@@ -682,6 +884,7 @@ impl AppParams {
             punch_strobe,
             punch_strobe_div,
             record_active,
+            tempo_tap,
             zoom,
             spin,
             mirror,
@@ -747,6 +950,8 @@ impl AppParams {
             scene_auto,
             scene_bars,
             deck_select,
+            deck_next,
+            deck_prev,
             column_fire,
         }
     }
@@ -820,9 +1025,13 @@ mod tests {
                 "/punch/strobe",
                 "/punch/strobe_div",
                 "/record/active",
+                // Tapping is a moment, not a look.
+                "/tempo/tap",
                 // The deck transport. A captured deck select would turn
                 // the page out from under the pad that was just pressed.
                 "/deck/select",
+                "/deck/next",
+                "/deck/prev",
                 "/column/fire",
             ]
         );
@@ -903,16 +1112,19 @@ mod tests {
     /// fixed at startup while the list grows on disk, so the two can drift
     /// apart — and a preset you cannot address is invisible to MIDI.
     #[test]
-    fn recall_range_covers_the_builtins_with_room_to_spare() {
-        // Slot 0 is "none", so N built-ins need slots up to N.
+    fn recall_range_covers_the_shipped_library_with_room_to_spare() {
+        // Slot 0 is "none", so N looks need slots up to N. A fresh
+        // install lists the built-ins and then the whole built-in set,
+        // and every one of them is a tile a hand can press.
         let builtins = vizz_mod::preset::BUILTINS.len() as f32;
+        let shipped = builtins + vizz_mod::sets::electronic().presets.len() as f32;
         assert!(
-            MAX_PRESET_SLOT >= builtins,
-            "recall tops out at {MAX_PRESET_SLOT} but there are {builtins} built-ins"
+            MAX_PRESET_SLOT >= shipped,
+            "recall tops out at {MAX_PRESET_SLOT} but a fresh install lists {shipped} looks"
         );
         assert!(
-            MAX_PRESET_SLOT >= builtins + 16.0,
-            "no headroom for user presets"
+            MAX_PRESET_SLOT >= shipped + 64.0,
+            "no headroom for a library of your own on top of the shipped one"
         );
     }
 
@@ -1280,25 +1492,39 @@ mod reference_tests {
             let (Ok(min), Ok(max), Ok(default)) = (min, max, cols[2].parse::<f32>()) else {
                 continue;
             };
+            let meaning = cols[3].to_string();
             for a in expand_compacted(&addr, rest) {
-                rows.insert(a, (min, max, default));
+                rows.insert(a, (min, max, default, meaning.clone()));
             }
         }
         assert!(rows.len() > 50, "parsed only {} rows — table format changed?", rows.len());
 
         let p = super::AppParams::build();
         for (_, d) in p.registry.iter() {
-            let (min, max, default) = rows
+            let (min, max, default, meaning) = rows
                 .get(&d.addr)
                 .unwrap_or_else(|| panic!("README OSC reference is missing {}", d.addr));
             assert_eq!((d.min, d.max), (*min, *max), "{}: range drifted", d.addr);
             assert_eq!(d.default, *default, "{}: default drifted", d.addr);
+            // The hover and the manual are the same sentence, by test.
+            assert_eq!(d.help, meaning, "{}: the help line drifted from the README", d.addr);
         }
         for addr in rows.keys() {
             assert!(
                 p.registry.id(addr).is_some(),
                 "README documents {addr}, which no longer exists"
             );
+        }
+    }
+
+    /// Every parameter says what it does. A row whose only hover was its
+    /// own address taught nothing; the one-line meanings existed only in
+    /// the README, and now the registry carries them.
+    #[test]
+    fn every_parameter_has_a_help_line() {
+        let p = super::AppParams::build();
+        for (_, d) in p.registry.iter() {
+            assert!(!d.help.is_empty(), "{} has no help line", d.addr);
         }
     }
 
@@ -1381,6 +1607,30 @@ mod reference_tests {
             super::SHAPE_CLOUD_PAIR >= def.min && super::SHAPE_CLOUD_PAIR <= def.max,
             "SHAPE_CLOUD_PAIR is outside /shape/mode's range"
         );
+    }
+
+    /// Every shape the app can draw sorts into a preset family.
+    ///
+    /// A saved look records what it was built on as a *name*, and the
+    /// preset lists group and colour by the family that name falls into.
+    /// vizz-mod owns the families and cannot see this list, so the two
+    /// are pinned here: adding a shape without giving it a family files
+    /// it under "clouds", which is a look grouped with the scans and
+    /// nothing anywhere failing to say so.
+    #[test]
+    fn every_shape_mode_sorts_into_a_preset_family() {
+        use vizz_mod::preset::Family;
+        let p = super::AppParams::build();
+        let (_, def) = p.registry.iter().find(|(id, _)| *id == p.shape).expect("/shape/mode");
+        let labels = def.labels.expect("/shape/mode has labels");
+        for label in labels {
+            let want = if label.contains("cloud") { Family::Cloud } else { Family::Shape };
+            let got = vizz_mod::preset::family(Some(label));
+            // An attractor is a shape the app generates too — the split
+            // is about what it looks like, not where it comes from.
+            let ok = got == want || (want == Family::Shape && got == Family::Attractor);
+            assert!(ok, "the shape '{label}' sorts as {got:?}, not as a shape");
+        }
     }
 
     /// The docs site carries the same OSC reference as the README, and a
@@ -1474,5 +1724,22 @@ mod reference_tests {
                 d.addr
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod wind_tests {
+    use super::*;
+
+    /// No wind by default: every look saved before the wind existed, and
+    /// the whole shipped set, must draw exactly as before. The rate may
+    /// be anything — at zero amount it moves nothing.
+    #[test]
+    fn the_wind_is_still_by_default() {
+        let p = AppParams::build();
+        let defs = p.registry.defs();
+        assert_eq!(defs[p.wind.index()].default, 0.0);
+        assert_eq!(defs[p.wind.index()].addr, "/shape/wind");
+        assert!(defs[p.wind_rate.index()].default > 0.0, "a rate of zero would freeze the field the moment wind was turned up");
     }
 }

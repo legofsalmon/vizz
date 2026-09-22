@@ -188,6 +188,11 @@ impl Ring {
     }
 }
 
+/// The confidence a detected tempo needs before auto lets it drive the
+/// clock. Named so the stage can say "AUTO?" below it and "AUTO" above,
+/// with the same line the engine uses.
+pub const MIN_CONFIDENCE: f32 = 0.25;
+
 /// Live-editable analysis settings. Written by the UI, read by the
 /// analysis thread — not on the render path, so a mutex is fine here.
 #[derive(Debug, Clone)]
@@ -204,7 +209,7 @@ impl Default for AudioSettings {
         Self {
             bands: default_bands(),
             auto_bpm: false,
-            min_confidence: 0.25,
+            min_confidence: MIN_CONFIDENCE,
         }
     }
 }

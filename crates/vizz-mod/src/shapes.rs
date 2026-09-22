@@ -35,6 +35,11 @@ pub struct ModShape {
     /// from it. Shown in the menu, because it is the difference between
     /// a fader you can still park at the top and one you cannot.
     pub bipolar: bool,
+    /// The audio band it listens to, if any. For the warning under the
+    /// menu: a shape gated on a band that never reaches the gate is
+    /// inert with its fader still reading amber, and nothing else says
+    /// which band to go and fit.
+    pub band: Option<usize>,
     /// Builds the source chain and returns the node to feed the sink.
     build: fn(&mut NodeGraph, [f32; 2]) -> NodeId,
 }
@@ -57,6 +62,7 @@ pub const SHAPES: &[ModShape] = &[
                 picture stop being still.",
         depth: 0.35,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::Sine, Rate::Beats(8.0)), at),
     },
     ModShape {
@@ -64,6 +70,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "A sine over four beats — one bar in four-four.",
         depth: 0.35,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::Sine, Rate::Beats(4.0)), at),
     },
     ModShape {
@@ -72,6 +79,7 @@ pub const SHAPES: &[ModShape] = &[
                 next one.",
         depth: 0.6,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let trig = g.add(NodeKind::BeatTrig { beats: 1.0 }, at);
             let env = g.add(
@@ -88,6 +96,7 @@ pub const SHAPES: &[ModShape] = &[
                 land, not chatter.",
         depth: 0.7,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let trig = g.add(NodeKind::BeatTrig { beats: 4.0 }, at);
             let env = g.add(
@@ -104,6 +113,7 @@ pub const SHAPES: &[ModShape] = &[
                 have to ride.",
         depth: 0.5,
         bipolar: false,
+        band: None,
         build: |g, at| g.add(NodeKind::Phasor { beats: 4.0 }, at),
     },
     ModShape {
@@ -112,6 +122,7 @@ pub const SHAPES: &[ModShape] = &[
                 the next.",
         depth: 0.5,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let phasor = g.add(NodeKind::Phasor { beats: 4.0 }, at);
             let flip = g.add(NodeKind::Scale { mul: -1.0, add: 1.0 }, step(at, 1));
@@ -125,6 +136,7 @@ pub const SHAPES: &[ModShape] = &[
                 lands on the beat instead of sliding past it.",
         depth: 0.5,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let phasor = g.add(NodeKind::Phasor { beats: 4.0 }, at);
             let steps = g.add(NodeKind::Quantise { steps: 4.0 }, step(at, 1));
@@ -138,13 +150,15 @@ pub const SHAPES: &[ModShape] = &[
                 drum rather than the clock.",
         depth: 0.6,
         bipolar: false,
+        band: Some(0),
         build: |g, at| band_env(g, at, 0, 0.005, 0.18),
     },
     ModShape {
         name: "Snare",
-        about: "The same, on the mid band.",
+        about: "The same, on the high-mid band.",
         depth: 0.5,
         bipolar: false,
+        band: Some(2),
         build: |g, at| band_env(g, at, 2, 0.005, 0.14),
     },
     ModShape {
@@ -152,6 +166,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "The top band, smoothed. Shimmer rather than hits.",
         depth: 0.4,
         bipolar: false,
+        band: Some(3),
         build: |g, at| {
             let band = g.add(NodeKind::Band(3), at);
             let smooth = g.add(
@@ -168,6 +183,7 @@ pub const SHAPES: &[ModShape] = &[
                 track pushing, not one drum.",
         depth: 0.45,
         bipolar: false,
+        band: None,
         build: |g, at| {
             let level = g.add(NodeKind::Level, at);
             let curve = g.add(
@@ -189,6 +205,7 @@ pub const SHAPES: &[ModShape] = &[
                 beat-locked — this is texture, not rhythm.",
         depth: 0.25,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::Sine, Rate::Hz(4.0)), at),
     },
     ModShape {
@@ -196,6 +213,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "A new value every beat, held until the next one.",
         depth: 0.5,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::SampleHold, Rate::Beats(1.0)), at),
     },
     ModShape {
@@ -203,6 +221,7 @@ pub const SHAPES: &[ModShape] = &[
         about: "Random, twelve times a second. Broken neon.",
         depth: 0.3,
         bipolar: true,
+        band: None,
         build: |g, at| g.add(lfo(Shape::SampleHold, Rate::Hz(12.0)), at),
     },
 ];
@@ -236,7 +255,7 @@ fn free_row(g: &NodeGraph) -> [f32; 2] {
 /// Band -> gate -> envelope: the idiom that turns a level into a hit.
 fn band_env(g: &mut NodeGraph, at: [f32; 2], band: usize, attack: f32, decay: f32) -> NodeId {
     let src = g.add(NodeKind::Band(band), at);
-    let gate = g.add(NodeKind::Gate { threshold: 0.5 }, step(at, 1));
+    let gate = g.add(NodeKind::Gate { threshold: GATE }, step(at, 1));
     let env = g.add(NodeKind::Envelope { attack, decay }, step(at, 2));
     g.connect(src, gate, 0);
     g.connect(gate, env, 0);
@@ -600,5 +619,106 @@ mod tests {
         rows.sort_unstable();
         rows.dedup();
         assert_eq!(rows.len(), 3, "three shapes shared fewer than three rows: {rows:?}");
+    }
+}
+
+/// Where every band-driven shape gates, as a fraction of the band's
+/// envelope. Public so the meters can draw the line: a band that never
+/// crosses it leaves its Kick or Snare inert while the fader still reads
+/// amber, and "is the kick reaching the line" should be one glance.
+pub const GATE: f32 = 0.5;
+
+/// The three ready-made modulators one press of "react" attaches, and
+/// where. The kick on the size, the loudness on the glow, the snare on
+/// the brightness: the low band punches the field, the level blooms it,
+/// the snare flashes it — the three things a first listener expects a
+/// picture to do with music, on three parameters every look has.
+pub const REACT: [(&str, &str); 3] = [
+    ("Kick", "/particles/size"),
+    ("Loudness", "/fx/glow"),
+    ("Snare", "/particles/brightness"),
+];
+
+/// Attach every [`REACT`] shape, or detach them all with `on = false`.
+/// Returns what it did, as (shape, address) pairs, for the notice.
+pub fn react(g: &mut NodeGraph, on: bool) -> Vec<(&'static str, &'static str)> {
+    let mut done = Vec::new();
+    for (shape, addr) in REACT {
+        let Some(i) = SHAPES.iter().position(|s| s.name == shape) else { continue };
+        let did = if on { attach(g, i, addr) } else { detach(g, addr) };
+        if did {
+            done.push((shape, addr));
+        }
+    }
+    done
+}
+
+/// Whether the picture is reacting: every [`REACT`] parameter is driven.
+/// Every, not any — one of the three attached by hand is a choice, not
+/// the switch being on.
+pub fn reacting(g: &NodeGraph) -> bool {
+    REACT.iter().all(|(_, addr)| driven(g, addr))
+}
+
+/// What the notice says after [`react`]: which shape went where, or that
+/// nothing needed doing. Shared by both screens so they say the same.
+pub fn react_notice(on: bool, done: &[(&str, &str)]) -> String {
+    if done.is_empty() {
+        return if on { "already reacting".into() } else { "nothing was reacting".into() };
+    }
+    let what = done
+        .iter()
+        .map(|(shape, addr)| {
+            format!("{} → {}", shape.to_lowercase(), addr.rsplit('/').next().unwrap_or(addr))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if on { format!("reacting: {what}") } else { format!("no longer reacting: {what}") }
+}
+
+#[cfg(test)]
+mod react_tests {
+    use super::*;
+
+    /// One press attaches all three and the graph says it is reacting;
+    /// a second takes all three off and leaves nothing behind. Every
+    /// shape named in the table has to exist, or the press would quietly
+    /// do two thirds of its job.
+    #[test]
+    fn react_is_a_switch_that_leaves_no_trace() {
+        for (shape, _) in REACT {
+            assert!(SHAPES.iter().any(|s| s.name == shape), "{shape} is not a shipped shape");
+        }
+        let mut g = NodeGraph::default();
+        assert!(!reacting(&g));
+        let on = react(&mut g, true);
+        assert_eq!(on.len(), 3, "{on:?}");
+        assert!(reacting(&g));
+        for (_, addr) in REACT {
+            assert!(driven(&g, addr), "{addr} is not driven");
+        }
+        assert_eq!(
+            react_notice(true, &on),
+            "reacting: kick → size · loudness → glow · snare → brightness"
+        );
+        let off = react(&mut g, false);
+        assert_eq!(off.len(), 3);
+        assert!(!reacting(&g));
+        assert!(g.nodes.is_empty(), "react left nodes behind: {}", g.nodes.len());
+        assert_eq!(react_notice(false, &[]), "nothing was reacting");
+    }
+
+    /// A shape attached by hand to one of the three is a choice, not
+    /// the switch: the chip must not read "reacting" for it, and the
+    /// press must still attach the other two.
+    #[test]
+    fn one_shape_by_hand_is_not_reacting() {
+        let mut g = NodeGraph::default();
+        let kick = SHAPES.iter().position(|s| s.name == "Kick").unwrap();
+        assert!(attach(&mut g, kick, "/particles/size"));
+        assert!(!reacting(&g));
+        let done = react(&mut g, true);
+        assert!(reacting(&g));
+        assert_eq!(done.len(), 3, "attach replaces the hand-made kick and adds the rest");
     }
 }
