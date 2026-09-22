@@ -2986,12 +2986,8 @@ impl Simulation for Swarm {
         // Both halves of the interaction are antisymmetric — the pull
         // two of them feel is equal and opposite, and so is the pull on
         // their phases — so half the pairs do all the work.
-        for v in &mut self.vel {
-            *v = [0.0; 3];
-        }
-        for st in &mut self.step {
-            *st = 0.0;
-        }
+        self.vel.fill([0.0; 3]);
+        self.step.fill(0.0);
         for i in 0..MATES {
             let (pi, ti) = (self.pos[i], self.phase[i]);
             for j_index in (i + 1)..MATES {
