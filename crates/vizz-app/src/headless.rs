@@ -111,11 +111,20 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             }
         }
     });
-    // Point the shape at the video the way the windowed app does, so a
-    // dump shows the input rather than the default sphere.
-    if video.is_some() {
+    // Point the shape at the input the way the windowed app does, so a
+    // dump shows what was asked for rather than the default sphere. A
+    // live cloud needs this as much as a video does: a headless capture
+    // of `--live-cloud` was a sphere, whatever was running behind it.
+    let show = if video.is_some() {
+        Some(vizz_render::attractor::VIDEO_SLOT)
+    } else if live.is_some() {
+        Some(vizz_render::particles::ParticleScene::LIVE_SLOT)
+    } else {
+        None
+    };
+    if let Some(slot) = show {
         let p = &*params_for_video;
-        p.registry.set(p.cloud_a, vizz_render::attractor::VIDEO_SLOT as f32);
+        p.registry.set(p.cloud_a, slot as f32);
         p.registry.set(p.cloud_morph, 0.0);
         p.registry.set(p.shape, crate::params::SHAPE_CLOUD_PAIR);
     }

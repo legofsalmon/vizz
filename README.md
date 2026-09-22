@@ -311,6 +311,11 @@ vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
 vizz --live-cloud sim:slime       # Physarum: a network from three rules
 vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
 vizz --live-cloud sim:cloth       # a sheet in the wind
+vizz --live-cloud sim:sandpile    # a table kept permanently on the edge of collapse
+vizz --live-cloud sim:cyclic      # states chasing each other round a ring: scroll waves
+vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
+vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
+vizz --live-cloud sim:vortex      # smoke rings, as the filaments they are made of
 ```
 
 A simulation is a live cloud that needs no sender: it runs on its own
@@ -451,6 +456,74 @@ projecting them three times a frame onto the constraint that the density
 is right, and is stable at any step at the price of looking slightly soft.
 Gravity tilts and swings round once a bar, so the liquid pours from corner
 to corner in time with the music; a kick thumps it through the floor.
+
+**sandpile** is Bak, Tang and Wiesenfeld's, which is where the phrase
+"self-organised criticality" comes from. The rule is one line: a cell
+holding four grains gives one to each neighbour. Nothing tunes it and
+nothing decides how big a slide should be, and yet a pile fed grain by
+grain lives permanently on the edge of collapse, where the same single
+grain sets off a slide of four cells or of forty thousand. Everything is
+poured on the middle of an empty table, because that is the arrangement
+whose picture is worth having: the heights left behind are flat plateaus
+of nought, one, two and three grains with sharp seams between them, in a
+disc whose pattern is the same at every size — a fractal nobody designed,
+which falls out of that one line and out of the rule being *abelian*, so
+that the order the slides are resolved in cannot change what they leave
+behind. The four heights are read straight off as four greys and the live
+slide is a bright annulus at the disc's edge. The loudness is the rate of
+the pour, a kick is a load that makes the disc jump outward, and a snare
+drops a second pile off to one side, which merges into one pattern rather
+than two overlapping ones.
+
+**cyclic** is Fisch, Gravner and Griffeath's cyclic cellular automaton:
+states in a ring, each one waiting to be eaten by the next. A cell in
+state *k* becomes *k + 1* as soon as enough of its neighbours already
+are, and the states wrap round, so nothing is ever finished and nothing
+has an equilibrium to fall into. Started from pure noise it goes through
+three phases nobody put in it — the noise clears into debris, the debris
+organises into expanding droplets, and the droplets are all eventually
+consumed by spirals, which once formed cannot be destroyed, because a
+spiral's own wave comes back round to feed it. In three dimensions the
+core is a line rather than a point and the waves are scrolls, which is
+what an arrhythmic heart does and what Belousov–Zhabotinsky does in a
+tall jar. Only the crest is drawn, so the picture is the wave and not
+the volume it is crossing. The loudness is the pace, the highs make the
+rule grudging, and a kick scatters a corner into fresh defects.
+
+**tangle** is one long elastic rod loose in a wind. A rod is the one
+thing here with no resolution: it is a single curve, and everything
+interesting about it is in how it bends. Stretching is stiff beyond any
+use — a rope does not get longer — so the length is held as a constraint
+and satisfied by moving the beads, which cannot add energy; bending is
+held the same way, as a constraint on the distance across three beads,
+which is the discrete rod's curvature written as something the same
+solver can do. What it needs beyond that is to know it is there: a rod
+with no self-repulsion passes through itself, and then it cannot knot,
+it can only look as though it has. That is the difference between a
+tangle and a scribble. The mids set how stiff it is, so it either
+sweeps in long curves or folds up small, and a kick is a whip.
+
+**crystal** is Reiter's snowflake, a cellular automaton with real-valued
+cells on a hexagonal lattice. Cells that are ice, or next to ice, drop
+out of the diffusion and take a trickle of vapour instead; everything
+else diffuses. Out of that come plates, sectored plates, stellar
+dendrites and needles, sorted by the background vapour exactly as real
+crystals are sorted by humidity in the Nakaya diagram. The six-fold
+symmetry is imposed nowhere — it is in the lattice. The mids set the
+vapour and the highs the trickle, so the habit is the music's; each flake
+grows until it reaches the edge of its plate, and then the next one
+starts in whatever air has been left behind.
+
+**vortex** is the thin cores that smoke rings are made of. Vorticity in
+an ideal fluid is carried rather than spread — Helmholtz, 1858 — so a
+flow whose spin is all in a few thin loops stays that way, and the whole
+thing can be integrated as those loops alone by Biot–Savart: no grid, no
+pressure solve, no tracers. What that buys is the behaviour no grid fluid
+at this resolution can show — rings that shrink as they speed up, catch
+the one in front, thread through it and swap places. The loudness is
+their circulation, a kick throws a new ring in over the oldest, and one
+light smoothing pass a frame takes out the wiggles finer than the core,
+which are not physical and grow until a filament is noise.
 
 What a simulation gets from the app is deliberately narrow — the four
 bands, the loudness, where the bar is — because it is meant to be a
