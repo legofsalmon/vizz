@@ -125,7 +125,7 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         // Maps: iterated, and lifted into depth by delay embedding.
         "clifford" => map(clifford, [0.1, 0.0]),
         "dejong" => map(dejong, [0.1, 0.1]),
-        "henon" => map(henon, [0.1, 0.0]),
+        "henon" => delay(henon, [0.1, 0.0]),
         "ikeda" => map(ikeda, [0.1, 0.0]),
         // Surfaces, in scan order.
         "supershape" => {
@@ -162,9 +162,9 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         "boy" => boy(),
         "gyroid" => minimal(
             &text("kind", "gyroid"),
-            num("cells", 2.0),
+            num("cells", 1.5),
             num("level", 0.0),
-            num("thickness", 0.06),
+            num("thickness", 0.07),
         ),
         "quasicrystal" => quasicrystal(num("cells", 3.0)),
         "phyllotaxis" => phyllotaxis(num("angle", 137.50776), num("rise", 0.6)),
@@ -516,6 +516,31 @@ fn dejong([x, y]: [f64; 2]) -> [f64; 2] {
     const C: f64 = 2.4;
     const D: f64 = -2.1;
     [(A * y).sin() - (B * x).cos(), (C * x).sin() - (D * y).cos()]
+}
+
+/// A plane map lifted by *two* delays: (xₙ, xₙ₋₁, xₙ₋₂).
+///
+/// [`map`] uses the map's own y for the second coordinate and one
+/// delay for the third, which is right when y carries information of
+/// its own. Hénon's y does not — it is exactly 0.3·xₙ₋₁ — so under the
+/// one-delay lift two of the three coordinates are the same number
+/// twice, and the attractor collapses onto a plane that the camera
+/// sees edge-on. Taking both delays from x instead is Takens' theorem
+/// applied properly, and unfolds it.
+fn delay(f: fn([f64; 2]) -> [f64; 2], start: [f64; 2]) -> Vec<[f64; 3]> {
+    let mut p = start;
+    for _ in 0..100 {
+        p = f(p);
+    }
+    let (mut one, mut two) = (p[0], p[0]);
+    let mut out = Vec::with_capacity(POINTS);
+    for _ in 0..POINTS {
+        p = f(p);
+        out.push([p[0], one, two]);
+        two = one;
+        one = p[0];
+    }
+    out
 }
 
 /// The Hénon map (1976), a = 1.4, b = 0.3: the first attractor anyone

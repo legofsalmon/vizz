@@ -548,9 +548,9 @@ pub const CATALOGUE: &[Generator] = &[
         group: Group::Surface,
         params: &[
             Param { key: "kind", label: "kind", about: "gyroid, schwarz or diamond", default: "gyroid", kind: Kind::Text },
-            Param { key: "cells", label: "cells", about: "how many periods across the box", default: "2", kind: Kind::Number { min: 1.0, max: 6.0 } },
+            Param { key: "cells", label: "cells", about: "how many periods across the box; more is denser and harder to read", default: "1.5", kind: Kind::Number { min: 1.0, max: 6.0 } },
             Param { key: "level", label: "level", about: "0 is the minimal surface; either side of it thickens one labyrinth and thins the other", default: "0", kind: Kind::Number { min: -1.5, max: 1.5 } },
-            Param { key: "thickness", label: "wall", about: "how thick to draw the wall", default: "0.06", kind: Kind::Number { min: 0.01, max: 0.4 } },
+            Param { key: "thickness", label: "wall", about: "how thick to draw the wall", default: "0.07", kind: Kind::Number { min: 0.01, max: 0.4 } },
         ],
     },
     Generator {

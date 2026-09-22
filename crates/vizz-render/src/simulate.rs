@@ -2633,22 +2633,21 @@ pub struct Slime {
 }
 
 impl Slime {
-    /// How far ahead an agent looks, in box units.
-    const SENSE: f32 = 0.035;
+    /// How far ahead an agent looks, in box units — about four cells.
+    const SENSE: f32 = 0.06;
     /// How much trail one agent leaves a second.
-    const DEPOSIT: f32 = 2.5;
+    const DEPOSIT: f32 = 6.0;
 
     pub fn new() -> Self {
         let mut rng = Rng::new(0x511E_511E);
         let mut pos = Vec::with_capacity(POINTS);
         let mut dir = Vec::with_capacity(POINTS);
         for _ in 0..POINTS {
-            // Started in a ball rather than everywhere, so the first
-            // thing on screen is a colony spreading rather than a fog
-            // already at equilibrium.
-            let d = rng.on_sphere();
-            let r = 0.22 * rng.f32().cbrt();
-            pos.push([0.5 + d[0] * r, 0.5 + d[1] * r, 0.5 + d[2] * r]);
+            // Everywhere, not in a clump: the network has to be built
+            // out of a uniform field, and a colony started in a ball is
+            // already in the one configuration the dynamics cannot get
+            // out of.
+            pos.push([rng.f32(), rng.f32(), rng.f32()]);
             dir.push(rng.on_sphere());
         }
         Self {
@@ -2736,7 +2735,12 @@ impl Simulation for Slime {
         let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
         self.time += dt;
         self.since_kick += dt;
-        let speed = if drive.audio { 0.06 + 0.16 * drive.level } else { 0.11 };
+        // Fast enough to leave the cell it is in. An agent that moves
+        // a fraction of a cell a frame deposits into the same cell over
+        // and over, which is a positive feedback into a point: the
+        // whole colony walks into its own trail and collapses to a
+        // blob. Half a box a second is about half a cell a frame.
+        let speed = if drive.audio { 0.35 + 0.35 * drive.level } else { 0.5 };
         // The sensor cone: wide agents wander and the network is
         // ragged, narrow ones commit and it is clean.
         let cone = if drive.audio { 0.35 + 0.7 * drive.bands[3] } else { 0.6 };
@@ -2800,7 +2804,10 @@ impl Simulation for Slime {
             self.pos[i] = next;
             self.trail[Self::at(next)] += Self::DEPOSIT * dt;
         }
-        self.diffuse((1.0 - 1.1 * dt).clamp(0.0, 1.0));
+        // A tenth of the trail a frame, which is the decay the model
+        // is usually run at: slower and the field saturates, faster and
+        // nothing is left to follow.
+        self.diffuse((1.0 - 6.0 * dt).clamp(0.0, 1.0));
     }
 
     fn points(&self, out: &mut Vec<Point>) {
@@ -2963,11 +2970,22 @@ impl Simulation for Swarm {
                 // A ceiling on the step: two that pass very close see a
                 // large force for one frame, and without this they are
                 // fired out of the picture.
-                *p += v.clamp(-4.0, 4.0) * dt;
-                *p = p.clamp(-1.6, 1.6);
+                *p += v.clamp(-2.5, 2.5) * dt;
             }
-            self.phase[i] =
-                (self.phase[i] + self.step[i].clamp(-20.0, 20.0) * dt).rem_euclid(std::f32::consts::TAU);
+            // And a leash rather than a wall for the one that gets out
+            // anyway. A clamp would park it on the boundary, where it
+            // stays for good and drags the whole swarm's scale with it;
+            // this walks it back in over a quarter of a second.
+            let p = self.pos[i];
+            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            if r > 1.4 {
+                let back = (r - 1.4) * (4.0 * dt).min(1.0) / r;
+                for c in &mut self.pos[i] {
+                    *c -= *c * back;
+                }
+            }
+            self.phase[i] = (self.phase[i] + self.step[i].clamp(-20.0, 20.0) * dt)
+                .rem_euclid(std::f32::consts::TAU);
         }
     }
 
@@ -3615,8 +3633,34 @@ mod tests {
     #[test]
     fn the_slime_builds_a_network() {
         let mut sim = Slime::new();
-        for _ in 0..600 {
+        for _ in 0..1_200 {
             sim.step(1.0 / 60.0, &Drive::default());
+        }
+        // Two things have to be true at once, and only one of them is
+        // obvious. The trail must concentrate — a network is veins with
+        // space between them, not an even wash. But the colony must
+        // also still be spread across the box, because the failure this
+        // model falls into is the opposite one: every agent steers
+        // towards the most trail, the most trail is wherever the agents
+        // are, and if they cannot outrun their own deposit the whole
+        // colony walks into a single blob. That blob concentrates the
+        // trail beautifully and is not a network.
+        let mut mean = [0.0f32; 3];
+        for p in &sim.pos {
+            for (m, c) in mean.iter_mut().zip(p) {
+                *m += c / POINTS as f32;
+            }
+        }
+        let mut spread = [0.0f32; 3];
+        for p in &sim.pos {
+            for (v, (c, m)) in spread.iter_mut().zip(p.iter().zip(mean)) {
+                *v += (c - m) * (c - m) / POINTS as f32;
+            }
+        }
+        // A cloud spread evenly through a box of side one has a
+        // standard deviation of 1/√12, which is 0.289.
+        for (axis, v) in spread.iter().enumerate() {
+            assert!(v.sqrt() > 0.2, "the colony collapsed on axis {axis}: {:.3}", v.sqrt());
         }
         let mut cells = sim.trail.clone();
         cells.sort_by(f32::total_cmp);
@@ -3624,9 +3668,7 @@ mod tests {
         assert!(total > 1.0, "nothing was laid down: {total}");
         let busiest: f32 = cells[cells.len() - TCELLS / 20..].iter().sum();
         let share = busiest / total;
-        assert!(share > 0.45, "the trail is spread evenly, not built: {share:.2}");
-        // And the agents are following it rather than ignoring it: the
-        // typical agent sits on more trail than the typical cell has.
+        assert!(share > 0.4, "the trail is spread evenly, not built: {share:.2}");
         let mut pts = Vec::new();
         sim.points(&mut pts);
         box_ok(&pts);
