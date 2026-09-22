@@ -4071,6 +4071,80 @@ mod generator_catalogue_tests {
             let cite = g.cite.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
             assert!(page.contains(&cite), "'{}' is on the page without its source", g.id);
         }
+        // The second half of the page — everything a frame is made of
+        // that is not a cloud. It used to be a page of its own; a check
+        // that its sections are still here is what stops the merge
+        // being quietly undone by a regeneration from an older example.
+        for part in [
+            "engine", "shapes", "layers", "colour", "light", "randomness", "audio", "frame",
+        ] {
+            assert!(
+                page.contains(&format!("<h2 id=\"{part}\">")),
+                "the '{part}' section is missing from the clouds page — regenerate it"
+            );
+        }
+    }
+
+    /// The bug this exists for: a link was added to the landing page for
+    /// a page that had not been written yet, and the only thing that
+    /// noticed was a person clicking it on the live site. Every internal
+    /// link now has to land on a file that is in the repository, or on a
+    /// redirect that is configured in `vercel.json`.
+    #[test]
+    fn every_internal_link_on_the_site_goes_somewhere() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site");
+        let config = std::fs::read_to_string(root.join("vercel.json")).expect("site/vercel.json");
+        // Enough of a parse for the question being asked: which paths
+        // does the host answer for that have no file behind them.
+        let redirects: Vec<String> = config
+            .split("\"source\": \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next().map(str::to_string))
+            .collect();
+
+        let mut pages = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read the site directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "html") {
+                    pages.push(path);
+                }
+            }
+        }
+        assert!(pages.len() >= 3, "the site has gone missing");
+
+        for page in &pages {
+            let html = std::fs::read_to_string(page).expect("read a site page");
+            for (from, _) in html.match_indices("href=\"/") {
+                // `href="/` is six characters before the slash, and the
+                // slash is part of the path.
+                let rest = &html[from + 6..];
+                let Some(end) = rest.find('"') else { continue };
+                // The fragment is a place on a page, not a page.
+                let target = rest[..end].split('#').next().unwrap_or("");
+                // The landing page, and protocol-relative URLs, which
+                // are somebody else's host.
+                if target == "/" || target.starts_with("//") {
+                    continue;
+                }
+                let trimmed = target.trim_matches('/');
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let found = root.join(format!("{trimmed}.html")).exists()
+                    || root.join(trimmed).join("index.html").exists()
+                    || root.join(trimmed).is_file()
+                    || redirects.iter().any(|r| r.trim_start_matches('/') == trimmed);
+                assert!(
+                    found,
+                    "{} links to /{trimmed}, which is neither a file in site/ nor a redirect",
+                    page.display()
+                );
+            }
+        }
     }
 
     /// The catalogue the panel lists and the maths the renderer holds are

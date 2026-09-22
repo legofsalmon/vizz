@@ -1408,7 +1408,9 @@ or `--cloud gen:<name>`, fills the next slot from a formula rather than a
 file. The menu groups them by what they are, because sixty-six names
 under two headings is a wall. **[The whole catalogue is a page on the
 site](https://vizz.letissier.ie/clouds)**, with a picture of each one,
-its knobs, and the paper it comes from:
+its knobs, and the paper it comes from — and below it, where the rest of
+the picture came from, from the shader's own shapes to the beat
+detection:
 
 | group | what is in it |
 | --- | --- |
