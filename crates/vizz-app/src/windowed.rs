@@ -4031,6 +4031,48 @@ mod cloud_note_tests {
 
 #[cfg(test)]
 mod generator_catalogue_tests {
+    /// The site's catalogue page is generated from the catalogue, by
+    /// `cargo run --example clouds_page -p vizz-mod`, and its plates by
+    /// `cargo run --release --example plates -p vizz-render`. Neither
+    /// runs on its own, so this is the thing that notices when somebody
+    /// adds a cloud and forgets: every id has to be on the page, and
+    /// every plate beside it has to exist.
+    #[test]
+    fn the_site_catalogue_lists_every_cloud() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = std::fs::read_to_string(root.join("site/clouds/index.html"))
+            .expect("site/clouds/index.html");
+        for g in vizz_mod::generators::CATALOGUE {
+            assert!(
+                page.contains(&format!("<code>gen:{}</code>", g.id)),
+                "'{}' is not on the site's catalogue page — regenerate it",
+                g.id
+            );
+            assert!(
+                root.join(format!("site/img/clouds/{}.webp", g.id)).exists(),
+                "'{}' has no plate — rerun the plates example",
+                g.id
+            );
+        }
+        for g in vizz_mod::generators::SIMULATIONS {
+            assert!(
+                page.contains(&format!("<code>sim:{}</code>", g.id)),
+                "the simulation '{}' is not on the site's catalogue page",
+                g.id
+            );
+            assert!(
+                root.join(format!("site/img/clouds/sim-{}.webp", g.id)).exists(),
+                "the simulation '{}' has no plate",
+                g.id
+            );
+        }
+        // And the credit, which is the reason the page exists at all.
+        for g in vizz_mod::generators::CATALOGUE.iter().chain(vizz_mod::generators::SIMULATIONS) {
+            let cite = g.cite.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            assert!(page.contains(&cite), "'{}' is on the page without its source", g.id);
+        }
+    }
+
     /// The catalogue the panel lists and the maths the renderer holds are
     /// two lists in two crates that cannot see each other. This is the
     /// one place that sees both.
