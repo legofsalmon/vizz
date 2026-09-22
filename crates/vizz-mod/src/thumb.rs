@@ -233,7 +233,7 @@ mod tests {
             bytes[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
         }
         let thumb = from_bgra(&bytes, w, h, stride).expect("a thumbnail");
-        let lit = thumb.rgba.chunks_exact(4).filter(|p| p[0] > 0).count();
+        let lit = thumb.rgba.as_chunks::<4>().0.iter().filter(|p| p[0] > 0).count();
         assert_eq!(lit, 100, "{lit} of 100 particles made it into the picture");
     }
 
@@ -293,7 +293,7 @@ mod tests {
         let (w, h, stride) = (64u32, 36u32, 64 * 4);
         let bytes = split(w, h, stride, [10, 20, 30], [40, 50, 60]);
         let thumb = from_bgra(&bytes, w, h, stride).expect("a thumbnail");
-        assert!(thumb.rgba.chunks_exact(4).all(|p| p[3] == 255));
+        assert!(thumb.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
     }
 
     /// Round trip through the disk, in a scoped show directory.
