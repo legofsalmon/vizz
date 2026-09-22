@@ -446,7 +446,7 @@ mod tests {
         let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
         let pixels = render_chain(&ctx, clear, 0.0, 0.0);
 
-        let alphas: Vec<u8> = pixels.chunks_exact(4).map(|p| p[3]).collect();
+        let alphas: Vec<u8> = pixels.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
         let clear_px = alphas.iter().filter(|a| **a < 8).count();
         let covered = alphas.iter().filter(|a| **a > 8).count();
         assert!(
@@ -469,7 +469,7 @@ mod tests {
         let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
         let covered = |glow: f32| {
             render_chain(&ctx, clear, glow, 0.0)
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .filter(|p| p[3] > 8)
                 .count()
         };
@@ -490,7 +490,7 @@ mod tests {
         let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
         let pixels = render_chain_punch(&ctx, clear, 0.0, 0.0, 1.0, 0.0);
         let white = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0] > 240 && p[1] > 240 && p[2] > 240 && p[3] > 240)
             .count();
         assert_eq!(
@@ -511,11 +511,11 @@ mod tests {
         let pixels =
             render_chain_punch(&ctx, crate::particles::SCENE_CLEAR, 0.4, 0.0, 0.0, 1.0);
         let lit = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8)
             .count();
         assert_eq!(lit, 0, "{lit} pixels still lit through a full blackout");
-        let covered = pixels.chunks_exact(4).filter(|p| p[3] > 250).count();
+        let covered = pixels.as_chunks::<4>().0.iter().filter(|p| p[3] > 250).count();
         assert_eq!(
             covered,
             pixels.len() / 4,
@@ -529,7 +529,7 @@ mod tests {
     fn the_opaque_default_survives_the_post_chain() {
         let Some(ctx) = gpu() else { return };
         let pixels = render_chain(&ctx, crate::particles::SCENE_CLEAR, 0.4, 0.0);
-        let holes = pixels.chunks_exact(4).filter(|p| p[3] < 250).count();
+        let holes = pixels.as_chunks::<4>().0.iter().filter(|p| p[3] < 250).count();
         assert_eq!(holes, 0, "{holes} pixels were transparent with an opaque background");
     }
 }
