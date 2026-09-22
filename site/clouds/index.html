@@ -139,7 +139,7 @@
 <div class="intro">
 <p class="lede">vizz draws point clouds. Most of them come from a scanner, a
 camera or a file — and 66 of them come from mathematics, with
-15 more that are still running while you watch.</p>
+19 more that are still running while you watch.</p>
 
 <p>Every picture on this page was drawn by the app's own code, from the same
 functions that fill a slot when you pick one from the menu. Nothing here is an
@@ -869,7 +869,7 @@ it.</p>
   </figure>
 </div>
 
-<h2 id="alive">15 that are alive</h2>
+<h2 id="alive">19 that are alive</h2>
 <p class="lede">These are not made once. Each runs on a thread of its own at the
 frame rate and streams into the live slot, driven by whatever the audio input
 is doing: the four bands, the loudness, and where the bar is. That is the whole
@@ -877,6 +877,20 @@ interface they get — deliberately, because the point is a <em>cloud</em> that
 happens to be alive rather than a second engine with its own controls.</p>
 <p class="lede">The plates below are each one caught a couple of seconds in, with
 no audio playing. The ones that are about growing were given longer.</p>
+
+<h2 id="sim-grown">grown</h2>
+<p class="lede">Built step by step by a rule, rather than evaluated: rewriting an alphabet, or letting particles wander in and stick.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sim-crystal.webp" width="600" height="400" loading="lazy" decoding="async" alt="crystal — a point cloud">
+    <figcaption>
+      <h3>crystal</h3>
+      <p class="spec"><code>sim:crystal</code></p>
+      <p>Reiter's snow crystal on a hexagonal lattice — plates, sectored plates and stellar dendrites, sorted by the vapour the mids and highs set; each flake grows out and the next one starts</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Snowflake">Clifford A. Reiter, “A local cellular model for snow crystal growth”, Chaos, Solitons &amp; Fractals 23 (2005); the morphologies are Ukichiro Nakaya’s (1954)</a></p>
+    </figcaption>
+  </figure>
+</div>
 
 <h2 id="sim-fields">fields</h2>
 <p class="lede">A grid of numbers stepped forward sixty times a second. The cloud is what rides it.</p>
@@ -933,6 +947,15 @@ no audio playing. The ones that are about growing were given longer.</p>
       <p class="spec"><code>sim:smoke</code></p>
       <p>the same solver in three dimensions, with heat — a plume that rises, shears and rolls up; the kick is a blast, the snare a shove, the highs the roughness</p>
       <p class="cite"><a href="https://www.wdv.com/Aerospace/Fluids/StamFluidsforGames.pdf">The same solver in three dimensions; buoyancy after Fedkiw, Stam &amp; Jensen, “Visual Simulation of Smoke”, SIGGRAPH 2001</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-cyclic.webp" width="600" height="400" loading="lazy" decoding="async" alt="cyclic — a point cloud">
+    <figcaption>
+      <h3>cyclic</h3>
+      <p class="spec"><code>sim:cyclic</code></p>
+      <p>states in a ring, each waiting to be eaten by the next: noise organises itself into scroll waves that turn for ever, because a spiral's own wave comes back round to feed it</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Cyclic_cellular_automaton">Robert Fisch, Janko Gravner &amp; David Griffeath, “Cyclic cellular automata in two dimensions” (1991); David Griffeath on the spirals’ four snapshots (1994)</a></p>
     </figcaption>
   </figure>
   <figure class="plate">
@@ -1020,6 +1043,24 @@ no audio playing. The ones that are about growing were given longer.</p>
       <p class="spec"><code>sim:pendulum</code></p>
       <p>four thousand double pendulums hung in a sheet from neighbouring angles — it swings as one surface, creases, then tears; the loudness is gravity and the kick hangs it again</p>
       <p class="cite"><a href="https://en.wikipedia.org/wiki/Double_pendulum">The double pendulum, the standard demonstration that four numbers can be unpredictable</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-tangle.webp" width="600" height="400" loading="lazy" decoding="async" alt="tangle — a point cloud">
+    <figcaption>
+      <h3>tangle</h3>
+      <p class="spec"><code>sim:tangle</code></p>
+      <p>one long elastic rod loose in a wind, tying itself in knots — it cannot stretch and it cannot pass through itself, which is the difference between a tangle and a scribble</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Verlet_integration">Thomas Jakobsen, “Advanced Character Physics”, GDC (2001); Miklós Bergou et al., “Discrete Elastic Rods”, SIGGRAPH (2008)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-vortex.webp" width="600" height="400" loading="lazy" decoding="async" alt="vortex — a point cloud">
+    <figcaption>
+      <h3>vortex</h3>
+      <p class="spec"><code>sim:vortex</code></p>
+      <p>the thin cores smoke rings are made of, moving each other by Biot–Savart — rings that catch the one in front and thread through it; the loudness is their circulation and the kick throws a new one in</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Vortex_ring">Hermann von Helmholtz on vortex motion (1858); Louis Rosenhead’s desingularised kernel (1930); Anthony Leonard, “Vortex methods for flow simulation” (1980)</a></p>
     </figcaption>
   </figure>
 </div>
@@ -1213,6 +1254,8 @@ instead — the citation is the thing to keep.</p>
   <li><strong>cloth</strong> — Xavier Provot, “Deformation constraints in a mass-spring model”, Graphics Interface 1995; Thomas Jakobsen, “Advanced Character Physics”, GDC 2001</li>
   <li><strong>coral</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, branching three ways a third of a turn apart</a></li>
   <li><strong>Coullet</strong> — <a href="https://en.wikipedia.org/wiki/Jerk_(physics)">Pierre Coullet, Charles Tresser &amp; Alain Arnéodo (1979) — a jerk system</a></li>
+  <li><strong>crystal</strong> — <a href="https://en.wikipedia.org/wiki/Snowflake">Clifford A. Reiter, “A local cellular model for snow crystal growth”, Chaos, Solitons &amp; Fractals 23 (2005); the morphologies are Ukichiro Nakaya’s (1954)</a></li>
+  <li><strong>cyclic</strong> — <a href="https://en.wikipedia.org/wiki/Cyclic_cellular_automaton">Robert Fisch, Janko Gravner &amp; David Griffeath, “Cyclic cellular automata in two dimensions” (1991); David Griffeath on the spirals’ four snapshots (1994)</a></li>
   <li><strong>Dadras</strong> — Sara Dadras &amp; Hamid Reza Momeni, Physics Letters A 373 (2009)</li>
   <li><strong>de Jong</strong> — <a href="https://paulbourke.net/fractals/peterdejong/">Peter de Jong, in A. K. Dewdney’s Computer Recreations, Scientific American (1987)</a></li>
   <li><strong>Dini</strong> — <a href="https://en.wikipedia.org/wiki/Dini%27s_surface">Ulisse Dini (1870); a pseudosphere dragged along a helix</a></li>
@@ -1276,11 +1319,13 @@ instead — the citation is the thing to keep.</p>
   <li><strong>standard map</strong> — <a href="https://en.wikipedia.org/wiki/Standard_map">Boris Chirikov, “A universal instability of many-dimensional oscillator systems”, Physics Reports 52 (1979); the last-torus threshold is John Greene’s (1979)</a></li>
   <li><strong>supershape</strong> — <a href="https://en.wikipedia.org/wiki/Superformula">Johan Gielis, “A generic geometric transformation that unifies a wide range of natural and abstract shapes”, Am. J. Botany 90 (2003)</a></li>
   <li><strong>swarmalators</strong> — <a href="https://www.nature.com/articles/s41467-017-01190-3">Kevin O’Keeffe, Hyunsuk Hong &amp; Steven Strogatz, “Oscillators that sync and swarm”, Nature Communications 8 (2017)</a></li>
+  <li><strong>tangle</strong> — <a href="https://en.wikipedia.org/wiki/Verlet_integration">Thomas Jakobsen, “Advanced Character Physics”, GDC (2001); Miklós Bergou et al., “Discrete Elastic Rods”, SIGGRAPH (2008)</a></li>
   <li><strong>Thomas</strong> — <a href="https://en.wikipedia.org/wiki/Thomas%27_cyclically_symmetric_attractor">René Thomas, “Deterministic chaos seen in terms of feedback circuits”, Int. J. Bifurcation and Chaos 9 (1999)</a></li>
   <li><strong>three-scroll</strong> — The three-scroll unified chaotic system; Dequan Li, Physics Letters A 372 (2008)</li>
   <li><strong>torus knot</strong> — <a href="https://en.wikipedia.org/wiki/Torus_knot">The classical (p,q) torus knots</a></li>
   <li><strong>tree</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, with a trunk that keeps going</a></li>
   <li><strong>twisted gasket</strong> — <a href="https://en.wikipedia.org/wiki/Iterated_function_system">The Sierpiński chaos game with a rotation in the loop — the kaleidoscopic IFS of the fractal-rendering community</a></li>
+  <li><strong>vortex</strong> — <a href="https://en.wikipedia.org/wiki/Vortex_ring">Hermann von Helmholtz on vortex motion (1858); Louis Rosenhead’s desingularised kernel (1930); Anthony Leonard, “Vortex methods for flow simulation” (1980)</a></li>
   <li><strong>wind</strong> — <a href="https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf">Robert Bridson, Jim Hourihan &amp; Marcus Nordenstam, “Curl-Noise for Procedural Fluid Flow”, SIGGRAPH 2007</a></li>
 </ol>
 
