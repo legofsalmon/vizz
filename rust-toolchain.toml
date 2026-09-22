@@ -1,0 +1,25 @@
+# Which Rust the workspace is built and linted with, on every machine and
+# every CI runner.
+#
+# Without this file the answer was "whatever the GitHub runner image happens
+# to ship this week". CI's `Ensure Rust` step is `command -v cargo || curl
+# … | sh`, and the runners come with Rust preinstalled, so that step almost
+# never runs and the toolchain floats with the image rather than with
+# anything in this repo. The Clippy step passes `-D warnings`, so the day an
+# image picks up a new Rust with a new warn-by-default lint, every open
+# branch goes red at once with no commit having touched a line. That is
+# exactly what happened on 2026-09-22, when `chunks_exact_to_as_chunks`
+# arrived and cost two PRs and a morning.
+#
+# Pinned here, a new lint arrives when this line is bumped deliberately, as
+# its own reviewable change, instead of overnight across every branch.
+#
+# 1.98.1 is what all three runners — ubuntu-latest, macos-latest and
+# windows-latest — were already resolving to when this was written, so the
+# pin freezes today's behaviour rather than moving it.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+# The Clippy step needs it, and `minimal` does not include it. Nothing here
+# runs rustfmt and nothing cross-compiles, so the list ends there.
+components = ["clippy"]
