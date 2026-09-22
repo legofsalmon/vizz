@@ -540,11 +540,11 @@ mod tests {
                 "buffer is not the size the dimensions claim"
             );
             assert!(
-                f.bgra.chunks_exact(4).all(|p| p[3] == 255),
+                f.bgra.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
                 "alpha must be opaque, or the picture arrives see-through"
             );
             assert!(
-                f.bgra.chunks_exact(4).any(|p| p[..3] != [0, 0, 0]),
+                f.bgra.as_chunks::<4>().0.iter().any(|p| p[..3] != [0, 0, 0]),
                 "the pattern is entirely black, which is what it exists to rule out"
             );
         });

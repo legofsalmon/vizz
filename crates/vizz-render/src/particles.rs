@@ -747,7 +747,7 @@ mod tests {
         rx.recv().unwrap().unwrap();
         let pixels = slice.get_mapped_range().unwrap().to_vec();
         let blown = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0] == 255 && p[1] == 255 && p[2] == 255)
             .count();
         drop(buffer);
@@ -799,7 +799,7 @@ mod tests {
         rx.recv().unwrap().unwrap();
         let pixels = slice.get_mapped_range().unwrap().to_vec();
         let sum: f64 = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0)
             .sum();
         drop(buffer);
@@ -1079,7 +1079,7 @@ mod tests {
         let spread = |px: &[u8]| {
             let mut sum = 0f64;
             let mut n = 0f64;
-            for (i, p) in px.chunks_exact(4).enumerate() {
+            for (i, p) in px.as_chunks::<4>().0.iter().enumerate() {
                 if p[0].max(p[1]).max(p[2]) <= 24 {
                     continue;
                 }
@@ -1146,7 +1146,7 @@ mod tests {
         let scene = ParticleScene::new(&ctx, FORMAT);
 
         let lit = |px: &[u8]| {
-            px.chunks_exact(4)
+            px.as_chunks::<4>().0.iter()
                 .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
                 .count()
         };
@@ -1274,7 +1274,7 @@ mod tests {
         );
 
         let lit = |px: &[u8]| {
-            px.chunks_exact(4)
+            px.as_chunks::<4>().0.iter()
                 .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
                 .count()
         };
@@ -1307,7 +1307,7 @@ mod tests {
         let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
         let pixels = render_with(&ctx, &scene, 0.0, clear);
 
-        let alphas: Vec<u8> = pixels.chunks_exact(4).map(|p| p[3]).collect();
+        let alphas: Vec<u8> = pixels.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
         let empty = alphas.iter().filter(|a| **a == 0).count();
         let covered = alphas.iter().filter(|a| **a > 8).count();
 
@@ -1323,12 +1323,12 @@ mod tests {
         // And the covered pixels must actually be where the light is: an
         // alpha channel unrelated to the picture would composite wrongly.
         let lit_and_opaque = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
             .filter(|p| p[3] > 8)
             .count();
         let lit = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[0].max(p[1]).max(p[2]) > 24)
             .count();
         assert!(
@@ -1344,7 +1344,7 @@ mod tests {
         let Some(ctx) = gpu() else { return };
         let scene = ParticleScene::new(&ctx, FORMAT);
         let pixels = render_with(&ctx, &scene, 0.0, SCENE_CLEAR);
-        let transparent = pixels.chunks_exact(4).filter(|p| p[3] < 250).count();
+        let transparent = pixels.as_chunks::<4>().0.iter().filter(|p| p[3] < 250).count();
         assert_eq!(
             transparent, 0,
             "{transparent} pixels were not opaque with the default background"
@@ -1467,7 +1467,7 @@ mod tests {
     }
 
     fn lit_pixels(px: &[u8]) -> usize {
-        px.chunks_exact(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 24).count()
+        px.as_chunks::<4>().0.iter().filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 24).count()
     }
 
     /// The attractor modes read their geometry from a texture the CPU

@@ -437,7 +437,7 @@ fn write_frame(dir: &Path, index: u64, frame: &MappedFrame, format: Format) -> R
         let mut out = Vec::with_capacity(w * h * 4);
         for row in 0..h {
             let line = &bytes[row * stride..row * stride + w * 4];
-            for px in line.chunks_exact(4) {
+            for px in line.as_chunks::<4>().0 {
                 out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
             }
         }
@@ -469,7 +469,7 @@ fn write_frame(dir: &Path, index: u64, frame: &MappedFrame, format: Format) -> R
             // encoder wants three channels, so drop the fourth rather
             // than let it reject the buffer.
             let rgb: Vec<u8> = rgba
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .flat_map(|px| [px[0], px[1], px[2]])
                 .collect();
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(

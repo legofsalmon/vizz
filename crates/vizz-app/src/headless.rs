@@ -250,7 +250,7 @@ fn dump_png(ctx: &GpuContext, texture: &wgpu::Texture, width: u32, height: u32, 
     buffer.unmap();
 
     // Master texture is BGRA; PNG wants RGBA.
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
 
