@@ -1,6 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": true,
+  "redirects": [
+    { "source": "/references", "destination": "/clouds#engine", "permanent": true },
+    { "source": "/references.html", "destination": "/clouds#engine", "permanent": true }
+  ],
   "headers": [
     {
       "source": "/(.*)",
