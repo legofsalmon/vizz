@@ -311,6 +311,8 @@ vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
 vizz --live-cloud sim:slime       # Physarum: a network from three rules
 vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
 vizz --live-cloud sim:cloth       # a sheet in the wind
+vizz --live-cloud sim:sand        # an Abelian sandpile, toppling
+vizz --live-cloud sim:spiral      # Belousov–Zhabotinsky waves
 vizz --live-cloud sim:cyclic      # states chasing each other round a ring: scroll waves
 vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
 vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
@@ -362,12 +364,18 @@ locked crowd is a thin ribbon and a free one is the whole tube. The
 loudness is the coupling: a loud passage locks them; a kick scatters half.
 With no audio the coupling breathes across the threshold on its own.
 
-**life** is a three-dimensional cellular automaton on a 48³ lattice in the
-"Clouds" rule (survive on 13–26 neighbours, born on 13, 14 or 17–19): a
-seed grows into slow, cloud-like masses that keep reshaping, a generation
-every three frames. A kick drops a new seed; an automaton that dies out or
-floods the lattice is reseeded, because a dead automaton is a blank slot
-with a name on it.
+**life** is a three-dimensional cellular automaton on a 48³ lattice, a
+generation every three frames. It ships in the "Pyroclastic" rule
+(`4-7/6-8/10`), which boils: about a third of the lattice turns over
+every generation, for ever. A kick drops a new seed.
+
+It used to ship in "Clouds", which grows into lovely slow masses and
+then *stops* — sixty changed cells a generation out of a hundred and ten
+thousand, which in a live slot is a still image with a name on it. Every
+test passed, because the tests asked that it neither die out nor flood.
+One now measures the churn instead, and an automaton that stops, in any
+rule you type, is started again after four dead generations, because a
+frozen automaton is as dead as an empty one.
 
 The rule is a knob, written as *survive/born/states* in neighbour counts
 and ranges. The third field is the interesting one. With two states a cell
@@ -436,6 +444,25 @@ out of two numbers and the transitions are sharp — a ball in phase, a
 ball at random phase, a disc with phase running round the rim, a disc
 splintered into blocks of one phase, and the same disc circulating — so
 the loudness and the mids walk a set between them.
+
+**sand** is the Abelian sandpile of Bak, Tang and Wiesenfeld — the model
+that named self-organised criticality. Drop grains on a square; any
+square holding four or more topples, sending one to each neighbour,
+which may make them topple in turn. That is the whole rule, and two
+things about it are surprising: the arrangement it settles into does not
+depend on the order the grains were added in, which is what "Abelian"
+means here and is what a test checks; and a large pile is not a heap but
+a fractal of nested triangles that nobody designed and which is still
+not fully explained.
+
+**spirals** is the Belousov–Zhabotinsky reaction. Belousov found in the
+1950s that a dish of citric acid, bromate and a cerium salt would change
+colour back and forth rather than settling, and could not get it
+published — a chemical reaction that oscillates looked to every referee
+like a violation of the second law. Three chemicals chase each other
+round a cycle here, and the rotating fronts annihilate where they meet
+rather than interfering, which is why a spiral's arm is a front and not
+a ripple.
 
 **cloth** is a sheet of sixty-five thousand particles hung from its top
 edge, in the same Arnold–Beltrami–Childress wind that `/shape/wind`
@@ -1432,17 +1459,19 @@ in the settings and re-rasterize deterministically on launch.
 
 **Or make one from an equation.** The clouds section's *generate…* menu,
 or `--cloud gen:<name>`, fills the next slot from a formula rather than a
-file. The menu groups them by what they are, because fifty-six names
-under two headings is a wall:
+file. The menu groups them by what they are, because sixty-six names
+under two headings is a wall. **[The whole catalogue is a page on the
+site](https://vizz.letissier.ie/clouds)**, with a picture of each one,
+its knobs, and the paper it comes from:
 
 | group | what is in it |
 | --- | --- |
-| flows | twenty-three strange attractors: Thomas, Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet, Genesio–Tesi |
-| maps | Clifford, de Jong, Hénon and Ikeda, lifted into depth by delay embedding, and Chirikov's standard map drawn on its torus |
+| flows | twenty-five strange attractors: Thomas, Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet, Genesio–Tesi, Lorenz-96 and the forced Duffing oscillator |
+| maps | Clifford, de Jong, Hénon, Ikeda and Gumowski–Mira, lifted into depth by delay embedding, and Chirikov's standard map drawn on its torus |
 | searched | the two quadratic searches, one over maps and one over flows |
-| surfaces | a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, and the gyroid with Schwarz' P and D |
-| curves | a 3:4:7 Lissajous knot and a (3,7) torus knot, thickened into tubes |
-| fractals | the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, and the Mandelbrot and a Julia set as reliefs |
+| surfaces | a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the gyroid with Schwarz' P and D |
+| curves | a 3:4:7 Lissajous knot, a (3,7) torus knot, the figure-eight knot, a spirograph and the three-dimensional Hilbert curve |
+| fractals | the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's basins and the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as reliefs |
 | grown | four L-system plants — a generic one, a fern, a coral and a tree — and a diffusion-limited aggregate |
 | patterns | Chladni sand, a Voronoi foam, an icosahedral quasicrystal and phyllotaxis |
 

@@ -1,0 +1,1144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vizz — clouds from equations</title>
+<link rel="icon" type="image/png" href="/img/icon.png">
+<link rel="apple-touch-icon" href="/img/icon.png">
+<meta name="description" content="Every point cloud vizz can make from an equation, and every simulation it can run live: what each one is, what it comes from, and who found it.">
+<meta property="og:title" content="vizz — clouds from equations">
+<meta property="og:description" content="Sixty-six generators and fifteen live simulations, with the paper each one comes from.">
+<meta property="og:type" content="article">
+<style>
+  /* One file, no build step, no CDN — the same rule as the rest of the
+     site, and no scripts at all: the page is a catalogue, and the
+     server's content-security policy allows none. The tokens are
+     copied from the docs page rather than shared, because two static
+     files cannot import from each other without a build. */
+  :root {
+    --bg: #0a0c12;
+    --panel: #12151d;
+    --line: #232838;
+    --text: #e8ecf5;
+    --dim: #97a0b5;
+    --accent: #7fb5ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .92em;
+    background: #171b26; padding: .1em .35em; border-radius: 4px;
+  }
+  .dim { color: var(--dim); }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(10,12,18,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 24px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .topbar img { width: 22px; height: 22px; border-radius: 5px; }
+  .topbar strong { letter-spacing: -.02em; }
+  .topbar .sp { flex: 1; }
+  .topbar a { text-decoration: none; }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.1; letter-spacing: -.02em; margin: 8px 0 12px; }
+  h2 {
+    font-size: 24px; letter-spacing: -.01em; margin: 56px 0 6px;
+    padding-top: 20px; border-top: 1px solid var(--line);
+  }
+  h3 { font-size: 17px; margin: 0 0 2px; letter-spacing: -.01em; }
+  p { margin: 10px 0; }
+  .lede { color: var(--dim); max-width: 64ch; }
+  .intro { max-width: 68ch; }
+
+  /* The index: eleven links, so no sidebar is needed. */
+  .jump { display: flex; flex-wrap: wrap; gap: 8px 10px; margin: 20px 0 8px; padding: 0; list-style: none; }
+  .jump a {
+    display: inline-block; text-decoration: none;
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 12px; font-size: 14px; color: var(--text);
+  }
+  .jump a:hover { border-color: var(--accent); color: var(--accent); }
+
+  .plates {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 18px; margin-top: 20px;
+  }
+  .plate {
+    margin: 0; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .plate img {
+    display: block; width: 100%; height: auto; aspect-ratio: 3 / 2;
+    background: #05070b; border-bottom: 1px solid var(--line);
+  }
+  .plate figcaption { padding: 14px 16px 16px; font-size: 14.5px; }
+  .plate p { margin: 6px 0 0; }
+  .spec { margin-top: 4px !important; }
+  .knobs { font-size: 13.5px; color: var(--dim); line-height: 1.5; }
+  .knobs span:first-child {
+    display: block; text-transform: uppercase; letter-spacing: .08em;
+    font-size: 11px; margin-bottom: 3px;
+  }
+  .cite { font-size: 13px; color: var(--dim); border-top: 1px solid var(--line); padding-top: 8px; margin-top: 10px !important; }
+  .sources { max-width: 90ch; font-size: 14.5px; color: var(--dim); padding-left: 22px; }
+  .sources li { margin: 7px 0; }
+  .sources strong { color: var(--text); font-weight: 600; }
+
+  footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--dim); font-size: 14.5px; }
+  @media (max-width: 640px) {
+    main { padding: 24px 16px 64px; }
+    .plates { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="/"><img src="/img/icon.png" alt=""></a>
+  <a href="/"><strong>vizz</strong></a>
+  <span class="dim">clouds</span>
+  <span class="sp"></span>
+  <a href="/docs">Docs</a>
+  <a href="https://github.com/legofsalmon/vizz">GitHub</a>
+</div>
+
+<main>
+<h1>Clouds from equations</h1>
+<div class="intro">
+<p class="lede">vizz draws point clouds. Most of them come from a scanner, a
+camera or a file — and 66 of them come from mathematics, with
+19 more that are still running while you watch.</p>
+
+<p>Every picture on this page was drawn by the app's own code, from the same
+functions that fill a slot when you pick one from the menu. Nothing here is an
+artist's impression of what a generator makes.</p>
+
+<p><strong>To use one:</strong> open the clouds section of the panel and pick from
+<em>generate…</em>, or start vizz with <code>--cloud gen:thomas</code>. A made cloud
+takes the next free slot and behaves exactly as a scanned one does: chosen by
+name, crossed to with a scene change, captured by a preset, lit, and remade the
+next time you launch. The ones with knobs take them after a <code>?</code> —
+<code>gen:torus-knot?p=2;q=5</code>. The live ones run in the live slot:
+<code>--live-cloud sim:fluid</code>, or <em>simulate…</em> beside <em>receive</em>.</p>
+
+<p><strong>Where these came from.</strong> Almost none of it is ours. Each entry says
+whose work it is, and links to somewhere to read about it where there is
+somewhere worth sending you. If we have credited something wrongly, that is a
+bug like any other — <a href="https://github.com/legofsalmon/vizz/issues">please
+tell us</a>.</p>
+</div>
+
+<ul class="jump">
+  <li><a href="#gen-flows">flows</a></li>
+  <li><a href="#gen-maps">maps</a></li>
+  <li><a href="#gen-searched">searched</a></li>
+  <li><a href="#gen-surfaces">surfaces</a></li>
+  <li><a href="#gen-curves">curves</a></li>
+  <li><a href="#gen-fractals">fractals</a></li>
+  <li><a href="#gen-grown">grown</a></li>
+  <li><a href="#gen-patterns">patterns</a></li>
+  <li><a href="#alive">alive</a></li>
+  <li><a href="#sources">sources</a></li>
+</ul>
+
+<h2 id="gen-flows">flows</h2>
+<p class="lede">Differential equations, integrated from one point on the attractor and recorded in time order. Consecutive points are consecutive moments, which is what makes the cloud crawl along itself rather than shimmer.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/thomas.webp" width="600" height="400" loading="lazy" decoding="async" alt="Thomas — a point cloud">
+    <figcaption>
+      <h3>Thomas</h3>
+      <p class="spec"><code>gen:thomas</code></p>
+      <p>Thomas' cyclically symmetric attractor — three sines; a knot of ribbons round the diagonal</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Thomas%27_cyclically_symmetric_attractor">René Thomas, “Deterministic chaos seen in terms of feedback circuits”, Int. J. Bifurcation and Chaos 9 (1999)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/halvorsen.webp" width="600" height="400" loading="lazy" decoding="async" alt="Halvorsen — a point cloud">
+    <figcaption>
+      <h3>Halvorsen</h3>
+      <p class="spec"><code>gen:halvorsen</code></p>
+      <p>Halvorsen's attractor — three lobes, cyclically symmetric; sheets folding into each other</p>
+      <p class="cite"><a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">Arne Dehli Halvorsen’s cyclically symmetric system, as catalogued by Sprott</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/dadras.webp" width="600" height="400" loading="lazy" decoding="async" alt="Dadras — a point cloud">
+    <figcaption>
+      <h3>Dadras</h3>
+      <p class="spec"><code>gen:dadras</code></p>
+      <p>Dadras' tri-scroll — three rolled sheets joined by a spine</p>
+      <p class="cite">Sara Dadras &amp; Hamid Reza Momeni, Physics Letters A 373 (2009)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/rossler.webp" width="600" height="400" loading="lazy" decoding="async" alt="Rössler — a point cloud">
+    <figcaption>
+      <h3>Rössler</h3>
+      <p class="spec"><code>gen:rossler</code></p>
+      <p>Rössler's funnel — a flat spiral that lifts and folds back on itself</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/R%C3%B6ssler_attractor">Otto Rössler, “An equation for continuous chaos”, Physics Letters A 57 (1976)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/four-wing.webp" width="600" height="400" loading="lazy" decoding="async" alt="Four-wing — a point cloud">
+    <figcaption>
+      <h3>Four-wing</h3>
+      <p class="spec"><code>gen:four-wing</code></p>
+      <p>the four-wing attractor — four lobes off a saddle</p>
+      <p class="cite">Wang, Sun &amp; van Wyk, the four-wing system (2009)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/chen.webp" width="600" height="400" loading="lazy" decoding="async" alt="Chen — a point cloud">
+    <figcaption>
+      <h3>Chen</h3>
+      <p class="spec"><code>gen:chen</code></p>
+      <p>Chen's system — Lorenz's cousin, wider and more tangled</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Multiscroll_attractor">Guanrong Chen &amp; Tetsushi Ueta, “Yet another chaotic attractor”, Int. J. Bifurcation and Chaos 9 (1999)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sprott-b.webp" width="600" height="400" loading="lazy" decoding="async" alt="Sprott B — a point cloud">
+    <figcaption>
+      <h3>Sprott B</h3>
+      <p class="spec"><code>gen:sprott-b</code></p>
+      <p>Sprott's case B — two quadratic terms, and chaos</p>
+      <p class="cite"><a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">Julien Clinton Sprott, “Some simple chaotic flows”, Phys. Rev. E 50 (1994) — case B</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/nose-hoover.webp" width="600" height="400" loading="lazy" decoding="async" alt="Nosé–Hoover — a point cloud">
+    <figcaption>
+      <h3>Nosé–Hoover</h3>
+      <p class="spec"><code>gen:nose-hoover</code></p>
+      <p>the Nosé–Hoover oscillator — a thermostatted particle wandering a sea of tori and chaos</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Nos%C3%A9%E2%80%93Hoover_thermostat">Shūichi Nosé (1984) and William Hoover (1985)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/arneodo.webp" width="600" height="400" loading="lazy" decoding="async" alt="Arneodo — a point cloud">
+    <figcaption>
+      <h3>Arneodo</h3>
+      <p class="spec"><code>gen:arneodo</code></p>
+      <p>Arneodo's attractor — a jerk system with one cubic term</p>
+      <p class="cite">Alain Arnéodo, Pierre Coullet &amp; Charles Tresser (1981)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/burke-shaw.webp" width="600" height="400" loading="lazy" decoding="async" alt="Burke–Shaw — a point cloud">
+    <figcaption>
+      <h3>Burke–Shaw</h3>
+      <p class="spec"><code>gen:burke-shaw</code></p>
+      <p>Burke–Shaw — two scrolls with the symmetry of a propeller</p>
+      <p class="cite">Bill Burke &amp; Robert Shaw (1981)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/chua.webp" width="600" height="400" loading="lazy" decoding="async" alt="Chua — a point cloud">
+    <figcaption>
+      <h3>Chua</h3>
+      <p class="spec"><code>gen:chua</code></p>
+      <p>Chua's circuit — the double scroll, from a real circuit with a nonlinear diode</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Chua%27s_circuit">Leon Chua (1983); Matsumoto, Chua &amp; Komuro, IEEE Trans. Circuits and Systems 32 (1985)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/hadley.webp" width="600" height="400" loading="lazy" decoding="async" alt="Hadley — a point cloud">
+    <figcaption>
+      <h3>Hadley</h3>
+      <p class="spec"><code>gen:hadley</code></p>
+      <p>the Hadley circulation — Lorenz's 1984 atmosphere in three variables</p>
+      <p class="cite">Edward Lorenz, “Irregularity: a fundamental property of the atmosphere”, Tellus 36A (1984)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/rucklidge.webp" width="600" height="400" loading="lazy" decoding="async" alt="Rucklidge — a point cloud">
+    <figcaption>
+      <h3>Rucklidge</h3>
+      <p class="spec"><code>gen:rucklidge</code></p>
+      <p>Rucklidge's convection model — a tall, folded ribbon</p>
+      <p class="cite">Alastair Rucklidge, “Chaos in models of double convection”, J. Fluid Mech. 237 (1992)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/three-scroll.webp" width="600" height="400" loading="lazy" decoding="async" alt="three-scroll — a point cloud">
+    <figcaption>
+      <h3>three-scroll</h3>
+      <p class="spec"><code>gen:three-scroll</code></p>
+      <p>the three-scroll unified system — three scrolls in one fast flow</p>
+      <p class="cite">The three-scroll unified chaotic system; Dequan Li, Physics Letters A 372 (2008)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/rabinovich.webp" width="600" height="400" loading="lazy" decoding="async" alt="Rabinovich–Fabrikant — a point cloud">
+    <figcaption>
+      <h3>Rabinovich–Fabrikant</h3>
+      <p class="spec"><code>gen:rabinovich</code></p>
+      <p>Rabinovich–Fabrikant — leaves and ribbons, from plasma physics</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Rabinovich%E2%80%93Fabrikant_equations">Mikhail Rabinovich &amp; Anatoly Fabrikant, Sov. Phys. JETP 50 (1979)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/aizawa.webp" width="600" height="400" loading="lazy" decoding="async" alt="Aizawa — a point cloud">
+    <figcaption>
+      <h3>Aizawa</h3>
+      <p class="spec"><code>gen:aizawa</code></p>
+      <p>Aizawa's attractor — a rotating sphere with a spindle driven through its poles</p>
+      <p class="cite">Yoji Aizawa &amp; Tatsuo Uezu (1982), as catalogued by Chaoscope</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/newton-leipnik.webp" width="600" height="400" loading="lazy" decoding="async" alt="Newton–Leipnik — a point cloud">
+    <figcaption>
+      <h3>Newton–Leipnik</h3>
+      <p class="spec"><code>gen:newton-leipnik</code></p>
+      <p>Newton–Leipnik — a tumbling rigid body, and two attractors in one system</p>
+      <p class="cite">Tim Newton &amp; Roy Leipnik, “Double strange attractors in rigid body motion”, SIAM J. Appl. Math. 41 (1981)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sakarya.webp" width="600" height="400" loading="lazy" decoding="async" alt="Sakarya — a point cloud">
+    <figcaption>
+      <h3>Sakarya</h3>
+      <p class="spec"><code>gen:sakarya</code></p>
+      <p>the Sakarya system — two lobes crossing at an angle, like a bow tie in wire</p>
+      <p class="cite">The Sakarya system (2010)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/rikitake.webp" width="600" height="400" loading="lazy" decoding="async" alt="Rikitake — a point cloud">
+    <figcaption>
+      <h3>Rikitake</h3>
+      <p class="spec"><code>gen:rikitake</code></p>
+      <p>the Rikitake dynamo — why the Earth's magnetic field reverses, and never on schedule</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Dynamo_theory">Tsuneji Rikitake, “Oscillations of a system of disk dynamos”, Math. Proc. Cambridge Phil. Soc. 54 (1958)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/shimizu-morioka.webp" width="600" height="400" loading="lazy" decoding="async" alt="Shimizu–Morioka — a point cloud">
+    <figcaption>
+      <h3>Shimizu–Morioka</h3>
+      <p class="spec"><code>gen:shimizu-morioka</code></p>
+      <p>Shimizu–Morioka — the butterfly's simplest relative, two wings and one quadratic term</p>
+      <p class="cite">Tsutomu Shimizu &amp; Nobuo Morioka, Physics Letters A 76 (1980)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/finance.webp" width="600" height="400" loading="lazy" decoding="async" alt="finance — a point cloud">
+    <figcaption>
+      <h3>finance</h3>
+      <p class="spec"><code>gen:finance</code></p>
+      <p>the finance system — interest rate, investment demand and price index, refusing to settle</p>
+      <p class="cite">Junhai Ma &amp; Yushu Chen, Applied Mathematics and Mechanics 22 (2001)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/coullet.webp" width="600" height="400" loading="lazy" decoding="async" alt="Coullet — a point cloud">
+    <figcaption>
+      <h3>Coullet</h3>
+      <p class="spec"><code>gen:coullet</code></p>
+      <p>Coullet's jerk system — one variable's third derivative, with a cubic pull</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Jerk_(physics)">Pierre Coullet, Charles Tresser &amp; Alain Arnéodo (1979) — a jerk system</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/genesio-tesi.webp" width="600" height="400" loading="lazy" decoding="async" alt="Genesio–Tesi — a point cloud">
+    <figcaption>
+      <h3>Genesio–Tesi</h3>
+      <p class="spec"><code>gen:genesio-tesi</code></p>
+      <p>Genesio–Tesi — the other classic jerk system, square rather than cubic</p>
+      <p class="cite">Roberto Genesio &amp; Alberto Tesi, Automatica 28 (1992)</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/lorenz96.webp" width="600" height="400" loading="lazy" decoding="async" alt="Lorenz-96 — a point cloud">
+    <figcaption>
+      <h3>Lorenz-96</h3>
+      <p class="spec"><code>gen:lorenz96</code></p>
+      <p>Lorenz's toy atmosphere: a ring of variables advecting each other; the test bed every weather forecasting scheme meets first</p>
+      <p class="knobs"><span>knobs</span> <code>size</code> how many round the ring <span class="dim">(4 to 40, default 5)</span><br>
+      <code>forcing</code> how hard it is driven; 8 is the chaotic one <span class="dim">(0 to 20, default 8)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Lorenz_96_model">Edward Lorenz, “Predictability: a problem partly solved”, ECMWF Seminar on Predictability (1996)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/duffing.webp" width="600" height="400" loading="lazy" decoding="async" alt="Duffing — a point cloud">
+    <figcaption>
+      <h3>Duffing</h3>
+      <p class="spec"><code>gen:duffing</code></p>
+      <p>a mass in a double well, shaken — drawn on the cylinder of the forcing phase, so once round the tube is one period</p>
+      <p class="knobs"><span>knobs</span> <code>drive</code> how hard it is shaken <span class="dim">(0 to 2, default 0.5)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Duffing_equation">Georg Duffing (1918); the chaotic forced case is Ueda’s (1979)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-maps">maps</h2>
+<p class="lede">Iterated rather than integrated: a rule applied over and over to a point in a plane, lifted into depth by delay embedding — Takens' theorem says a delayed coordinate unfolds the dynamics rather than merely decorating them.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/clifford.webp" width="600" height="400" loading="lazy" decoding="async" alt="Clifford — a point cloud">
+    <figcaption>
+      <h3>Clifford</h3>
+      <p class="spec"><code>gen:clifford</code></p>
+      <p>Pickover's Clifford map, lifted into depth by its own previous step</p>
+      <p class="cite"><a href="https://paulbourke.net/fractals/clifford/">Clifford Pickover, Computers, Pattern, Chaos and Beauty (1990)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/dejong.webp" width="600" height="400" loading="lazy" decoding="async" alt="de Jong — a point cloud">
+    <figcaption>
+      <h3>de Jong</h3>
+      <p class="spec"><code>gen:dejong</code></p>
+      <p>the Peter de Jong map of 1987, lifted the same way</p>
+      <p class="cite"><a href="https://paulbourke.net/fractals/peterdejong/">Peter de Jong, in A. K. Dewdney’s Computer Recreations, Scientific American (1987)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/henon.webp" width="600" height="400" loading="lazy" decoding="async" alt="Hénon — a point cloud">
+    <figcaption>
+      <h3>Hénon</h3>
+      <p class="spec"><code>gen:henon</code></p>
+      <p>the Hénon map — the first attractor anyone drew that was plainly a fractal</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/H%C3%A9non_map">Michel Hénon, “A two-dimensional mapping with a strange attractor”, Comm. Math. Phys. 50 (1976)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/ikeda.webp" width="600" height="400" loading="lazy" decoding="async" alt="Ikeda — a point cloud">
+    <figcaption>
+      <h3>Ikeda</h3>
+      <p class="spec"><code>gen:ikeda</code></p>
+      <p>the Ikeda map — light in a ring cavity, with a hook in the attractor nothing else here has</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Ikeda_map">Kensuke Ikeda, Optics Communications 30 (1979)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/standard.webp" width="600" height="400" loading="lazy" decoding="async" alt="standard map — a point cloud">
+    <figcaption>
+      <h3>standard map</h3>
+      <p class="spec"><code>gen:standard</code></p>
+      <p>Chirikov's standard map on its torus — islands that close, and one orbit that never does</p>
+      <p class="knobs"><span>knobs</span> <code>k</code> how hard each turn is kicked; at 0.9716 the last ring across the picture breaks <span class="dim">(0 to 4, default 0.971635)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Standard_map">Boris Chirikov, “A universal instability of many-dimensional oscillator systems”, Physics Reports 52 (1979); the last-torus threshold is John Greene’s (1979)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/gumowski.webp" width="600" height="400" loading="lazy" decoding="async" alt="Gumowski–Mira — a point cloud">
+    <figcaption>
+      <h3>Gumowski–Mira</h3>
+      <p class="spec"><code>gen:gumowski</code></p>
+      <p>from a study of particle beams at CERN — moths and mandalas that change completely in the third decimal place</p>
+      <p class="knobs"><span>knobs</span> <code>mu</code> the one number; try small changes <span class="dim">(-1 to 1, default -0.801)</span></p>
+      <p class="cite">Igor Gumowski &amp; Christian Mira, CERN (1980)</p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-searched">searched</h2>
+<p class="lede">Nobody chose these. Thirty coefficients are drawn at random and the result is kept only if it is chaotic, which about one draw in a few hundred is. The seed is the whole parameter, so the same seed is the same attractor on every machine.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/quadratic.webp" width="600" height="400" loading="lazy" decoding="async" alt="quadratic — a point cloud">
+    <figcaption>
+      <h3>quadratic</h3>
+      <p class="spec"><code>gen:quadratic</code></p>
+      <p>Sprott's search: random quadratic maps until one is chaotic — a new attractor every roll</p>
+      <p class="knobs"><span>knobs</span> <code>seed</code> which search; the same seed is the same attractor on every machine <span class="dim">(any whole number, default 1)</span></p>
+      <p class="cite"><a href="https://sprott.physics.wisc.edu/sa.htm">Julien Clinton Sprott, Strange Attractors: Creating Patterns in Chaos (1993)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/quadratic-flow.webp" width="600" height="400" loading="lazy" decoding="async" alt="quadratic flow — a point cloud">
+    <figcaption>
+      <h3>quadratic flow</h3>
+      <p class="spec"><code>gen:quadratic-flow</code></p>
+      <p>the same search with an integrator inside: random quadratic flows until one is chaotic — smooth ribbons where the map gives dust</p>
+      <p class="knobs"><span>knobs</span> <code>seed</code> which search; the same seed is the same attractor on every machine <span class="dim">(any whole number, default 1)</span></p>
+      <p class="cite"><a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">The same search over quadratic flows; Sprott, “Some simple chaotic flows”, Phys. Rev. E 50 (1994)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-surfaces">surfaces</h2>
+<p class="lede">Swept in scan order over two parameters, so the cloud reads as a surface rather than a fog.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/supershape.webp" width="600" height="400" loading="lazy" decoding="async" alt="supershape — a point cloud">
+    <figcaption>
+      <h3>supershape</h3>
+      <p class="spec"><code>gen:supershape</code></p>
+      <p>Gielis' superformula as a solid — a seven-fold flower</p>
+      <p class="knobs"><span>knobs</span> <code>m</code> fold: how many times round the symmetry repeats <span class="dim">(1 to 16, default 7)</span><br>
+      <code>n1</code> overall roundness — small pinches, large bloats <span class="dim">(0.1 to 10, default 2)</span><br>
+      <code>n2</code> the cosine exponent <span class="dim">(0.1 to 20, default 8)</span><br>
+      <code>n3</code> the sine exponent <span class="dim">(0.1 to 20, default 4)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Superformula">Johan Gielis, “A generic geometric transformation that unifies a wide range of natural and abstract shapes”, Am. J. Botany 90 (2003)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/harmonic.webp" width="600" height="400" loading="lazy" decoding="async" alt="harmonic — a point cloud">
+    <figcaption>
+      <h3>harmonic</h3>
+      <p class="spec"><code>gen:harmonic</code></p>
+      <p>a sphere rippled by a spherical harmonic</p>
+      <p class="knobs"><span>knobs</span> <code>round</code> waves round the equator <span class="dim">(1 to 8, default 3)</span><br>
+      <code>up</code> waves pole to pole <span class="dim">(1 to 8, default 2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Spherical_harmonics">A sphere modulated by a spherical harmonic; the classical functions of Laplace (1782)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/hopf.webp" width="600" height="400" loading="lazy" decoding="async" alt="Hopf — a point cloud">
+    <figcaption>
+      <h3>Hopf</h3>
+      <p class="spec"><code>gen:hopf</code></p>
+      <p>the Hopf fibration — nested tori of linked circles, projected from the 3-sphere</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Hopf_fibration">Heinz Hopf, “Über die Abbildungen der dreidimensionalen Sphäre auf die Kugelfläche”, Math. Annalen 104 (1931)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/orbital.webp" width="600" height="400" loading="lazy" decoding="async" alt="orbital — a point cloud">
+    <figcaption>
+      <h3>orbital</h3>
+      <p class="spec"><code>gen:orbital</code></p>
+      <p>a real spherical harmonic as a balloon — the shape a textbook draws for an atomic orbital</p>
+      <p class="knobs"><span>knobs</span> <code>l</code> degree: how many nodal lines in all <span class="dim">(0 to 8, default 3)</span><br>
+      <code>m</code> order: how many of them run through the poles; negative turns the lobes <span class="dim">(-8 to 8, default 2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Spherical_harmonics">The real spherical harmonics, as a chemistry textbook draws an atomic orbital</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/klein.webp" width="600" height="400" loading="lazy" decoding="async" alt="Klein bottle — a point cloud">
+    <figcaption>
+      <h3>Klein bottle</h3>
+      <p class="spec"><code>gen:klein</code></p>
+      <p>the figure-eight immersion — a surface with no inside, and the crossing that three dimensions force on it</p>
+      <p class="knobs"><span>knobs</span> <code>girth</code> how fat the tube is against the ring <span class="dim">(0.5 to 5, default 2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Klein_bottle">Felix Klein (1882); the figure-eight immersion is the standard one</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/boy.webp" width="600" height="400" loading="lazy" decoding="async" alt="Boy's surface — a point cloud">
+    <figcaption>
+      <h3>Boy's surface</h3>
+      <p class="spec"><code>gen:boy</code></p>
+      <p>the projective plane immersed without a boundary — three-fold symmetric, and thought impossible until 1901</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Boy%27s_surface">Werner Boy (1901); this parametrisation is François Apéry’s (1986)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/gyroid.webp" width="600" height="400" loading="lazy" decoding="async" alt="gyroid — a point cloud">
+    <figcaption>
+      <h3>gyroid</h3>
+      <p class="spec"><code>gen:gyroid</code></p>
+      <p>a triply periodic minimal surface — two labyrinths that fill space and never touch; also Schwarz's P and D</p>
+      <p class="knobs"><span>knobs</span> <code>kind</code> gyroid, schwarz or diamond <span class="dim">(text, default gyroid)</span><br>
+      <code>cells</code> how many periods across the box; more is denser and harder to read <span class="dim">(1 to 6, default 1.5)</span><br>
+      <code>level</code> 0 is the minimal surface; either side of it thickens one labyrinth and thins the other <span class="dim">(-1.5 to 1.5, default 0)</span><br>
+      <code>thickness</code> how thick to draw the wall <span class="dim">(0.01 to 0.4, default 0.07)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Gyroid">Alan Schoen, Infinite Periodic Minimal Surfaces Without Self-Intersections, NASA TN D-5541 (1970); Schwarz’ P and D are from 1865</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/dini.webp" width="600" height="400" loading="lazy" decoding="async" alt="Dini — a point cloud">
+    <figcaption>
+      <h3>Dini</h3>
+      <p class="spec"><code>gen:dini</code></p>
+      <p>a pseudosphere dragged along a helix — constant negative curvature, everywhere the same</p>
+      <p class="knobs"><span>knobs</span> <code>twist</code> how fast the horn climbs <span class="dim">(0 to 1, default 0.2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Dini%27s_surface">Ulisse Dini (1870); a pseudosphere dragged along a helix</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/enneper.webp" width="600" height="400" loading="lazy" decoding="async" alt="Enneper — a point cloud">
+    <figcaption>
+      <h3>Enneper</h3>
+      <p class="spec"><code>gen:enneper</code></p>
+      <p>a minimal surface from 1864 that runs through itself twice, which is exactly the interesting part</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Enneper_surface">Alfred Enneper (1864)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-curves">curves</h2>
+<p class="lede">Traced along a curve and thickened into a tube, in order, so the crawl runs along the curve.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/lissajous.webp" width="600" height="400" loading="lazy" decoding="async" alt="Lissajous — a point cloud">
+    <figcaption>
+      <h3>Lissajous</h3>
+      <p class="spec"><code>gen:lissajous</code></p>
+      <p>a 3:4:7 Lissajous knot, as a tube</p>
+      <p class="knobs"><span>knobs</span> <code>a</code> frequency on x <span class="dim">(1 to 9, default 3)</span><br>
+      <code>b</code> frequency on y <span class="dim">(1 to 9, default 4)</span><br>
+      <code>c</code> frequency on z <span class="dim">(1 to 12, default 7)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Lissajous_knot">Jules Antoine Lissajous (1857); the knotted case is Bogle, Hearst, Jones &amp; Stoilov (1994)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/torus-knot.webp" width="600" height="400" loading="lazy" decoding="async" alt="torus knot — a point cloud">
+    <figcaption>
+      <h3>torus knot</h3>
+      <p class="spec"><code>gen:torus-knot</code></p>
+      <p>a (3,7) torus knot — three times round, seven times through</p>
+      <p class="knobs"><span>knobs</span> <code>p</code> times round the axis <span class="dim">(1 to 9, default 3)</span><br>
+      <code>q</code> times through the hole <span class="dim">(1 to 12, default 7)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Torus_knot">The classical (p,q) torus knots</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/hilbert.webp" width="600" height="400" loading="lazy" decoding="async" alt="Hilbert curve — a point cloud">
+    <figcaption>
+      <h3>Hilbert curve</h3>
+      <p class="spec"><code>gen:hilbert</code></p>
+      <p>one unbroken line through every cell of a cube — the cloud crawls along a curve that fills space</p>
+      <p class="knobs"><span>knobs</span> <code>order</code> how many times the curve folds into itself <span class="dim">(1 to 5, default 3)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Hilbert_curve">David Hilbert, “Über die stetige Abbildung einer Linie auf ein Flächenstück”, Math. Annalen 38 (1891)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/spirograph.webp" width="600" height="400" loading="lazy" decoding="async" alt="spirograph — a point cloud">
+    <figcaption>
+      <h3>spirograph</h3>
+      <p class="spec"><code>gen:spirograph</code></p>
+      <p>the curve a pen traces through a hole in a wheel rolling inside another, given a slow rise so it coils</p>
+      <p class="knobs"><span>knobs</span> <code>R</code> the big wheel <span class="dim">(1 to 20, default 5)</span><br>
+      <code>r</code> the small wheel; the ratio decides the petals <span class="dim">(0.2 to 19, default 3)</span><br>
+      <code>pen</code> how far the pen sits from the roller's centre <span class="dim">(0.1 to 20, default 5)</span><br>
+      <code>wave</code> how many times it climbs and falls <span class="dim">(0 to 8, default 1)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Hypotrochoid">The hypotrochoid, and Denys Fisher’s 1965 toy</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/figure-eight.webp" width="600" height="400" loading="lazy" decoding="async" alt="figure-eight knot — a point cloud">
+    <figcaption>
+      <h3>figure-eight knot</h3>
+      <p class="spec"><code>gen:figure-eight</code></p>
+      <p>the only knot with four crossings, and the simplest one that is its own mirror image</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Figure-eight_knot_(mathematics)">The 4₁ knot, the simplest amphichiral one</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-fractals">fractals</h2>
+<p class="lede">Self-similar at every scale, found by the chaos game, by escape time, or by marching rays inward until they stop escaping.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sierpinski.webp" width="600" height="400" loading="lazy" decoding="async" alt="Sierpinski — a point cloud">
+    <figcaption>
+      <h3>Sierpinski</h3>
+      <p class="spec"><code>gen:sierpinski</code></p>
+      <p>the Sierpinski tetrahedron, by the chaos game</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Sierpi%C5%84ski_triangle">Wacław Sierpiński (1915), by Michael Barnsley’s chaos game</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/menger.webp" width="600" height="400" loading="lazy" decoding="async" alt="Menger — a point cloud">
+    <figcaption>
+      <h3>Menger</h3>
+      <p class="spec"><code>gen:menger</code></p>
+      <p>the Menger sponge, by the chaos game</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Menger_sponge">Karl Menger (1926)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/mandelbulb.webp" width="600" height="400" loading="lazy" decoding="async" alt="Mandelbulb — a point cloud">
+    <figcaption>
+      <h3>Mandelbulb</h3>
+      <p class="spec"><code>gen:mandelbulb</code></p>
+      <p>the power-eight Mandelbulb's surface, found by marching rays inward</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Mandelbulb">Daniel White and Paul Nylander (2009)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/kifs.webp" width="600" height="400" loading="lazy" decoding="async" alt="twisted gasket — a point cloud">
+    <figcaption>
+      <h3>twisted gasket</h3>
+      <p class="spec"><code>gen:kifs</code></p>
+      <p>the Sierpinski tetrahedron with a turn folded into every step — shells, spirals and lattices, one number wide</p>
+      <p class="knobs"><span>knobs</span> <code>angle</code> degrees of turn per step; 0 is the plain gasket <span class="dim">(-180 to 180, default 24)</span><br>
+      <code>tilt</code> degrees of turn about the other axis <span class="dim">(-180 to 180, default 0)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Iterated_function_system">The Sierpiński chaos game with a rotation in the loop — the kaleidoscopic IFS of the fractal-rendering community</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/mandelbox.webp" width="600" height="400" loading="lazy" decoding="async" alt="Mandelbox — a point cloud">
+    <figcaption>
+      <h3>Mandelbox</h3>
+      <p class="spec"><code>gen:mandelbox</code></p>
+      <p>fold, invert, scale, add — where the Mandelbulb is organic, this is architecture</p>
+      <p class="knobs"><span>knobs</span> <code>scale</code> the multiplier in the iteration; negative values turn it inside out <span class="dim">(-4 to 4, default 2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Mandelbox">Tom Lowe (2010)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/quaternion.webp" width="600" height="400" loading="lazy" decoding="async" alt="quaternion Julia — a point cloud">
+    <figcaption>
+      <h3>quaternion Julia</h3>
+      <p class="spec"><code>gen:quaternion</code></p>
+      <p>z ← z² + c in four dimensions, sliced back into three</p>
+      <p class="knobs"><span>knobs</span> <code>cr</code> the real part of c <span class="dim">(-2 to 2, default -0.2)</span><br>
+      <code>ci</code> the first imaginary part <span class="dim">(-2 to 2, default 0.6)</span><br>
+      <code>cj</code> the second imaginary part <span class="dim">(-2 to 2, default 0.2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Julia_set">Alan Norton, “Generation and display of geometric fractals in 3-D”, SIGGRAPH 1982</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/newton.webp" width="600" height="400" loading="lazy" decoding="async" alt="Newton — a point cloud">
+    <figcaption>
+      <h3>Newton</h3>
+      <p class="spec"><code>gen:newton</code></p>
+      <p>Newton's method for zⁿ = 1 as a relief — basins whose boundary touches every basin at once</p>
+      <p class="knobs"><span>knobs</span> <code>power</code> how many roots to chase <span class="dim">(2 to 8, default 3)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Newton_fractal">Arthur Cayley asked the question in 1879 and could not answer it for the cubic</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/lyapunov.webp" width="600" height="400" loading="lazy" decoding="async" alt="Lyapunov — a point cloud">
+    <figcaption>
+      <h3>Lyapunov</h3>
+      <p class="spec"><code>gen:lyapunov</code></p>
+      <p>the Markus–Hess fractal — where the logistic map settles into a cycle, drawn as towers over the chaotic sea</p>
+      <p class="knobs"><span>knobs</span> <code>sequence</code> which rate, in turn: AB is the published one, AABAB is another city <span class="dim">(text, default AB)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Lyapunov_fractal">Mario Markus &amp; Benno Hess, “Lyapunov exponents of the logistic map with periodic forcing”, Computers &amp; Graphics 13 (1989)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/mandelbrot.webp" width="600" height="400" loading="lazy" decoding="async" alt="Mandelbrot — a point cloud">
+    <figcaption>
+      <h3>Mandelbrot</h3>
+      <p class="spec"><code>gen:mandelbrot</code></p>
+      <p>the Mandelbrot set as a relief — the set a plateau, the escape time the country round it</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Mandelbrot_set">Benoit Mandelbrot (1980); the smooth escape count is Douady and Hubbard’s</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/julia.webp" width="600" height="400" loading="lazy" decoding="async" alt="Julia — a point cloud">
+    <figcaption>
+      <h3>Julia</h3>
+      <p class="spec"><code>gen:julia</code></p>
+      <p>a Julia set as a relief, c = −0.8 + 0.156i</p>
+      <p class="knobs"><span>knobs</span> <code>cr</code> the real part of c <span class="dim">(-2 to 2, default -0.8)</span><br>
+      <code>ci</code> the imaginary part of c <span class="dim">(-2 to 2, default 0.156)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Julia_set">Gaston Julia (1918) and Pierre Fatou</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-grown">grown</h2>
+<p class="lede">Built step by step by a rule, rather than evaluated: rewriting an alphabet, or letting particles wander in and stick.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/plant.webp" width="600" height="400" loading="lazy" decoding="async" alt="plant — a point cloud">
+    <figcaption>
+      <h3>plant</h3>
+      <p class="spec"><code>gen:plant</code></p>
+      <p>a plant grown by an L-system — five generations of branching, thick wood to thin twigs</p>
+      <p class="knobs"><span>knobs</span> <code>rule</code> the production for X — F draws, + − &amp; ^ \ / turn, [ ] branch, X grows again <span class="dim">(text, default F[+&amp;X][-^X]/F[\X]X)</span><br>
+      <code>angle</code> degrees per turn <span class="dim">(5 to 60, default 25)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/L-system">Aristid Lindenmayer (1968); Przemysław Prusinkiewicz &amp; Lindenmayer, The Algorithmic Beauty of Plants (1990)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/fern.webp" width="600" height="400" loading="lazy" decoding="async" alt="fern — a point cloud">
+    <figcaption>
+      <h3>fern</h3>
+      <p class="spec"><code>gen:fern</code></p>
+      <p>a fern by Lindenmayer's rewriting — fronds off a curling spine, rolling as they go</p>
+      <p class="knobs"><span>knobs</span> <code>angle</code> degrees per turn <span class="dim">(5 to 60, default 22)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, in the fern’s own rule</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/coral.webp" width="600" height="400" loading="lazy" decoding="async" alt="coral — a point cloud">
+    <figcaption>
+      <h3>coral</h3>
+      <p class="spec"><code>gen:coral</code></p>
+      <p>a three-way branching coral — every tip splits into three, a third of a turn apart</p>
+      <p class="knobs"><span>knobs</span> <code>angle</code> degrees per turn <span class="dim">(5 to 60, default 30)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, branching three ways a third of a turn apart</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/tree.webp" width="600" height="400" loading="lazy" decoding="async" alt="tree — a point cloud">
+    <figcaption>
+      <h3>tree</h3>
+      <p class="spec"><code>gen:tree</code></p>
+      <p>a tree with a trunk — long wood below, short twigs above, branches off three sides</p>
+      <p class="knobs"><span>knobs</span> <code>angle</code> degrees per turn <span class="dim">(5 to 60, default 20)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, with a trunk that keeps going</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/dla.webp" width="600" height="400" loading="lazy" decoding="async" alt="aggregate — a point cloud">
+    <figcaption>
+      <h3>aggregate</h3>
+      <p class="spec"><code>gen:dla</code></p>
+      <p>diffusion-limited aggregation — particles that wander in and stick where they touch; soot, lightning and copper all do this</p>
+      <p class="knobs"><span>knobs</span> <code>seed</code> which walk; the same seed is the same dendrite <span class="dim">(any whole number, default 1)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Diffusion-limited_aggregation">Thomas Witten &amp; Leonard Sander, “Diffusion-limited aggregation, a kinetic critical phenomenon”, Phys. Rev. Lett. 47 (1981)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="gen-patterns">patterns</h2>
+<p class="lede">Sampled where a pattern is, rather than swept: a point is kept if the field says so.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/chladni.webp" width="600" height="400" loading="lazy" decoding="async" alt="Chladni — a point cloud">
+    <figcaption>
+      <h3>Chladni</h3>
+      <p class="spec"><code>gen:chladni</code></p>
+      <p>sand on a vibrating plate — points settle where the plate stands still</p>
+      <p class="knobs"><span>knobs</span> <code>n</code> the first mode number <span class="dim">(1 to 9, default 5)</span><br>
+      <code>m</code> the second; equal numbers make no pattern <span class="dim">(1 to 9, default 2)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Ernst_Chladni">Ernst Chladni, Entdeckungen über die Theorie des Klanges (1787)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/voronoi.webp" width="600" height="400" loading="lazy" decoding="async" alt="foam — a point cloud">
+    <figcaption>
+      <h3>foam</h3>
+      <p class="spec"><code>gen:voronoi</code></p>
+      <p>Voronoi foam — the walls between cells scattered in a box, meeting three at an edge as soap films do</p>
+      <p class="knobs"><span>knobs</span> <code>cells</code> how many centres to scatter <span class="dim">(4 to 64, default 24)</span><br>
+      <code>seed</code> where they land <span class="dim">(any whole number, default 1)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Voronoi_diagram">Georgy Voronoy (1908); the walls are the set of points equidistant from the two nearest centres</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/quasicrystal.webp" width="600" height="400" loading="lazy" decoding="async" alt="quasicrystal — a point cloud">
+    <figcaption>
+      <h3>quasicrystal</h3>
+      <p class="spec"><code>gen:quasicrystal</code></p>
+      <p>six plane waves on the five-fold axes of an icosahedron — a pattern that never repeats and is nowhere random</p>
+      <p class="knobs"><span>knobs</span> <code>cells</code> how fine the pattern is <span class="dim">(1 to 8, default 3)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Quasicrystal">Dan Shechtman et al., Phys. Rev. Lett. 53 (1984); Nobel Prize in Chemistry, 2011</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/phyllotaxis.webp" width="600" height="400" loading="lazy" decoding="async" alt="phyllotaxis — a point cloud">
+    <figcaption>
+      <h3>phyllotaxis</h3>
+      <p class="spec"><code>gen:phyllotaxis</code></p>
+      <p>the sunflower's own packing — one floret every 137.5°, the only angle that never lines up</p>
+      <p class="knobs"><span>knobs</span> <code>angle</code> degrees between florets; a tenth off the golden angle and the spiral arms appear <span class="dim">(1 to 359, default 137.50776)</span><br>
+      <code>rise</code> how far the head domes <span class="dim">(0 to 3, default 0.6)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Phyllotaxis">The golden angle; Helmut Vogel’s sunflower model (1979)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="alive">19 that are alive</h2>
+<p class="lede">These are not made once. Each runs on a thread of its own at the
+frame rate and streams into the live slot, driven by whatever the audio input
+is doing: the four bands, the loudness, and where the bar is. That is the whole
+interface they get — deliberately, because the point is a <em>cloud</em> that
+happens to be alive rather than a second engine with its own controls.</p>
+<p class="lede">The plates below are each one caught a couple of seconds in, with
+no audio playing. The ones that are about growing were given longer.</p>
+
+<h2 id="sim-grown">grown</h2>
+<p class="lede">Built step by step by a rule, rather than evaluated: rewriting an alphabet, or letting particles wander in and stick.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sim-crystal.webp" width="600" height="400" loading="lazy" decoding="async" alt="crystal — a point cloud">
+    <figcaption>
+      <h3>crystal</h3>
+      <p class="spec"><code>sim:crystal</code></p>
+      <p>Reiter's snow crystal on a hexagonal lattice — plates, sectored plates and stellar dendrites, sorted by the vapour the mids and highs set; each flake grows out and the next one starts</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Snowflake">Clifford A. Reiter, “A local cellular model for snow crystal growth”, Chaos, Solitons &amp; Fractals 23 (2005); the morphologies are Ukichiro Nakaya’s (1954)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="sim-fields">fields</h2>
+<p class="lede">A grid of numbers stepped forward sixty times a second. The cloud is what rides it.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sim-fluid.webp" width="600" height="400" loading="lazy" decoding="async" alt="fluid — a point cloud">
+    <figcaption>
+      <h3>fluid</h3>
+      <p class="spec"><code>sim:fluid</code></p>
+      <p>Stam's stable fluids — the Navier–Stokes equations on an endless sheet; the loudness stirs it, the kick bursts it, the snare spins it, the highs roughen it</p>
+      <p class="cite"><a href="https://www.wdv.com/Aerospace/Fluids/StamFluidsforGames.pdf">Jos Stam, “Stable Fluids”, SIGGRAPH 1999, and “Real-Time Fluid Dynamics for Games”, GDC 2003; vorticity confinement from Fedkiw, Stam &amp; Jensen, SIGGRAPH 2001</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-reaction.webp" width="600" height="400" loading="lazy" decoding="async" alt="reaction — a point cloud">
+    <figcaption>
+      <h3>reaction</h3>
+      <p class="spec"><code>sim:reaction</code></p>
+      <p>Gray–Scott reaction–diffusion — spots that grow, split and heal; the kick plants new ones</p>
+      <p class="cite"><a href="https://www.karlsims.com/rd.html">The Gray–Scott system in John Pearson’s parameterisation, Science 261 (1993); the mitosis constants are Karl Sims’</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-wind.webp" width="600" height="400" loading="lazy" decoding="async" alt="wind — a point cloud">
+    <figcaption>
+      <h3>wind</h3>
+      <p class="spec"><code>sim:wind</code></p>
+      <p>curl noise — tracers in a divergence-free noise field, a fluid with no solve; the kick is a gust, the highs roughen it</p>
+      <p class="cite"><a href="https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf">Robert Bridson, Jim Hourihan &amp; Marcus Nordenstam, “Curl-Noise for Procedural Fluid Flow”, SIGGRAPH 2007</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-sand.webp" width="600" height="400" loading="lazy" decoding="async" alt="sandpile — a point cloud">
+    <figcaption>
+      <h3>sandpile</h3>
+      <p class="spec"><code>sim:sand</code></p>
+      <p>grains dropped and toppled — the model that named self-organised criticality, and a fractal nobody designed; the kick drops a load somewhere else</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Abelian_sandpile_model">Per Bak, Chao Tang &amp; Kurt Wiesenfeld, “Self-organized criticality”, Phys. Rev. Lett. 59 (1987); Deepak Dhar on the Abelian property (1990)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-spiral.webp" width="600" height="400" loading="lazy" decoding="async" alt="spirals — a point cloud">
+    <figcaption>
+      <h3>spirals</h3>
+      <p class="spec"><code>sim:spiral</code></p>
+      <p>the Belousov–Zhabotinsky reaction — rotating waves that annihilate where they meet, the same dynamics as a heartbeat; the kick seeds fresh defects</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Belousov%E2%80%93Zhabotinsky_reaction">Boris Belousov (1951) and Anatol Zhabotinsky (1964); the cellular form is Alasdair Turner’s</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-smoke.webp" width="600" height="400" loading="lazy" decoding="async" alt="smoke — a point cloud">
+    <figcaption>
+      <h3>smoke</h3>
+      <p class="spec"><code>sim:smoke</code></p>
+      <p>the same solver in three dimensions, with heat — a plume that rises, shears and rolls up; the kick is a blast, the snare a shove, the highs the roughness</p>
+      <p class="cite"><a href="https://www.wdv.com/Aerospace/Fluids/StamFluidsforGames.pdf">The same solver in three dimensions; buoyancy after Fedkiw, Stam &amp; Jensen, “Visual Simulation of Smoke”, SIGGRAPH 2001</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-cyclic.webp" width="600" height="400" loading="lazy" decoding="async" alt="cyclic — a point cloud">
+    <figcaption>
+      <h3>cyclic</h3>
+      <p class="spec"><code>sim:cyclic</code></p>
+      <p>states in a ring, each waiting to be eaten by the next: noise organises itself into scroll waves that turn for ever, because a spiral's own wave comes back round to feed it</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Cyclic_cellular_automaton">Robert Fisch, Janko Gravner &amp; David Griffeath, “Cyclic cellular automata in two dimensions” (1991); David Griffeath on the spirals’ four snapshots (1994)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-life.webp" width="600" height="400" loading="lazy" decoding="async" alt="life — a point cloud">
+    <figcaption>
+      <h3>life</h3>
+      <p class="spec"><code>sim:life</code></p>
+      <p>a three-dimensional cellular automaton in the Pyroclastic rule — a lattice that boils, endlessly; the kick drops a seed</p>
+      <p class="knobs"><span>knobs</span> <code>rule</code> survive / born / states, as neighbour counts: 4-7/6-8/10 is Pyroclastic and boils; 2,6,9/4,6,8-9/10 builds; 4/4/5 is Bays' 4-4-5, a spiking crystal; 13-26/13-14,17-19 is Clouds, which grows lovely masses and then stops, so it is started again <span class="dim">(text, default 4-7/6-8/10)</span></p>
+      <p class="cite"><a href="https://softologyblog.wordpress.com/2019/12/28/3d-cellular-automata-3/">Carter Bays, “Candidates for the Game of Life in Three Dimensions”, Complex Systems 1 (1987); the multi-state rules as catalogued by Softology</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="sim-many-bodies">many bodies</h2>
+<p class="lede">Many things, each with a position of its own, and rules about how they see each other.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sim-flock.webp" width="600" height="400" loading="lazy" decoding="async" alt="flock — a point cloud">
+    <figcaption>
+      <h3>flock</h3>
+      <p class="spec"><code>sim:flock</code></p>
+      <p>Reynolds' boids — four thousand of them drawing streaks; the loudness is their pace, the kick a predator, the snare a scatter</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Boids">Craig Reynolds, “Flocks, Herds and Schools: A Distributed Behavioral Model”, SIGGRAPH 1987</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-slime.webp" width="600" height="400" loading="lazy" decoding="async" alt="slime — a point cloud">
+    <figcaption>
+      <h3>slime</h3>
+      <p class="spec"><code>sim:slime</code></p>
+      <p>Physarum: sixty-five thousand agents that leave a trail and follow the strongest one they can see — a transport network out of three rules and no plan; the kick starts a new front</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Physarum_polycephalum">Jeff Jones, “Characteristics of pattern formation and evolution in approximations of Physarum transport networks”, Artificial Life 16 (2010); Tero et al., Science 327 (2010)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-swarm.webp" width="600" height="400" loading="lazy" decoding="async" alt="swarmalators — a point cloud">
+    <figcaption>
+      <h3>swarmalators</h3>
+      <p class="spec"><code>sim:swarm</code></p>
+      <p>particles that swarm and synchronise at once, each depending on the other — five states from two numbers; the loudness and the mids move between them</p>
+      <p class="cite"><a href="https://www.nature.com/articles/s41467-017-01190-3">Kevin O’Keeffe, Hyunsuk Hong &amp; Steven Strogatz, “Oscillators that sync and swarm”, Nature Communications 8 (2017)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-cloth.webp" width="600" height="400" loading="lazy" decoding="async" alt="cloth — a point cloud">
+    <figcaption>
+      <h3>cloth</h3>
+      <p class="spec"><code>sim:cloth</code></p>
+      <p>a sheet of sixty-five thousand particles hung from its top edge in an Arnold–Beltrami–Childress wind; the kick is a gust</p>
+      <p class="cite">Xavier Provot, “Deformation constraints in a mass-spring model”, Graphics Interface 1995; Thomas Jakobsen, “Advanced Character Physics”, GDC 2001</p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-kuramoto.webp" width="600" height="400" loading="lazy" decoding="async" alt="kuramoto — a point cloud">
+    <figcaption>
+      <h3>kuramoto</h3>
+      <p class="spec"><code>sim:kuramoto</code></p>
+      <p>Kuramoto's coupled oscillators on a torus — a loud passage locks them into a ribbon, quiet frees them; the kick scatters half</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Kuramoto_model">Yoshiki Kuramoto (1975); Steven Strogatz, “From Kuramoto to Crawford”, Physica D 143 (2000)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-liquid.webp" width="600" height="400" loading="lazy" decoding="async" alt="liquid — a point cloud">
+    <figcaption>
+      <h3>liquid</h3>
+      <p class="spec"><code>sim:liquid</code></p>
+      <p>four thousand particles of water in a tilting box — gravity swings round once a bar, so it pours corner to corner; the kick throws it at the ceiling</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Smoothed-particle_hydrodynamics">Miles Macklin &amp; Matthias Müller, “Position Based Fluids”, SIGGRAPH 2013; kernels from Müller, Charypar &amp; Gross, SCA 2003</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-orbits.webp" width="600" height="400" loading="lazy" decoding="async" alt="orbits — a point cloud">
+    <figcaption>
+      <h3>orbits</h3>
+      <p class="spec"><code>sim:orbits</code></p>
+      <p>five hundred bodies pulling on each other round a heavy centre — the loudness is the clock, the kick a shockwave, the snare knocks the disc out of its plane</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/N-body_simulation">Direct-summation gravity, with Plummer softening (1911)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-pendulum.webp" width="600" height="400" loading="lazy" decoding="async" alt="pendulum — a point cloud">
+    <figcaption>
+      <h3>pendulum</h3>
+      <p class="spec"><code>sim:pendulum</code></p>
+      <p>four thousand double pendulums hung in a sheet from neighbouring angles — it swings as one surface, creases, then tears; the loudness is gravity and the kick hangs it again</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Double_pendulum">The double pendulum, the standard demonstration that four numbers can be unpredictable</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-tangle.webp" width="600" height="400" loading="lazy" decoding="async" alt="tangle — a point cloud">
+    <figcaption>
+      <h3>tangle</h3>
+      <p class="spec"><code>sim:tangle</code></p>
+      <p>one long elastic rod loose in a wind, tying itself in knots — it cannot stretch and it cannot pass through itself, which is the difference between a tangle and a scribble</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Verlet_integration">Thomas Jakobsen, “Advanced Character Physics”, GDC (2001); Miklós Bergou et al., “Discrete Elastic Rods”, SIGGRAPH (2008)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-vortex.webp" width="600" height="400" loading="lazy" decoding="async" alt="vortex — a point cloud">
+    <figcaption>
+      <h3>vortex</h3>
+      <p class="spec"><code>sim:vortex</code></p>
+      <p>the thin cores smoke rings are made of, moving each other by Biot–Savart — rings that catch the one in front and thread through it; the loudness is their circulation and the kick throws a new one in</p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Vortex_ring">Hermann von Helmholtz on vortex motion (1858); Louis Rosenhead’s desingularised kernel (1930); Anthony Leonard, “Vortex methods for flow simulation” (1980)</a></p>
+    </figcaption>
+  </figure>
+</div>
+
+<h2 id="sources">Sources</h2>
+<p class="lede">Every entry above, in one list, with whoever found it. Where the
+original paper is behind a paywall the link goes to an encyclopaedia article
+instead — the citation is the thing to keep.</p>
+<ol class="sources">
+  <li><strong>aggregate</strong> — <a href="https://en.wikipedia.org/wiki/Diffusion-limited_aggregation">Thomas Witten &amp; Leonard Sander, “Diffusion-limited aggregation, a kinetic critical phenomenon”, Phys. Rev. Lett. 47 (1981)</a></li>
+  <li><strong>Aizawa</strong> — Yoji Aizawa &amp; Tatsuo Uezu (1982), as catalogued by Chaoscope</li>
+  <li><strong>Arneodo</strong> — Alain Arnéodo, Pierre Coullet &amp; Charles Tresser (1981)</li>
+  <li><strong>Boy's surface</strong> — <a href="https://en.wikipedia.org/wiki/Boy%27s_surface">Werner Boy (1901); this parametrisation is François Apéry’s (1986)</a></li>
+  <li><strong>Burke–Shaw</strong> — Bill Burke &amp; Robert Shaw (1981)</li>
+  <li><strong>Chen</strong> — <a href="https://en.wikipedia.org/wiki/Multiscroll_attractor">Guanrong Chen &amp; Tetsushi Ueta, “Yet another chaotic attractor”, Int. J. Bifurcation and Chaos 9 (1999)</a></li>
+  <li><strong>Chladni</strong> — <a href="https://en.wikipedia.org/wiki/Ernst_Chladni">Ernst Chladni, Entdeckungen über die Theorie des Klanges (1787)</a></li>
+  <li><strong>Chua</strong> — <a href="https://en.wikipedia.org/wiki/Chua%27s_circuit">Leon Chua (1983); Matsumoto, Chua &amp; Komuro, IEEE Trans. Circuits and Systems 32 (1985)</a></li>
+  <li><strong>Clifford</strong> — <a href="https://paulbourke.net/fractals/clifford/">Clifford Pickover, Computers, Pattern, Chaos and Beauty (1990)</a></li>
+  <li><strong>cloth</strong> — Xavier Provot, “Deformation constraints in a mass-spring model”, Graphics Interface 1995; Thomas Jakobsen, “Advanced Character Physics”, GDC 2001</li>
+  <li><strong>coral</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, branching three ways a third of a turn apart</a></li>
+  <li><strong>Coullet</strong> — <a href="https://en.wikipedia.org/wiki/Jerk_(physics)">Pierre Coullet, Charles Tresser &amp; Alain Arnéodo (1979) — a jerk system</a></li>
+  <li><strong>crystal</strong> — <a href="https://en.wikipedia.org/wiki/Snowflake">Clifford A. Reiter, “A local cellular model for snow crystal growth”, Chaos, Solitons &amp; Fractals 23 (2005); the morphologies are Ukichiro Nakaya’s (1954)</a></li>
+  <li><strong>cyclic</strong> — <a href="https://en.wikipedia.org/wiki/Cyclic_cellular_automaton">Robert Fisch, Janko Gravner &amp; David Griffeath, “Cyclic cellular automata in two dimensions” (1991); David Griffeath on the spirals’ four snapshots (1994)</a></li>
+  <li><strong>Dadras</strong> — Sara Dadras &amp; Hamid Reza Momeni, Physics Letters A 373 (2009)</li>
+  <li><strong>de Jong</strong> — <a href="https://paulbourke.net/fractals/peterdejong/">Peter de Jong, in A. K. Dewdney’s Computer Recreations, Scientific American (1987)</a></li>
+  <li><strong>Dini</strong> — <a href="https://en.wikipedia.org/wiki/Dini%27s_surface">Ulisse Dini (1870); a pseudosphere dragged along a helix</a></li>
+  <li><strong>Duffing</strong> — <a href="https://en.wikipedia.org/wiki/Duffing_equation">Georg Duffing (1918); the chaotic forced case is Ueda’s (1979)</a></li>
+  <li><strong>Enneper</strong> — <a href="https://en.wikipedia.org/wiki/Enneper_surface">Alfred Enneper (1864)</a></li>
+  <li><strong>fern</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, in the fern’s own rule</a></li>
+  <li><strong>figure-eight knot</strong> — <a href="https://en.wikipedia.org/wiki/Figure-eight_knot_(mathematics)">The 4₁ knot, the simplest amphichiral one</a></li>
+  <li><strong>finance</strong> — Junhai Ma &amp; Yushu Chen, Applied Mathematics and Mechanics 22 (2001)</li>
+  <li><strong>flock</strong> — <a href="https://en.wikipedia.org/wiki/Boids">Craig Reynolds, “Flocks, Herds and Schools: A Distributed Behavioral Model”, SIGGRAPH 1987</a></li>
+  <li><strong>fluid</strong> — <a href="https://www.wdv.com/Aerospace/Fluids/StamFluidsforGames.pdf">Jos Stam, “Stable Fluids”, SIGGRAPH 1999, and “Real-Time Fluid Dynamics for Games”, GDC 2003; vorticity confinement from Fedkiw, Stam &amp; Jensen, SIGGRAPH 2001</a></li>
+  <li><strong>foam</strong> — <a href="https://en.wikipedia.org/wiki/Voronoi_diagram">Georgy Voronoy (1908); the walls are the set of points equidistant from the two nearest centres</a></li>
+  <li><strong>Four-wing</strong> — Wang, Sun &amp; van Wyk, the four-wing system (2009)</li>
+  <li><strong>Genesio–Tesi</strong> — Roberto Genesio &amp; Alberto Tesi, Automatica 28 (1992)</li>
+  <li><strong>Gumowski–Mira</strong> — Igor Gumowski &amp; Christian Mira, CERN (1980)</li>
+  <li><strong>gyroid</strong> — <a href="https://en.wikipedia.org/wiki/Gyroid">Alan Schoen, Infinite Periodic Minimal Surfaces Without Self-Intersections, NASA TN D-5541 (1970); Schwarz’ P and D are from 1865</a></li>
+  <li><strong>Hadley</strong> — Edward Lorenz, “Irregularity: a fundamental property of the atmosphere”, Tellus 36A (1984)</li>
+  <li><strong>Halvorsen</strong> — <a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">Arne Dehli Halvorsen’s cyclically symmetric system, as catalogued by Sprott</a></li>
+  <li><strong>harmonic</strong> — <a href="https://en.wikipedia.org/wiki/Spherical_harmonics">A sphere modulated by a spherical harmonic; the classical functions of Laplace (1782)</a></li>
+  <li><strong>Hilbert curve</strong> — <a href="https://en.wikipedia.org/wiki/Hilbert_curve">David Hilbert, “Über die stetige Abbildung einer Linie auf ein Flächenstück”, Math. Annalen 38 (1891)</a></li>
+  <li><strong>Hopf</strong> — <a href="https://en.wikipedia.org/wiki/Hopf_fibration">Heinz Hopf, “Über die Abbildungen der dreidimensionalen Sphäre auf die Kugelfläche”, Math. Annalen 104 (1931)</a></li>
+  <li><strong>Hénon</strong> — <a href="https://en.wikipedia.org/wiki/H%C3%A9non_map">Michel Hénon, “A two-dimensional mapping with a strange attractor”, Comm. Math. Phys. 50 (1976)</a></li>
+  <li><strong>Ikeda</strong> — <a href="https://en.wikipedia.org/wiki/Ikeda_map">Kensuke Ikeda, Optics Communications 30 (1979)</a></li>
+  <li><strong>Julia</strong> — <a href="https://en.wikipedia.org/wiki/Julia_set">Gaston Julia (1918) and Pierre Fatou</a></li>
+  <li><strong>Klein bottle</strong> — <a href="https://en.wikipedia.org/wiki/Klein_bottle">Felix Klein (1882); the figure-eight immersion is the standard one</a></li>
+  <li><strong>kuramoto</strong> — <a href="https://en.wikipedia.org/wiki/Kuramoto_model">Yoshiki Kuramoto (1975); Steven Strogatz, “From Kuramoto to Crawford”, Physica D 143 (2000)</a></li>
+  <li><strong>life</strong> — <a href="https://softologyblog.wordpress.com/2019/12/28/3d-cellular-automata-3/">Carter Bays, “Candidates for the Game of Life in Three Dimensions”, Complex Systems 1 (1987); the multi-state rules as catalogued by Softology</a></li>
+  <li><strong>liquid</strong> — <a href="https://en.wikipedia.org/wiki/Smoothed-particle_hydrodynamics">Miles Macklin &amp; Matthias Müller, “Position Based Fluids”, SIGGRAPH 2013; kernels from Müller, Charypar &amp; Gross, SCA 2003</a></li>
+  <li><strong>Lissajous</strong> — <a href="https://en.wikipedia.org/wiki/Lissajous_knot">Jules Antoine Lissajous (1857); the knotted case is Bogle, Hearst, Jones &amp; Stoilov (1994)</a></li>
+  <li><strong>Lorenz-96</strong> — <a href="https://en.wikipedia.org/wiki/Lorenz_96_model">Edward Lorenz, “Predictability: a problem partly solved”, ECMWF Seminar on Predictability (1996)</a></li>
+  <li><strong>Lyapunov</strong> — <a href="https://en.wikipedia.org/wiki/Lyapunov_fractal">Mario Markus &amp; Benno Hess, “Lyapunov exponents of the logistic map with periodic forcing”, Computers &amp; Graphics 13 (1989)</a></li>
+  <li><strong>Mandelbox</strong> — <a href="https://en.wikipedia.org/wiki/Mandelbox">Tom Lowe (2010)</a></li>
+  <li><strong>Mandelbrot</strong> — <a href="https://en.wikipedia.org/wiki/Mandelbrot_set">Benoit Mandelbrot (1980); the smooth escape count is Douady and Hubbard’s</a></li>
+  <li><strong>Mandelbulb</strong> — <a href="https://en.wikipedia.org/wiki/Mandelbulb">Daniel White and Paul Nylander (2009)</a></li>
+  <li><strong>Menger</strong> — <a href="https://en.wikipedia.org/wiki/Menger_sponge">Karl Menger (1926)</a></li>
+  <li><strong>Newton</strong> — <a href="https://en.wikipedia.org/wiki/Newton_fractal">Arthur Cayley asked the question in 1879 and could not answer it for the cubic</a></li>
+  <li><strong>Newton–Leipnik</strong> — Tim Newton &amp; Roy Leipnik, “Double strange attractors in rigid body motion”, SIAM J. Appl. Math. 41 (1981)</li>
+  <li><strong>Nosé–Hoover</strong> — <a href="https://en.wikipedia.org/wiki/Nos%C3%A9%E2%80%93Hoover_thermostat">Shūichi Nosé (1984) and William Hoover (1985)</a></li>
+  <li><strong>orbital</strong> — <a href="https://en.wikipedia.org/wiki/Spherical_harmonics">The real spherical harmonics, as a chemistry textbook draws an atomic orbital</a></li>
+  <li><strong>orbits</strong> — <a href="https://en.wikipedia.org/wiki/N-body_simulation">Direct-summation gravity, with Plummer softening (1911)</a></li>
+  <li><strong>pendulum</strong> — <a href="https://en.wikipedia.org/wiki/Double_pendulum">The double pendulum, the standard demonstration that four numbers can be unpredictable</a></li>
+  <li><strong>phyllotaxis</strong> — <a href="https://en.wikipedia.org/wiki/Phyllotaxis">The golden angle; Helmut Vogel’s sunflower model (1979)</a></li>
+  <li><strong>plant</strong> — <a href="https://en.wikipedia.org/wiki/L-system">Aristid Lindenmayer (1968); Przemysław Prusinkiewicz &amp; Lindenmayer, The Algorithmic Beauty of Plants (1990)</a></li>
+  <li><strong>quadratic</strong> — <a href="https://sprott.physics.wisc.edu/sa.htm">Julien Clinton Sprott, Strange Attractors: Creating Patterns in Chaos (1993)</a></li>
+  <li><strong>quadratic flow</strong> — <a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">The same search over quadratic flows; Sprott, “Some simple chaotic flows”, Phys. Rev. E 50 (1994)</a></li>
+  <li><strong>quasicrystal</strong> — <a href="https://en.wikipedia.org/wiki/Quasicrystal">Dan Shechtman et al., Phys. Rev. Lett. 53 (1984); Nobel Prize in Chemistry, 2011</a></li>
+  <li><strong>quaternion Julia</strong> — <a href="https://en.wikipedia.org/wiki/Julia_set">Alan Norton, “Generation and display of geometric fractals in 3-D”, SIGGRAPH 1982</a></li>
+  <li><strong>Rabinovich–Fabrikant</strong> — <a href="https://en.wikipedia.org/wiki/Rabinovich%E2%80%93Fabrikant_equations">Mikhail Rabinovich &amp; Anatoly Fabrikant, Sov. Phys. JETP 50 (1979)</a></li>
+  <li><strong>reaction</strong> — <a href="https://www.karlsims.com/rd.html">The Gray–Scott system in John Pearson’s parameterisation, Science 261 (1993); the mitosis constants are Karl Sims’</a></li>
+  <li><strong>Rikitake</strong> — <a href="https://en.wikipedia.org/wiki/Dynamo_theory">Tsuneji Rikitake, “Oscillations of a system of disk dynamos”, Math. Proc. Cambridge Phil. Soc. 54 (1958)</a></li>
+  <li><strong>Rucklidge</strong> — Alastair Rucklidge, “Chaos in models of double convection”, J. Fluid Mech. 237 (1992)</li>
+  <li><strong>Rössler</strong> — <a href="https://en.wikipedia.org/wiki/R%C3%B6ssler_attractor">Otto Rössler, “An equation for continuous chaos”, Physics Letters A 57 (1976)</a></li>
+  <li><strong>Sakarya</strong> — The Sakarya system (2010)</li>
+  <li><strong>sandpile</strong> — <a href="https://en.wikipedia.org/wiki/Abelian_sandpile_model">Per Bak, Chao Tang &amp; Kurt Wiesenfeld, “Self-organized criticality”, Phys. Rev. Lett. 59 (1987); Deepak Dhar on the Abelian property (1990)</a></li>
+  <li><strong>Shimizu–Morioka</strong> — Tsutomu Shimizu &amp; Nobuo Morioka, Physics Letters A 76 (1980)</li>
+  <li><strong>Sierpinski</strong> — <a href="https://en.wikipedia.org/wiki/Sierpi%C5%84ski_triangle">Wacław Sierpiński (1915), by Michael Barnsley’s chaos game</a></li>
+  <li><strong>slime</strong> — <a href="https://en.wikipedia.org/wiki/Physarum_polycephalum">Jeff Jones, “Characteristics of pattern formation and evolution in approximations of Physarum transport networks”, Artificial Life 16 (2010); Tero et al., Science 327 (2010)</a></li>
+  <li><strong>smoke</strong> — <a href="https://www.wdv.com/Aerospace/Fluids/StamFluidsforGames.pdf">The same solver in three dimensions; buoyancy after Fedkiw, Stam &amp; Jensen, “Visual Simulation of Smoke”, SIGGRAPH 2001</a></li>
+  <li><strong>spirals</strong> — <a href="https://en.wikipedia.org/wiki/Belousov%E2%80%93Zhabotinsky_reaction">Boris Belousov (1951) and Anatol Zhabotinsky (1964); the cellular form is Alasdair Turner’s</a></li>
+  <li><strong>spirograph</strong> — <a href="https://en.wikipedia.org/wiki/Hypotrochoid">The hypotrochoid, and Denys Fisher’s 1965 toy</a></li>
+  <li><strong>Sprott B</strong> — <a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">Julien Clinton Sprott, “Some simple chaotic flows”, Phys. Rev. E 50 (1994) — case B</a></li>
+  <li><strong>standard map</strong> — <a href="https://en.wikipedia.org/wiki/Standard_map">Boris Chirikov, “A universal instability of many-dimensional oscillator systems”, Physics Reports 52 (1979); the last-torus threshold is John Greene’s (1979)</a></li>
+  <li><strong>supershape</strong> — <a href="https://en.wikipedia.org/wiki/Superformula">Johan Gielis, “A generic geometric transformation that unifies a wide range of natural and abstract shapes”, Am. J. Botany 90 (2003)</a></li>
+  <li><strong>swarmalators</strong> — <a href="https://www.nature.com/articles/s41467-017-01190-3">Kevin O’Keeffe, Hyunsuk Hong &amp; Steven Strogatz, “Oscillators that sync and swarm”, Nature Communications 8 (2017)</a></li>
+  <li><strong>tangle</strong> — <a href="https://en.wikipedia.org/wiki/Verlet_integration">Thomas Jakobsen, “Advanced Character Physics”, GDC (2001); Miklós Bergou et al., “Discrete Elastic Rods”, SIGGRAPH (2008)</a></li>
+  <li><strong>Thomas</strong> — <a href="https://en.wikipedia.org/wiki/Thomas%27_cyclically_symmetric_attractor">René Thomas, “Deterministic chaos seen in terms of feedback circuits”, Int. J. Bifurcation and Chaos 9 (1999)</a></li>
+  <li><strong>three-scroll</strong> — The three-scroll unified chaotic system; Dequan Li, Physics Letters A 372 (2008)</li>
+  <li><strong>torus knot</strong> — <a href="https://en.wikipedia.org/wiki/Torus_knot">The classical (p,q) torus knots</a></li>
+  <li><strong>tree</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, with a trunk that keeps going</a></li>
+  <li><strong>twisted gasket</strong> — <a href="https://en.wikipedia.org/wiki/Iterated_function_system">The Sierpiński chaos game with a rotation in the loop — the kaleidoscopic IFS of the fractal-rendering community</a></li>
+  <li><strong>vortex</strong> — <a href="https://en.wikipedia.org/wiki/Vortex_ring">Hermann von Helmholtz on vortex motion (1858); Louis Rosenhead’s desingularised kernel (1930); Anthony Leonard, “Vortex methods for flow simulation” (1980)</a></li>
+  <li><strong>wind</strong> — <a href="https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf">Robert Bridson, Jim Hourihan &amp; Marcus Nordenstam, “Curl-Noise for Procedural Fluid Flow”, SIGGRAPH 2007</a></li>
+</ol>
+
+<footer>
+<p>This page is generated from the app's own catalogue and drawn with the app's
+own code, so it cannot drift from what vizz actually ships. vizz is
+<a href="https://github.com/legofsalmon/vizz">open source</a>, MIT licensed.</p>
+</footer>
+
+</main>
+</body>
+</html>

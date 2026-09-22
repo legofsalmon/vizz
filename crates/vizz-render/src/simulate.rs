@@ -17,7 +17,7 @@
 //! crossed to, captured and lit like the others — that happens to be
 //! alive.
 //!
-//! Seventeen ship. Some are *fields on a grid*: **fluid** is Stam's
+//! Nineteen ship. Some are *fields on a grid*: **fluid** is Stam's
 //! stable solver for the incompressible Navier–Stokes equations
 //! (Stam, "Stable Fluids", 1999; "Real-Time Fluid Dynamics for Games",
 //! 2003) on a periodic sheet, with Fedkiw's vorticity confinement to
@@ -25,8 +25,10 @@
 //! heat to lift it; **reaction** is the Gray–Scott system in Pearson's
 //! parameterisation; **wind** is curl noise, a fluid with no solve at
 //! all; **life** is a cellular automaton on a cubic lattice;
-//! and **cyclic** is another, whose states chase each other round a
-//! ring until the lattice fills with scroll waves.
+//! **cyclic** is another, whose states chase each other round a
+//! ring until the lattice fills with scroll waves; **sand** is the
+//! Abelian sandpile; and **spiral** is the Belousov–Zhabotinsky
+//! reaction as a cellular model.
 //!
 //! Some are *many bodies*: **flock** is Reynolds' boids, **orbits** is
 //! gravity by direct summation, **liquid** is position-based fluids,
@@ -39,10 +41,9 @@
 //! And **crystal** is grown: Reiter's snowflake on a hexagonal
 //! lattice. **kuramoto** is a crowd of coupled oscillators, which is
 //! none of the above.
-//!
-//! They cost between half a millisecond and a little over twenty per
-//! frame, on a thread of their own, and a slow one loses frames rather
-//! than the picture: the renderer takes whatever the slot holds.
+//!//! They cost between half a millisecond and twenty per frame, on a
+//! thread of their own, and a slow one loses frames rather than the
+//! picture: the renderer takes whatever the slot holds.
 
 use std::f32::consts::SQRT_2;
 
@@ -83,7 +84,7 @@ pub trait Simulation: Send {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "cyclic", "tangle", "crystal", "vortex"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -107,7 +108,7 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "flock" => Some(Box::new(Flock::new())),
         "wind" => Some(Box::new(Wind::new())),
         "kuramoto" => Some(Box::new(Kuramoto::new())),
-        "life" => Some(Box::new(Life::with_rule(&text("rule", Life::CLOUDS)))),
+        "life" => Some(Box::new(Life::with_rule(&text("rule", Life::DEFAULT)))),
         "orbits" => Some(Box::new(Orbits::new())),
         "pendulum" => Some(Box::new(Pendulum::new())),
         "smoke" => Some(Box::new(Smoke::new())),
@@ -115,6 +116,8 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "slime" => Some(Box::new(Slime::new())),
         "swarm" => Some(Box::new(Swarm::new())),
         "cloth" => Some(Box::new(Cloth::new())),
+        "sand" => Some(Box::new(Sand::new())),
+        "spiral" => Some(Box::new(Spiral::new())),
         "cyclic" => Some(Box::new(Cyclic::new())),
         "tangle" => Some(Box::new(Tangle::new())),
         "crystal" => Some(Box::new(Crystal::new())),
@@ -1035,7 +1038,7 @@ impl Simulation for Kuramoto {
             1.2 + 1.2 * (self.time * 0.1).sin()
         };
         // A kick scatters half the crowd.
-        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.5 {
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
             self.since_kick = 0.0;
             for i in 0..OSC {
                 if self.rng.f32() < 0.5 {
@@ -1111,26 +1114,34 @@ pub struct Life {
     /// How many states, counting dead: 2 is Life's own.
     states: u8,
     frame: u32,
+    /// Generations in a row that have changed almost nothing.
+    stalled: u32,
     since_kick: f32,
     rng: Rng,
 }
 
 impl Life {
-    /// The Clouds rule, as `survive/born` in neighbour counts. Two
-    /// states, so the third field can be left off.
-    pub const CLOUDS: &'static str = "13-26/13-14,17-19";
+    /// The rule this runs unless told otherwise: Pyroclastic, which
+    /// boils. A live slot has to keep moving, and most of the
+    /// catalogued three-dimensional rules do not — Clouds
+    /// (`13-26/13-14,17-19`) grows into lovely masses and then stops
+    /// dead, changing sixty cells a generation out of a hundred and
+    /// ten thousand, which on screen is a still image with a name on
+    /// it. This one turns over a third of the lattice every
+    /// generation, for ever.
+    pub const DEFAULT: &'static str = "4-7/6-8/10";
 
     pub fn new() -> Self {
-        Self::with_rule(Self::CLOUDS)
+        Self::with_rule(Self::DEFAULT)
     }
 
     /// An automaton in the rule `survive/born` or `survive/born/states`,
     /// the first two sides lists of neighbour counts and ranges —
     /// `13-26/13-14,17-19`, `4/4/5`. A rule that will not parse is the
-    /// Clouds rule, because a blank rule is a blank slot.
+    /// shipped one, because a blank rule is a blank slot.
     pub fn with_rule(rule: &str) -> Self {
         let (survive, born, states) = parse_rule(rule)
-            .unwrap_or_else(|| parse_rule(Self::CLOUDS).expect("the shipped rule parses"));
+            .unwrap_or_else(|| parse_rule(Self::DEFAULT).expect("the shipped rule parses"));
         let mut l = Self {
             cells: vec![0; LG * LG * LG],
             next: vec![0; LG * LG * LG],
@@ -1138,6 +1149,7 @@ impl Life {
             born,
             states,
             frame: 0,
+            stalled: 0,
             since_kick: 10.0,
             rng: Rng::new(0x11FE),
         };
@@ -1151,7 +1163,12 @@ impl Life {
     /// multi-state ones grow outward from almost nothing and fill the
     /// lattice if handed a crowd.
     fn seed_side(&self) -> usize {
-        if self.states > 2 { 6 } else { 14 }
+        // The two-state rules here want a *crowd*: Clouds asks for
+        // thirteen of a cell's twenty-six neighbours before it will
+        // keep it alive, so a small block is all edge, the edge all
+        // dies, and what is left is a speck that keeps being reseeded.
+        // Half the lattice across is a nucleus that can hold itself up.
+        if self.states > 2 { 6 } else { 24 }
     }
 
     /// A random block, about half full, centred on a cell.
@@ -1173,7 +1190,9 @@ impl Life {
         }
     }
 
-    fn generation(&mut self) {
+    /// Advance one generation, and say how many cells it changed.
+    fn generation(&mut self) -> u32 {
+        let mut changed = 0u32;
         let at = |x: usize, y: usize, z: usize| (x % LG) + (y % LG) * LG + (z % LG) * LG * LG;
         let top = self.states - 1;
         for z in 0..LG {
@@ -1198,7 +1217,8 @@ impl Life {
                     }
                     let cell = self.cells[at(x, y, z)];
                     let n = n as usize;
-                    self.next[at(x, y, z)] = match cell {
+                    let was = cell;
+                    let now = match cell {
                         0 => u8::from(self.born[n]) * top,
                         c if c == top => {
                             if self.survive[n] {
@@ -1211,10 +1231,13 @@ impl Life {
                         // only runs one way.
                         c => c - 1,
                     };
+                    self.next[at(x, y, z)] = now;
+                    changed += u32::from(now != was);
                 }
             }
         }
         std::mem::swap(&mut self.cells, &mut self.next);
+        changed
     }
 
     /// Every cell that is not dead — the live front and the ash behind
@@ -1282,11 +1305,17 @@ impl Simulation for Life {
             self.seed(x, y, z, side);
         }
         if self.frame.is_multiple_of(3) {
-            self.generation();
+            let changed = self.generation();
+            // A generation that changes almost nothing has stopped, and
+            // a stopped automaton is as dead as an empty one — most of
+            // the catalogued rules grow into a shape and then hold it
+            // for ever, which in a live slot is a still image. Four of
+            // those in a row and it starts again.
+            self.stalled = if changed < 64 { self.stalled + 1 } else { 0 };
             // Died out, or filled the lattice: start again from a seed.
             // A dead automaton is a blank slot with a name on it.
             let alive = self.alive();
-            if !(64..=LG * LG * LG * 9 / 10).contains(&alive) {
+            if self.stalled >= 4 || !(64..=LG * LG * LG * 9 / 10).contains(&alive) {
                 self.cells.iter_mut().for_each(|c| *c = 0);
                 let (x, y, z) = (
                     (self.rng.f32() * LG as f32) as usize,
@@ -1295,6 +1324,7 @@ impl Simulation for Life {
                 );
                 let side = self.seed_side();
                 self.seed(x, y, z, side);
+                self.stalled = 0;
             }
         }
     }
@@ -1906,11 +1936,11 @@ impl Smoke {
         // The standing vent, on its own slow path across the floor.
         let vent = [0.5 + 0.25 * (t * 0.19).cos(), 0.12, 0.5 + 0.25 * (t * 0.23).sin()];
         let heat = &mut self.heat;
-        Self::near(vent, 0.05, |idx, g| heat[idx] += g * 6.0 * dt);
+        Self::near(vent, 0.05, |idx, g| heat[idx] += g * 16.0 * dt);
         if kick {
             // A blast: hot, and somewhere else.
             let at = [self.rng.f32(), 0.12, self.rng.f32()];
-            let amount = 18.0 * drive.bands[0] * dt;
+            let amount = 45.0 * drive.bands[0] * dt;
             let heat = &mut self.heat;
             Self::near(at, 0.06, |idx, g| heat[idx] += g * amount);
         }
@@ -1930,7 +1960,12 @@ impl Smoke {
         // periodic box has no sky to lose heat to, so it is cooled by
         // hand, and lifted only by the part of the heat above the
         // average, which keeps the net force at zero.
-        let cool = (1.0 - 0.35 * dt).clamp(0.0, 1.0);
+        // Cooling fast enough that a parcel fades before it has risen
+        // the height of the box. A periodic box has no sky to lose
+        // heat to, so a slow cool simply fills it: the hot air leaves
+        // the top, comes back in at the bottom, and within a few
+        // seconds there is no plume, only a warm room.
+        let cool = (1.0 - 1.6 * dt).clamp(0.0, 1.0);
         let mut total = 0.0;
         for h in &mut self.heat {
             *h = (*h * cool).min(4.0);
@@ -2177,7 +2212,12 @@ impl Simulation for Smoke {
                 p[2] * SG as f32 - 0.5,
             );
             let h = Self::trilerp(&self.heat, &c);
-            let bright = (0.22 + 0.78 * (h * 1.6).min(1.0)).clamp(0.0, 1.0);
+            // Cold air is nearly black, not grey. The box is evenly
+            // full of tracers so that none of them ever has to be
+            // re-seeded, which means most of them are sitting in air
+            // that is doing nothing, and at a fifth brightness sixty
+            // thousand of those wash the plume out entirely.
+            let bright = (0.06 + 0.94 * (h * 2.2).min(1.0)).clamp(0.0, 1.0);
             let shade = (bright * 255.0) as u8;
             out.push(Point {
                 pos: [(p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, (p[2] - 0.5) * 2.0],
@@ -2933,7 +2973,7 @@ impl Simulation for Swarm {
             // five states come round.
             (0.6 + 0.4 * (self.time * 0.07).sin(), -0.35 + 0.65 * (self.time * 0.043).cos())
         };
-        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.5 {
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
             self.since_kick = 0.0;
             for p in &mut self.pos {
                 let d = self.rng.on_sphere();
@@ -3205,6 +3245,360 @@ impl Simulation for Cloth {
                 color: [shade, shade, shade],
             });
         }
+    }
+}
+
+// --- Sandpile ---------------------------------------------------------
+
+/// Cells along each side of the sandpile. Its square is a slot, so
+/// there is one point per cell.
+const PILE: usize = 256;
+
+/// The Abelian sandpile (Bak, Tang & Wiesenfeld, 1987), the model that
+/// named self-organised criticality.
+///
+/// Drop grains on a square. Any square holding four or more topples,
+/// sending one grain to each neighbour, which may make them topple in
+/// turn. That is the whole rule. Two facts about it are surprising.
+/// The first is that the order of toppling does not matter — whatever
+/// order you use, the final arrangement is the same, which is what
+/// "Abelian" means here. The second is what a large pile looks like:
+/// not a heap, but a fractal of nested triangles and squares that
+/// nobody designed and which is still not fully explained.
+///
+/// It is also the origin of the idea that a system can drive *itself*
+/// to the edge of stability and sit there, which is where avalanches,
+/// earthquakes and forest fires get their power laws.
+pub struct Sand {
+    cells: Vec<u32>,
+    /// Cells known to be over the limit, so a pass does not sweep the
+    /// whole square looking for them.
+    unstable: Vec<u32>,
+    next: Vec<u32>,
+    dropped: u64,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Sand {
+    /// Grains a second at the middle, with no audio. The pattern's
+    /// radius grows as the square root of the count, so a square this
+    /// size wants a few hundred thousand grains before the nested
+    /// triangles appear — which is half a minute of watching, and the
+    /// half minute is the point.
+    const RAIN: f32 = 30_000.0;
+    /// The most topplings one frame will do. A pass that ran to
+    /// stability would take as long as it takes, and this runs inside a
+    /// frame.
+    const BUDGET: usize = 400_000;
+
+    pub fn new() -> Self {
+        let mut sand = Self {
+            cells: vec![0; PILE * PILE],
+            unstable: Vec::with_capacity(1 << 16),
+            next: Vec::with_capacity(1 << 16),
+            dropped: 0,
+            since_kick: 10.0,
+            rng: Rng::new(0x5A_4D),
+        };
+        sand.drop_at(PILE / 2, PILE / 2, 60_000);
+        sand
+    }
+
+    fn drop_at(&mut self, x: usize, y: usize, grains: u32) {
+        if grains == 0 {
+            return;
+        }
+        let i = x.min(PILE - 1) + y.min(PILE - 1) * PILE;
+        self.cells[i] += grains;
+        self.dropped += u64::from(grains);
+        if self.cells[i] >= 4 {
+            self.unstable.push(i as u32);
+        }
+    }
+
+    /// Topple until stable or out of budget. Grains that reach the edge
+    /// fall off, which is what stops the pile growing for ever and is
+    /// how the model is always run.
+    fn settle(&mut self) {
+        let mut spent = 0;
+        while !self.unstable.is_empty() && spent < Self::BUDGET {
+            self.next.clear();
+            for index in std::mem::take(&mut self.unstable) {
+                let i = index as usize;
+                if self.cells[i] < 4 {
+                    continue;
+                }
+                let times = self.cells[i] / 4;
+                self.cells[i] -= times * 4;
+                spent += times as usize;
+                let (x, y) = (i % PILE, i / PILE);
+                let give = |s: &mut Self, x: usize, y: usize| {
+                    let j = x + y * PILE;
+                    s.cells[j] += times;
+                    if s.cells[j] >= 4 {
+                        s.next.push(j as u32);
+                    }
+                };
+                if x > 0 {
+                    give(self, x - 1, y);
+                }
+                if x + 1 < PILE {
+                    give(self, x + 1, y);
+                }
+                if y > 0 {
+                    give(self, x, y - 1);
+                }
+                if y + 1 < PILE {
+                    give(self, x, y + 1);
+                }
+                if self.cells[i] >= 4 {
+                    self.next.push(index);
+                }
+            }
+            std::mem::swap(&mut self.unstable, &mut self.next);
+        }
+    }
+
+    /// How far the pile has spread from the middle, as a share of the
+    /// half-width. Once it reaches the edge the pattern stops growing,
+    /// so it is swept away and started again.
+    fn reach(&self) -> f32 {
+        let half = PILE / 2;
+        let mut far = 0usize;
+        for x in 0..PILE {
+            if self.cells[x + half * PILE] > 0 {
+                far = far.max(half.abs_diff(x));
+            }
+            if self.cells[half + x * PILE] > 0 {
+                far = far.max(half.abs_diff(x));
+            }
+        }
+        far as f32 / half as f32
+    }
+}
+
+impl Default for Sand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Sand {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.since_kick += dt;
+        let rain = Self::RAIN * if drive.audio { 0.3 + 2.0 * drive.level } else { 1.0 };
+        let grains = (rain * dt) as u32;
+        self.drop_at(PILE / 2, PILE / 2, grains);
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.3 {
+            self.since_kick = 0.0;
+            // A load somewhere else, which sends an avalanche across
+            // whatever the pattern had settled into.
+            let (x, y) = (
+                (self.rng.f32() * PILE as f32) as usize,
+                (self.rng.f32() * PILE as f32) as usize,
+            );
+            self.drop_at(x, y, 4_000);
+        }
+        self.settle();
+        if self.reach() > 0.94 {
+            self.cells.iter_mut().for_each(|c| *c = 0);
+            self.unstable.clear();
+            self.dropped = 0;
+            self.drop_at(PILE / 2, PILE / 2, 60_000);
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for (i, grains) in self.cells.iter().enumerate() {
+            let (x, y) = (i % PILE, i / PILE);
+            let height = (*grains).min(3) as f32 / 3.0;
+            // Empty ground sits at the floor and is nearly dark; the
+            // three levels above it step up and brighten, so the
+            // nested triangles read as terraces.
+            let shade = if *grains == 0 { 45.0 } else { 90.0 + 165.0 * height } as u8;
+            out.push(Point {
+                pos: [
+                    (x as f32 + 0.5) / PILE as f32 * 2.0 - 1.0,
+                    (height - 0.5) * 0.38,
+                    (y as f32 + 0.5) / PILE as f32 * 2.0 - 1.0,
+                ],
+                normal: [0.0; 3],
+                color: [shade, shade, shade],
+            });
+        }
+    }
+}
+
+// --- Spirals ----------------------------------------------------------
+
+/// Cells along each side of the reaction. Its square is a slot.
+const BZ: usize = 256;
+
+/// The Belousov–Zhabotinsky reaction, as a cellular model.
+///
+/// Belousov found in the 1950s that a dish of citric acid, bromate and
+/// a cerium salt would change colour back and forth rather than
+/// settling, and could not get it published: a chemical reaction that
+/// oscillates looked to every referee like a violation of the second
+/// law. It is not — the system is far from equilibrium and burning
+/// fuel to do it — and by the 1970s the rotating spiral waves it makes
+/// were understood to be the same excitable dynamics as a heartbeat
+/// and a slime mould's signalling.
+///
+/// Three chemicals chase each other round a cycle, each one made at the
+/// expense of the next, with a local average standing in for diffusion.
+/// The waves annihilate where they meet, which is why they never
+/// interfere: a spiral's arm is a front, not a ripple.
+pub struct Spiral {
+    a: Vec<f32>,
+    b: Vec<f32>,
+    c: Vec<f32>,
+    a1: Vec<f32>,
+    b1: Vec<f32>,
+    c1: Vec<f32>,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Spiral {
+    pub fn new() -> Self {
+        debug_assert_eq!(BZ * BZ, POINTS);
+        let mut rng = Rng::new(0xB2_5217);
+        let cells = BZ * BZ;
+        // Started at random, because a spiral needs a defect to wind
+        // around and a smooth start has none.
+        let a: Vec<f32> = (0..cells).map(|_| rng.f32()).collect();
+        let b: Vec<f32> = (0..cells).map(|_| rng.f32()).collect();
+        let c: Vec<f32> = (0..cells).map(|_| rng.f32()).collect();
+        Self {
+            a1: vec![0.0; cells],
+            b1: vec![0.0; cells],
+            c1: vec![0.0; cells],
+            a,
+            b,
+            c,
+            since_kick: 10.0,
+            rng,
+        }
+    }
+
+    /// The mean of the nine cells around one, wrapping at the edges.
+    fn around(field: &[f32], x: usize, y: usize) -> f32 {
+        let mut sum = 0.0;
+        for dy in 0..3 {
+            let j = (y + dy + BZ - 1) % BZ;
+            for dx in 0..3 {
+                let i = (x + dx + BZ - 1) % BZ;
+                sum += field[i + j * BZ];
+            }
+        }
+        sum / 9.0
+    }
+}
+
+impl Default for Spiral {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Spiral {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        self.since_kick += dt.clamp(0.0, 1.0);
+        // How hard each chemical feeds on the next. Past about 1.4 the
+        // waves break up into turbulence, and below 1 they die out.
+        let alpha = if drive.audio { 1.0 + 0.5 * drive.level } else { 1.2 };
+        const BETA: f32 = 1.0;
+        const GAMMA: f32 = 1.0;
+        for y in 0..BZ {
+            for x in 0..BZ {
+                let i = x + y * BZ;
+                let (a, b, c) = (
+                    Self::around(&self.a, x, y),
+                    Self::around(&self.b, x, y),
+                    Self::around(&self.c, x, y),
+                );
+                self.a1[i] = (a + a * (alpha * b - GAMMA * c)).clamp(0.0, 1.0);
+                self.b1[i] = (b + b * (BETA * c - alpha * a)).clamp(0.0, 1.0);
+                self.c1[i] = (c + c * (GAMMA * a - BETA * b)).clamp(0.0, 1.0);
+            }
+        }
+        std::mem::swap(&mut self.a, &mut self.a1);
+        std::mem::swap(&mut self.b, &mut self.b1);
+        std::mem::swap(&mut self.c, &mut self.c1);
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
+            self.since_kick = 0.0;
+            // A patch of noise, which is a fresh crop of defects and
+            // therefore a fresh crop of spirals.
+            let (cx, cy) = (
+                (self.rng.f32() * BZ as f32) as usize,
+                (self.rng.f32() * BZ as f32) as usize,
+            );
+            for dy in 0..40 {
+                for dx in 0..40 {
+                    let i = (cx + dx) % BZ + ((cy + dy) % BZ) * BZ;
+                    self.a[i] = self.rng.f32();
+                    self.b[i] = self.rng.f32();
+                    self.c[i] = self.rng.f32();
+                }
+            }
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for y in 0..BZ {
+            for x in 0..BZ {
+                let i = x + y * BZ;
+                // The front stands up and brightens: one chemical is
+                // the height, another the shade, so a wave is a ridge
+                // with a lit edge rather than a flat stripe.
+                let front = self.a[i];
+                let shade = (70.0 + 185.0 * self.c[i].clamp(0.0, 1.0)) as u8;
+                out.push(Point {
+                    pos: [
+                        (x as f32 + 0.5) / BZ as f32 * 2.0 - 1.0,
+                        (front - 0.5) * 0.5,
+                        (y as f32 + 0.5) / BZ as f32 * 2.0 - 1.0,
+                    ],
+                    normal: [0.0; 3],
+                    color: [shade, shade, shade],
+                });
+            }
+        }
+    }
+}
+
+/// A small deterministic generator (xorshift64), so a simulation's
+/// self-driven behaviour is the same on every machine.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed | 1)
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn f32(&mut self) -> f32 {
+        (self.next() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    fn on_sphere(&mut self) -> [f32; 3] {
+        let u = self.f32() * 2.0 - 1.0;
+        let a = self.f32() * std::f32::consts::TAU;
+        let s = (1.0 - u * u).sqrt();
+        [s * a.cos(), s * a.sin(), u]
     }
 }
 
@@ -3773,9 +4167,7 @@ impl Crystal {
 
     /// Fill the plate with vapour and drop one seed of ice in it.
     fn nucleate(&mut self) {
-        for c in &mut self.s {
-            *c = self.beta;
-        }
+        self.s.fill(self.beta);
         self.s[HEX / 2 + (HEX / 2) * HEX] = 1.0;
         self.reach = 1.0;
     }
@@ -4255,36 +4647,6 @@ impl Simulation for Vortex {
     }
 }
 
-/// A small deterministic generator (xorshift64), so a simulation's
-/// self-driven behaviour is the same on every machine.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-
-    fn f32(&mut self) -> f32 {
-        (self.next() >> 40) as f32 / (1u64 << 24) as f32
-    }
-
-    fn on_sphere(&mut self) -> [f32; 3] {
-        let u = self.f32() * 2.0 - 1.0;
-        let a = self.f32() * std::f32::consts::TAU;
-        let s = (1.0 - u * u).sqrt();
-        [s * a.cos(), s * a.sin(), u]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4436,20 +4798,59 @@ mod tests {
         box_ok(&pts);
     }
 
-    /// The automaton neither dies nor floods over a run, and always hands
-    /// over a full slot.
+    /// The automaton neither dies nor floods over a run, always hands
+    /// over a full slot — and, the part that matters for a *live*
+    /// slot, keeps moving. Most of the catalogued three-dimensional
+    /// rules grow into a shape and then hold it for ever; Clouds
+    /// settles down to sixty changed cells a generation out of a
+    /// hundred and ten thousand, which is a still image. The shipped
+    /// rule turns over a good share of the lattice every generation,
+    /// and any rule that does stop is reseeded.
     #[test]
-    fn life_keeps_living() {
+    fn life_keeps_living_and_keeps_moving() {
         let mut l = Life::new();
-        for _ in 0..300 {
+        let mut churn = 0.0f32;
+        let mut generations = 0.0f32;
+        for frame in 0..900 {
+            let before = l.cells.clone();
             l.step(1.0 / 60.0, &Drive::default());
+            if frame > 300 {
+                churn += before.iter().zip(&l.cells).filter(|(a, b)| a != b).count() as f32;
+                generations += 1.0 / 3.0;
+            }
         }
         let alive = l.alive();
         let cells = LG * LG * LG;
         assert!(alive > cells / 200 && alive < cells * 9 / 10, "{alive} of {cells} alive");
+        let per_generation = churn / generations;
+        assert!(
+            per_generation > cells as f32 / 100.0,
+            "the automaton has stopped: {per_generation:.0} cells a generation"
+        );
         let mut pts = Vec::new();
         l.points(&mut pts);
         box_ok(&pts);
+    }
+
+    /// A rule that freezes is started again rather than left on screen.
+    /// Clouds is the example: it grows into masses and then holds them,
+    /// and without this the slot would show one picture all night.
+    #[test]
+    fn a_frozen_automaton_is_reseeded() {
+        let mut l = Life::with_rule("13-26/13-14,17-19");
+        let mut reseeds = 0;
+        let mut last = l.alive();
+        for _ in 0..3_000 {
+            l.step(1.0 / 60.0, &Drive::default());
+            let now = l.alive();
+            // A reseed is the only thing that can change the count by a
+            // large fraction in one generation.
+            if now.abs_diff(last) > last / 3 {
+                reseeds += 1;
+            }
+            last = now;
+        }
+        assert!(reseeds > 0, "a rule that stops was left stopped");
     }
 
     /// A rule is read as counts, ranges and a state count, and a rule
@@ -4474,7 +4875,7 @@ mod tests {
         assert!(parse_rule("4/4/5/6").is_none());
         let fallback = Life::with_rule("nonsense");
         assert_eq!(fallback.survive, Life::new().survive);
-        assert_eq!(fallback.states, 2);
+        assert_eq!(fallback.states, 10, "the shipped rule has a decay ramp");
         assert!(start("life?rule=4/4").is_some());
     }
 
@@ -4825,6 +5226,79 @@ mod tests {
         assert!(gusted > quiet, "the gust did nothing: {quiet} then {gusted}");
     }
 
+    /// The sandpile is Abelian, which is the whole theorem: the stable
+    /// arrangement it settles into does not depend on the order the
+    /// grains were added in. Five thousand grains dropped at once and
+    /// five hundred dropped ten times, settling in between, give the
+    /// same pile cell for cell.
+    #[test]
+    fn the_sandpile_does_not_care_what_order_it_was_built_in() {
+        let settle = |sand: &mut Sand| {
+            while !sand.unstable.is_empty() {
+                sand.settle();
+            }
+        };
+        let mut all_at_once = Sand::new();
+        all_at_once.drop_at(PILE / 2, PILE / 2, 5_000);
+        settle(&mut all_at_once);
+        let mut bit_by_bit = Sand::new();
+        for _ in 0..10 {
+            bit_by_bit.drop_at(PILE / 2, PILE / 2, 500);
+            settle(&mut bit_by_bit);
+        }
+        assert_eq!(all_at_once.cells, bit_by_bit.cells, "the pile depends on its history");
+        // Settled means nothing over the limit anywhere.
+        assert!(all_at_once.cells.iter().all(|c| *c < 4), "a cell was left unstable");
+        // And it is a pattern rather than a heap: the four heights are
+        // all well represented, which a smooth pile would not be.
+        for height in 0..4u32 {
+            let share = all_at_once.cells.iter().filter(|c| **c == height).count();
+            assert!(share > 200, "height {height} barely appears: {share}");
+        }
+        let mut pts = Vec::new();
+        all_at_once.points(&mut pts);
+        box_ok(&pts);
+    }
+
+    /// The reaction makes waves: the field is structured rather than
+    /// flat, it keeps moving, and every chemical stays in its bounds.
+    #[test]
+    fn the_spirals_keep_turning() {
+        let mut sim = Spiral::new();
+        for _ in 0..200 {
+            sim.step(1.0 / 60.0, &Drive::default());
+        }
+        for field in [&sim.a, &sim.b, &sim.c] {
+            for v in field.iter() {
+                assert!((0.0..=1.0).contains(v), "a chemical left its bounds: {v}");
+            }
+        }
+        // Structure: neighbouring cells agree, which random noise would
+        // not, and the field still uses its whole range.
+        let mut difference = 0.0f32;
+        for y in 0..BZ {
+            for x in 0..BZ - 1 {
+                difference += (sim.a[x + y * BZ] - sim.a[x + 1 + y * BZ]).abs();
+            }
+        }
+        let roughness = difference / (BZ * (BZ - 1)) as f32;
+        assert!(roughness < 0.1, "the field is still noise: {roughness:.3}");
+        let lo = sim.a.iter().cloned().fold(f32::MAX, f32::min);
+        let hi = sim.a.iter().cloned().fold(0.0f32, f32::max);
+        assert!(hi - lo > 0.5, "the field went flat: {lo:.2} to {hi:.2}");
+        // And it is still going: a wave has moved over the next second.
+        let before = sim.a.clone();
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &Drive::default());
+        }
+        let moved: f32 = before.iter().zip(&sim.a).map(|(x, y)| (x - y).abs()).sum::<f32>()
+            / (BZ * BZ) as f32;
+        assert!(moved > 0.05, "the waves stopped: {moved:.3}");
+        let mut pts = Vec::new();
+        sim.points(&mut pts);
+        box_ok(&pts);
+    }
+
     /// The ring only ever turns one way. Every cell either stays where
     /// it is or moves on to exactly the next state — never back, never
     /// two at once — and that is the only rule there is.
@@ -5063,10 +5537,3 @@ mod tests {
         assert!(start("weather").is_none());
     }
 }
-
-
-
-
-
-
-

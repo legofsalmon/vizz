@@ -178,6 +178,8 @@
   <a href="/"><strong>vizz</strong></a>
   <span class="dim">documentation</span>
   <span class="sp"></span>
+  <a href="/clouds">Clouds</a>
+  <a href="/references">References</a>
   <a href="https://github.com/legofsalmon/vizz">GitHub</a>
 </div>
 
@@ -649,30 +651,39 @@ Typed clouds persist as <code>text:WORD</code> and come back after a restart.</p
 
 <h3>From an equation</h3>
 <p>The clouds section's <em>generate…</em> menu, or <code>--cloud gen:thomas</code>,
-fills the next slot from a formula. Fifty-six of them, grouped in the menu by
-what they are:</p>
+fills the next slot from a formula. Sixty-six of them, grouped in the menu by
+what they are — and <a href="/clouds">the whole catalogue is a page of its
+own</a>, with a picture of each and the paper it comes from:</p>
 <ul>
-<li><strong>flows</strong> — twenty-three strange attractors: Thomas, Halvorsen,
+<li><strong>flows</strong> — twenty-five strange attractors: Thomas, Halvorsen,
 Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw,
 Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant, Aizawa,
 Newton–Leipnik, Sakarya, Rikitake, Shimizu–Morioka, finance, Coullet,
-Genesio–Tesi. Traced in time order, so the cloud crawls along itself.</li>
-<li><strong>maps</strong> — Clifford, de Jong, Hénon, Ikeda, lifted into depth by
-delay embedding, and Chirikov's standard map drawn on its torus.</li>
+Genesio–Tesi, Lorenz-96 and the forced Duffing oscillator. Traced in time
+order, so the cloud crawls along itself.</li>
+<li><strong>maps</strong> — Clifford, de Jong, Hénon, Ikeda and Gumowski–Mira,
+lifted into depth by delay embedding, and Chirikov's standard map drawn on its
+torus.</li>
 <li><strong>searched</strong> — the two quadratic searches, over maps and over
 flows.</li>
 <li><strong>surfaces</strong> — a Gielis supershape, a harmonic-rippled sphere, a
 real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle,
-Boy's surface, and the gyroid with Schwarz' P and D.</li>
-<li><strong>curves</strong> — a Lissajous knot and a torus knot.</li>
+Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the
+gyroid with Schwarz' P and D.</li>
+<li><strong>curves</strong> — a Lissajous knot, a torus knot, the figure-eight
+knot, a spirograph and the three-dimensional Hilbert curve.</li>
 <li><strong>fractals</strong> — the Sierpinski tetrahedron, the Menger sponge, the
-Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, and the
-Mandelbrot and a Julia set as reliefs.</li>
+Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's
+basins, the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as
+reliefs.</li>
 <li><strong>grown</strong> — four L-system plants and a diffusion-limited
 aggregate.</li>
 <li><strong>patterns</strong> — Chladni sand, a Voronoi foam, an icosahedral
 quasicrystal, and phyllotaxis.</li>
 </ul>
+<p><a href="/clouds">The whole catalogue is on its own page</a>, with a picture
+of each one, its knobs, and the paper it comes from.</p>
+
 <p>A generated cloud persists as <code>gen:name</code> and is remade on launch.
 Some take knobs — the supershape's exponents, a knot's windings, the orbital's
 degree and order, the gyroid's wall, the plant's rule, phyllotaxis' angle —
@@ -719,6 +730,8 @@ vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
 vizz --live-cloud sim:slime       # Physarum: a network from three rules
 vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
 vizz --live-cloud sim:cloth       # a sheet in the wind
+vizz --live-cloud sim:sand        # an Abelian sandpile, toppling
+vizz --live-cloud sim:spiral      # Belousov–Zhabotinsky waves
 vizz --live-cloud sim:cyclic      # states chasing each other round a ring
 vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
 vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
@@ -752,7 +765,10 @@ following the strongest one it can see — a transport network out of three rule
 and no plan. <strong>swarmalators</strong> swarm and synchronise at once, each
 depending on the other, and walk between five states as the audio moves two
 numbers. <strong>cloth</strong> is a sheet of sixty-five thousand particles hung
-from its top edge in the same wind <code>/shape/wind</code> blows.</p>
+from its top edge in the same wind <code>/shape/wind</code> blows.
+<strong>sand</strong> is the Abelian sandpile — grains dropped and toppled, and a
+fractal nobody designed. <strong>spirals</strong> is the Belousov–Zhabotinsky
+reaction, whose rotating fronts annihilate where they meet.</p>
 
 <p><strong>cyclic</strong> is Fisch, Gravner and Griffeath's cyclic
 automaton: states in a ring, each waiting to be eaten by the next. Noise
@@ -773,9 +789,12 @@ through it.</p>
 <p>The automaton's rule is a knob, written <em>survive/born/states</em>. Past
 two states a cell that fails to survive counts down instead of dying, and only
 the top of the ramp counts as a neighbour — the ash left behind turns a flat
-rule into a solid that grows and crusts. <code>4/4/5</code> is a spiking
-crystal, <code>4-7/6-8/10</code> boils, <code>9-26/5-7,12-13,15/5</code> is
-Amoeba.</p>
+rule into a solid that grows and crusts. It ships in
+<code>4-7/6-8/10</code>, Pyroclastic, which boils; <code>4/4/5</code> is a
+spiking crystal and <code>9-26/5-7,12-13,15/5</code> is Amoeba.
+<code>13-26/13-14,17-19</code> is Clouds, which grows lovely masses and then
+stops — so it, and any rule that stops, is started again after four dead
+generations.</p>
 
 <h3>Showing and crossing between them</h3>
 
@@ -1544,6 +1563,9 @@ culprit.</p>
 press ending the show is the one destructive keystroke worth guarding.</p>
 
 <footer>
+<p>Where the generative systems here come from — the papers, algorithms
+and people behind them — is on the <a href="/references">references</a>
+page.</p>
 <p>vizz is <a href="https://github.com/legofsalmon/vizz">open source</a>, MIT
 licensed. Found something wrong or missing in these docs?
 <a href="https://github.com/legofsalmon/vizz/issues">Open an issue</a>.</p>
