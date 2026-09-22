@@ -649,21 +649,36 @@ Typed clouds persist as <code>text:WORD</code> and come back after a restart.</p
 
 <h3>From an equation</h3>
 <p>The clouds section's <em>generate…</em> menu, or <code>--cloud gen:thomas</code>,
-fills the next slot from a formula: twenty-three strange attractors (Thomas,
-Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo,
-Burke–Shaw, Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant,
-Aizawa, Newton–Leipnik, Sakarya, Rikitake, Shimizu–Morioka, finance, Coullet,
-Genesio–Tesi), the Clifford and de Jong maps lifted into depth, a Gielis
-supershape, a harmonic-rippled sphere, a real spherical harmonic as an
-orbital, a Lissajous knot, a torus knot, the Hopf fibration, Chladni sand,
-four L-system plants (a generic one, a fern, a coral and a tree), a Voronoi
-foam, the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, and the
-Mandelbrot and a Julia set as reliefs. Flows are traced in time order so the
-cloud crawls along itself. A generated cloud persists as <code>gen:name</code>
-and is remade on launch. Some take knobs — the supershape's exponents, a
-knot's windings, the orbital's degree and order, the plant's rule, the Julia
-constant — which the menu opens a row for and writes into the spec:
-<code>gen:torus-knot?p=2;q=5</code>, <code>gen:orbital?l=5;m=3</code>.</p>
+fills the next slot from a formula. Fifty-six of them, grouped in the menu by
+what they are:</p>
+<ul>
+<li><strong>flows</strong> — twenty-three strange attractors: Thomas, Halvorsen,
+Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw,
+Chua, Hadley, Rucklidge, three-scroll, Rabinovich–Fabrikant, Aizawa,
+Newton–Leipnik, Sakarya, Rikitake, Shimizu–Morioka, finance, Coullet,
+Genesio–Tesi. Traced in time order, so the cloud crawls along itself.</li>
+<li><strong>maps</strong> — Clifford, de Jong, Hénon, Ikeda, lifted into depth by
+delay embedding, and Chirikov's standard map drawn on its torus.</li>
+<li><strong>searched</strong> — the two quadratic searches, over maps and over
+flows.</li>
+<li><strong>surfaces</strong> — a Gielis supershape, a harmonic-rippled sphere, a
+real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle,
+Boy's surface, and the gyroid with Schwarz' P and D.</li>
+<li><strong>curves</strong> — a Lissajous knot and a torus knot.</li>
+<li><strong>fractals</strong> — the Sierpinski tetrahedron, the Menger sponge, the
+Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, and the
+Mandelbrot and a Julia set as reliefs.</li>
+<li><strong>grown</strong> — four L-system plants and a diffusion-limited
+aggregate.</li>
+<li><strong>patterns</strong> — Chladni sand, a Voronoi foam, an icosahedral
+quasicrystal, and phyllotaxis.</li>
+</ul>
+<p>A generated cloud persists as <code>gen:name</code> and is remade on launch.
+Some take knobs — the supershape's exponents, a knot's windings, the orbital's
+degree and order, the gyroid's wall, the plant's rule, phyllotaxis' angle —
+which the menu opens a row for and writes into the spec:
+<code>gen:torus-knot?p=2;q=5</code>, <code>gen:orbital?l=5;m=3</code>,
+<code>gen:gyroid?kind=diamond;cells=3</code>.</p>
 
 <p>Two are searches. <strong>quadratic</strong> is Sprott's: random
 three-dimensional quadratic maps until one is chaotic, judged by a positive
@@ -700,7 +715,10 @@ the other machine's.</p>
 <pre><code>vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
 vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
 vizz --live-cloud sim:smoke       # the same solver in three dimensions, with heat
-vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts</code></pre>
+vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
+vizz --live-cloud sim:slime       # Physarum: a network from three rules
+vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
+vizz --live-cloud sim:cloth       # a sheet in the wind</code></pre>
 
 <p>A simulation is a live cloud that needs no sender: it runs on its own thread
 at the frame rate and publishes through the stream's path. The panel's
@@ -724,7 +742,13 @@ four thousand double pendulums in a sheet from neighbouring angles: it swings
 as one surface, creases, then tears. <strong>smoke</strong> is the fluid
 solver in three dimensions with heat, a plume that rises and rolls up.
 <strong>liquid</strong> is four thousand particles of water in a box that
-tilts, gravity swinging round once a bar so it pours corner to corner.</p>
+tilts, gravity swinging round once a bar so it pours corner to corner.
+<strong>slime</strong> is Physarum, one agent per point, each leaving a trail and
+following the strongest one it can see — a transport network out of three rules
+and no plan. <strong>swarmalators</strong> swarm and synchronise at once, each
+depending on the other, and walk between five states as the audio moves two
+numbers. <strong>cloth</strong> is a sheet of sixty-five thousand particles hung
+from its top edge in the same wind <code>/shape/wind</code> blows.</p>
 
 <p>The automaton's rule is a knob, written <em>survive/born/states</em>. Past
 two states a cell that fails to survive counts down instead of dying, and only

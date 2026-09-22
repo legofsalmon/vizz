@@ -308,6 +308,9 @@ vizz --live-cloud sim:fluid       # Stam's stable fluids, driven by the audio
 vizz --live-cloud sim:reaction    # Gray–Scott reaction–diffusion
 vizz --live-cloud sim:smoke       # the same solver in three dimensions, with heat
 vizz --live-cloud sim:liquid      # water, as particles, in a box that tilts
+vizz --live-cloud sim:slime       # Physarum: a network from three rules
+vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
+vizz --live-cloud sim:cloth       # a sheet in the wind
 ```
 
 A simulation is a live cloud that needs no sender: it runs on its own
@@ -408,6 +411,35 @@ average, so the net force is zero and a periodic box does not accelerate
 away — and what rises is a plume with a mushroom on it. A vent wanders the
 floor on its own; a kick is a blast somewhere else, a snare a shove
 sideways, the highs the roughness.
+
+**slime** is Physarum polycephalum, which is a single cell the size of a
+dinner plate with no nervous system and a habit of solving mazes. Jones'
+model is three rules: leave a trail, look a short way ahead in a few
+directions, steer towards whichever has the most trail on it. Nothing in
+it knows about paths or networks; what comes out anyway is a transport
+network that keeps rebuilding itself, which is what the real organism
+does when it reproduces the Tokyo rail map out of oat flakes. One agent
+per point, so the cloud is the colony rather than a picture of it. The
+loudness is their speed, the highs widen the sensor cone, and a kick
+throws a share of them somewhere else to start a new front.
+
+**swarmalators** swarm and synchronise at once, and each depends on the
+other: how strongly two are drawn together depends on how close their
+phases are, and how strongly their phases pull depends on how close they
+are in space. Sperm do this, so do magnetic colloids and the Japanese
+tree frogs that arrange themselves in a pond by call. Five states come
+out of two numbers and the transitions are sharp — a ball in phase, a
+ball at random phase, a disc with phase running round the rim, a disc
+splintered into blocks of one phase, and the same disc circulating — so
+the loudness and the mids walk a set between them.
+
+**cloth** is a sheet of sixty-five thousand particles hung from its top
+edge, in the same Arnold–Beltrami–Childress wind that `/shape/wind`
+blows through the particle field. What makes mass-spring cloth behave is
+not the springs but how they are solved: integrating spring forces at a
+frame's step blows a stiff sheet apart, so the links are treated as
+constraints and satisfied by moving the particles, which cannot add
+energy. The loudness is the wind and a kick is a gust.
 
 **liquid** is smoothed-particle hydrodynamics — four thousand particles of
 water in a box, each drawn as a small cluster of points — solved by
@@ -1346,19 +1378,20 @@ in the settings and re-rasterize deterministically on launch.
 
 **Or make one from an equation.** The clouds section's *generate…* menu,
 or `--cloud gen:<name>`, fills the next slot from a formula rather than a
-file: twenty-three strange attractors (Thomas, Halvorsen, Dadras,
-Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw,
-Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll
-system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the
-Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet and
-Genesio–Tesi), the Clifford and de Jong maps lifted into depth by delay
-embedding, a Gielis supershape, a harmonic-rippled sphere, a real
-spherical harmonic drawn as an orbital, a 3:4:7 Lissajous knot, a (3,7)
-torus knot, the Hopf fibration as nested tori of linked circles, Chladni
-sand on a vibrating plate, four L-system plants — a generic one, a fern,
-a coral and a tree — a Voronoi foam, the Sierpinski tetrahedron, the
-Menger sponge, the power-eight Mandelbulb's surface, and the Mandelbrot
-and a Julia set as reliefs.
+file. The menu groups them by what they are, because fifty-six names
+under two headings is a wall:
+
+| group | what is in it |
+| --- | --- |
+| flows | twenty-three strange attractors: Thomas, Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet, Genesio–Tesi |
+| maps | Clifford, de Jong, Hénon and Ikeda, lifted into depth by delay embedding, and Chirikov's standard map drawn on its torus |
+| searched | the two quadratic searches, one over maps and one over flows |
+| surfaces | a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, and the gyroid with Schwarz' P and D |
+| curves | a 3:4:7 Lissajous knot and a (3,7) torus knot, thickened into tubes |
+| fractals | the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, and the Mandelbrot and a Julia set as reliefs |
+| grown | four L-system plants — a generic one, a fern, a coral and a tree — and a diffusion-limited aggregate |
+| patterns | Chladni sand, a Voronoi foam, an icosahedral quasicrystal and phyllotaxis |
+
 Each is made once on the CPU — flows in time order, so the cloud crawls
 along itself; surfaces in scan order; fractals by the chaos game or by
 marching rays — and then it is a cloud like any other: chosen by name,
@@ -1400,6 +1433,26 @@ also stay inside a box four times its own width for a further hundred
 thousand steps. Points are then placed evenly along the trajectory
 rather than evenly in time, because a field drawn at random changes
 speed as it goes round.
+
+**Some of them are worth knowing about.** The **gyroid** is one of three
+triply periodic minimal surfaces here, the family nature keeps building:
+two labyrinths that fill space, never touch, and have the same shape as
+each other. It turns up in butterfly wings and block copolymers, and
+Schwarz found the other two in 1865. The **quasicrystal** is six plane
+waves along the five-fold axes of an icosahedron; five-fold symmetry
+tiles no lattice, so the pattern never repeats and is nowhere random,
+which is what Shechtman was told for two years could not exist.
+**phyllotaxis** is the sunflower's packing, and its angle is the knob:
+the golden angle is the only one that never lines up, and a tenth of a
+degree either side of it the seamless packing falls into a fixed number
+of spiral arms. The **standard map** is a portrait rather than a path —
+two hundred and fifty-six orbits rather than one — because what there is
+to see is which starting points stay on a ring and which wander; at
+K = 0.971635 the last ring across the picture breaks. The **aggregate**
+grows by diffusion-limited aggregation, where nothing in the rules says
+anything about branching and a dendrite comes out anyway, because a
+wanderer is far likelier to meet a tip than to find its way into a
+fjord.
 
 **Every named flow is tested for chaos, not for looks.** A test
 integrates all twenty-three and measures the largest Lyapunov exponent by
