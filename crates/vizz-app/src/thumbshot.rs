@@ -143,6 +143,16 @@ impl Shutter {
 mod tests {
     use super::*;
 
+    /// Config storage pointed somewhere private, so these cannot see the
+    /// developer's own library.
+    ///
+    /// Shared with the rest of the crate rather than copied. A copy lived
+    /// here with a mutex of its own, and two mutexes guarding one
+    /// process-wide variable guard nothing: these tests and the ones in
+    /// `settings` could redirect `XDG_CONFIG_HOME` out from under each
+    /// other, which is the failure the lock exists to prevent.
+    use crate::test_env::scoped;
+
     /// A look that already has a picture keeps it.
     ///
     /// Otherwise every recall silently replaces the saved picture with
@@ -194,20 +204,4 @@ mod tests {
         );
     }
 
-    /// Config storage pointed somewhere private, so these cannot see the
-    /// developer's own library. Serialised: the environment is per
-    /// process.
-    fn scoped(tag: &str) -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let guard = LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!("vizz-app-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: the mutex makes this the only thread touching the
-        // environment for as long as the guard is held.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        (guard, dir)
-    }
 }
