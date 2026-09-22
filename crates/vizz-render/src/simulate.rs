@@ -35,6 +35,8 @@
 //! thread of their own, and a slow one loses frames rather than the
 //! picture: the renderer takes whatever the slot holds.
 
+use std::f32::consts::SQRT_2;
+
 use crate::attractor::POINTS;
 use crate::pointcloud::Point;
 
@@ -72,7 +74,7 @@ pub trait Simulation: Send {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -101,6 +103,9 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "pendulum" => Some(Box::new(Pendulum::new())),
         "smoke" => Some(Box::new(Smoke::new())),
         "liquid" => Some(Box::new(Liquid::new())),
+        "slime" => Some(Box::new(Slime::new())),
+        "swarm" => Some(Box::new(Swarm::new())),
+        "cloth" => Some(Box::new(Cloth::new())),
         _ => None,
     }
 }
@@ -2597,6 +2602,581 @@ impl Simulation for Liquid {
     }
 }
 
+// --- Slime ------------------------------------------------------------
+
+/// Cells along each side of the trail grid.
+const TG: usize = 64;
+const TPLANE: usize = TG * TG;
+const TCELLS: usize = TG * TG * TG;
+
+/// Physarum polycephalum, which is a single cell the size of a dinner
+/// plate with no nervous system and a habit of solving mazes.
+///
+/// Jones' model (2010) is three rules and nothing else: leave a trail,
+/// look a short way ahead in a few directions, and steer towards
+/// whichever has the most trail on it. Nothing in it knows about paths
+/// or networks. What emerges anyway is a transport network that keeps
+/// rebuilding itself — the same thing the real organism does when it
+/// reproduces the Tokyo rail map out of oat flakes.
+///
+/// One agent per point, so the cloud *is* the colony rather than a
+/// rendering of it, and the trail exists only to be followed.
+pub struct Slime {
+    pos: Vec<[f32; 3]>,
+    /// Unit headings.
+    dir: Vec<[f32; 3]>,
+    trail: Vec<f32>,
+    swap: Vec<f32>,
+    time: f32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Slime {
+    /// How far ahead an agent looks, in box units.
+    const SENSE: f32 = 0.035;
+    /// How much trail one agent leaves a second.
+    const DEPOSIT: f32 = 2.5;
+
+    pub fn new() -> Self {
+        let mut rng = Rng::new(0x511E_511E);
+        let mut pos = Vec::with_capacity(POINTS);
+        let mut dir = Vec::with_capacity(POINTS);
+        for _ in 0..POINTS {
+            // Started in a ball rather than everywhere, so the first
+            // thing on screen is a colony spreading rather than a fog
+            // already at equilibrium.
+            let d = rng.on_sphere();
+            let r = 0.22 * rng.f32().cbrt();
+            pos.push([0.5 + d[0] * r, 0.5 + d[1] * r, 0.5 + d[2] * r]);
+            dir.push(rng.on_sphere());
+        }
+        Self {
+            pos,
+            dir,
+            trail: vec![0.0; TCELLS],
+            swap: vec![0.0; TCELLS],
+            time: 0.0,
+            since_kick: 10.0,
+            rng,
+        }
+    }
+
+    fn at(p: [f32; 3]) -> usize {
+        let c: [usize; 3] =
+            std::array::from_fn(|i| ((p[i].rem_euclid(1.0) * TG as f32) as usize).min(TG - 1));
+        c[0] + c[1] * TG + c[2] * TPLANE
+    }
+
+    /// Two directions at right angles to a heading, for swinging the
+    /// sensors around it.
+    fn frame(h: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        // Cross with whichever axis the heading leans on least, so the
+        // cross product is never near zero.
+        let a = if h[0].abs() < h[1].abs() && h[0].abs() < h[2].abs() {
+            [1.0, 0.0, 0.0]
+        } else if h[1].abs() < h[2].abs() {
+            [0.0, 1.0, 0.0]
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+        let u = [
+            h[1] * a[2] - h[2] * a[1],
+            h[2] * a[0] - h[0] * a[2],
+            h[0] * a[1] - h[1] * a[0],
+        ];
+        let n = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(1e-6);
+        let u = [u[0] / n, u[1] / n, u[2] / n];
+        let v = [
+            h[1] * u[2] - h[2] * u[1],
+            h[2] * u[0] - h[0] * u[2],
+            h[0] * u[1] - h[1] * u[0],
+        ];
+        (u, v)
+    }
+
+    /// Blur and fade the trail: a three-tap pass along each axis, which
+    /// is the same as a 27-cell blur at a ninth of the reads.
+    fn diffuse(&mut self, decay: f32) {
+        for axis in 0..3 {
+            let stride = match axis {
+                0 => 1,
+                1 => TG,
+                _ => TPLANE,
+            };
+            for k in 0..TG {
+                for j in 0..TG {
+                    for i in 0..TG {
+                        let idx = i + j * TG + k * TPLANE;
+                        // The neighbours along this axis, wrapped.
+                        let c = [i, j, k][axis];
+                        let up = idx + stride - if c + 1 == TG { TG * stride } else { 0 };
+                        let down = idx + if c == 0 { TG * stride } else { 0 } - stride;
+                        self.swap[idx] =
+                            0.5 * self.trail[idx] + 0.25 * (self.trail[up] + self.trail[down]);
+                    }
+                }
+            }
+            std::mem::swap(&mut self.trail, &mut self.swap);
+        }
+        for t in &mut self.trail {
+            *t *= decay;
+        }
+    }
+}
+
+impl Default for Slime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Slime {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        let speed = if drive.audio { 0.06 + 0.16 * drive.level } else { 0.11 };
+        // The sensor cone: wide agents wander and the network is
+        // ragged, narrow ones commit and it is clean.
+        let cone = if drive.audio { 0.35 + 0.7 * drive.bands[3] } else { 0.6 };
+        let turn = 7.0 * dt;
+        let kick = drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4;
+        if kick {
+            self.since_kick = 0.0;
+        }
+        let (sin_cone, cos_cone) = cone.sin_cos();
+        for i in 0..POINTS {
+            let p = self.pos[i];
+            let h = self.dir[i];
+            let (u, v) = Self::frame(h);
+            // Five sensors: straight on, and four around the cone.
+            let mut best = h;
+            let mut most = self.trail[Self::at([
+                p[0] + h[0] * Self::SENSE,
+                p[1] + h[1] * Self::SENSE,
+                p[2] + h[2] * Self::SENSE,
+            ])];
+            for turn_index in 0..4 {
+                let a = turn_index as f32 * std::f32::consts::FRAC_PI_2;
+                let (sa, ca) = a.sin_cos();
+                let d: [f32; 3] = std::array::from_fn(|k| {
+                    h[k] * cos_cone + (u[k] * ca + v[k] * sa) * sin_cone
+                });
+                let value = self.trail[Self::at([
+                    p[0] + d[0] * Self::SENSE,
+                    p[1] + d[1] * Self::SENSE,
+                    p[2] + d[2] * Self::SENSE,
+                ])];
+                if value > most {
+                    most = value;
+                    best = d;
+                }
+            }
+            // Steer towards it rather than snapping: the trail an agent
+            // leaves behind is only useful if it is smooth.
+            let mut h: [f32; 3] =
+                std::array::from_fn(|k| self.dir[i][k] + (best[k] - self.dir[i][k]) * turn);
+            let n = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
+            if n > 1e-6 {
+                for c in &mut h {
+                    *c /= n;
+                }
+            } else {
+                h = self.rng.on_sphere();
+            }
+            if kick && self.rng.f32() < 0.15 {
+                // A share of the colony thrown somewhere else, which
+                // starts a new front rather than moving the old one.
+                let d = self.rng.on_sphere();
+                let r = 0.3 * self.rng.f32().cbrt();
+                self.pos[i] = [0.5 + d[0] * r, 0.5 + d[1] * r, 0.5 + d[2] * r];
+                self.dir[i] = self.rng.on_sphere();
+                continue;
+            }
+            self.dir[i] = h;
+            let next: [f32; 3] =
+                std::array::from_fn(|k| (p[k] + h[k] * speed * dt).rem_euclid(1.0));
+            self.pos[i] = next;
+            self.trail[Self::at(next)] += Self::DEPOSIT * dt;
+        }
+        self.diffuse((1.0 - 1.1 * dt).clamp(0.0, 1.0));
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for p in &self.pos {
+            // Bright where the trail is thick, so the veins of the
+            // network stand out from the agents still exploring.
+            let t = self.trail[Self::at(*p)];
+            let shade = (90.0 + 165.0 * (t * 2.5).min(1.0)) as u8;
+            out.push(Point {
+                pos: [(p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, (p[2] - 0.5) * 2.0],
+                normal: [0.0; 3],
+                color: [shade, shade, shade],
+            });
+        }
+    }
+}
+
+// --- Swarmalators -----------------------------------------------------
+
+/// Swarmalators, and the points each is drawn with.
+const MATES: usize = 1024;
+const MATE_BLOB: usize = 64;
+
+/// Swarmalators (O'Keeffe, Hong & Strogatz, 2017): particles that both
+/// *swarm* and *synchronise*, where each depends on the other.
+///
+/// Fireflies sync their flashing; starlings swarm; a swarmalator does
+/// both at once, and the two are coupled — how strongly two of them are
+/// drawn together depends on how close their phases are, and how
+/// strongly their phases pull on each other depends on how close they
+/// are in space. Sperm do this. So do magnetic colloids, and the
+/// Japanese tree frogs that arrange themselves in a pond by call.
+///
+/// Five states come out of two numbers, and the transitions between
+/// them are sharp: a ball where everything is in phase, a ball where
+/// phase is spread at random, a disc where phase runs round the rim, a
+/// disc that has splintered into blocks of one phase each, and the same
+/// disc with the blocks circulating. The audio drives the two numbers,
+/// so a set walks through the states.
+pub struct Swarm {
+    pos: Vec<[f32; 3]>,
+    vel: Vec<[f32; 3]>,
+    phase: Vec<f32>,
+    pace: Vec<f32>,
+    step: Vec<f32>,
+    blob: Vec<[f32; 3]>,
+    time: f32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Swarm {
+    pub fn new() -> Self {
+        debug_assert_eq!(MATES * MATE_BLOB, POINTS);
+        let mut rng = Rng::new(0x5A11_5A11);
+        let mut pos = Vec::with_capacity(MATES);
+        let mut phase = Vec::with_capacity(MATES);
+        let mut pace = Vec::with_capacity(MATES);
+        for _ in 0..MATES {
+            let d = rng.on_sphere();
+            let r = 0.6 * rng.f32().cbrt();
+            pos.push([d[0] * r, d[1] * r, d[2] * r]);
+            phase.push(rng.f32() * std::f32::consts::TAU);
+            // Identical natural paces, as the model is usually studied:
+            // everything interesting here comes from the coupling, not
+            // from a spread of clocks.
+            pace.push(0.6);
+        }
+        let blob = (0..MATES * MATE_BLOB)
+            .map(|_| {
+                let d = rng.on_sphere();
+                let r = 0.035 * rng.f32().cbrt();
+                [d[0] * r, d[1] * r, d[2] * r]
+            })
+            .collect();
+        Self {
+            vel: vec![[0.0; 3]; MATES],
+            step: vec![0.0; MATES],
+            pos,
+            phase,
+            pace,
+            blob,
+            time: 0.0,
+            since_kick: 10.0,
+            rng,
+        }
+    }
+}
+
+impl Default for Swarm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Swarm {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        // J: how much being in phase draws two of them together.
+        // K: how much being close pulls their phases together. The
+        // states live at the corners of this square, and a loud room
+        // pushes towards the ordered ones.
+        let (j, k) = if drive.audio {
+            (0.1 + 0.9 * drive.level, -0.75 + 1.6 * drive.bands[2])
+        } else {
+            // Left alone, it wanders the square on its own so that all
+            // five states come round.
+            (0.6 + 0.4 * (self.time * 0.07).sin(), -0.35 + 0.65 * (self.time * 0.043).cos())
+        };
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
+            self.since_kick = 0.0;
+            for p in &mut self.pos {
+                let d = self.rng.on_sphere();
+                for (c, d) in p.iter_mut().zip(d) {
+                    *c += d * 0.25;
+                }
+            }
+        }
+        let n = MATES as f32;
+        // Both halves of the interaction are antisymmetric — the pull
+        // two of them feel is equal and opposite, and so is the pull on
+        // their phases — so half the pairs do all the work.
+        for v in &mut self.vel {
+            *v = [0.0; 3];
+        }
+        for st in &mut self.step {
+            *st = 0.0;
+        }
+        for i in 0..MATES {
+            let (pi, ti) = (self.pos[i], self.phase[i]);
+            for j_index in (i + 1)..MATES {
+                let pj = self.pos[j_index];
+                let d = [pj[0] - pi[0], pj[1] - pi[1], pj[2] - pi[2]];
+                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                let r = r2.sqrt().max(1e-3);
+                let gap = self.phase[j_index] - ti;
+                // Attraction that phase agreement strengthens, and a
+                // harder repulsion that stops them piling up.
+                let a = ((1.0 + j * gap.cos()) / r - 1.0 / (r * r)) / r;
+                for (k, d) in d.iter().enumerate() {
+                    self.vel[i][k] += d * a;
+                    self.vel[j_index][k] -= d * a;
+                }
+                let turn = gap.sin() / r;
+                self.step[i] += turn;
+                self.step[j_index] -= turn;
+            }
+        }
+        for i in 0..MATES {
+            for v in &mut self.vel[i] {
+                *v /= n;
+            }
+            self.step[i] = self.pace[i] + k * self.step[i] / n;
+        }
+        for i in 0..MATES {
+            for (p, v) in self.pos[i].iter_mut().zip(self.vel[i]) {
+                // A ceiling on the step: two that pass very close see a
+                // large force for one frame, and without this they are
+                // fired out of the picture.
+                *p += v.clamp(-4.0, 4.0) * dt;
+                *p = p.clamp(-1.6, 1.6);
+            }
+            self.phase[i] =
+                (self.phase[i] + self.step[i].clamp(-20.0, 20.0) * dt).rem_euclid(std::f32::consts::TAU);
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        // Fitted to the box each frame, because the swarm's own size is
+        // one of the things that changes between states.
+        let reach = self
+            .pos
+            .iter()
+            .flat_map(|p| p.iter().map(|c| c.abs()))
+            .fold(0.3f32, f32::max);
+        let scale = 0.94 / reach;
+        for (i, p) in self.pos.iter().enumerate() {
+            // Phase as brightness, so a synchronised swarm pulses as
+            // one and a phase wave is a band running round the rim.
+            let shade = (60.0 + 195.0 * (0.5 + 0.5 * self.phase[i].cos())) as u8;
+            for b in 0..MATE_BLOB {
+                let o = self.blob[i * MATE_BLOB + b];
+                out.push(Point {
+                    pos: [
+                        (p[0] * scale + o[0]).clamp(-1.0, 1.0),
+                        (p[1] * scale + o[1]).clamp(-1.0, 1.0),
+                        (p[2] * scale + o[2]).clamp(-1.0, 1.0),
+                    ],
+                    normal: [0.0; 3],
+                    color: [shade, shade, shade],
+                });
+            }
+        }
+    }
+}
+
+// --- Cloth ------------------------------------------------------------
+
+/// Particles along each side of the sheet. Their square is a slot.
+const WEAVE: usize = 256;
+
+/// A sheet of cloth, hung from its top edge, in a wind.
+///
+/// Mass-spring cloth is older than real-time graphics, and the reason
+/// it is still here is that nothing else looks like cloth. What makes
+/// it behave is not the springs but how they are solved: integrating
+/// spring forces at a frame's time step blows a stiff sheet apart, so
+/// the links are treated as *constraints* and satisfied by moving the
+/// particles directly (Provot, 1995; Jakobsen, 2001). A constraint pass
+/// cannot add energy, which is why this is stable at any step.
+///
+/// The wind is the same Arnold–Beltrami–Childress flow that
+/// `/shape/wind` blows through the particle field, sampled at each
+/// particle: a closed form, so the sheet needs no fluid behind it.
+pub struct Cloth {
+    pos: Vec<[f32; 3]>,
+    /// Where it was last frame; the velocity is the difference.
+    was: Vec<[f32; 3]>,
+    time: f32,
+    since_kick: f32,
+    gust: f32,
+}
+
+impl Cloth {
+    /// The rest length of a link between neighbours.
+    const LINK: f32 = 1.8 / (WEAVE as f32 - 1.0);
+    /// Relaxation passes a frame.
+    const PASSES: usize = 4;
+    /// How heavy the sheet is.
+    const WEIGHT: f32 = 0.6;
+
+    pub fn new() -> Self {
+        debug_assert_eq!(WEAVE * WEAVE, POINTS);
+        let mut pos = Vec::with_capacity(POINTS);
+        for row in 0..WEAVE {
+            for col in 0..WEAVE {
+                pos.push([
+                    -0.9 + col as f32 * Self::LINK,
+                    0.9 - row as f32 * Self::LINK,
+                    0.0,
+                ]);
+            }
+        }
+        Self { was: pos.clone(), pos, time: 0.0, since_kick: 10.0, gust: 0.0 }
+    }
+
+    /// The ABC flow, as the shader reads it: divergence-free, and
+    /// chaotic in its streamlines, which is what makes a sheet in it
+    /// fold rather than merely bulge.
+    fn wind(p: [f32; 3], t: f32) -> [f32; 3] {
+        let one = |q: [f32; 3]| {
+            [q[2].sin() + q[1].cos(), q[0].sin() + q[2].cos(), q[1].sin() + q[0].cos()]
+        };
+        let a = one([p[0] * 2.2 + t, p[1] * 2.2 + t * 0.7, p[2] * 2.2 + t * 1.3]);
+        let b = one([p[0] * 5.1 - t * 1.1, p[1] * 5.1 + t * 1.7, p[2] * 5.1 + t * 0.5]);
+        std::array::from_fn(|k| a[k] + 0.4 * b[k])
+    }
+
+    /// Pull two particles back to the rest length, half from each —
+    /// except at the top edge, which is nailed up.
+    fn link(&mut self, a: usize, b: usize, rest: f32) {
+        let (pa, pb) = (self.pos[a], self.pos[b]);
+        let d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if len < 1e-6 {
+            return;
+        }
+        let pull = (len - rest) / len * 0.5;
+        let pinned_a = a < WEAVE;
+        let pinned_b = b < WEAVE;
+        if pinned_a && pinned_b {
+            return;
+        }
+        let (share_a, share_b) = match (pinned_a, pinned_b) {
+            (true, _) => (0.0, 2.0),
+            (_, true) => (2.0, 0.0),
+            _ => (1.0, 1.0),
+        };
+        for (k, d) in d.iter().enumerate() {
+            self.pos[a][k] += d * pull * share_a;
+            self.pos[b][k] -= d * pull * share_b;
+        }
+    }
+}
+
+impl Default for Cloth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Cloth {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        self.gust *= (-dt * 1.6).exp();
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.3 {
+            self.since_kick = 0.0;
+            self.gust = 1.0;
+        }
+        // The flow itself runs to about four; the sheet is one box
+        // wide, so anything much above a tenth of that throws it clear
+        // out of the picture in a second rather than billowing it.
+        let strength = if drive.audio { 0.07 + 0.22 * drive.level } else { 0.15 } + 0.5 * self.gust;
+        let t = self.time * 0.5;
+        // Verlet: the velocity is where it was, so damping is a number
+        // rather than a state.
+        for i in 0..POINTS {
+            let p = self.pos[i];
+            if i < WEAVE {
+                self.was[i] = p;
+                continue;
+            }
+            let w = Self::wind(p, t);
+            let a = [w[0] * strength, w[1] * strength - Self::WEIGHT, w[2] * strength];
+            let next: [f32; 3] = std::array::from_fn(|k| {
+                p[k] + (p[k] - self.was[i][k]) * 0.985 + a[k] * dt * dt
+            });
+            self.was[i] = p;
+            self.pos[i] = next;
+        }
+        for _ in 0..Self::PASSES {
+            // Structural links along the weave, then the diagonals that
+            // stop it shearing into a parallelogram.
+            for row in 0..WEAVE {
+                for col in 0..WEAVE {
+                    let i = row * WEAVE + col;
+                    if col + 1 < WEAVE {
+                        self.link(i, i + 1, Self::LINK);
+                    }
+                    if row + 1 < WEAVE {
+                        self.link(i, i + WEAVE, Self::LINK);
+                    }
+                    if row + 1 < WEAVE && col + 1 < WEAVE {
+                        self.link(i, i + WEAVE + 1, Self::LINK * SQRT_2);
+                        self.link(i + 1, i + WEAVE, Self::LINK * SQRT_2);
+                    }
+                }
+            }
+        }
+        // The sheet is the whole picture, so it stays in the frame: a
+        // gust that would take it out of the box is stopped at the
+        // wall rather than clipped away by the fit.
+        for p in &mut self.pos {
+            for c in p.iter_mut() {
+                *c = c.clamp(-1.0, 1.0);
+            }
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for (i, p) in self.pos.iter().enumerate() {
+            // Bright where it is moving fastest, so the fold running
+            // across the sheet is the thing the eye follows.
+            let v = [p[0] - self.was[i][0], p[1] - self.was[i][1], p[2] - self.was[i][2]];
+            let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            let shade = (95.0 + 160.0 * (speed * 30.0).min(1.0)) as u8;
+            out.push(Point {
+                pos: [
+                    p[0].clamp(-1.0, 1.0),
+                    p[1].clamp(-1.0, 1.0),
+                    p[2].clamp(-1.0, 1.0),
+                ],
+                normal: [0.0; 3],
+                color: [shade, shade, shade],
+            });
+        }
+    }
+}
+
 /// A small deterministic generator (xorshift64), so a simulation's
 /// self-driven behaviour is the same on every machine.
 struct Rng(u64);
@@ -3025,6 +3605,122 @@ mod tests {
         }
         let after = l.pos.iter().map(|p| p[1]).sum::<f32>() / DROPS as f32;
         assert!(after > before + 0.02, "the kick did not lift it: {before} to {after}");
+    }
+
+    /// The colony builds a network: the trail stops being spread
+    /// evenly and becomes veins with space between them, which is the
+    /// whole claim of the model. Measured as the share of the trail
+    /// that is in the busiest twentieth of the cells — even spreading
+    /// puts a twentieth there, a network puts most of it.
+    #[test]
+    fn the_slime_builds_a_network() {
+        let mut sim = Slime::new();
+        for _ in 0..600 {
+            sim.step(1.0 / 60.0, &Drive::default());
+        }
+        let mut cells = sim.trail.clone();
+        cells.sort_by(f32::total_cmp);
+        let total: f32 = cells.iter().sum();
+        assert!(total > 1.0, "nothing was laid down: {total}");
+        let busiest: f32 = cells[cells.len() - TCELLS / 20..].iter().sum();
+        let share = busiest / total;
+        assert!(share > 0.45, "the trail is spread evenly, not built: {share:.2}");
+        // And the agents are following it rather than ignoring it: the
+        // typical agent sits on more trail than the typical cell has.
+        let mut pts = Vec::new();
+        sim.points(&mut pts);
+        box_ok(&pts);
+        let lit = pts.iter().filter(|p| p.color[0] > 160).count();
+        assert!(lit > POINTS / 20, "no agent found a vein: {lit}");
+    }
+
+    /// Swarmalators sync when told to and do not when told not to: the
+    /// order parameter, which is how aligned the phases are, is high
+    /// under a positive phase coupling and low under a negative one.
+    #[test]
+    fn the_swarm_syncs_under_coupling_and_not_against_it() {
+        let order = |sim: &Swarm| {
+            let (mut c, mut s) = (0.0f32, 0.0f32);
+            for t in &sim.phase {
+                c += t.cos();
+                s += t.sin();
+            }
+            (c * c + s * s).sqrt() / MATES as f32
+        };
+        let run = |drive: Drive| {
+            let mut sim = Swarm::new();
+            for _ in 0..900 {
+                sim.step(1.0 / 60.0, &drive);
+            }
+            let mut pts = Vec::new();
+            sim.points(&mut pts);
+            box_ok(&pts);
+            for p in &sim.pos {
+                for v in p {
+                    assert!(v.is_finite(), "a swarmalator left: {p:?}");
+                }
+            }
+            order(&sim)
+        };
+        // Band three at full sets the phase coupling positive.
+        let together =
+            run(Drive { bands: [0.0, 0.0, 1.0, 0.0], level: 0.8, bar: 0.0, audio: true });
+        // Band three at zero sets it negative.
+        let apart = run(Drive { bands: [0.0, 0.0, 0.0, 0.0], level: 0.8, bar: 0.0, audio: true });
+        assert!(together > 0.8, "a positive coupling did not sync them: {together:.2}");
+        assert!(apart < together - 0.2, "a negative one synced them anyway: {apart:.2}");
+    }
+
+    /// The sheet hangs, keeps its weave and blows: the top edge stays
+    /// nailed up, no link is stretched far past its rest length, and
+    /// the free end moves.
+    #[test]
+    fn the_cloth_hangs_and_blows() {
+        let mut sim = Cloth::new();
+        let pinned: Vec<[f32; 3]> = sim.pos[..WEAVE].to_vec();
+        let hem = sim.pos[POINTS - 1];
+        for _ in 0..600 {
+            sim.step(1.0 / 60.0, &Drive::default());
+        }
+        assert_eq!(&sim.pos[..WEAVE], &pinned[..], "the top edge came off its nail");
+        let moved = (0..3).map(|k| (sim.pos[POINTS - 1][k] - hem[k]).abs()).fold(0.0f32, f32::max);
+        assert!(moved > 0.02, "the sheet did not move: {moved}");
+        // The weave holds. Mass-spring cloth solved in a handful of
+        // passes is famously super-elastic (Provot, 1995), so what is
+        // checked is the shape of the distribution rather than the
+        // single worst link: the sheet should be within a sixth of its
+        // rest length nearly everywhere, and nowhere torn.
+        let mut lengths: Vec<f32> = Vec::with_capacity(WEAVE * (WEAVE - 1));
+        for row in 0..WEAVE {
+            for col in 0..WEAVE - 1 {
+                let i = row * WEAVE + col;
+                let d = [
+                    sim.pos[i + 1][0] - sim.pos[i][0],
+                    sim.pos[i + 1][1] - sim.pos[i][1],
+                    sim.pos[i + 1][2] - sim.pos[i][2],
+                ];
+                lengths.push((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt());
+            }
+        }
+        lengths.sort_by(f32::total_cmp);
+        let n = lengths.len();
+        let nearly_all = lengths[n * 999 / 1000] / Cloth::LINK;
+        let worst = lengths[n - 1] / Cloth::LINK;
+        assert!(nearly_all < 1.35, "the weave is stretched through: {nearly_all:.2}x");
+        assert!(worst < 2.0, "a link tore: {worst:.2}x");
+        assert!(lengths[n / 2] / Cloth::LINK > 0.6, "the sheet crushed: {:.2}x", lengths[n / 2] / Cloth::LINK);
+        let mut pts = Vec::new();
+        sim.points(&mut pts);
+        box_ok(&pts);
+        // A kick is a gust, and a gust moves it more than no gust does.
+        let quiet: f32 = sim.pos.iter().zip(&sim.was).map(|(p, w)| (p[2] - w[2]).abs()).sum();
+        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true };
+        sim.step(1.0 / 60.0, &loud);
+        for _ in 0..20 {
+            sim.step(1.0 / 60.0, &Drive { audio: true, ..Drive::default() });
+        }
+        let gusted: f32 = sim.pos.iter().zip(&sim.was).map(|(p, w)| (p[2] - w[2]).abs()).sum();
+        assert!(gusted > quiet, "the gust did nothing: {quiet} then {gusted}");
     }
 
     /// Every simulation is reachable by id, and nothing else is.

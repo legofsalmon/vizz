@@ -726,15 +726,8 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                 // Or run one here: a simulation is a live source that
                 // needs no sender, and the bands drive it.
                 ui.menu_button("simulate…", |ui| {
-                    for g in vizz_mod::generators::SIMULATIONS {
-                        if ui.button(g.name).on_hover_text(g.about).clicked() {
-                            if g.params.is_empty() {
-                                actions.live_cloud = Some(Some(format!("sim:{}", g.id)));
-                            } else {
-                                ui.data_mut(|d| d.insert_temp(picked_id("sim"), g.id.to_string()));
-                            }
-                            ui.close();
-                        }
+                    if let Some(id) = simulation_menu(ui, vizz_mod::generators::SIMULATIONS) {
+                        actions.live_cloud = Some(Some(format!("sim:{id}")));
                     }
                 })
                 .response
@@ -1043,26 +1036,12 @@ fn clouds_section(
     ui.horizontal(|ui| {
         ui.small("or from an equation:");
         ui.menu_button("generate…", |ui| {
-            use vizz_mod::preset::Family;
-            for family in [Family::Attractor, Family::Shape] {
-                ui.label(
-                    egui::RichText::new(family.label())
-                        .size(10.0)
-                        .color(vizz_design::ink::TERTIARY)
-                        .monospace(),
-                );
-                for g in vizz_mod::generators::CATALOGUE.iter().filter(|g| g.family == family) {
-                    if ui.button(g.name).on_hover_text(g.about).clicked() {
-                        // One with knobs opens its row; one without is
-                        // made on the spot.
-                        if g.params.is_empty() {
-                            actions.generate_cloud = Some(g.id.to_string());
-                        } else {
-                            ui.data_mut(|d| d.insert_temp(picked_id("gen"), g.id.to_string()));
-                        }
-                        ui.close();
-                    }
-                }
+            // Grouped by what a generator *is*, not by which shelf a
+            // look built on it files under. Fifty-odd names under two
+            // headings is a wall; under "flows", "surfaces" and
+            // "fractals" it is a place to look.
+            if let Some(id) = generator_menu(ui, vizz_mod::generators::CATALOGUE) {
+                actions.generate_cloud = Some(id);
             }
         })
         .response
@@ -1071,6 +1050,56 @@ fn clouds_section(
     if let Some(spec) = settings_row(ui, "gen", vizz_mod::generators::CATALOGUE, "make") {
         actions.generate_cloud = Some(spec);
     }
+}
+
+/// The body of a generate or simulate menu: every entry under the
+/// heading for its group, in the catalogue's own order within each.
+/// Returns the id of one that can be made on the spot; one with knobs
+/// opens its row instead and returns nothing.
+fn menu_body(
+    ui: &mut egui::Ui,
+    list: &'static [vizz_mod::generators::Generator],
+    scope: &str,
+) -> Option<String> {
+    use vizz_mod::generators::Group;
+    let mut picked = None;
+    for group in Group::ALL {
+        let mut any = false;
+        for g in list.iter().filter(|g| g.group == *group) {
+            if !any {
+                any = true;
+                ui.label(
+                    egui::RichText::new(group.label())
+                        .size(10.0)
+                        .color(vizz_design::ink::TERTIARY)
+                        .monospace(),
+                );
+            }
+            if ui.button(g.name).on_hover_text(g.about).clicked() {
+                if g.params.is_empty() {
+                    picked = Some(g.id.to_string());
+                } else {
+                    ui.data_mut(|d| d.insert_temp(picked_id(scope), g.id.to_string()));
+                }
+                ui.close();
+            }
+        }
+    }
+    picked
+}
+
+fn generator_menu(
+    ui: &mut egui::Ui,
+    list: &'static [vizz_mod::generators::Generator],
+) -> Option<String> {
+    menu_body(ui, list, "gen")
+}
+
+fn simulation_menu(
+    ui: &mut egui::Ui,
+    list: &'static [vizz_mod::generators::Generator],
+) -> Option<String> {
+    menu_body(ui, list, "sim")
 }
 
 /// Which generator or simulation has its knobs out, per menu.

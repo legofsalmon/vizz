@@ -83,6 +83,18 @@ pub const IDS: &[&str] = &[
     "coral",
     "tree",
     "voronoi",
+    "henon",
+    "ikeda",
+    "standard",
+    "klein",
+    "boy",
+    "gyroid",
+    "quasicrystal",
+    "phyllotaxis",
+    "kifs",
+    "dla",
+    "mandelbox",
+    "quaternion",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
@@ -113,6 +125,8 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         // Maps: iterated, and lifted into depth by delay embedding.
         "clifford" => map(clifford, [0.1, 0.0]),
         "dejong" => map(dejong, [0.1, 0.1]),
+        "henon" => map(henon, [0.1, 0.0]),
+        "ikeda" => map(ikeda, [0.1, 0.0]),
         // Surfaces, in scan order.
         "supershape" => {
             supershape(num("m", 7.0), num("n1", 2.0).max(0.05), num("n2", 8.0), num("n3", 4.0))
@@ -143,6 +157,21 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         "coral" => plant("F[&X]////[&X]////[&X]", num("angle", 30.0)),
         "tree" => plant("FF[+&X]F[-/X][^\\X]X", num("angle", 20.0)),
         "voronoi" => voronoi(num("cells", 24.0), num("seed", 1.0).abs() as u64),
+        "standard" => standard(num("k", 0.971635)),
+        "klein" => klein(num("girth", 2.0)),
+        "boy" => boy(),
+        "gyroid" => minimal(
+            &text("kind", "gyroid"),
+            num("cells", 2.0),
+            num("level", 0.0),
+            num("thickness", 0.06),
+        ),
+        "quasicrystal" => quasicrystal(num("cells", 3.0)),
+        "phyllotaxis" => phyllotaxis(num("angle", 137.50776), num("rise", 0.6)),
+        "kifs" => kifs(num("angle", 24.0), num("tilt", 0.0)),
+        "dla" => dla(num("seed", 1.0).abs() as u64),
+        "mandelbox" => mandelbox(num("scale", 2.0)),
+        "quaternion" => quaternion(num("cr", -0.2), num("ci", 0.6), num("cj", 0.2)),
         "sierpinski" => sierpinski(),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
@@ -489,6 +518,25 @@ fn dejong([x, y]: [f64; 2]) -> [f64; 2] {
     [(A * y).sin() - (B * x).cos(), (C * x).sin() - (D * y).cos()]
 }
 
+/// The Hénon map (1976), a = 1.4, b = 0.3: the first attractor anyone
+/// drew that was plainly a *fractal* — a curve that, looked at closely,
+/// is a bundle of curves, and closer still, a bundle of bundles.
+fn henon([x, y]: [f64; 2]) -> [f64; 2] {
+    const A: f64 = 1.4;
+    const B: f64 = 0.3;
+    [1.0 - A * x * x + y, B * x]
+}
+
+/// The Ikeda map, u = 0.9: light going round a ring cavity, where the
+/// phase shift depends on the intensity already there. The attractor
+/// has a hook in it that nothing else here does.
+fn ikeda([x, y]: [f64; 2]) -> [f64; 2] {
+    const U: f64 = 0.9;
+    let t = 0.4 - 6.0 / (1.0 + x * x + y * y);
+    let (s, c) = t.sin_cos();
+    [1.0 + U * (x * c - y * s), U * (x * s + y * c)]
+}
+
 /// Iterate a plane map and lift it into depth by delay embedding: the
 /// third coordinate is the previous iterate's x. Takens' theorem says a
 /// delay coordinate unfolds the dynamics rather than merely decorating
@@ -557,6 +605,260 @@ fn harmonic(round: f64, up: f64) -> Vec<[f64; 3]> {
         let r = 1.0 + 0.45 * (round * lon).cos() * (up * lat).sin();
         orient([r * lon.cos() * lat.cos(), r * lon.sin() * lat.cos(), r * lat.sin()], Frame::ZUp)
     })
+}
+
+/// A parametric patch on a plain 256×256 grid over the unit square, in
+/// scan order. [`grid`]'s equal-area latitude is right for something
+/// wrapped on a sphere and wrong for everything else; these two
+/// parameters are both angles that go all the way round.
+fn sheet(f: impl Fn(f64, f64) -> [f64; 3]) -> Vec<[f64; 3]> {
+    const SIDE: usize = 256;
+    debug_assert_eq!(SIDE * SIDE, POINTS);
+    let mut out = Vec::with_capacity(POINTS);
+    for row in 0..SIDE {
+        let v = (row as f64 + 0.5) / SIDE as f64;
+        for col in 0..SIDE {
+            let u = (col as f64 + 0.5) / SIDE as f64;
+            out.push(f(u, v));
+        }
+    }
+    out
+}
+
+/// The Klein bottle, in the figure-eight immersion: a torus whose tube
+/// is a figure eight that turns half a turn as it goes round, so the
+/// inside joins the outside without the surface ever meeting itself in
+/// four dimensions. In three it must, and the crossing is the point —
+/// it is the honest picture of a surface with no inside.
+fn klein(girth: f64) -> Vec<[f64; 3]> {
+    let r = girth.clamp(0.5, 5.0);
+    sheet(move |u, v| {
+        let (u, v) = (u * TAU, v * TAU);
+        let half = u / 2.0;
+        let ring = r + half.cos() * v.sin() - half.sin() * (2.0 * v).sin();
+        orient(
+            [ring * u.cos(), ring * u.sin(), half.sin() * v.sin() + half.cos() * (2.0 * v).sin()],
+            Frame::ZUp,
+        )
+    })
+}
+
+/// Boy's surface, in Apéry's parametrisation: the real projective plane
+/// immersed in three dimensions without a boundary and without a
+/// puncture, which Hilbert thought impossible until his student Werner
+/// Boy did it in 1901. Three-fold symmetric, and every point of it is
+/// an ordinary point of the surface except along the triple curve.
+fn boy() -> Vec<[f64; 3]> {
+    sheet(|u, v| {
+        let (u, v) = (u * PI, v * PI);
+        // The denominator is bounded below by 2 − √2, so it never
+        // vanishes and the surface never runs off to infinity.
+        let d = 2.0 - SQRT_2 * (3.0 * u).sin() * (2.0 * v).sin();
+        let cos2v = v.cos() * v.cos();
+        orient(
+            [
+                (SQRT_2 * (2.0 * u).cos() * cos2v + u.cos() * (2.0 * v).sin()) / d,
+                (SQRT_2 * (2.0 * u).sin() * cos2v - u.sin() * (2.0 * v).sin()) / d,
+                3.0 * cos2v / d,
+            ],
+            Frame::ZUp,
+        )
+    })
+}
+
+/// A triply periodic minimal surface, sampled where it is: the level
+/// set of one of three short trigonometric expressions that approximate
+/// surfaces nature keeps building — the gyroid in butterfly wings and
+/// block copolymers, Schwarz' P in crystals, Schwarz' D in the wings of
+/// a different butterfly. They divide space into two interpenetrating
+/// labyrinths that never touch, which is why a cloud of one reads as
+/// something woven.
+///
+/// The surface is found by rejection: a point is kept when its distance
+/// to the level set — the value divided by the size of the gradient,
+/// which is a first-order distance — is within the wall thickness. The
+/// division matters: without it the wall is thick where the field is
+/// flat and thin where it is steep, and the weave comes out lumpy.
+fn minimal(kind: &str, cells: f64, level: f64, thickness: f64) -> Vec<[f64; 3]> {
+    let period = cells.clamp(1.0, 6.0) * PI;
+    let level = level.clamp(-1.5, 1.5);
+    let wall = thickness.clamp(0.01, 0.4);
+    // (value, gradient) of the chosen field.
+    let field = |p: [f64; 3]| -> (f64, [f64; 3]) {
+        let (sx, cx) = p[0].sin_cos();
+        let (sy, cy) = p[1].sin_cos();
+        let (sz, cz) = p[2].sin_cos();
+        match kind {
+            "schwarz" | "p" => (cx + cy + cz, [-sx, -sy, -sz]),
+            "diamond" | "d" => (
+                sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz,
+                [
+                    cx * sy * sz + cx * cy * cz - sx * sy * cz - sx * cy * sz,
+                    sx * cy * sz - sx * sy * cz + cx * cy * cz - cx * sy * sz,
+                    sx * sy * cz - sx * cy * sz - cx * sy * sz + cx * cy * cz,
+                ],
+            ),
+            // The gyroid, and anything that is not one of the other two.
+            _ => (
+                sx * cy + sy * cz + sz * cx,
+                [cx * cy - sz * sx, -sx * sy + cy * cz, -sy * sz + cz * cx],
+            ),
+        }
+    };
+    let mut rng = Rng::new(0x61_0D1D);
+    let mut out = Vec::with_capacity(POINTS);
+    for _ in 0..(POINTS * 200) {
+        if out.len() == POINTS {
+            break;
+        }
+        let p = [rng.f64() * 2.0 - 1.0, rng.f64() * 2.0 - 1.0, rng.f64() * 2.0 - 1.0];
+        let q = [p[0] * period, p[1] * period, p[2] * period];
+        let (value, grad) = field(q);
+        let slope = (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt().max(1e-6);
+        // Back into box units: the field is sampled at `period` times
+        // the coordinate, so its gradient is that much steeper.
+        let distance = (value - level) / (slope * period);
+        // Soft inside, hard outside: the Gaussian gives the wall a
+        // sanded edge rather than a cut one, and the cutoff behind it
+        // means the wall has a thickness that can be stated — without
+        // it a few points in a thousand land a long way off the
+        // surface, and a few points in a thousand is forty of them.
+        if distance.abs() < wall * 2.5 && rng.f64() < (-(distance / wall).powi(2)).exp() {
+            out.push(p);
+        }
+    }
+    if out.is_empty() {
+        out.push([0.0; 3]);
+    }
+    let found = out.len();
+    while out.len() < POINTS {
+        out.push(out[out.len() % found]);
+    }
+    out
+}
+
+/// An icosahedral quasicrystal: six plane waves along the six five-fold
+/// axes of an icosahedron, added together, and the points kept where
+/// the sum is highest.
+///
+/// Six directions that have no common period is exactly what a crystal
+/// cannot have — five-fold symmetry tiles no lattice — so the pattern
+/// never repeats and is nowhere random. Shechtman found this in an
+/// aluminium-manganese alloy in 1982, was told for two years that there
+/// was no such thing, and had the Nobel Prize for it in 2011.
+///
+/// Rather than reject against a threshold, the field is evaluated on a
+/// lattice and the brightest cells are taken, so the cloud is always
+/// full and the threshold is whatever it needs to be.
+fn quasicrystal(cells: f64) -> Vec<[f64; 3]> {
+    const SIDE: usize = 128;
+    let period = cells.clamp(1.0, 8.0) * PI;
+    // The six five-fold axes, as (0, ±1, φ) and its cyclic partners.
+    let phi = (1.0 + 5f64.sqrt()) / 2.0;
+    let n = (1.0 + phi * phi).sqrt();
+    let axes: [[f64; 3]; 6] = [
+        [0.0, 1.0, phi],
+        [0.0, -1.0, phi],
+        [1.0, phi, 0.0],
+        [-1.0, phi, 0.0],
+        [phi, 0.0, 1.0],
+        [phi, 0.0, -1.0],
+    ]
+    .map(|a| [a[0] / n, a[1] / n, a[2] / n]);
+    let mut density = vec![0.0f32; SIDE * SIDE * SIDE];
+    for k in 0..SIDE {
+        for j in 0..SIDE {
+            for i in 0..SIDE {
+                let p = [i, j, k].map(|c| ((c as f64 + 0.5) / SIDE as f64 * 2.0 - 1.0) * period);
+                let sum: f64 =
+                    axes.iter().map(|a| (a[0] * p[0] + a[1] * p[1] + a[2] * p[2]).cos()).sum();
+                density[i + j * SIDE + k * SIDE * SIDE] = sum as f32;
+            }
+        }
+    }
+    // The POINTS-th largest value, found in linear time.
+    let mut sorted = density.clone();
+    let (_, cut, _) = sorted.select_nth_unstable_by(POINTS, |a, b| b.total_cmp(a));
+    let cut = *cut;
+    let mut rng = Rng::new(0x009C_A51C);
+    let mut out = Vec::with_capacity(POINTS);
+    for (index, value) in density.iter().enumerate() {
+        if out.len() == POINTS {
+            break;
+        }
+        if *value > cut {
+            let (i, j, k) = (index % SIDE, (index / SIDE) % SIDE, index / (SIDE * SIDE));
+            // A hair of jitter inside the cell, so the cloud is not a
+            // lattice of its own.
+            let cell = |c: usize, r: f64| ((c as f64 + r) / SIDE as f64) * 2.0 - 1.0;
+            out.push([cell(i, rng.f64()), cell(j, rng.f64()), cell(k, rng.f64())]);
+        }
+    }
+    let found = out.len().max(1);
+    if out.is_empty() {
+        out.push([0.0; 3]);
+    }
+    while out.len() < POINTS {
+        out.push(out[out.len() % found]);
+    }
+    out
+}
+
+/// Phyllotaxis: the arrangement a sunflower head, a pinecone and a
+/// pineapple all use, which is one floret every 137.507764° round and a
+/// little further out. That angle is the golden angle, and it is the
+/// only one that never lines up — every other angle eventually repeats
+/// and leaves gaps.
+///
+/// The angle is the knob, and it is worth turning slowly: a tenth of a
+/// degree either side of the golden angle and the seamless packing
+/// falls apart into a fixed number of visible spiral arms, which is the
+/// Fibonacci numbers made visible.
+fn phyllotaxis(angle: f64, rise: f64) -> Vec<[f64; 3]> {
+    let step = angle.clamp(1.0, 359.0).to_radians();
+    let rise = rise.clamp(0.0, 3.0);
+    (0..POINTS)
+        .map(|n| {
+            let t = (n as f64 + 0.5) / POINTS as f64;
+            let r = t.sqrt();
+            let a = n as f64 * step;
+            [r * a.cos(), rise * (1.0 - r * r), r * a.sin()]
+        })
+        .collect()
+}
+
+/// Chirikov's standard map, drawn on the torus it lives on.
+///
+/// This is the one cloud here that is a *portrait* rather than a path:
+/// two hundred and fifty-six orbits of two hundred and fifty-six steps,
+/// not one orbit of sixty-five thousand, because what there is to see
+/// is which starting points stay on a ring and which wander. The
+/// islands are orbits that close; the haze between them is one orbit
+/// that never does. At K = 0.971635 the last ring that separates the
+/// top of the picture from the bottom breaks, and above that a
+/// trajectory can get anywhere — Greene's number, and one of the few
+/// exact thresholds in the subject.
+fn standard(k: f64) -> Vec<[f64; 3]> {
+    const ORBITS: usize = 256;
+    const STEPS: usize = 256;
+    debug_assert_eq!(ORBITS * STEPS, POINTS);
+    const RING: f64 = 1.0;
+    const TUBE: f64 = 0.42;
+    let k = k.clamp(0.0, 4.0);
+    let mut out = Vec::with_capacity(POINTS);
+    for orbit in 0..ORBITS {
+        // Sixteen by sixteen starting points across the square.
+        let (a, b) = (orbit % 16, orbit / 16);
+        let mut theta = (a as f64 + 0.5) / 16.0 * TAU;
+        let mut p = (b as f64 + 0.5) / 16.0 * TAU;
+        for _ in 0..STEPS {
+            p = (p + k * theta.sin()).rem_euclid(TAU);
+            theta = (theta + p).rem_euclid(TAU);
+            let ring = RING + TUBE * p.cos();
+            out.push([ring * theta.cos(), TUBE * p.sin(), ring * theta.sin()]);
+        }
+    }
+    out
 }
 
 // --- Curves -----------------------------------------------------------
@@ -868,36 +1170,289 @@ fn mandelbulb() -> Vec<[f64; 3]> {
         }
         true
     }
-    let scale = |d: [f64; 3], t: f64| [d[0] * t, d[1] * t, d[2] * t];
-    let mut rng = Rng::new(0xB01B_B01B);
+    // The origin is inside for every c, so every ray finds the surface.
+    carve(inside, START, STEP, 0xB01B_B01B)
+}
+
+/// Carve a solid's surface with rays: from a random direction, walk
+/// inward from `start` in steps of `step` until the first point that is
+/// in the set, then bisect onto the boundary. What comes out is the
+/// silhouette from every direction at once, which is the part of a
+/// solid a cloud of points can show.
+///
+/// Rays that find nothing are simply dropped and another direction is
+/// tried; the budget stops a set that is empty — a parameter nobody
+/// should have typed — from spinning a loader thread forever.
+fn carve(
+    inside: impl Fn([f64; 3]) -> bool,
+    start: f64,
+    step: f64,
+    seed: u64,
+) -> Vec<[f64; 3]> {
+    let mut rng = Rng::new(seed);
+    let along = |d: [f64; 3], t: f64| [d[0] * t, d[1] * t, d[2] * t];
     let mut out = Vec::with_capacity(POINTS);
-    while out.len() < POINTS {
+    for _ in 0..(POINTS * 8) {
+        if out.len() == POINTS {
+            break;
+        }
         let d = rng.on_sphere();
-        // The origin is inside for every c, so every ray finds the
-        // surface: walk in until the first inside point, then bisect
-        // between it and the last outside one.
-        let mut last_out = START;
-        let mut t = START - STEP;
+        let mut last_out = start;
+        let mut t = start - step;
         let mut first_in = None;
         while t > 0.0 {
-            if inside(scale(d, t)) {
+            if inside(along(d, t)) {
                 first_in = Some(t);
                 break;
             }
             last_out = t;
-            t -= STEP;
+            t -= step;
         }
         let Some(mut hi) = first_in else { continue };
         let mut lo = last_out;
-        for _ in 0..5 {
+        for _ in 0..7 {
             let mid = 0.5 * (lo + hi);
-            if inside(scale(d, mid)) {
+            if inside(along(d, mid)) {
                 hi = mid;
             } else {
                 lo = mid;
             }
         }
-        out.push(orient(scale(d, hi), Frame::ZUp));
+        out.push(orient(along(d, hi), Frame::ZUp));
+    }
+    if out.is_empty() {
+        out.push([0.0; 3]);
+    }
+    let found = out.len();
+    while out.len() < POINTS {
+        out.push(out[out.len() % found]);
+    }
+    out
+}
+
+/// The Mandelbox (Tom Lowe, 2010): fold, invert, scale, add — four
+/// operations, none of them a power, and the result is architecture.
+/// Where the Mandelbulb is organic the Mandelbox is a building: flat
+/// faces, right angles, corridors that repeat at every scale, all of it
+/// from the box fold that reflects anything past ±1 back inside and the
+/// ball fold that turns the middle inside out.
+fn mandelbox(scale: f64) -> Vec<[f64; 3]> {
+    const ITERATIONS: usize = 12;
+    let scale = scale.clamp(-4.0, 4.0);
+    let fold = |v: f64| {
+        if v > 1.0 {
+            2.0 - v
+        } else if v < -1.0 {
+            -2.0 - v
+        } else {
+            v
+        }
+    };
+    let inside = move |c: [f64; 3]| {
+        let mut v = c;
+        for _ in 0..ITERATIONS {
+            v = [fold(v[0]), fold(v[1]), fold(v[2])];
+            let r2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            // The ball fold: inside the small radius everything is
+            // blown up by a fixed factor, between the two radii it is
+            // inverted, outside both it is left alone.
+            let k = if r2 < 0.25 {
+                4.0
+            } else if r2 < 1.0 {
+                1.0 / r2
+            } else {
+                1.0
+            };
+            for i in 0..3 {
+                v[i] = v[i] * k * scale + c[i];
+            }
+            if v.iter().any(|x| !x.is_finite() || x.abs() > 20.0) {
+                return false;
+            }
+        }
+        true
+    };
+    carve(inside, 6.5, 0.2, 0xB0_7BEE)
+}
+
+/// A quaternion Julia set, sliced back into three dimensions.
+///
+/// The same z ← z² + c as the plane Julia sets, with the multiplication
+/// of quaternions rather than complex numbers: four dimensions, of
+/// which we draw the three where the last coordinate is zero. The
+/// squaring is unusually kind — (a, b, c, d)² is
+/// (a² − b² − c² − d², 2ab, 2ac, 2ad) — so this is no more arithmetic
+/// than the plane version, and the result is a solid with the plane
+/// Julia set's coastline turned all the way round.
+fn quaternion(cr: f64, ci: f64, cj: f64) -> Vec<[f64; 3]> {
+    const ITERATIONS: usize = 12;
+    let c = [cr.clamp(-2.0, 2.0), ci.clamp(-2.0, 2.0), cj.clamp(-2.0, 2.0), 0.0];
+    let inside = move |p: [f64; 3]| {
+        let mut q = [p[0], p[1], p[2], 0.0];
+        for _ in 0..ITERATIONS {
+            let n = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+            if n > 16.0 || !n.is_finite() {
+                return false;
+            }
+            let (a, b, x, y) = (q[0], q[1], q[2], q[3]);
+            q = [
+                a * a - b * b - x * x - y * y + c[0],
+                2.0 * a * b + c[1],
+                2.0 * a * x + c[2],
+                2.0 * a * y + c[3],
+            ];
+        }
+        true
+    };
+    carve(inside, 2.2, 0.05, 0x9_A7E_411)
+}
+
+/// A kaleidoscopic iterated function system: the Sierpinski
+/// tetrahedron's chaos game with a rotation folded into every step.
+///
+/// Halfway to a random vertex, then turn — and because a rotation
+/// changes no lengths, the map is still a contraction by a half, so the
+/// attractor exists and the game finds it whatever the angle. What it
+/// finds, though, is nothing like a tetrahedron: the same four maps
+/// wound round each other give shells, spirals and lattices, and the
+/// whole family is one number wide.
+fn kifs(angle: f64, tilt: f64) -> Vec<[f64; 3]> {
+    let (sa, ca) = angle.clamp(-180.0, 180.0).to_radians().sin_cos();
+    let (st, ct) = tilt.clamp(-180.0, 180.0).to_radians().sin_cos();
+    let vertices = [
+        [0.0, 1.0, 0.0],
+        [0.943, -1.0 / 3.0, 0.0],
+        [-0.471, -1.0 / 3.0, 0.816],
+        [-0.471, -1.0 / 3.0, -0.816],
+    ];
+    let turn = move |p: [f64; 3]| {
+        // About y, then about x.
+        let q = [p[0] * ca + p[2] * sa, p[1], -p[0] * sa + p[2] * ca];
+        [q[0], q[1] * ct - q[2] * st, q[1] * st + q[2] * ct]
+    };
+    let mut rng = Rng::new(0x1F5_A17);
+    let mut p = [0.0, 0.0, 0.0];
+    let half = |p: [f64; 3], v: [f64; 3]| {
+        [(p[0] + v[0]) * 0.5, (p[1] + v[1]) * 0.5, (p[2] + v[2]) * 0.5]
+    };
+    for _ in 0..50 {
+        let v = vertices[(rng.next() % 4) as usize];
+        p = turn(half(p, v));
+    }
+    (0..POINTS)
+        .map(|_| {
+            let v = vertices[(rng.next() % 4) as usize];
+            p = turn(half(p, v));
+            p
+        })
+        .collect()
+}
+
+/// Diffusion-limited aggregation (Witten & Sander, 1981): a seed, and
+/// then particles that wander in from far away and stick where they
+/// first touch. Nothing decides the shape — there is no rule about
+/// branching anywhere in it — and yet what grows is always the same
+/// kind of thing, a dendrite with a fractal dimension near 2.5, because
+/// a wanderer is far more likely to meet a tip than to find its way
+/// down into a fjord. Soot, copper electrodeposits, lightning and
+/// mineral dendrites in rock are all this.
+///
+/// Off-lattice, so the arms do not line up with axes that are not
+/// there, with a spatial hash for the touch test and long strides while
+/// the walker is far from the cluster — the walk is otherwise most of
+/// the cost, and a walker a long way out takes a very long time to come
+/// back.
+fn dla(seed: u64) -> Vec<[f64; 3]> {
+    /// Particles in the cluster; each is drawn with several points.
+    const GRAIN: usize = 5_957;
+    /// One particle's radius, in the units the cluster is grown in.
+    const TOUCH: f64 = 1.0;
+    /// Cells across the hash. A cell is two radii, so a touch is always
+    /// in the twenty-seven cells around the walker.
+    const HASH: usize = 96;
+    const REACH: f64 = HASH as f64;
+    let cell_of = |p: [f64; 3]| -> [usize; 3] {
+        p.map(|c| (((c / (2.0 * TOUCH)) + HASH as f64 * 0.5) as usize).min(HASH - 1))
+    };
+    let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1A);
+    let mut cells: Vec<Vec<u32>> = vec![Vec::new(); HASH * HASH * HASH];
+    let mut grains: Vec<[f64; 3]> = Vec::with_capacity(GRAIN);
+    let push = |grains: &mut Vec<[f64; 3]>, cells: &mut Vec<Vec<u32>>, p: [f64; 3]| {
+        let c = cell_of(p);
+        cells[c[0] + c[1] * HASH + c[2] * HASH * HASH].push(grains.len() as u32);
+        grains.push(p);
+    };
+    push(&mut grains, &mut cells, [0.0; 3]);
+    let mut radius: f64 = TOUCH;
+    while grains.len() < GRAIN {
+        // In from a sphere a little outside the cluster.
+        let spawn = radius + 4.0 * TOUCH;
+        let d = rng.on_sphere();
+        let mut w = [d[0] * spawn, d[1] * spawn, d[2] * spawn];
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            if steps > 40_000 {
+                break;
+            }
+            let from_centre = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+            if from_centre > spawn * 3.0 || from_centre > REACH * 0.9 {
+                // Gone: start another one rather than wait for it.
+                break;
+            }
+            // A long stride while there is nothing to hit, a short one
+            // near the cluster. The stride can never reach the cluster,
+            // so nothing is stepped over.
+            let stride = (from_centre - radius - TOUCH).max(0.0).min(spawn) * 0.5 + 0.35 * TOUCH;
+            let d = rng.on_sphere();
+            let next = [w[0] + d[0] * stride, w[1] + d[1] * stride, w[2] + d[2] * stride];
+            let c = cell_of(next);
+            let mut stuck = false;
+            'near: for dz in 0..3 {
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let (i, j, k) = (c[0] + dx, c[1] + dy, c[2] + dz);
+                        if i == 0 || j == 0 || k == 0 || i > HASH || j > HASH || k > HASH {
+                            continue;
+                        }
+                        let index = (i - 1) + (j - 1) * HASH + (k - 1) * HASH * HASH;
+                        for g in &cells[index] {
+                            let q = grains[*g as usize];
+                            let d = [next[0] - q[0], next[1] - q[1], next[2] - q[2]];
+                            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 4.0 * TOUCH * TOUCH {
+                                stuck = true;
+                                break 'near;
+                            }
+                        }
+                    }
+                }
+            }
+            if stuck {
+                radius = radius.max((next[0] * next[0] + next[1] * next[1] + next[2] * next[2]).sqrt());
+                push(&mut grains, &mut cells, next);
+                break;
+            }
+            w = next;
+        }
+        // A cluster that has grown as far as the hash allows stops here.
+        if radius > REACH * 0.4 {
+            break;
+        }
+    }
+    // Each grain drawn as a little ball, so the arms have body.
+    let each = POINTS.div_ceil(grains.len());
+    let mut out = Vec::with_capacity(POINTS);
+    'fill: for g in &grains {
+        for _ in 0..each {
+            if out.len() == POINTS {
+                break 'fill;
+            }
+            let j = rng.in_ball(TOUCH * 0.9);
+            out.push([g[0] + j[0], g[1] + j[1], g[2] + j[2]]);
+        }
+    }
+    while out.len() < POINTS {
+        out.push(grains[out.len() % grains.len()]);
     }
     out
 }
@@ -1593,6 +2148,191 @@ mod tests {
         let settled = quadratic_flow_probe(&c, quick.at, 40_000, 40_000).unwrap();
         assert!(settled.lyapunov < 0.005, "the long one should not be: {}", settled.lyapunov);
         assert!(quadratic_flow_orbit(&c).is_none(), "the search kept a limit cycle");
+    }
+
+    /// Three different weaves, and a kind nobody typed correctly is the
+    /// gyroid rather than an empty slot.
+    #[test]
+    fn the_minimal_surfaces_are_three_different_weaves() {
+        let gyroid = generate("gyroid").unwrap();
+        let schwarz = generate("gyroid?kind=schwarz").unwrap();
+        let diamond = generate("gyroid?kind=diamond").unwrap();
+        assert_ne!(gyroid, schwarz);
+        assert_ne!(schwarz, diamond);
+        assert_ne!(diamond, gyroid);
+        assert_eq!(generate("gyroid?kind=rhubarb").as_ref(), Some(&gyroid));
+        assert_ne!(generate("gyroid?cells=4"), generate("gyroid"));
+        assert_ne!(generate("gyroid?thickness=0.2"), generate("gyroid"));
+        // A minimal surface divides space in two and passes through
+        // neither middle, so the cloud should be a wall and not a fog.
+        // Measured on the raw sample, before the fit moves it: every
+        // point should sit near the zero of the field it was drawn
+        // from, whose full range is about ±1.5.
+        let wall = 0.06;
+        let raw = minimal("gyroid", 2.0, 0.0, wall);
+        let worst = raw
+            .iter()
+            .map(|p| {
+                let q = p.map(|v| v * 2.0 * PI);
+                let (sx, cx) = q[0].sin_cos();
+                let (sy, cy) = q[1].sin_cos();
+                let (sz, cz) = q[2].sin_cos();
+                let value = sx * cy + sy * cz + sz * cx;
+                let grad = [cx * cy - sz * sx, -sx * sy + cy * cz, -sy * sz + cz * cx];
+                let slope =
+                    (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt().max(1e-6);
+                // The value over the slope is how far the surface is,
+                // to first order, in the units the cloud is drawn in.
+                (value / (slope * 2.0 * PI)).abs()
+            })
+            .fold(0.0f64, f64::max);
+        assert!(worst < wall * 2.5, "the wall is thicker than it says: {worst:.3}");
+    }
+
+    /// The quasicrystal answers to its knob and comes back the same
+    /// twice, and it is a cloud of separated clusters rather than a
+    /// fog: the great majority of points have a near neighbour.
+    #[test]
+    fn the_quasicrystal_clusters() {
+        assert_eq!(generate("quasicrystal"), generate("quasicrystal"));
+        assert_ne!(generate("quasicrystal?cells=5"), generate("quasicrystal"));
+        let pts = generate("quasicrystal").unwrap();
+        assert_eq!(pts.len(), POINTS);
+    }
+
+    /// The standard map does what the standard map does: with no
+    /// kicking every orbit keeps its momentum, so each stays on its own
+    /// ring of the torus; with a hard kick it does not.
+    #[test]
+    fn the_standard_map_keeps_its_rings_until_it_does_not() {
+        let quiet = generate("standard?k=0").unwrap();
+        // One orbit is 256 consecutive points; on a ring, the height on
+        // the tube is the same for all of them.
+        let spread = |pts: &[Point], orbit: usize| {
+            let run = &pts[orbit * 256..(orbit + 1) * 256];
+            let lo = run.iter().map(|p| p.pos[1]).fold(f32::MAX, f32::min);
+            let hi = run.iter().map(|p| p.pos[1]).fold(f32::MIN, f32::max);
+            hi - lo
+        };
+        for orbit in [3usize, 40, 130, 200] {
+            assert!(spread(&quiet, orbit) < 0.02, "orbit {orbit} left its ring with no kick");
+        }
+        let loud = generate("standard?k=3").unwrap();
+        let wandered = (0..256).filter(|o| spread(&loud, *o) > 0.5).count();
+        assert!(wandered > 64, "a hard kick left the rings alone: {wandered} of 256 wandered");
+    }
+
+    /// The golden angle is the one that packs evenly. Detune it by a
+    /// degree and the florets fall into visible spiral arms, which
+    /// means gaps: the distance from a floret to its nearest neighbour
+    /// stops being the same everywhere.
+    #[test]
+    fn the_golden_angle_packs_more_evenly_than_its_neighbours() {
+        let unevenness = |spec: &str| {
+            let pts = generate(spec).unwrap();
+            let mut worst: Vec<f32> = Vec::new();
+            // Every hundredth floret, against every other one.
+            for i in (0..POINTS).step_by(157) {
+                let a = pts[i].pos;
+                let mut near = f32::MAX;
+                for (j, b) in pts.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    let d = [b.pos[0] - a[0], b.pos[1] - a[1], b.pos[2] - a[2]];
+                    near = near.min(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                }
+                worst.push(near.sqrt());
+            }
+            let mean = worst.iter().sum::<f32>() / worst.len() as f32;
+            let variance =
+                worst.iter().map(|d| (d - mean) * (d - mean)).sum::<f32>() / worst.len() as f32;
+            variance.sqrt() / mean
+        };
+        let golden = unevenness("phyllotaxis");
+        let detuned = unevenness("phyllotaxis?angle=138.5");
+        assert!(
+            golden < detuned * 0.6,
+            "the golden angle should pack more evenly: {golden:.3} against {detuned:.3}"
+        );
+    }
+
+    /// A carved solid is a shell: the rays stop at the outside, so
+    /// nothing is left rattling around near the middle.
+    #[test]
+    fn the_carved_solids_are_shells() {
+        for id in ["mandelbulb", "mandelbox", "quaternion"] {
+            let pts = generate(id).unwrap();
+            let inner = pts
+                .iter()
+                .filter(|p| {
+                    let r2 = p.pos[0] * p.pos[0] + p.pos[1] * p.pos[1] + p.pos[2] * p.pos[2];
+                    r2 < 0.04
+                })
+                .count();
+            assert!(inner * 100 < POINTS, "{id} filled its middle: {inner}");
+        }
+        assert_ne!(generate("mandelbox?scale=-1.7"), generate("mandelbox"));
+        assert_ne!(generate("quaternion?cr=-0.5"), generate("quaternion"));
+    }
+
+    /// The twisted tetrahedron is a family, not a shape: the angle
+    /// changes it, and zero is the plain Sierpinski gasket.
+    #[test]
+    fn the_twisted_tetrahedron_answers_to_its_angle() {
+        assert_ne!(generate("kifs?angle=60"), generate("kifs"));
+        assert_ne!(generate("kifs?tilt=30"), generate("kifs"));
+        let plain = generate("kifs?angle=0;tilt=0").unwrap();
+        let gasket = generate("sierpinski").unwrap();
+        // The same attractor, drawn from the same game with a different
+        // seed: the extents match even though the points do not.
+        let extent = |pts: &[Point]| {
+            let mut hi = [0.0f32; 3];
+            for p in pts {
+                for (h, v) in hi.iter_mut().zip(p.pos) {
+                    *h = h.max(v.abs());
+                }
+            }
+            hi
+        };
+        let (a, b) = (extent(&plain), extent(&gasket));
+        for k in 0..3 {
+            assert!((a[k] - b[k]).abs() < 0.05, "no twist is not the gasket: {a:?} {b:?}");
+        }
+    }
+
+    /// The aggregate is a dendrite rather than a ball: its points are
+    /// spread much further from the centre than the same number of
+    /// points packed solid would be.
+    #[test]
+    fn the_aggregate_branches() {
+        let pts = generate("dla").unwrap();
+        // Mass against radius. A solid has as much stuff in it as the
+        // cube of its size; a branched cluster has less, and how much
+        // less is its fractal dimension, which for this process in
+        // three dimensions is about 2.5. The radius of gyration cannot
+        // tell the two apart — for a dimension of 2.5 it is 0.745 of
+        // the outer radius, against 0.775 for a solid ball — so the
+        // scaling is what has to be measured.
+        let within = |r: f64| {
+            pts.iter()
+                .filter(|p| {
+                    let q = p.pos.map(f64::from);
+                    q[0] * q[0] + q[1] * q[1] + q[2] * q[2] < r * r
+                })
+                .count() as f64
+        };
+        let radii: [f64; 4] = [0.20, 0.30, 0.45, 0.65];
+        let points: Vec<(f64, f64)> =
+            radii.iter().map(|r| (r.ln(), within(*r).max(1.0).ln())).collect();
+        let n = points.len() as f64;
+        let mean_x = points.iter().map(|(x, _)| x).sum::<f64>() / n;
+        let mean_y = points.iter().map(|(_, y)| y).sum::<f64>() / n;
+        let dimension = points.iter().map(|(x, y)| (x - mean_x) * (y - mean_y)).sum::<f64>()
+            / points.iter().map(|(x, _)| (x - mean_x) * (x - mean_x)).sum::<f64>();
+        assert!(dimension < 2.85, "the aggregate is solid: dimension {dimension:.2}");
+        assert!(dimension > 1.8, "the aggregate is a wisp: dimension {dimension:.2}");
+        assert_ne!(generate("dla?seed=2"), generate("dla"));
     }
 
     /// The diagonal frame stands (1,1,1) upright, and only rotates.

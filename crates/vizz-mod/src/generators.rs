@@ -34,6 +34,67 @@ pub enum Kind {
     Text,
 }
 
+/// What a generator *is*, for the menu to put it under a heading. The
+/// family decides which shelf a look built on it files under, which is
+/// a different question: a Julia set and a torus knot are both shapes
+/// to a preset list, and nobody browsing for one would look in the same
+/// place for the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Integrated in time order; the cloud crawls along itself.
+    Flow,
+    /// Iterated, and lifted into depth by delay embedding.
+    Map,
+    /// Found by searching until something is chaotic.
+    Searched,
+    /// Swept in scan order over two parameters.
+    Surface,
+    /// Traced along a curve and thickened.
+    Curve,
+    /// Self-similar at every scale.
+    Fractal,
+    /// Grown by a rule, step by step.
+    Grown,
+    /// Sampled where a pattern is.
+    Pattern,
+    /// A simulation of a field on a grid.
+    Field,
+    /// A simulation of many bodies.
+    Bodies,
+}
+
+impl Group {
+    /// Every group, in menu order.
+    pub const ALL: &'static [Group] = &[
+        Group::Flow,
+        Group::Map,
+        Group::Searched,
+        Group::Surface,
+        Group::Curve,
+        Group::Fractal,
+        Group::Grown,
+        Group::Pattern,
+        Group::Field,
+        Group::Bodies,
+    ];
+
+    /// The heading the menu shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::Flow => "flows",
+            Group::Map => "maps",
+            Group::Searched => "searched",
+            Group::Surface => "surfaces",
+            Group::Curve => "curves",
+            Group::Fractal => "fractals",
+            Group::Grown => "grown",
+            Group::Pattern => "patterns",
+            Group::Field => "fields",
+            Group::Bodies => "many bodies",
+        }
+    }
+}
+
 /// One generator, as the menu lists it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Generator {
@@ -48,6 +109,8 @@ pub struct Generator {
     pub about: &'static str,
     /// Which shelf a look built on it goes on.
     pub family: Family,
+    /// Which heading the menu lists it under.
+    pub group: Group,
     /// The knobs it takes, in the order the panel shows them. Empty for
     /// most: a named attractor's parameters are what make it that one.
     pub params: &'static [Param],
@@ -61,6 +124,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Thomas",
         about: "Thomas' cyclically symmetric attractor — three sines; a knot of ribbons round the diagonal",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -68,6 +132,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Halvorsen",
         about: "Halvorsen's attractor — three lobes, cyclically symmetric; sheets folding into each other",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -75,6 +140,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Dadras",
         about: "Dadras' tri-scroll — three rolled sheets joined by a spine",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -82,6 +148,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Rössler",
         about: "Rössler's funnel — a flat spiral that lifts and folds back on itself",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -89,6 +156,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Four-wing",
         about: "the four-wing attractor — four lobes off a saddle",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -96,6 +164,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Chen",
         about: "Chen's system — Lorenz's cousin, wider and more tangled",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -103,6 +172,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Clifford",
         about: "Pickover's Clifford map, lifted into depth by its own previous step",
         family: Family::Attractor,
+        group: Group::Map,
         params: &[],
     },
     Generator {
@@ -110,6 +180,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "de Jong",
         about: "the Peter de Jong map of 1987, lifted the same way",
         family: Family::Attractor,
+        group: Group::Map,
         params: &[],
     },
     Generator {
@@ -117,6 +188,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "supershape",
         about: "Gielis' superformula as a solid — a seven-fold flower",
         family: Family::Shape,
+        group: Group::Surface,
         params: &[
             Param { key: "m", label: "m", about: "fold: how many times round the symmetry repeats", default: "7", kind: Kind::Number { min: 1.0, max: 16.0 } },
             Param { key: "n1", label: "n1", about: "overall roundness — small pinches, large bloats", default: "2", kind: Kind::Number { min: 0.1, max: 10.0 } },
@@ -129,6 +201,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "harmonic",
         about: "a sphere rippled by a spherical harmonic",
         family: Family::Shape,
+        group: Group::Surface,
         params: &[
             Param { key: "round", label: "round", about: "waves round the equator", default: "3", kind: Kind::Number { min: 1.0, max: 8.0 } },
             Param { key: "up", label: "up", about: "waves pole to pole", default: "2", kind: Kind::Number { min: 1.0, max: 8.0 } },
@@ -139,6 +212,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Lissajous",
         about: "a 3:4:7 Lissajous knot, as a tube",
         family: Family::Shape,
+        group: Group::Curve,
         params: &[
             Param { key: "a", label: "a", about: "frequency on x", default: "3", kind: Kind::Number { min: 1.0, max: 9.0 } },
             Param { key: "b", label: "b", about: "frequency on y", default: "4", kind: Kind::Number { min: 1.0, max: 9.0 } },
@@ -150,6 +224,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "torus knot",
         about: "a (3,7) torus knot — three times round, seven times through",
         family: Family::Shape,
+        group: Group::Curve,
         params: &[
             Param { key: "p", label: "p", about: "times round the axis", default: "3", kind: Kind::Number { min: 1.0, max: 9.0 } },
             Param { key: "q", label: "q", about: "times through the hole", default: "7", kind: Kind::Number { min: 1.0, max: 12.0 } },
@@ -160,6 +235,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Hopf",
         about: "the Hopf fibration — nested tori of linked circles, projected from the 3-sphere",
         family: Family::Shape,
+        group: Group::Surface,
         params: &[],
     },
     Generator {
@@ -167,6 +243,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Chladni",
         about: "sand on a vibrating plate — points settle where the plate stands still",
         family: Family::Shape,
+        group: Group::Pattern,
         params: &[
             Param { key: "n", label: "n", about: "the first mode number", default: "5", kind: Kind::Number { min: 1.0, max: 9.0 } },
             Param { key: "m", label: "m", about: "the second; equal numbers make no pattern", default: "2", kind: Kind::Number { min: 1.0, max: 9.0 } },
@@ -177,6 +254,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Sierpinski",
         about: "the Sierpinski tetrahedron, by the chaos game",
         family: Family::Shape,
+        group: Group::Fractal,
         params: &[],
     },
     Generator {
@@ -184,6 +262,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Menger",
         about: "the Menger sponge, by the chaos game",
         family: Family::Shape,
+        group: Group::Fractal,
         params: &[],
     },
     Generator {
@@ -191,6 +270,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Mandelbulb",
         about: "the power-eight Mandelbulb's surface, found by marching rays inward",
         family: Family::Shape,
+        group: Group::Fractal,
         params: &[],
     },
     Generator {
@@ -198,6 +278,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Sprott B",
         about: "Sprott's case B — two quadratic terms, and chaos",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -205,6 +286,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Nosé–Hoover",
         about: "the Nosé–Hoover oscillator — a thermostatted particle wandering a sea of tori and chaos",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -212,6 +294,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Arneodo",
         about: "Arneodo's attractor — a jerk system with one cubic term",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -219,6 +302,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Burke–Shaw",
         about: "Burke–Shaw — two scrolls with the symmetry of a propeller",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -226,6 +310,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Chua",
         about: "Chua's circuit — the double scroll, from a real circuit with a nonlinear diode",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -233,6 +318,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Hadley",
         about: "the Hadley circulation — Lorenz's 1984 atmosphere in three variables",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -240,6 +326,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Rucklidge",
         about: "Rucklidge's convection model — a tall, folded ribbon",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -247,6 +334,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "three-scroll",
         about: "the three-scroll unified system — three scrolls in one fast flow",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -254,6 +342,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Rabinovich–Fabrikant",
         about: "Rabinovich–Fabrikant — leaves and ribbons, from plasma physics",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -261,6 +350,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "plant",
         about: "a plant grown by an L-system — five generations of branching, thick wood to thin twigs",
         family: Family::Shape,
+        group: Group::Grown,
         params: &[
             Param { key: "rule", label: "rule", about: "the production for X — F draws, + − & ^ \\ / turn, [ ] branch, X grows again", default: "F[+&X][-^X]/F[\\X]X", kind: Kind::Text },
             Param { key: "angle", label: "angle", about: "degrees per turn", default: "25", kind: Kind::Number { min: 5.0, max: 60.0 } },
@@ -271,6 +361,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "quadratic",
         about: "Sprott's search: random quadratic maps until one is chaotic — a new attractor every roll",
         family: Family::Attractor,
+        group: Group::Searched,
         params: &[Param {
             key: "seed",
             label: "seed",
@@ -284,6 +375,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Aizawa",
         about: "Aizawa's attractor — a rotating sphere with a spindle driven through its poles",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -291,6 +383,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Newton–Leipnik",
         about: "Newton–Leipnik — a tumbling rigid body, and two attractors in one system",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -298,6 +391,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Sakarya",
         about: "the Sakarya system — two lobes crossing at an angle, like a bow tie in wire",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -305,6 +399,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Rikitake",
         about: "the Rikitake dynamo — why the Earth's magnetic field reverses, and never on schedule",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -312,6 +407,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Shimizu–Morioka",
         about: "Shimizu–Morioka — the butterfly's simplest relative, two wings and one quadratic term",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -319,6 +415,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "finance",
         about: "the finance system — interest rate, investment demand and price index, refusing to settle",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -326,6 +423,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Coullet",
         about: "Coullet's jerk system — one variable's third derivative, with a cubic pull",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -333,6 +431,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Genesio–Tesi",
         about: "Genesio–Tesi — the other classic jerk system, square rather than cubic",
         family: Family::Attractor,
+        group: Group::Flow,
         params: &[],
     },
     Generator {
@@ -340,6 +439,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "quadratic flow",
         about: "the same search with an integrator inside: random quadratic flows until one is chaotic — smooth ribbons where the map gives dust",
         family: Family::Attractor,
+        group: Group::Searched,
         params: &[Param {
             key: "seed",
             label: "seed",
@@ -353,6 +453,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "orbital",
         about: "a real spherical harmonic as a balloon — the shape a textbook draws for an atomic orbital",
         family: Family::Shape,
+        group: Group::Surface,
         params: &[
             Param { key: "l", label: "l", about: "degree: how many nodal lines in all", default: "3", kind: Kind::Number { min: 0.0, max: 8.0 } },
             Param { key: "m", label: "m", about: "order: how many of them run through the poles; negative turns the lobes", default: "2", kind: Kind::Number { min: -8.0, max: 8.0 } },
@@ -363,6 +464,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "fern",
         about: "a fern by Lindenmayer's rewriting — fronds off a curling spine, rolling as they go",
         family: Family::Shape,
+        group: Group::Grown,
         params: &[Param { key: "angle", label: "angle", about: "degrees per turn", default: "22", kind: Kind::Number { min: 5.0, max: 60.0 } }],
     },
     Generator {
@@ -370,6 +472,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "coral",
         about: "a three-way branching coral — every tip splits into three, a third of a turn apart",
         family: Family::Shape,
+        group: Group::Grown,
         params: &[Param { key: "angle", label: "angle", about: "degrees per turn", default: "30", kind: Kind::Number { min: 5.0, max: 60.0 } }],
     },
     Generator {
@@ -377,6 +480,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "tree",
         about: "a tree with a trunk — long wood below, short twigs above, branches off three sides",
         family: Family::Shape,
+        group: Group::Grown,
         params: &[Param { key: "angle", label: "angle", about: "degrees per turn", default: "20", kind: Kind::Number { min: 5.0, max: 60.0 } }],
     },
     Generator {
@@ -384,9 +488,127 @@ pub const CATALOGUE: &[Generator] = &[
         name: "foam",
         about: "Voronoi foam — the walls between cells scattered in a box, meeting three at an edge as soap films do",
         family: Family::Shape,
+        group: Group::Pattern,
         params: &[
             Param { key: "cells", label: "cells", about: "how many centres to scatter", default: "24", kind: Kind::Number { min: 4.0, max: 64.0 } },
             Param { key: "seed", label: "seed", about: "where they land", default: "1", kind: Kind::Seed },
+        ],
+    },
+    Generator {
+        id: "henon",
+        name: "Hénon",
+        about: "the Hénon map — the first attractor anyone drew that was plainly a fractal",
+        family: Family::Attractor,
+        group: Group::Map,
+        params: &[],
+    },
+    Generator {
+        id: "ikeda",
+        name: "Ikeda",
+        about: "the Ikeda map — light in a ring cavity, with a hook in the attractor nothing else here has",
+        family: Family::Attractor,
+        group: Group::Map,
+        params: &[],
+    },
+    Generator {
+        id: "standard",
+        name: "standard map",
+        about: "Chirikov's standard map on its torus — islands that close, and one orbit that never does",
+        family: Family::Attractor,
+        group: Group::Map,
+        params: &[Param {
+            key: "k",
+            label: "kick",
+            about: "how hard each turn is kicked; at 0.9716 the last ring across the picture breaks",
+            default: "0.971635",
+            kind: Kind::Number { min: 0.0, max: 4.0 },
+        }],
+    },
+    Generator {
+        id: "klein",
+        name: "Klein bottle",
+        about: "the figure-eight immersion — a surface with no inside, and the crossing that three dimensions force on it",
+        family: Family::Shape,
+        group: Group::Surface,
+        params: &[Param { key: "girth", label: "girth", about: "how fat the tube is against the ring", default: "2", kind: Kind::Number { min: 0.5, max: 5.0 } }],
+    },
+    Generator {
+        id: "boy",
+        name: "Boy's surface",
+        about: "the projective plane immersed without a boundary — three-fold symmetric, and thought impossible until 1901",
+        family: Family::Shape,
+        group: Group::Surface,
+        params: &[],
+    },
+    Generator {
+        id: "gyroid",
+        name: "gyroid",
+        about: "a triply periodic minimal surface — two labyrinths that fill space and never touch; also Schwarz's P and D",
+        family: Family::Shape,
+        group: Group::Surface,
+        params: &[
+            Param { key: "kind", label: "kind", about: "gyroid, schwarz or diamond", default: "gyroid", kind: Kind::Text },
+            Param { key: "cells", label: "cells", about: "how many periods across the box", default: "2", kind: Kind::Number { min: 1.0, max: 6.0 } },
+            Param { key: "level", label: "level", about: "0 is the minimal surface; either side of it thickens one labyrinth and thins the other", default: "0", kind: Kind::Number { min: -1.5, max: 1.5 } },
+            Param { key: "thickness", label: "wall", about: "how thick to draw the wall", default: "0.06", kind: Kind::Number { min: 0.01, max: 0.4 } },
+        ],
+    },
+    Generator {
+        id: "quasicrystal",
+        name: "quasicrystal",
+        about: "six plane waves on the five-fold axes of an icosahedron — a pattern that never repeats and is nowhere random",
+        family: Family::Shape,
+        group: Group::Pattern,
+        params: &[Param { key: "cells", label: "cells", about: "how fine the pattern is", default: "3", kind: Kind::Number { min: 1.0, max: 8.0 } }],
+    },
+    Generator {
+        id: "phyllotaxis",
+        name: "phyllotaxis",
+        about: "the sunflower's own packing — one floret every 137.5°, the only angle that never lines up",
+        family: Family::Shape,
+        group: Group::Pattern,
+        params: &[
+            Param { key: "angle", label: "angle", about: "degrees between florets; a tenth off the golden angle and the spiral arms appear", default: "137.50776", kind: Kind::Number { min: 1.0, max: 359.0 } },
+            Param { key: "rise", label: "rise", about: "how far the head domes", default: "0.6", kind: Kind::Number { min: 0.0, max: 3.0 } },
+        ],
+    },
+    Generator {
+        id: "kifs",
+        name: "twisted gasket",
+        about: "the Sierpinski tetrahedron with a turn folded into every step — shells, spirals and lattices, one number wide",
+        family: Family::Shape,
+        group: Group::Fractal,
+        params: &[
+            Param { key: "angle", label: "twist", about: "degrees of turn per step; 0 is the plain gasket", default: "24", kind: Kind::Number { min: -180.0, max: 180.0 } },
+            Param { key: "tilt", label: "tilt", about: "degrees of turn about the other axis", default: "0", kind: Kind::Number { min: -180.0, max: 180.0 } },
+        ],
+    },
+    Generator {
+        id: "dla",
+        name: "aggregate",
+        about: "diffusion-limited aggregation — particles that wander in and stick where they touch; soot, lightning and copper all do this",
+        family: Family::Shape,
+        group: Group::Grown,
+        params: &[Param { key: "seed", label: "seed", about: "which walk; the same seed is the same dendrite", default: "1", kind: Kind::Seed }],
+    },
+    Generator {
+        id: "mandelbox",
+        name: "Mandelbox",
+        about: "fold, invert, scale, add — where the Mandelbulb is organic, this is architecture",
+        family: Family::Shape,
+        group: Group::Fractal,
+        params: &[Param { key: "scale", label: "scale", about: "the multiplier in the iteration; negative values turn it inside out", default: "2", kind: Kind::Number { min: -4.0, max: 4.0 } }],
+    },
+    Generator {
+        id: "quaternion",
+        name: "quaternion Julia",
+        about: "z ← z² + c in four dimensions, sliced back into three",
+        family: Family::Shape,
+        group: Group::Fractal,
+        params: &[
+            Param { key: "cr", label: "c real", about: "the real part of c", default: "-0.2", kind: Kind::Number { min: -2.0, max: 2.0 } },
+            Param { key: "ci", label: "c i", about: "the first imaginary part", default: "0.6", kind: Kind::Number { min: -2.0, max: 2.0 } },
+            Param { key: "cj", label: "c j", about: "the second imaginary part", default: "0.2", kind: Kind::Number { min: -2.0, max: 2.0 } },
         ],
     },
     Generator {
@@ -394,6 +616,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Mandelbrot",
         about: "the Mandelbrot set as a relief — the set a plateau, the escape time the country round it",
         family: Family::Shape,
+        group: Group::Fractal,
         params: &[],
     },
     Generator {
@@ -401,6 +624,7 @@ pub const CATALOGUE: &[Generator] = &[
         name: "Julia",
         about: "a Julia set as a relief, c = −0.8 + 0.156i",
         family: Family::Shape,
+        group: Group::Fractal,
         params: &[
             Param { key: "cr", label: "c real", about: "the real part of c", default: "-0.8", kind: Kind::Number { min: -2.0, max: 2.0 } },
             Param { key: "ci", label: "c imaginary", about: "the imaginary part of c", default: "0.156", kind: Kind::Number { min: -2.0, max: 2.0 } },
@@ -417,6 +641,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "fluid",
         about: "Stam's stable fluids — the Navier–Stokes equations on an endless sheet; the loudness stirs it, the kick bursts it, the snare spins it, the highs roughen it",
         family: Family::Shape,
+        group: Group::Field,
         params: &[],
     },
     Generator {
@@ -424,6 +649,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "reaction",
         about: "Gray–Scott reaction–diffusion — spots that grow, split and heal; the kick plants new ones",
         family: Family::Shape,
+        group: Group::Field,
         params: &[],
     },
     Generator {
@@ -431,6 +657,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "flock",
         about: "Reynolds' boids — four thousand of them drawing streaks; the loudness is their pace, the kick a predator, the snare a scatter",
         family: Family::Shape,
+        group: Group::Bodies,
         params: &[],
     },
     Generator {
@@ -438,6 +665,31 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "wind",
         about: "curl noise — tracers in a divergence-free noise field, a fluid with no solve; the kick is a gust, the highs roughen it",
         family: Family::Shape,
+        group: Group::Field,
+        params: &[],
+    },
+    Generator {
+        id: "slime",
+        name: "slime",
+        about: "Physarum: sixty-five thousand agents that leave a trail and follow the strongest one they can see — a transport network out of three rules and no plan; the kick starts a new front",
+        family: Family::Shape,
+        group: Group::Bodies,
+        params: &[],
+    },
+    Generator {
+        id: "swarm",
+        name: "swarmalators",
+        about: "particles that swarm and synchronise at once, each depending on the other — five states from two numbers; the loudness and the mids move between them",
+        family: Family::Shape,
+        group: Group::Bodies,
+        params: &[],
+    },
+    Generator {
+        id: "cloth",
+        name: "cloth",
+        about: "a sheet of sixty-five thousand particles hung from its top edge in an Arnold–Beltrami–Childress wind; the kick is a gust",
+        family: Family::Shape,
+        group: Group::Bodies,
         params: &[],
     },
     Generator {
@@ -445,6 +697,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "kuramoto",
         about: "Kuramoto's coupled oscillators on a torus — a loud passage locks them into a ribbon, quiet frees them; the kick scatters half",
         family: Family::Shape,
+        group: Group::Bodies,
         params: &[],
     },
     Generator {
@@ -452,6 +705,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "smoke",
         about: "the same solver in three dimensions, with heat — a plume that rises, shears and rolls up; the kick is a blast, the snare a shove, the highs the roughness",
         family: Family::Shape,
+        group: Group::Field,
         params: &[],
     },
     Generator {
@@ -459,6 +713,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "liquid",
         about: "four thousand particles of water in a tilting box — gravity swings round once a bar, so it pours corner to corner; the kick throws it at the ceiling",
         family: Family::Shape,
+        group: Group::Bodies,
         params: &[],
     },
     Generator {
@@ -466,6 +721,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "orbits",
         about: "five hundred bodies pulling on each other round a heavy centre — the loudness is the clock, the kick a shockwave, the snare knocks the disc out of its plane",
         family: Family::Shape,
+        group: Group::Bodies,
         params: &[],
     },
     Generator {
@@ -473,6 +729,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "pendulum",
         about: "four thousand double pendulums hung in a sheet from neighbouring angles — it swings as one surface, creases, then tears; the loudness is gravity and the kick hangs it again",
         family: Family::Shape,
+        group: Group::Bodies,
         params: &[],
     },
     Generator {
@@ -480,6 +737,7 @@ pub const SIMULATIONS: &[Generator] = &[
         name: "life",
         about: "a three-dimensional cellular automaton in the Clouds rule — slow masses that keep reshaping; the kick drops a seed",
         family: Family::Shape,
+        group: Group::Field,
         params: &[
             Param { key: "rule", label: "rule", about: "survive / born / states, as neighbour counts: 13-26/13-14,17-19 is Clouds; 4/4/5 is Bays' 4-4-5, a spiking crystal; 4-7/6-8/10 boils; 9-26/5-7,12-13,15/5 is Amoeba; 2,6,9/4,6,8-9/10 builds", default: "13-26/13-14,17-19", kind: Kind::Text },
         ],
