@@ -172,6 +172,11 @@ pub struct ParticleScene {
     pub palettes: crate::palette::Palettes,
     /// How many palettes have been loaded, for choosing the next row.
     loaded_palettes: usize,
+    /// The surface draw mode, built on its first frame. Behind a mutex
+    /// because its buffers grow with the count and the target, while
+    /// drawing takes `&self` like the additive pass does.
+    surface: std::sync::Mutex<Option<crate::surface::Surface>>,
+    target_format: wgpu::TextureFormat,
 }
 
 impl ParticleScene {
@@ -196,7 +201,10 @@ impl ParticleScene {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    // Compute and fragment too, for the surface mode's
+                    // evaluation pass and per-pixel lighting.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT
+                        | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -210,7 +218,7 @@ impl ParticleScene {
                 // WebGPU's default limits.
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -224,7 +232,7 @@ impl ParticleScene {
                 // binding as portable as the two above it.
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -236,7 +244,7 @@ impl ParticleScene {
                 // texel layout as the positions at binding 1.
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -248,7 +256,7 @@ impl ParticleScene {
                 // no sampler and no filterable format.
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -320,6 +328,8 @@ impl ParticleScene {
             attractors,
             palettes,
             loaded_palettes: 0,
+            surface: std::sync::Mutex::new(None),
+            target_format,
         }
     }
 
@@ -583,22 +593,7 @@ impl ParticleScene {
         clear: bool,
         background: wgpu::Color,
     ) {
-        // The caller does not own the palette bank, so the occupied-row
-        // count is filled in here rather than being threaded through the
-        // engine. It changes whenever a palette is dropped, which is why
-        // it is read per frame rather than captured once.
-        let mut uniforms = *uniforms;
-        uniforms.palette_rows[0] = self.palettes.occupied() as f32;
-        // Same reasoning for the video input: whether a frame has ever
-        // arrived and what shape it is are facts about the texture this
-        // owns, not settings the parameter table could hold.
-        uniforms.video[0] = if self.video.present { 1.0 } else { 0.0 };
-        uniforms.video[1] = self.video.aspect();
-        // And the size of the target, for the footprint floor: a fact
-        // about where this pass draws, which only this call knows.
-        uniforms.viewport_h = target.texture().height() as f32;
-        ctx.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        self.prepare(ctx, target, uniforms);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particles"),
@@ -643,6 +638,62 @@ impl ParticleScene {
         // "fewer invocations" is not on its own a reason to expect a win.
         // Anyone re-attempting this should benchmark before believing it.
         pass.draw(0..count * 6, 0..1);
+    }
+
+    /// Fill in what only this scene and this target know, upload, and
+    /// return what was uploaded.
+    fn prepare(
+        &self,
+        ctx: &GpuContext,
+        target: &wgpu::TextureView,
+        uniforms: &Uniforms,
+    ) -> Uniforms {
+        // The caller does not own the palette bank, so the occupied-row
+        // count is filled in here rather than being threaded through the
+        // engine. It changes whenever a palette is dropped, which is why
+        // it is read per frame rather than captured once.
+        let mut uniforms = *uniforms;
+        uniforms.palette_rows[0] = self.palettes.occupied() as f32;
+        // Same reasoning for the video input: whether a frame has ever
+        // arrived and what shape it is are facts about the texture this
+        // owns, not settings the parameter table could hold.
+        uniforms.video[0] = if self.video.present { 1.0 } else { 0.0 };
+        uniforms.video[1] = self.video.aspect();
+        // And the size of the target, for the footprint floor: a fact
+        // about where this pass draws, which only this call knows.
+        uniforms.viewport_h = target.texture().height() as f32;
+        ctx.queue
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        uniforms
+    }
+
+    /// Encode one frame in the surface mode: the particles as opaque, lit
+    /// surfels, and the room as lit surfaces when `walls` is given. See
+    /// [`crate::surface`]. Takes the place of [`Self::render`] and of the
+    /// wireframe room for the frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_surface(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        uniforms: &Uniforms,
+        count: u32,
+        clear: bool,
+        background: wgpu::Color,
+        walls: Option<crate::surface::Walls>,
+    ) {
+        let uniforms = self.prepare(ctx, target, uniforms);
+        // A poisoned lock means an earlier frame panicked mid-encode; the
+        // resources inside are still sound, so draw on rather than take
+        // the show down with it.
+        let mut surface = self.surface.lock().unwrap_or_else(|e| e.into_inner());
+        let surface = surface.get_or_insert_with(|| {
+            crate::surface::Surface::new(ctx, &self.bgl, self.target_format)
+        });
+        surface.render(
+            ctx, encoder, &self.bind_group, target, &uniforms, count, clear, background, walls,
+        );
     }
 }
 

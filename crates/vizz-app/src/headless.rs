@@ -188,13 +188,18 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             vector.render(&ctx, &mut encoder, &post.scene_view, &inputs.vector);
         }
         // Room next: it clears when nothing painted before it.
-        if inputs.room_visible {
+        if inputs.room_visible && !inputs.surface {
             room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room, output.height,
                 inputs.background,
                 !vector_in_scene);
         }
-        scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count,
-            !inputs.room_visible && !vector_in_scene, inputs.background);
+        if inputs.surface {
+            scene.render_surface(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms,
+                inputs.count, !vector_in_scene, inputs.background, inputs.walls());
+        } else {
+            scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count,
+                !inputs.room_visible && !vector_in_scene, inputs.background);
+        }
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         if inputs.vector_active && inputs.vector_print {
             vector_print.render(&ctx, &mut encoder, &output.view, &inputs.vector);

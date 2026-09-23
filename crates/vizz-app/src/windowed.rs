@@ -1160,7 +1160,9 @@ impl App {
         // it is off by default and drawing invisible lines is wasted
         // work.
         let vector_in_scene = inputs.vector_active && !inputs.vector_print;
-        if inputs.room_visible {
+        // The surface mode draws the room itself, as walls rather than
+        // lines, in the same depth-tested pass as the cloud.
+        if inputs.room_visible && !inputs.surface {
             state.room.render(
                 &state.ctx,
                 &mut encoder,
@@ -1171,15 +1173,28 @@ impl App {
                 !vector_in_scene,
             );
         }
-        state.scene.render(
-            &state.ctx,
-            &mut encoder,
-            &state.post.scene_view,
-            &inputs.uniforms,
-            inputs.count,
-            !inputs.room_visible && !vector_in_scene,
-            inputs.background,
-        );
+        if inputs.surface {
+            state.scene.render_surface(
+                &state.ctx,
+                &mut encoder,
+                &state.post.scene_view,
+                &inputs.uniforms,
+                inputs.count,
+                !vector_in_scene,
+                inputs.background,
+                inputs.walls(),
+            );
+        } else {
+            state.scene.render(
+                &state.ctx,
+                &mut encoder,
+                &state.post.scene_view,
+                &inputs.uniforms,
+                inputs.count,
+                !inputs.room_visible && !vector_in_scene,
+                inputs.background,
+            );
+        }
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         // Print placement: the stack replaces the finished frame, drawn
         // at the output format so no tone-map shoulder or feedback ever

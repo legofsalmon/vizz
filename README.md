@@ -1389,6 +1389,46 @@ shadows here for that to be inconsistent with, and the alternative is
 half of every scan rendering black for a reason nobody could diagnose
 from the front of a stage.
 
+### Solid surfaces
+
+```
+/particles/surface   0 = glow (the default), 1 = solid, lit surfaces
+```
+
+Everything above lights a field of light. `/particles/surface` makes the
+field a *thing*: each particle becomes an opaque disc — a surfel, after
+Pfister et al., "Surfels: Surface Elements as Rendering Primitives",
+SIGGRAPH 2000 — so nearer ones hide farther ones, lamps light the side of
+the form that faces them, and the sun casts a shadow. The room, when it
+is up, is drawn as dark plaster walls, floor and ceiling with its grid in
+them, and the lamps and the cloud's shadow land on it.
+
+How it is drawn:
+
+- **Each particle is evaluated once**, by a compute pass, into a buffer
+  the other passes read — the same shader functions the additive pass
+  uses, so switching modes never moves the cloud.
+- **The sun gets a shadow map**: the surfels from the sun into a 2048²
+  depth map fitted to the cloud (Williams, SIGGRAPH 1978), read with 3×3
+  percentage-closer filtering (Reeves, Salesin & Cook, SIGGRAPH 1987).
+  Only the cloud casts.
+- **Surfels and walls go into a G-buffer**, and one pass lights every
+  covered pixel. Deferred, because the normal a cloud of discs needs is
+  not any one disc's: it is the orientation of the surface they make
+  together, which the lighting pass reads from the depth buffer a few
+  surfels away on each side. So a procedural sphere with no normals at
+  all still shades as a sphere. Where a scan has its own normals they
+  win, with a fifth left to the depth so the grain survives.
+- **The ambient is a sky**: full on a surface facing up, 0.3 facing down.
+  A flat fill on an opaque form paints it one colour and it reads as a
+  cut-out.
+
+Nothing about the additive mode changed; a frame drawn in it is
+byte-for-byte what it was. The surface mode costs more — a compute pass,
+a shadow pass when the sun is up, and the lighting pass — which on the
+software rasteriser the tests run on was 122 ms a frame against 72 ms for
+the same look drawn as glow. It has not been timed on a real GPU yet.
+
 ## Camera moves
 
 ```
@@ -1875,6 +1915,7 @@ and the aliases are read on the way in only.
 | `/particles/hue` | 0 – 1 | 0.58 | base hue |
 | `/particles/saturation` | 0 – 1 | 0.8 | color saturation |
 | `/particles/brightness` | 0 – 2 | 1 | value multiplier |
+| `/particles/surface` | 0 – 1 | 0 | draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

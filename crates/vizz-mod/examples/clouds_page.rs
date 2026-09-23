@@ -646,6 +646,12 @@ const ENGINE: &[Part] = &[
                 ours: false,
             },
             Piece {
+                name: "Solid surfaces",
+                about: r#"<p>With <code>/particles/surface</code> up, a particle stops being light and becomes a small opaque disc, so the cloud is an object: nearer discs hide farther ones, a lamp lights the side of the form that faces it, and the sun casts a shadow onto the cloud itself and onto the room, which is drawn as walls, floor and ceiling instead of lines. Each particle is evaluated once by a compute pass with the same functions the glowing mode uses, so switching never moves anything. The lighting is deferred: the discs write colour and depth, and one pass lights every pixel, reading which way the surface faces from the depth a few discs away on each side. That is what lets a procedural sphere with no normals at all shade as a sphere rather than a heap of beads.</p>"#,
+                source: r#"the discs are surfels, after Hanspeter Pfister, Matthias Zwicker, Jeroen van Baar and Markus Gross, <a href="https://dl.acm.org/doi/10.1145/344779.344936">“Surfels: Surface Elements as Rendering Primitives”</a>, SIGGRAPH 2000. The shadow is a shadow map, Lance Williams, <a href="https://dl.acm.org/doi/10.1145/965139.807402">“Casting Curved Shadows on Curved Surfaces”</a>, SIGGRAPH 1978, read with the percentage-closer filtering of William Reeves, David Salesin and Robert Cook, <a href="https://dl.acm.org/doi/10.1145/37402.37435">“Rendering Antialiased Shadows with Depth Maps”</a>, SIGGRAPH 1987. Normals from the depth buffer are standard deferred-rendering practice; the span that follows the surfel size is vizz's."#,
+                ours: false,
+            },
+            Piece {
                 name: "Gravity wells",
                 about: r#"<p>Four attractors and repulsors bending the cloud from a layer above the scenes. Deliberately <em>not</em> a simulation: every particle here is a function of its index with no state between frames, and integrating velocities would throw that away for physics nobody is checking. The falloff is <code>r²/(d²+r²)</code> — one at the centre, a half at the radius, asymptotically nothing beyond — because a hard cutoff shows up as a visible shell in the cloud.</p>"#,
                 source: "vizz. A displacement field that reads as gravity, not a gravity model.",
