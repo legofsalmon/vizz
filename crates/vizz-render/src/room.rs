@@ -22,6 +22,18 @@ const OVERSCAN: f32 = 1.01;
 const LINES_PER_AXIS: u32 = 10;
 /// Five faces, each with depth lines and cross lines.
 const LINE_COUNT: u32 = 5 * LINES_PER_AXIS * 2;
+/// Two triangles per line; see `vs_main` in room.wgsl.
+const VERTS_PER_LINE: u32 = 6;
+
+/// How wide a room line is, in render pixels, when the scene is drawn
+/// `render_h` pixels tall for an output `output_h` tall.
+///
+/// One output pixel, whatever the render scale. The old hardware lines
+/// were one *render* pixel, so drawing at 2× and downscaling halved the
+/// room's light — which is what kept 2× from being the default.
+pub fn line_px(render_h: u32, output_h: u32) -> f32 {
+    (render_h.max(1) as f32 / output_h.max(1) as f32).max(1e-3)
+}
 
 /// Layout must match `Room` in room.wgsl.
 #[repr(C)]
@@ -43,9 +55,12 @@ pub struct RoomUniforms {
     /// 0,0 is frame centre; ±1 puts it on the frame edge.
     pub vanish_x: f32,
     pub vanish_y: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    /// Target size in pixels and line width in those pixels. Set by
+    /// [`Room::render`] from the target it draws into; whatever the caller
+    /// leaves here is overwritten.
+    pub viewport_w: f32,
+    pub viewport_h: f32,
+    pub line_px: f32,
 }
 
 impl RoomUniforms {
@@ -85,9 +100,9 @@ impl RoomUniforms {
             converge: converge.clamp(0.0, 1.0),
             vanish_x,
             vanish_y,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            viewport_w: 0.0,
+            viewport_h: 0.0,
+            line_px: 1.0,
         }
     }
 
@@ -255,7 +270,7 @@ impl Room {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
             depth_stencil: None,
@@ -269,17 +284,30 @@ impl Room {
 
     /// Draw into an existing pass target. Must run *before* the particles,
     /// so the cloud accumulates on top of it.
+    ///
+    /// `output_h` is the height of the master the target is eventually
+    /// downscaled into; lines are one pixel of *that* wide, so the room's
+    /// brightness does not change with the render scale.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         uniforms: &RoomUniforms,
+        output_h: u32,
         background: wgpu::Color,
         clear: bool,
     ) {
+        let size = target.texture().size();
+        let uniforms = RoomUniforms {
+            viewport_w: size.width as f32,
+            viewport_h: size.height as f32,
+            line_px: line_px(size.height, output_h),
+            ..*uniforms
+        };
         ctx.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("room"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -309,7 +337,7 @@ impl Room {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.draw(0..LINE_COUNT * 2, 0..1);
+        pass.draw(0..LINE_COUNT * VERTS_PER_LINE, 0..1);
     }
 }
 
@@ -472,6 +500,136 @@ mod tests {
 
     /// The vertex count the pipeline draws has to match what the shader
     /// generates, or the last face is silently missing.
+    fn gpu() -> Option<GpuContext> {
+        match pollster::block_on(GpuContext::new(None)) {
+            Ok(ctx) => Some(ctx),
+            Err(_) if std::env::var_os("VIZZ_REQUIRE_GPU").is_some() => {
+                panic!("VIZZ_REQUIRE_GPU is set but no GPU adapter was found")
+            }
+            Err(_) => {
+                eprintln!("no GPU adapter available; skipping GPU test");
+                None
+            }
+        }
+    }
+
+    fn f16_to_f32(h: u16) -> f32 {
+        let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let exp = ((h >> 10) & 0x1f) as i32;
+        let frac = (h & 0x3ff) as f32;
+        match exp {
+            0 => sign * frac * 2f32.powi(-24),
+            31 => f32::NAN,
+            _ => sign * (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+        }
+    }
+
+    /// Draw the room `scale` times larger than a `size`-pixel output, box
+    /// it back down to the output, and return the output's pixels (the
+    /// green channel, linear).
+    fn render_room(ctx: &GpuContext, room: &Room, size: [u32; 2], scale: u32) -> Vec<f32> {
+        let [w, h] = [size[0] * scale, size[1] * scale];
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("room-test-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::SCENE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let row = (w * 8).div_ceil(256) * 256;
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("room-test-readback"),
+            size: (row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let cam = Camera { aspect: w as f32 / h as f32, ..Default::default() };
+        let u = RoomUniforms::for_camera(&cam, cam.distance - 1.6, 6.0, 1.0, 0.7, 0.6, 0.1, -0.05);
+        let mut enc = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        room.render(ctx, &mut enc, &view, &u, size[1], wgpu::Color::BLACK, true);
+        enc.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(h),
+                },
+            },
+            texture.size(),
+        );
+        ctx.queue.submit([enc.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = slice.get_mapped_range().unwrap().to_vec();
+        let texel = |x: u32, y: u32| {
+            let o = (y * row + x * 8 + 2) as usize;
+            f16_to_f32(u16::from_le_bytes([bytes[o], bytes[o + 1]]))
+        };
+        let mut out = vec![0.0; (size[0] * size[1]) as usize];
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                let mut sum = 0.0;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        sum += texel(x * scale + dx, y * scale + dy);
+                    }
+                }
+                out[(y * size[0] + x) as usize] = sum / (scale * scale) as f32;
+            }
+        }
+        out
+    }
+
+    /// The room is as bright at every render scale.
+    ///
+    /// The old hardware lines were one render pixel wide, so 2× kept half
+    /// the room's light and 4× a quarter — measured at 9.7, 4.9 and 2.3
+    /// (×1e-3 mean linear) in the 2026-09-23 previz review, which is what
+    /// kept 2× from being the default. Lines one *output* pixel wide with
+    /// exact coverage put the same light into the frame however finely
+    /// they are drawn.
+    #[test]
+    fn the_room_is_as_bright_at_every_render_scale() {
+        let Some(ctx) = gpu() else { return };
+        let room = Room::new(&ctx, crate::post::SCENE_FORMAT);
+        let size = [160, 90];
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        let one = render_room(&ctx, &room, size, 1);
+        let two = render_room(&ctx, &room, size, 2);
+        let four = render_room(&ctx, &room, size, 4);
+        let (m1, m2, m4) = (mean(&one), mean(&two), mean(&four));
+        assert!(m1 > 1e-3, "the room drew nothing: {m1}");
+        for (label, m) in [("2x", m2), ("4x", m4)] {
+            let ratio = m / m1;
+            assert!(
+                (0.93..1.07).contains(&ratio),
+                "{label} keeps {ratio:.2} of the 1x room's light ({m} vs {m1})"
+            );
+        }
+        // And the finer renders converge on one picture rather than just
+        // matching in total: 2x sits closer to 4x than 1x does.
+        let err = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>();
+        assert!(err(&two, &four) < err(&one, &four));
+    }
+
+    #[test]
+    fn line_width_is_one_output_pixel() {
+        assert_eq!(line_px(1080, 1080), 1.0);
+        assert_eq!(line_px(2160, 1080), 2.0);
+        assert_eq!(line_px(540, 1080), 0.5);
+        // Never zero, even for a nonsense size.
+        assert!(line_px(0, 0) > 0.0);
+    }
+
     #[test]
     fn line_count_matches_the_shader() {
         // 5 faces × (N depth lines + N cross lines).

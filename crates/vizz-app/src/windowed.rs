@@ -438,8 +438,12 @@ impl App {
         log::info!(
             "output {ow}x{oh} ({}), rendering at {rw}x{rh} ({:.2}x)",
             if s.wide_output { "16-bit float" } else { "8-bit" },
-            s.scale()
+            s.scale_for([ow, oh])
         );
+        // What the panel shows, and what a later output change starts
+        // from: the scale actually in use, which for a settings file that
+        // never chose one depends on the output size.
+        self.render_scale = s.scale_for([ow, oh]);
         let output = OutputTarget::with_format(&ctx.device, ow, oh, master_format);
         let post = PostChain::new(&ctx, rw, rh, master_format);
         // The scene draws into the post chain's HDR buffer, not straight
@@ -903,9 +907,7 @@ impl App {
     /// from inside the frame path, where the window state is already
     /// borrowed and the stream's first frame needs exactly this.
     fn show_cloud_slot(p: &crate::params::AppParams, slot: usize) {
-        p.registry.set(p.cloud_a, slot as f32);
-        p.registry.set(p.cloud_morph, 0.0);
-        p.registry.set(p.shape, crate::params::SHAPE_CLOUD_PAIR);
+        p.show_cloud_slot(slot);
     }
 
     /// Rasterize a typed word into the next slot.
@@ -1164,6 +1166,7 @@ impl App {
                 &mut encoder,
                 &state.post.scene_view,
                 &inputs.room,
+                state.output.height,
                 inputs.background,
                 !vector_in_scene,
             );
@@ -3997,7 +4000,8 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         output_status: Vec::new(),
         armed_learn: None,
         pending_clouds: Vec::new(),
-        render_scale: crate::settings::load().scale(),
+        // Replaced as soon as the output size is known; see `init`.
+        render_scale: 1.0,
         clock_source: crate::settings::load().clock_source,
         recorder: None,
         thumbs: Default::default(),

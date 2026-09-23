@@ -189,6 +189,12 @@ impl FrameEngine {
     /// Whether the set list has changed since this was last asked, and
     /// should be written to disk. Taken rather than read, so one save
     /// answers one change.
+    /// Land every parameter on its set value at the next frame, skipping
+    /// the slew — the same cut a zero-second scene blend makes.
+    pub fn cut(&mut self) {
+        self.cut_pending = true;
+    }
+
     pub fn take_decks_dirty(&mut self) -> bool {
         std::mem::take(&mut self.decks_dirty)
     }
@@ -888,7 +894,7 @@ impl FrameEngine {
                 cam_up: cam.up,
                 defocus: camera.defocus,
                 cam_position: cam.position,
-                _pad_cam: 0.0,
+                viewport_h: 0.0,
                 time: self.vis_time as f32,
                 aspect,
                 size: self.snapshot.get(p.size),
@@ -1004,9 +1010,10 @@ impl FrameEngine {
                 flash: self.snapshot.get(p.punch_flash),
                 invert: self.snapshot.get(p.punch_invert),
                 black: self.snapshot.get(p.punch_black).max(strobe_dark),
-                _pad0: 0.0,
-                _pad1: 0.0,
-                _pad2: 0.0,
+                // Filled in by PostChain::render from the target sizes.
+                downsample: 0.0,
+                out_texel_x: 0.0,
+                out_texel_y: 0.0,
             },
             room,
             room_visible: room_brightness > 0.002,

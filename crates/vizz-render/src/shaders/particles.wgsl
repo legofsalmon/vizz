@@ -12,7 +12,10 @@ struct Uniforms {
     cam_up: vec3<f32>,
     defocus: f32,
     cam_position: vec3<f32>,
-    _pad_cam: f32,
+    // Height of the target in pixels, for the footprint floor. Filled in
+    // by ParticleScene::render from the target it draws into; 0 turns the
+    // floor off.
+    viewport_h: f32,
     time: f32,          // pre-integrated on CPU: advances at `speed` rate
     aspect: f32,        // width / height
     size: f32,          // particle billboard half-size in view units
@@ -120,6 +123,9 @@ struct VsOut {
 };
 
 const TAU: f32 = 6.28318530718;
+/// Smallest sprite half-size, in target pixels; see the footprint floor in
+/// vs_main. 1.6 was the value measured in the 2026-09-23 previz review.
+const FOOTPRINT_MIN_PX: f32 = 1.6;
 
 // Per-particle randomness, hashed from the *integer* index.
 //
@@ -618,7 +624,25 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // Sprites shrink with the object they belong to. Leaving them at a
     // fixed size while the shape around them compresses is what gives a
     // miniature away — the grain of the thing has to scale too.
-    let half = u.size * coc * placed.w;
+    var half = u.size * coc * placed.w;
+
+    // Footprint floor. A sprite smaller than a pixel is point-sampled by
+    // the rasteriser: it lands on a pixel centre or it does not, so a
+    // field of them flickers as they move. Widen anything under
+    // FOOTPRINT_MIN_PX to that size and dim it by the area it gained, so
+    // it is low-passed rather than dropped and carries the same light.
+    // This is the screen-space filter of Mip-Splatting (Yu et al., CVPR
+    // 2024), applied to a disc instead of a Gaussian. On the Confetti look
+    // it took frame-to-frame shimmer from 37% to 23% in the 2026-09-23
+    // previz review.
+    var energy = 1.0;
+    if (u.viewport_h > 0.0) {
+        let probe = u.view_proj * vec4<f32>(p + u.cam_up * half, 1.0);
+        let r_px = abs(probe.y / probe.w - centre.y / centre.w) * (u.viewport_h * 0.5);
+        let grow = max(FOOTPRINT_MIN_PX / max(r_px, 1e-4), 1.0);
+        half = half * grow;
+        energy = 1.0 / (grow * grow);
+    }
 
     // Billboard in world space against the camera basis, so sprites face
     // the camera from any angle instead of only from straight on.
@@ -628,7 +652,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
     // Spreading the same energy over a wider disc dims it; without this,
     // defocusing brightens the frame instead of softening it.
-    let bokeh = 1.0 / (coc * coc);
+    let bokeh = energy / (coc * coc);
     // Distance fade so depth still reads without a depth buffer.
     let fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
     // `w` after the view-projection is the view-space depth, which is what

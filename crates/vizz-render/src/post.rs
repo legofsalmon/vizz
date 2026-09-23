@@ -37,9 +37,28 @@ pub struct PostUniforms {
     /// Darken to black, 0..1. RGB only — alpha is untouched, matching
     /// the master dim, so layer users keep their coverage.
     pub black: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    /// 1 when the scene is drawn at a render scale between 1× and 2× and
+    /// the composite has to filter it down, 0 otherwise. Set by
+    /// [`PostChain::render`] from the sizes involved; whatever the caller
+    /// leaves in these three is overwritten.
+    pub downsample: f32,
+    /// One output pixel, in uv.
+    pub out_texel_x: f32,
+    pub out_texel_y: f32,
+}
+
+/// Whether the composite needs more than one tap to bring a scene of
+/// size `scene` down to an output of size `out`.
+///
+/// One bilinear tap at an output pixel's centre averages the 2×2 scene
+/// texels around it. At exactly 2× those are the four texels the output
+/// pixel covers, so one tap is an exact box filter; at 1× it lands on one
+/// texel and is an exact copy. Anywhere between, the output pixel covers
+/// texels the tap never reads, and fine detail aliases in the downscale.
+/// Upscaling (below 1×) has nothing to filter.
+pub fn needs_filtered_downsample(scene: [u32; 2], out: [u32; 2]) -> bool {
+    let exact = |k: u32| scene[0] == out[0] * k && scene[1] == out[1] * k;
+    !exact(1) && !exact(2) && (scene[0] > out[0] || scene[1] > out[1])
 }
 
 /// HDR so sustained feedback has headroom before the tone-map. Scenes
@@ -200,8 +219,20 @@ impl PostChain {
         output: &wgpu::TextureView,
         uniforms: &PostUniforms,
     ) {
+        let scene = self.scene_view.texture().size();
+        let out = output.texture().size();
+        let uniforms = PostUniforms {
+            downsample: if needs_filtered_downsample([scene.width, scene.height], [out.width, out.height]) {
+                1.0
+            } else {
+                0.0
+            },
+            out_texel_x: 1.0 / out.width.max(1) as f32,
+            out_texel_y: 1.0 / out.height.max(1) as f32,
+            ..*uniforms
+        };
         ctx.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         let back = 1 - self.front;
         // Pass 1: scene + previous history -> the other history slot.
@@ -301,6 +332,21 @@ mod tests {
 
     const W: u32 = 128;
 
+    #[test]
+    fn only_fractional_supersampling_takes_the_filtered_path() {
+        let out = [1920, 1080];
+        // 1× and 2× are exact with one tap, and stay the old picture.
+        assert!(!needs_filtered_downsample([1920, 1080], out));
+        assert!(!needs_filtered_downsample([3840, 2160], out));
+        // Between them the footprint is wider than one tap reads.
+        assert!(needs_filtered_downsample([2880, 1620], out));
+        assert!(needs_filtered_downsample([2400, 1350], out));
+        // A render the pixel budget squeezed to just under 2× too.
+        assert!(needs_filtered_downsample([3838, 2158], out));
+        // Below 1× is an upscale: nothing to filter.
+        assert!(!needs_filtered_downsample([960, 540], out));
+    }
+
     fn gpu() -> Option<GpuContext> {
         match pollster::block_on(GpuContext::new(None)) {
             Ok(ctx) => Some(ctx),
@@ -356,7 +402,7 @@ mod tests {
             cam_up: cam.up,
             defocus: 0.0,
             cam_position: cam.position,
-            _pad_cam: 0.0,
+            viewport_h: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,
@@ -396,9 +442,9 @@ mod tests {
             flash,
             invert: 0.0,
             black,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            downsample: 0.0,
+            out_texel_x: 0.0,
+            out_texel_y: 0.0,
         };
 
         let mut enc = ctx
