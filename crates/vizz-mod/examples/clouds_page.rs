@@ -633,6 +633,12 @@ const ENGINE: &[Part] = &[
                 ours: true,
             },
             Piece {
+                name: "Drawing at twice the size",
+                about: r#"<p>Up to 1080p the frame is drawn at twice the output's width and height and filtered down, which is the one thing that reliably cleans up a field of one-pixel sprites: against a 4× reference it takes out about half the error and more than half the frame-to-frame shimmer. Two things had to change for that to be safe. The room's lines were one-pixel hardware lines, so drawn at 2× they lost half their light; they are now quads one <em>output</em> pixel wide whose edge coverage is the exact overlap of a pixel with the line, so the room is equally bright at any scale and anti-aliased at 1× as well. And a sprite smaller than about a pixel and a half is widened to that size and dimmed by the area it gained, so it is low-passed instead of landing on a pixel centre or missing it.</p>"#,
+                source: r#"the line coverage is the box-filter case of Satish Gupta and Robert Sproull, <a href="https://dl.acm.org/doi/10.1145/965161.806787">“Filtering Edges for Gray-Scale Displays”</a>, SIGGRAPH 1981. The sprite floor is the screen-space filter of Zehao Yu, Anpei Chen, Binbin Huang, Torsten Sattler and Andreas Geiger, <a href="https://niujinshuchong.github.io/mip-splatting/">“Mip-Splatting: Alias-free 3D Gaussian Splatting”</a>, CVPR 2024, applied to a disc instead of a Gaussian."#,
+                ours: false,
+            },
+            Piece {
                 name: "Gravity wells",
                 about: r#"<p>Four attractors and repulsors bending the cloud from a layer above the scenes. Deliberately <em>not</em> a simulation: every particle here is a function of its index with no state between frames, and integrating velocities would throw that away for physics nobody is checking. The falloff is <code>r²/(d²+r²)</code> — one at the centre, a half at the radius, asymptotically nothing beyond — because a hard cutoff shows up as a visible shell in the cloud.</p>"#,
                 source: "vizz. A displacement field that reads as gravity, not a gravity model.",
