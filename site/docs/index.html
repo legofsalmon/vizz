@@ -730,7 +730,11 @@ vizz --live-cloud sim:slime       # Physarum: a network from three rules
 vizz --live-cloud sim:swarm       # swarmalators: swarming and syncing at once
 vizz --live-cloud sim:cloth       # a sheet in the wind
 vizz --live-cloud sim:sand        # an Abelian sandpile, toppling
-vizz --live-cloud sim:spiral      # Belousov–Zhabotinsky waves</code></pre>
+vizz --live-cloud sim:spiral      # Belousov–Zhabotinsky waves
+vizz --live-cloud sim:cyclic      # states chasing each other round a ring
+vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
+vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
+vizz --live-cloud sim:vortex      # smoke rings, as the filaments they are made of</code></pre>
 
 <p>A simulation is a live cloud that needs no sender: it runs on its own thread
 at the frame rate and publishes through the stream's path. The panel's
@@ -764,6 +768,22 @@ from its top edge in the same wind <code>/shape/wind</code> blows.
 <strong>sand</strong> is the Abelian sandpile — grains dropped and toppled, and a
 fractal nobody designed. <strong>spirals</strong> is the Belousov–Zhabotinsky
 reaction, whose rotating fronts annihilate where they meet.</p>
+
+<p><strong>cyclic</strong> is Fisch, Gravner and Griffeath's cyclic
+automaton: states in a ring, each waiting to be eaten by the next. Noise
+clears into debris, the debris organises into droplets, and the droplets are
+consumed by spirals that cannot be destroyed, because a spiral's own wave comes
+back round to feed it; in three dimensions the waves are scrolls, and only the
+crest is drawn. <strong>tangle</strong> is one long elastic rod loose in a wind,
+its length and its curvature both held as constraints, and self-repulsion on a
+grid so it cannot pass through itself — which is the difference between a
+tangle and a scribble. <strong>crystal</strong> is Reiter's snowflake on a
+hexagonal lattice: cells that are ice or next to it drop out of the diffusion
+and take a trickle of vapour instead, and out of that come plates, sectored
+plates and stellar dendrites, sorted by vapour as real crystals are sorted by
+humidity. <strong>vortex</strong> is the thin cores smoke rings are made of,
+moving each other by Biot–Savart — rings that catch the one in front and thread
+through it.</p>
 
 <p>The automaton's rule is a knob, written <em>survive/born/states</em>. Past
 two states a cell that fails to survive counts down instead of dying, and only

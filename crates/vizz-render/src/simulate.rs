@@ -17,21 +17,31 @@
 //! crossed to, captured and lit like the others — that happens to be
 //! alive.
 //!
-//! Ten ship, and they are all one of three kinds. Some are *fields on
-//! a grid*: **fluid** is Stam's stable solver for the incompressible
-//! Navier–Stokes equations (Stam, "Stable Fluids", 1999; "Real-Time
-//! Fluid Dynamics for Games", 2003) on a periodic sheet, with Fedkiw's
-//! vorticity confinement to keep the swirls alive; **smoke** is the
-//! same solver in a box, with heat to lift it; **reaction** is the
-//! Gray–Scott system in Pearson's parameterisation; **wind** is curl
-//! noise, a fluid with no solve at all; **life** is a cellular
-//! automaton on a cubic lattice. Some are *many bodies*: **flock** is
-//! Reynolds' boids, **orbits** is gravity by direct summation,
-//! **liquid** is position-based fluids, **pendulum** is four thousand
-//! double pendulums hung in a sheet. And **kuramoto** is a crowd of
-//! coupled oscillators, which is neither.
+//! Nineteen ship. Some are *fields on a grid*: **fluid** is Stam's
+//! stable solver for the incompressible Navier–Stokes equations
+//! (Stam, "Stable Fluids", 1999; "Real-Time Fluid Dynamics for Games",
+//! 2003) on a periodic sheet, with Fedkiw's vorticity confinement to
+//! keep the swirls alive; **smoke** is the same solver in a box, with
+//! heat to lift it; **reaction** is the Gray–Scott system in Pearson's
+//! parameterisation; **wind** is curl noise, a fluid with no solve at
+//! all; **life** is a cellular automaton on a cubic lattice;
+//! **cyclic** is another, whose states chase each other round a
+//! ring until the lattice fills with scroll waves; **sand** is the
+//! Abelian sandpile; and **spiral** is the Belousov–Zhabotinsky
+//! reaction as a cellular model.
 //!
-//! They cost between half a millisecond and twenty per frame, on a
+//! Some are *many bodies*: **flock** is Reynolds' boids, **orbits** is
+//! gravity by direct summation, **liquid** is position-based fluids,
+//! **pendulum** is four thousand double pendulums hung in a sheet,
+//! **slime** is Physarum, **swarm** is swarmalators, **cloth** is a
+//! mass-spring sheet in a wind, **vortex** is the thin cores smoke
+//! rings are made of, moving each other by Biot–Savart, **tangle** is
+//! one long elastic rod tying itself in knots.
+//!
+//! And **crystal** is grown: Reiter's snowflake on a hexagonal
+//! lattice. **kuramoto** is a crowd of coupled oscillators, which is
+//! none of the above.
+//!//! They cost between half a millisecond and twenty per frame, on a
 //! thread of their own, and a slow one loses frames rather than the
 //! picture: the renderer takes whatever the slot holds.
 
@@ -74,7 +84,7 @@ pub trait Simulation: Send {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -108,6 +118,10 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "cloth" => Some(Box::new(Cloth::new())),
         "sand" => Some(Box::new(Sand::new())),
         "spiral" => Some(Box::new(Spiral::new())),
+        "cyclic" => Some(Box::new(Cyclic::new())),
+        "tangle" => Some(Box::new(Tangle::new())),
+        "crystal" => Some(Box::new(Crystal::new())),
+        "vortex" => Some(Box::new(Vortex::new())),
         _ => None,
     }
 }
@@ -2972,12 +2986,8 @@ impl Simulation for Swarm {
         // Both halves of the interaction are antisymmetric — the pull
         // two of them feel is equal and opposite, and so is the pull on
         // their phases — so half the pairs do all the work.
-        for v in &mut self.vel {
-            *v = [0.0; 3];
-        }
-        for st in &mut self.step {
-            *st = 0.0;
-        }
+        self.vel.fill([0.0; 3]);
+        self.step.fill(0.0);
         for i in 0..MATES {
             let (pi, ti) = (self.pos[i], self.phase[i]);
             for j_index in (i + 1)..MATES {
@@ -3585,6 +3595,1051 @@ impl Rng {
         let a = self.f32() * std::f32::consts::TAU;
         let s = (1.0 - u * u).sqrt();
         [s * a.cos(), s * a.sin(), u]
+    }
+}
+
+// --- Cyclic -----------------------------------------------------------
+
+/// Cells along each side of the cyclic lattice.
+const CG: usize = 64;
+const CPLANE: usize = CG * CG;
+const CCELLS: usize = CG * CG * CG;
+
+/// The cyclic cellular automaton (Fisch, Gravner and Griffeath, 1991):
+/// states in a ring, each one waiting to be eaten by the next.
+///
+/// A cell in state *k* becomes *k + 1* as soon as enough of its
+/// neighbours already are; the states wrap round, so nothing is ever
+/// finished and nothing has an equilibrium to fall into. Started from
+/// pure noise it goes through three phases nobody put in it: the noise
+/// clears into *debris*, the debris organises into expanding
+/// *droplets*, and the droplets are eventually all consumed by
+/// *spirals* — self-sustaining cores that, once formed, cannot be
+/// destroyed, because a spiral's own wave comes back round to feed it.
+/// The lattice ends up tiled with them, turning for ever.
+///
+/// In three dimensions the spiral core is a line rather than a point
+/// and the waves are scrolls: nested shells rolling out of a filament,
+/// which is what an arrhythmic heart does and what the
+/// Belousov–Zhabotinsky reaction does in a tall jar. Only the crest is
+/// drawn — the two or three states behind the front — so the picture is
+/// the wave and not the volume it is crossing.
+pub struct Cyclic {
+    cell: Vec<u8>,
+    next: Vec<u8>,
+    states: u8,
+    /// Neighbours in the next state needed before a cell turns.
+    threshold: u8,
+    /// Generations owed, so the pace is in generations a second rather
+    /// than one a frame whatever the frame rate is.
+    owed: f32,
+    time: f32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Cyclic {
+    /// States in the ring. Twelve is well past the threshold where
+    /// spirals form and slow enough to see a wave arrive.
+    const STATES: u8 = 12;
+
+    pub fn new() -> Self {
+        let mut s = Self {
+            cell: vec![0; CCELLS],
+            next: vec![0; CCELLS],
+            states: Self::STATES,
+            threshold: 1,
+            owed: 0.0,
+            time: 0.0,
+            since_kick: 10.0,
+            rng: Rng::new(0xC7_C11C),
+        };
+        s.scatter(0, CG);
+        // Run it far enough that the first frame is already past the
+        // debris: an empty-looking lattice of noise is not the system.
+        for _ in 0..120 {
+            s.generation();
+        }
+        s
+    }
+
+    /// Fill a cube of the lattice with noise, which is how a spiral is
+    /// started: a spiral needs a defect to wind round, and noise is
+    /// nothing but defects.
+    fn scatter(&mut self, corner: usize, side: usize) {
+        for z in 0..side {
+            for y in 0..side {
+                for x in 0..side {
+                    let i = (corner + x) % CG
+                        + ((corner + y) % CG) * CG
+                        + ((corner + z) % CG) * CPLANE;
+                    self.cell[i] = (self.rng.next() % self.states as u64) as u8;
+                }
+            }
+        }
+    }
+
+    /// One turn of the ring over the whole lattice.
+    fn generation(&mut self) {
+        for z in 0..CG {
+            for y in 0..CG {
+                for x in 0..CG {
+                    let i = x + y * CG + z * CPLANE;
+                    let me = self.cell[i];
+                    let eats = (me + 1) % self.states;
+                    let mut count = 0;
+                    for (axis, c) in [x, y, z].into_iter().enumerate() {
+                        let stride = [1, CG, CPLANE][axis];
+                        let up = i + stride - if c + 1 == CG { CG * stride } else { 0 };
+                        let down = i + if c == 0 { CG * stride } else { 0 } - stride;
+                        count += u8::from(self.cell[up] == eats);
+                        count += u8::from(self.cell[down] == eats);
+                    }
+                    self.next[i] = if count >= self.threshold { eats } else { me };
+                }
+            }
+        }
+        std::mem::swap(&mut self.cell, &mut self.next);
+    }
+}
+
+impl Default for Cyclic {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Cyclic {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        // How many neighbours it takes. One is the loose rule that
+        // fills the lattice with spirals; two is grudging, and the
+        // waves come out blockier and slower, with fewer cores.
+        self.threshold = if drive.audio && drive.bands[3] > 0.6 { 2 } else { 1 };
+        // Generations a second. A wave crossing the lattice in about
+        // five seconds is a pace the eye can follow round a spiral.
+        let pace = if drive.audio { 6.0 + 16.0 * drive.level } else { 12.0 };
+        self.owed += pace * dt;
+        // Capped, so a frame that took too long does not then take
+        // even longer catching up.
+        let generations = (self.owed as usize).min(6);
+        self.owed -= generations as f32;
+        for _ in 0..generations {
+            self.generation();
+        }
+        // The kick scatters a corner of the lattice, which is a fresh
+        // patch of defects — some of them wind up into new cores, and
+        // the waves already crossing it roll straight over the rest.
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.5 {
+            self.since_kick = 0.0;
+            let corner = (self.rng.next() as usize) % CG;
+            self.scatter(corner, CG / 4);
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        // The crest: the states just behind the front. Drawing every
+        // cell would draw the solid lattice, and the wave is the thing
+        // that is moving.
+        const CREST: u8 = 3;
+        let front: Vec<usize> = (0..CCELLS).filter(|&i| self.cell[i] < CREST).collect();
+        if front.is_empty() {
+            return;
+        }
+        // A slot's worth however many are on the crest: a stride across
+        // them when there are more, a jittered repeat when there are
+        // fewer. The same policy the loader uses, applied here so the
+        // count is right before the fit sees it.
+        let mut rng = Rng::new(0xC7_5EED);
+        for i in 0..POINTS {
+            let pick = if front.len() >= POINTS {
+                front[(i as u64 * front.len() as u64 / POINTS as u64) as usize]
+            } else {
+                front[i % front.len()]
+            };
+            let (x, y, z) = (pick % CG, (pick / CG) % CG, pick / CPLANE);
+            let j: [f32; 3] = if front.len() >= POINTS {
+                [0.0; 3]
+            } else {
+                std::array::from_fn(|_| rng.f32() - 0.5)
+            };
+            // Brightest at the very front, falling off behind it, so a
+            // scroll reads as a wave with a direction.
+            let shade = (255.0 - 55.0 * self.cell[pick] as f32) as u8;
+            out.push(Point {
+                pos: [
+                    ((x as f32 + 0.5 + j[0] * 0.8) / CG as f32 - 0.5) * 2.0,
+                    ((y as f32 + 0.5 + j[1] * 0.8) / CG as f32 - 0.5) * 2.0,
+                    ((z as f32 + 0.5 + j[2] * 0.8) / CG as f32 - 0.5) * 2.0,
+                ],
+                normal: [0.0; 3],
+                color: [shade, shade, shade],
+            });
+        }
+    }
+}
+
+// --- Tangle -----------------------------------------------------------
+
+/// Beads along the rod. Coarse on purpose, twice over: a rod's
+/// thickness has to be a few links, or it can fold tighter than it is
+/// wide and no contact solver can talk it out of that; and a rope thin
+/// enough to have a thousand beads in this box is also thin enough to
+/// pack the whole of itself into a marble, which is what it does.
+const BEADS: usize = 256;
+/// Points drawn per bead — a length of tube, sixteen round by sixteen
+/// along, so the rod is a rope and not a dotted line.
+const STRAND: usize = POINTS / BEADS;
+const ROUND: usize = 16;
+/// Cells along each side of the grid the rod checks itself against.
+/// One cell is a clear distance or more, so a bead's own cell and the
+/// twenty-six round it hold everything it could be touching.
+const KG: usize = 12;
+
+/// One long elastic rod, loose in a flow, tying itself in knots.
+///
+/// A rod is the one thing in this list with no resolution: it is a
+/// single curve, and everything interesting about it is in how it
+/// bends rather than in how many pieces it has. Stretching is stiff
+/// beyond any use — a rope does not get longer — so the length is held
+/// as a *constraint* and satisfied by moving the beads (Jakobsen,
+/// 2001), which cannot add energy and so is stable at any step;
+/// bending is held the same way, as a constraint on the distance
+/// across three beads, which is the discrete rod's curvature
+/// (Bergou et al., 2008) written as something the same solver can do.
+///
+/// What it needs beyond that is to know it is there: a rod with no
+/// self-repulsion passes through itself, and then it cannot knot, it
+/// can only look as though it has. So every bead is put on a grid each
+/// frame and pushed off the ones too close to it that are not its own
+/// neighbours along the rod. That is the difference between a tangle
+/// and a scribble.
+pub struct Tangle {
+    pos: Vec<[f32; 3]>,
+    /// Where it was last frame; the velocity is the difference.
+    was: Vec<[f32; 3]>,
+    /// Bead lists per grid cell, rebuilt each frame.
+    grid: Vec<Vec<u32>>,
+    time: f32,
+    since_kick: f32,
+    whip: f32,
+}
+
+impl Tangle {
+    /// The rest length of a link. The rope is about ten box widths
+    /// long and a fifteenth of one thick, which are the proportions
+    /// that let it fill the box when it coils: a rope's tangle takes
+    /// up the square of its thickness times its length, and a thinner
+    /// one at this length simply disappears into a knot in the middle.
+    const LINK: f32 = 20.0 / BEADS as f32;
+    /// How close two beads that are not neighbours may come — the
+    /// rope's own thickness.
+    const CLEAR: f32 = Self::LINK * 2.0;
+    /// How far along the rod a bead has to be before it counts as
+    /// something to bump into. It has to be enough further than
+    /// [`Self::CLEAR`] that an ordinary bend does not set the two
+    /// against each other: at five links apart, two beads are two and
+    /// a half times the clear distance apart on a straight run.
+    const OWN: usize = 4;
+    /// Relaxation passes a frame.
+    const PASSES: usize = 10;
+
+    pub fn new() -> Self {
+        let mut pos = Vec::with_capacity(BEADS);
+        // Laid out as a loose helix rather than a straight line: a
+        // straight rod in a symmetric flow has nothing to break its
+        // symmetry with, and takes far too long to start moving.
+        for i in 0..BEADS {
+            let t = i as f32 / (BEADS - 1) as f32;
+            let a = t * std::f32::consts::TAU * 6.0;
+            let (sa, ca) = a.sin_cos();
+            pos.push([ca * 0.5, (t - 0.5) * 1.4, sa * 0.5]);
+        }
+        // Scaled to the length the links will hold it at. A rod laid
+        // out longer than its own rest length spends the first minute
+        // being hauled in a bead at a time, because a constraint pass
+        // moves a correction one link along the rod and this one is
+        // four thousand links.
+        let laid: f32 = (0..BEADS - 1)
+            .map(|i| {
+                let (a, b) = (pos[i], pos[i + 1]);
+                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+            })
+            .sum();
+        let fit = Self::LINK * (BEADS - 1) as f32 / laid;
+        for p in &mut pos {
+            for c in p.iter_mut() {
+                *c *= fit;
+            }
+        }
+        Self {
+            was: pos.clone(),
+            pos,
+            grid: vec![Vec::new(); KG * KG * KG],
+            time: 0.0,
+            since_kick: 10.0,
+            whip: 0.0,
+        }
+    }
+
+    fn cell_of(p: [f32; 3]) -> usize {
+        let c: [usize; 3] = std::array::from_fn(|k| {
+            (((p[k] * 0.5 + 0.5) * KG as f32) as isize).clamp(0, KG as isize - 1) as usize
+        });
+        c[0] + c[1] * KG + c[2] * KG * KG
+    }
+
+    /// Pull two beads to a distance, half of the correction each.
+    fn hold_at(&mut self, a: usize, b: usize, rest: f32, share: f32) {
+        let (pa, pb) = (self.pos[a], self.pos[b]);
+        let d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if len < 1e-7 {
+            return;
+        }
+        let pull = (len - rest) / len * 0.5 * share;
+        for (k, d) in d.iter().enumerate() {
+            self.pos[a][k] += d * pull;
+            self.pos[b][k] -= d * pull;
+        }
+    }
+
+    /// Push apart every pair of beads that are too close and are not
+    /// each other's neighbours along the rod.
+    fn keep_clear(&mut self) {
+        for c in &mut self.grid {
+            c.clear();
+        }
+        for (i, p) in self.pos.iter().enumerate() {
+            self.grid[Self::cell_of(*p)].push(i as u32);
+        }
+        // The grid is one clear-distance across a cell or more, so a
+        // bead's own cell and the twenty-six round it hold everything
+        // that could be touching it.
+        let mut shove: Vec<[f32; 3]> = vec![[0.0; 3]; BEADS];
+        for (i, away) in shove.iter_mut().enumerate() {
+            let p = self.pos[i];
+            let base: [isize; 3] = std::array::from_fn(|k| {
+                (((p[k] * 0.5 + 0.5) * KG as f32) as isize).clamp(0, KG as isize - 1)
+            });
+            for dz in -1isize..=1 {
+                for dy in -1isize..=1 {
+                    for dx in -1isize..=1 {
+                        let c: [isize; 3] =
+                            [base[0] + dx, base[1] + dy, base[2] + dz];
+                        if c.iter().any(|&v| v < 0 || v >= KG as isize) {
+                            continue;
+                        }
+                        let cell = c[0] as usize + c[1] as usize * KG + c[2] as usize * KG * KG;
+                        for &j in &self.grid[cell] {
+                            let j = j as usize;
+                            // Its own stretch of rod is *supposed* to
+                            // be that close.
+                            if j <= i + Self::OWN && i <= j + Self::OWN {
+                                continue;
+                            }
+                            let q = self.pos[j];
+                            let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                            let l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                            if !(1e-12..Self::CLEAR * Self::CLEAR).contains(&l2) {
+                                continue;
+                            }
+                            let l = l2.sqrt();
+                            let push = (Self::CLEAR - l) / l * 0.5;
+                            for (k, d) in d.iter().enumerate() {
+                                away[k] += d * push;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Capped: in a knot a bead can be crowded by a dozen others at
+        // once, and the sum of a dozen shoves is a jump the link pass
+        // afterwards cannot undo in the passes it has — which shows up
+        // as a rope that gets slightly longer every frame.
+        let most = Self::LINK * 0.8;
+        for (p, s) in self.pos.iter_mut().zip(&shove) {
+            let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+            let scale = if len > most { most / len } else { 1.0 };
+            for k in 0..3 {
+                p[k] += s[k] * scale;
+            }
+        }
+    }
+}
+
+impl Default for Tangle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Tangle {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        self.whip *= (-dt * 2.5).exp();
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
+            self.since_kick = 0.0;
+            self.whip = 1.0;
+        }
+        // The same Arnold–Beltrami–Childress flow the cloth hangs in:
+        // divergence-free, and chaotic in its streamlines, which is
+        // what winds a rod round itself rather than merely waving it.
+        let strength = if drive.audio { 0.14 + 0.4 * drive.level } else { 0.32 } + 0.7 * self.whip;
+        let t = self.time * 0.4;
+        for i in 0..BEADS {
+            let p = self.pos[i];
+            let w = Cloth::wind(p, t);
+            // A soft wall rather than a pull towards the middle: a
+            // spring to the centre balls the whole rope up at the
+            // origin, because eight box-widths of rope will happily
+            // pack into a sphere the size of a marble and then nothing
+            // can get it out again.
+            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-6);
+            let over = (r - 0.85).max(0.0);
+            let next: [f32; 3] = std::array::from_fn(|k| {
+                let a = w[k] * strength - p[k] / r * over * 6.0;
+                p[k] + (p[k] - self.was[i][k]) * 0.985 + a * dt * dt
+            });
+            self.was[i] = p;
+            self.pos[i] = next;
+        }
+        // How straight it wants to be. Stiff, it sweeps in long
+        // curves; slack, it folds up small and knots.
+        let bend = if drive.audio { 0.55 + 0.42 * drive.bands[2] } else { 0.85 };
+        // Shoved apart first and pulled back to length after, in that
+        // order: a shove is a displacement with nothing restoring the
+        // links behind it, so a solve that ends on one ends with a
+        // rope slightly longer than it was, every frame, for ever.
+        for pass in 0..Self::PASSES {
+            // Twice over the run of passes, so a contact found on the
+            // first one still has passes left to settle into.
+            if pass == 0 || pass == Self::PASSES / 2 {
+                self.keep_clear();
+            }
+            for i in 0..BEADS - 2 {
+                // Across three beads: the discrete rod's curvature,
+                // held loosely so it can still bend, which is the
+                // whole point of a rod.
+                self.hold_at(i, i + 2, Self::LINK * 2.0 * bend, 0.2);
+            }
+            // Alternating direction, because a sweep along a chain
+            // carries its corrections the way it is going and leaves
+            // the far end for the next one: four thousand links is a
+            // long way for a correction to travel one link at a time.
+            if pass % 2 == 0 {
+                for i in 0..BEADS - 1 {
+                    self.hold_at(i, i + 1, Self::LINK, 1.0);
+                }
+            } else {
+                for i in (0..BEADS - 1).rev() {
+                    self.hold_at(i, i + 1, Self::LINK, 1.0);
+                }
+            }
+        }
+        for p in &mut self.pos {
+            for c in p.iter_mut() {
+                *c = c.clamp(-1.0, 1.0);
+            }
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for i in 0..BEADS {
+            let a = self.pos[i];
+            let b = self.pos[(i + 1).min(BEADS - 1)];
+            let along = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let behind = self.pos[i.saturating_sub(1)];
+            let span = [b[0] - behind[0], b[1] - behind[1], b[2] - behind[2]];
+            let reach = (span[0] * span[0] + span[1] * span[1] + span[2] * span[2]).sqrt();
+            let tangent: [f32; 3] = if reach > 1e-7 {
+                std::array::from_fn(|k| span[k] / reach)
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+            let (u, v) = Slime::frame(tangent);
+            // Bright where it is bent hardest: the knots and the kinks
+            // are what there is to look at, and a straight run is not.
+            let straight = reach / (2.0 * Self::LINK);
+            let shade = (100.0 + 155.0 * (1.0 - straight).clamp(0.0, 1.0).sqrt()) as u8;
+            let thick = Self::CLEAR * 0.45;
+            for q in 0..STRAND {
+                let (step, turn) = (q / ROUND, q % ROUND);
+                let t = step as f32 / (STRAND / ROUND) as f32;
+                let angle = turn as f32 / ROUND as f32 * std::f32::consts::TAU;
+                let (sa, ca) = angle.sin_cos();
+                out.push(Point {
+                    pos: std::array::from_fn(|k| {
+                        (a[k] + along[k] * t + (u[k] * ca + v[k] * sa) * thick).clamp(-1.0, 1.0)
+                    }),
+                    normal: [0.0; 3],
+                    color: [shade, shade, shade],
+                });
+            }
+        }
+    }
+}
+
+// --- Crystal ----------------------------------------------------------
+
+/// Cells across the hexagonal lattice. Its square is a slot.
+const HEX: usize = 256;
+
+/// Reiter's snowflake (2005): a snow crystal grown one cell at a time
+/// on a hexagonal lattice.
+///
+/// It is a cellular automaton with real-valued cells, and it does not
+/// know what a snowflake looks like. Each cell holds water. Cells that
+/// are already ice, or next to ice, stop taking part in the diffusion
+/// and get a constant trickle of vapour added instead; everything else
+/// diffuses. That is all of it — and out of it come the plates, the
+/// sectored plates, the stellar dendrites and the needles, sorted by
+/// the background vapour exactly as they are sorted by humidity in the
+/// Nakaya diagram that real crystals obey.
+///
+/// The six-fold symmetry is not imposed anywhere: it is in the lattice,
+/// and everything else follows from the diffusion being screened at the
+/// tips in the same way a diffusion-limited aggregate's are. One
+/// crystal grows until
+/// it reaches the edge of the plate, then it falls and the next one
+/// starts in different air.
+pub struct Crystal {
+    /// Water per cell; at or above one it is ice.
+    s: Vec<f32>,
+    /// Next iteration's cells.
+    next: Vec<f32>,
+    /// Cells that are ice or touching it, so out of the diffusion.
+    held: Vec<bool>,
+    /// The background vapour this crystal is growing in, which is what
+    /// decides its habit.
+    beta: f32,
+    /// Vapour added to a cell on the boundary each iteration.
+    gamma: f32,
+    /// How far the ice has reached from the middle, in cells.
+    reach: f32,
+    /// Seconds left of the pause on a finished flake.
+    holding: f32,
+    time: f32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Crystal {
+    /// Diffusion rate. Reiter runs it at one; the interesting habits
+    /// are all found by moving the vapour, not this.
+    const ALPHA: f32 = 1.0;
+    /// How far out the ice is allowed to reach before the crystal is
+    /// done, as a share of the plate.
+    const FULL: f32 = 0.44;
+    /// Seconds a finished flake is left on the plate before the next
+    /// one starts. Growing it is the interesting part, but the grown
+    /// crystal is the thing it was grown for, and without this the
+    /// picture is never the flake, only the flake appearing.
+    const HOLD: f32 = 2.5;
+
+    pub fn new() -> Self {
+        let mut s = Self {
+            s: vec![0.0; HEX * HEX],
+            next: vec![0.0; HEX * HEX],
+            held: vec![false; HEX * HEX],
+            beta: 0.45,
+            gamma: 0.0004,
+            reach: 1.0,
+            holding: 0.0,
+            time: 0.0,
+            since_kick: 10.0,
+            rng: Rng::new(0x50_0F_1A_CE),
+        };
+        s.nucleate();
+        s
+    }
+
+    /// Fill the plate with vapour and drop one seed of ice in it.
+    fn nucleate(&mut self) {
+        self.s.fill(self.beta);
+        self.s[HEX / 2 + (HEX / 2) * HEX] = 1.0;
+        self.reach = 1.0;
+    }
+
+    /// The six neighbours of a cell on a hexagonal lattice stored in
+    /// offset rows — which is a square array with every other row
+    /// shifted half a cell, so a hexagon's six neighbours are four
+    /// across and two along.
+    fn neighbours(x: usize, y: usize) -> [Option<usize>; 6] {
+        let odd = y & 1 == 1;
+        let lean: isize = if odd { 0 } else { -1 };
+        let at = |dx: isize, dy: isize| -> Option<usize> {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 || nx >= HEX as isize || ny >= HEX as isize {
+                None
+            } else {
+                Some(nx as usize + ny as usize * HEX)
+            }
+        };
+        [
+            at(-1, 0),
+            at(1, 0),
+            at(lean, -1),
+            at(lean + 1, -1),
+            at(lean, 1),
+            at(lean + 1, 1),
+        ]
+    }
+
+    /// One iteration of the automaton.
+    fn grow(&mut self) {
+        // Which cells are out of the diffusion: ice, or next to it.
+        for y in 0..HEX {
+            for x in 0..HEX {
+                let i = x + y * HEX;
+                let mut held = self.s[i] >= 1.0;
+                if !held {
+                    for n in Self::neighbours(x, y).into_iter().flatten() {
+                        if self.s[n] >= 1.0 {
+                            held = true;
+                            break;
+                        }
+                    }
+                }
+                self.held[i] = held;
+            }
+        }
+        // Split each cell's water in two: the part that diffuses, and
+        // the part that has been taken out of the diffusion because it
+        // is ice or next to it. A held cell holds *no* diffusing water,
+        // which is what starves the crevices and lets the tips run
+        // away; what it does still do is take in the diffusing water of
+        // its free neighbours, and that is how the crystal grows.
+        for y in 0..HEX {
+            for x in 0..HEX {
+                let i = x + y * HEX;
+                let free = if self.held[i] { 0.0 } else { self.s[i] };
+                let mut sum = 0.0;
+                for n in Self::neighbours(x, y) {
+                    // Off the plate is more of the same air, so an edge
+                    // cell is not starved by its own edge.
+                    sum += match n {
+                        Some(n) if !self.held[n] => self.s[n],
+                        Some(_) => 0.0,
+                        None => self.beta,
+                    };
+                }
+                let mean = sum / 6.0;
+                let held = if self.held[i] { self.s[i] + self.gamma } else { 0.0 };
+                self.next[i] = free + Self::ALPHA * 0.5 * (mean - free) + held;
+            }
+        }
+        std::mem::swap(&mut self.s, &mut self.next);
+    }
+
+    /// Where a cell sits on the plate: rows half a cell apart, which is
+    /// what makes the lattice hexagonal rather than square.
+    fn place(x: usize, y: usize) -> [f32; 2] {
+        let step = 2.0 / HEX as f32;
+        let shift = if y & 1 == 1 { 0.5 } else { 0.0 };
+        [
+            (x as f32 + shift) * step - 1.0,
+            (y as f32 - HEX as f32 * 0.5) * step * 0.866_025_4,
+        ]
+    }
+
+    /// How far the ice reaches, in cells from the middle.
+    fn measure(&self) -> f32 {
+        let mut reach: f32 = 0.0;
+        for y in 0..HEX {
+            for x in 0..HEX {
+                if self.s[x + y * HEX] >= 1.0 {
+                    let dx = x as f32 - HEX as f32 * 0.5;
+                    let dy = (y as f32 - HEX as f32 * 0.5) * 0.866_025_4;
+                    reach = reach.max((dx * dx + dy * dy).sqrt());
+                }
+            }
+        }
+        reach
+    }
+}
+
+impl Default for Crystal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Crystal {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        // The air this one is growing in. Low vapour grows a plate,
+        // high vapour grows a star — the same sorting the Nakaya
+        // diagram makes out of humidity.
+        if drive.audio {
+            self.beta = 0.35 + 0.28 * drive.bands[2];
+            self.gamma = 0.0001 + 0.0016 * drive.bands[3];
+        }
+        let kick = drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.6;
+        if kick {
+            self.since_kick = 0.0;
+        }
+        // A finished flake stays a moment, and a kick cuts the pause
+        // short: nothing is growing, so there is nothing to interrupt.
+        if self.holding > 0.0 {
+            self.holding -= dt;
+            if kick {
+                self.holding = 0.0;
+            }
+            if self.holding <= 0.0 {
+                self.nucleate();
+            }
+            return;
+        }
+        let iterations = if drive.audio { 5 + (10.0 * drive.level) as usize } else { 10 };
+        for _ in 0..iterations {
+            self.grow();
+        }
+        self.reach = self.measure();
+        // Grown out, or knocked off its plate: the next crystal starts
+        // in whatever air the music has left behind.
+        if self.reach > HEX as f32 * Self::FULL || (kick && self.reach > HEX as f32 * 0.12) {
+            if !drive.audio {
+                // Left alone it still works through the habits rather
+                // than growing the same flake for ever.
+                self.beta = 0.34 + 0.26 * self.rng.f32();
+                self.gamma = 0.0001 + 0.0014 * self.rng.f32();
+            }
+            self.holding = Self::HOLD;
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        // Two thirds of the slot to the ice and a third to the air it
+        // grew in. Spending a point per cell would spend all of them
+        // on vapour — the flake is a few thousand cells of sixty-five
+        // thousand — and draw a plate with a mark on it.
+        const PLATE: usize = POINTS / 3;
+        let mut rng = Rng::new(0x1CE_5EED);
+        for i in 0..PLATE {
+            let cell = (i as u64 * (HEX * HEX) as u64 / PLATE as u64) as usize;
+            let (x, y) = (cell % HEX, cell / HEX);
+            let [px, pz] = Self::place(x, y);
+            let shade = (22.0 + 64.0 * self.s[cell].min(1.0)) as u8;
+            out.push(Point {
+                pos: [px.clamp(-1.0, 1.0), 0.0, pz.clamp(-1.0, 1.0)],
+                normal: [0.0; 3],
+                color: [shade, shade, shade],
+            });
+        }
+        let ice: Vec<usize> = (0..HEX * HEX).filter(|&i| self.s[i] >= 1.0).collect();
+        for i in 0..POINTS - PLATE {
+            // A stride across the ice when there is more of it than
+            // there are points left, a jittered repeat when there is
+            // less — the loader's own policy, so the count is right
+            // before the fit sees it.
+            let want = POINTS - PLATE;
+            let pick = if ice.len() >= want {
+                ice[(i as u64 * ice.len() as u64 / want as u64) as usize]
+            } else {
+                ice[i % ice.len()]
+            };
+            let (x, y) = (pick % HEX, pick / HEX);
+            let [px, pz] = Self::place(x, y);
+            let thick = self.s[pick] - 1.0;
+            let jitter = if ice.len() >= want { 0.0 } else { 1.0 };
+            let step = 2.0 / HEX as f32;
+            out.push(Point {
+                pos: [
+                    (px + (rng.f32() - 0.5) * step * jitter).clamp(-1.0, 1.0),
+                    0.05 + 0.3 * thick.min(1.5),
+                    (pz + (rng.f32() - 0.5) * step * jitter).clamp(-1.0, 1.0),
+                ],
+                normal: [0.0; 3],
+                color: {
+                    let shade = (150.0 + 105.0 * thick.min(1.0)) as u8;
+                    [shade, shade, shade]
+                },
+            });
+        }
+    }
+}
+
+// --- Vortex -----------------------------------------------------------
+
+/// Filaments in the box.
+const RINGS: usize = 8;
+/// Nodes around each filament.
+const NODES: usize = 128;
+/// Points drawn per node: a short tube, so a filament is a rope and
+/// not a dotted line.
+const TUBE: usize = POINTS / (RINGS * NODES);
+
+/// Vortex filaments: the thin cores that smoke rings are made of,
+/// moving each other about.
+///
+/// Vorticity in an ideal fluid does not spread, it is carried — a
+/// theorem of Helmholtz's from 1858 — so a fluid whose spin is all
+/// concentrated in a few thin loops stays that way, and the whole flow
+/// can be integrated as those loops alone (Rosenhead, 1930; Leonard,
+/// 1980). Each piece of filament moves in the flow every other piece
+/// induces, by Biot–Savart, and that is the entire simulation: no grid,
+/// no pressure solve, no tracers.
+///
+/// What it buys is the behaviour no grid fluid at this resolution can
+/// show: rings that shrink as they speed up, catch the one in front,
+/// thread through it and swap places — leapfrogging, which Helmholtz
+/// predicted and which is still startling to watch — and filaments that
+/// stretch, wind round each other and go on stretching.
+pub struct Vortex {
+    /// Node positions, filament by filament.
+    node: Vec<[f32; 3]>,
+    /// Velocity read off the others, kept between the two half-steps.
+    vel: Vec<[f32; 3]>,
+    /// Circulation of each filament, signed.
+    gamma: [f32; RINGS],
+    time: f32,
+    since_kick: f32,
+    rng: Rng,
+}
+
+impl Vortex {
+    /// The core radius that keeps Biot–Savart from dividing by zero at
+    /// the filament itself. A real core has a thickness too, so this is
+    /// not only a numerical dodge.
+    const CORE: f32 = 0.045;
+
+    pub fn new() -> Self {
+        let mut s = Self {
+            node: vec![[0.0; 3]; RINGS * NODES],
+            vel: vec![[0.0; 3]; RINGS * NODES],
+            gamma: [0.0; RINGS],
+            time: 0.0,
+            since_kick: 10.0,
+            rng: Rng::new(0x1207_7EC5),
+        };
+        for r in 0..RINGS {
+            s.lay(r);
+        }
+        s
+    }
+
+    /// Lay filament `r` out as a ring, somewhere, facing somewhere.
+    fn lay(&mut self, r: usize) {
+        let axis = self.rng.on_sphere();
+        let (u, v) = Slime::frame(axis);
+        let centre: [f32; 3] = std::array::from_fn(|_| (self.rng.f32() - 0.5) * 0.9);
+        let radius = 0.16 + 0.22 * self.rng.f32();
+        for n in 0..NODES {
+            let a = n as f32 / NODES as f32 * std::f32::consts::TAU;
+            let (sa, ca) = a.sin_cos();
+            self.node[r * NODES + n] =
+                std::array::from_fn(|k| centre[k] + (u[k] * ca + v[k] * sa) * radius);
+            self.vel[r * NODES + n] = [0.0; 3];
+        }
+        self.gamma[r] = if self.rng.f32() < 0.5 { -1.0 } else { 1.0 } * (0.6 + 0.6 * self.rng.f32());
+    }
+
+    /// The velocity every filament induces at every node, by
+    /// Biot–Savart with a desingularised kernel (Rosenhead–Moore).
+    fn induce(&mut self, strength: f32) {
+        let total = RINGS * NODES;
+        let a2 = Self::CORE * Self::CORE;
+        for i in 0..total {
+            let p = self.node[i];
+            let mut v = [0.0f32; 3];
+            for r in 0..RINGS {
+                let g = self.gamma[r] * strength * 0.08;
+                for n in 0..NODES {
+                    let j = r * NODES + n;
+                    let k = r * NODES + (n + 1) % NODES;
+                    let (a, b) = (self.node[j], self.node[k]);
+                    // The segment, and the vector from its middle.
+                    let dl = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let m = [
+                        p[0] - (a[0] + b[0]) * 0.5,
+                        p[1] - (a[1] + b[1]) * 0.5,
+                        p[2] - (a[2] + b[2]) * 0.5,
+                    ];
+                    let r2 = m[0] * m[0] + m[1] * m[1] + m[2] * m[2] + a2;
+                    let scale = g / (r2 * r2.sqrt());
+                    v[0] += (dl[1] * m[2] - dl[2] * m[1]) * scale;
+                    v[1] += (dl[2] * m[0] - dl[0] * m[2]) * scale;
+                    v[2] += (dl[0] * m[1] - dl[1] * m[0]) * scale;
+                }
+            }
+            self.vel[i] = v;
+        }
+    }
+
+    /// Damp the wiggles finer than the core.
+    ///
+    /// Biot–Savart on a discretised filament is unstable at wavelengths
+    /// shorter than the core radius — they are not physical, the core
+    /// is where the model stops resolving, and left alone they grow
+    /// until the filament is noise. One light Laplacian pass a frame
+    /// takes them out and barely touches the long waves that are the
+    /// motion worth watching; every filament method does some version
+    /// of this.
+    fn smooth(&mut self) {
+        const LAMBDA: f32 = 0.08;
+        let mut ring = vec![[0.0f32; 3]; NODES];
+        for r in 0..RINGS {
+            let base = r * NODES;
+            for (n, slot) in ring.iter_mut().enumerate() {
+                let a = self.node[base + (n + NODES - 1) % NODES];
+                let b = self.node[base + n];
+                let c = self.node[base + (n + 1) % NODES];
+                *slot = std::array::from_fn(|k| b[k] + LAMBDA * ((a[k] + c[k]) * 0.5 - b[k]));
+            }
+            self.node[base..base + NODES].copy_from_slice(&ring);
+        }
+    }
+
+    /// Spread the nodes of each filament out along it again.
+    ///
+    /// A stretching filament drags its nodes into bunches, and a bunch
+    /// resolves the curve where nothing is happening while leaving the
+    /// part that is stretching with nothing on it. Resampling to equal
+    /// arc length every frame is what keeps a filament a filament.
+    fn respace(&mut self) {
+        let mut arc = vec![0.0f32; NODES + 1];
+        let mut ring = vec![[0.0f32; 3]; NODES];
+        for r in 0..RINGS {
+            let base = r * NODES;
+            for n in 0..NODES {
+                let a = self.node[base + n];
+                let b = self.node[base + (n + 1) % NODES];
+                let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                arc[n + 1] = arc[n] + (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            }
+            let total = arc[NODES];
+            if total < 1e-5 {
+                continue;
+            }
+            let mut seg = 0usize;
+            for (n, slot) in ring.iter_mut().enumerate() {
+                let want = total * n as f32 / NODES as f32;
+                while seg + 1 < NODES && arc[seg + 1] < want {
+                    seg += 1;
+                }
+                let span = (arc[seg + 1] - arc[seg]).max(1e-6);
+                let t = ((want - arc[seg]) / span).clamp(0.0, 1.0);
+                let a = self.node[base + seg];
+                let b = self.node[base + (seg + 1) % NODES];
+                *slot = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+            }
+            self.node[base..base + NODES].copy_from_slice(&ring);
+        }
+    }
+}
+
+impl Default for Vortex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Vortex {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.time += dt;
+        self.since_kick += dt;
+        // Circulation is the one number a filament has, and it is the
+        // pace of everything: a loud passage runs the rings fast.
+        let strength = if drive.audio { 0.55 + 1.1 * drive.level } else { 0.9 };
+        self.induce(strength);
+        for i in 0..RINGS * NODES {
+            for k in 0..3 {
+                self.node[i][k] += self.vel[i][k] * dt;
+            }
+        }
+        self.respace();
+        self.smooth();
+        // A filament driven out of the box is pulled back rather than
+        // clipped: a ring cut off at a wall stops being a ring.
+        for p in &mut self.node {
+            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            if r > 0.92 {
+                let pull = (r - 0.92) * 2.4 * dt * 60.0;
+                for c in p.iter_mut() {
+                    *c -= *c / r * pull;
+                }
+            }
+        }
+        // The kick throws a new ring in, over the oldest one, so the
+        // box keeps being given something to leapfrog with.
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.5 {
+            self.since_kick = 0.0;
+            let r = (self.rng.next() as usize) % RINGS;
+            self.lay(r);
+        }
+        // A filament that has wound itself into a knot too fine to
+        // draw is laid out again. Real ones reconnect instead; this is
+        // the cheap version of the same ending.
+        for r in 0..RINGS {
+            let base = r * NODES;
+            let mut length = 0.0;
+            for n in 0..NODES {
+                let a = self.node[base + n];
+                let b = self.node[base + (n + 1) % NODES];
+                let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                length += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            }
+            if !length.is_finite() || !(0.1..=14.0).contains(&length) {
+                self.lay(r);
+            }
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        for r in 0..RINGS {
+            let base = r * NODES;
+            for n in 0..NODES {
+                let a = self.node[base + n];
+                let b = self.node[base + (n + 1) % NODES];
+                let along = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let len = (along[0] * along[0] + along[1] * along[1] + along[2] * along[2]).sqrt();
+                let tangent: [f32; 3] = if len > 1e-6 {
+                    std::array::from_fn(|k| along[k] / len)
+                } else {
+                    [0.0, 1.0, 0.0]
+                };
+                let (u, v) = Slime::frame(tangent);
+                let speed = {
+                    let w = self.vel[base + n];
+                    (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt()
+                };
+                let shade = (100.0 + 155.0 * (speed * 0.5).min(1.0)) as u8;
+                // A short tube: a few steps along the segment, a few
+                // round it, which is exactly TUBE points.
+                let around = 8usize;
+                let steps = TUBE / around;
+                let thick = 0.012;
+                for s in 0..steps {
+                    let t = s as f32 / steps as f32;
+                    let centre: [f32; 3] = std::array::from_fn(|k| a[k] + along[k] * t);
+                    for q in 0..around {
+                        let ang = q as f32 / around as f32 * std::f32::consts::TAU;
+                        let (sa, ca) = ang.sin_cos();
+                        out.push(Point {
+                            pos: std::array::from_fn(|k| {
+                                (centre[k] + (u[k] * ca + v[k] * sa) * thick).clamp(-1.0, 1.0)
+                            }),
+                            normal: [0.0; 3],
+                            color: [shade, shade, shade],
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -4238,6 +5293,219 @@ mod tests {
         let mut pts = Vec::new();
         sim.points(&mut pts);
         box_ok(&pts);
+    }
+
+    /// The ring only ever turns one way. Every cell either stays where
+    /// it is or moves on to exactly the next state — never back, never
+    /// two at once — and that is the only rule there is.
+    #[test]
+    fn the_ring_only_turns_forwards() {
+        let mut sim = Cyclic::new();
+        let before = sim.cell.clone();
+        sim.generation();
+        for (&was, &now) in before.iter().zip(&sim.cell) {
+            let forward = (was + 1) % Cyclic::STATES;
+            assert!(now == was || now == forward, "{was} became {now}");
+        }
+    }
+
+    /// From noise it organises itself into waves, and then it never
+    /// stops.
+    ///
+    /// A wave is a run of cells one state apart, so the measure is how
+    /// often two neighbours are within a step of each other round the
+    /// ring. In noise that is three states out of twelve, by chance.
+    /// Once the waves have formed it is most of the lattice — and the
+    /// lattice keeps turning, because a cyclic automaton has no still
+    /// state to fall into, which is what separates it from every rule
+    /// that settles.
+    #[test]
+    fn noise_becomes_waves_that_never_settle() {
+        let in_step = |s: &Cyclic| -> f32 {
+            let mut near = 0u32;
+            for z in 0..CG {
+                for y in 0..CG {
+                    for x in 0..CG {
+                        let a = s.cell[x + y * CG + z * CPLANE];
+                        let b = s.cell[(x + 1) % CG + y * CG + z * CPLANE];
+                        let step = (a + s.states - b) % s.states;
+                        near += u32::from(step <= 1 || step == s.states - 1);
+                    }
+                }
+            }
+            near as f32 / CCELLS as f32
+        };
+        let mut sim = Cyclic::new();
+        // A fresh lattice of noise, to measure chance from.
+        sim.scatter(0, CG);
+        let noise = in_step(&sim);
+        assert!(
+            (noise - 3.0 / Cyclic::STATES as f32).abs() < 0.02,
+            "the scatter was not random: {noise}"
+        );
+        for _ in 0..400 {
+            sim.generation();
+        }
+        let organised = in_step(&sim);
+        assert!(organised > 0.6, "it stayed noise: {noise} then {organised}");
+        let before = sim.cell.clone();
+        sim.generation();
+        let turning = before.iter().zip(&sim.cell).filter(|(a, b)| a != b).count();
+        assert!(
+            turning > CCELLS / 100,
+            "the lattice came to rest, which this rule cannot do: {turning} cells turned"
+        );
+        let mut out = Vec::new();
+        sim.points(&mut out);
+        box_ok(&out);
+    }
+
+    /// A rope does not get longer, and it does not pass through itself.
+    /// Those are the two claims, and both are constraints rather than
+    /// forces, so both should hold exactly rather than on average.
+    #[test]
+    fn the_rope_keeps_its_length_and_its_distance() {
+        let mut sim = Tangle::new();
+        let drive = Drive { bands: [0.0, 0.0, 0.5, 0.0], level: 0.9, bar: 0.0, audio: true };
+        for _ in 0..240 {
+            sim.step(1.0 / 60.0, &drive);
+        }
+        let length: f32 = (0..BEADS - 1)
+            .map(|i| {
+                let (a, b) = (sim.pos[i], sim.pos[i + 1]);
+                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+            })
+            .sum();
+        let rest = Tangle::LINK * (BEADS - 1) as f32;
+        assert!(
+            (length - rest).abs() < rest * 0.05,
+            "the rope stretched: {length} against {rest}"
+        );
+        // Every pair that is not a neighbour along the rod, checked
+        // properly rather than through the grid the solver uses.
+        let mut closest = f32::MAX;
+        for i in 0..BEADS {
+            for j in i + 4..BEADS {
+                let (a, b) = (sim.pos[i], sim.pos[j]);
+                let d2 = (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2);
+                closest = closest.min(d2);
+            }
+        }
+        let closest = closest.sqrt();
+        assert!(
+            closest > Tangle::CLEAR * 0.5,
+            "the rope went through itself: two beads {closest} apart"
+        );
+        let mut out = Vec::new();
+        sim.points(&mut out);
+        box_ok(&out);
+    }
+
+    /// And it is a rod, not a chain: it resists bending, and how much
+    /// is a setting. Measured as the rod's own curvature — how far
+    /// three beads in a row fall short of lying straight — because
+    /// that is the quantity the constraint holds and the thing that
+    /// decides whether it sweeps in long curves or folds up small.
+    #[test]
+    fn a_stiffer_rod_bends_less() {
+        let straightness = |mids: f32| -> f32 {
+            let mut sim = Tangle::new();
+            let drive = Drive { bands: [0.0, 0.0, mids, 0.0], level: 0.9, bar: 0.0, audio: true };
+            for _ in 0..300 {
+                sim.step(1.0 / 60.0, &drive);
+            }
+            let across: f32 = (0..BEADS - 2)
+                .map(|i| {
+                    let (a, b) = (sim.pos[i], sim.pos[i + 2]);
+                    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+                })
+                .sum();
+            across / ((BEADS - 2) as f32 * 2.0 * Tangle::LINK)
+        };
+        let (slack, stiff) = (straightness(0.0), straightness(1.0));
+        assert!(stiff > slack * 1.02, "stiffness did nothing: {slack} then {stiff}");
+        assert!(slack < 0.99, "the slack rod did not bend at all: {slack}");
+    }
+
+    /// Ice appears, spreads, and when the flake has filled its plate
+    /// the next one starts from a seed rather than the run stopping.
+    #[test]
+    fn the_crystal_grows_and_starts_again() {
+        let mut sim = Crystal::new();
+        let drive = Drive { bands: [0.0, 0.0, 0.5, 0.4], level: 1.0, bar: 0.0, audio: true };
+        let ice = |s: &Crystal| s.s.iter().filter(|&&v| v >= 1.0).count();
+        assert_eq!(ice(&sim), 1, "a crystal starts from one seed");
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &drive);
+        }
+        let grown = ice(&sim);
+        assert!(grown > 20, "the crystal did not grow: {grown} cells of ice");
+        // It is a crystal, not a blob: the ice reaches out much further
+        // than a disc of that many cells would.
+        let disc = (grown as f32 / std::f32::consts::PI).sqrt();
+        assert!(
+            sim.reach > disc * 1.6,
+            "the ice is a disc, not a flake: reach {} for {grown} cells",
+            sim.reach
+        );
+        // Run it out to the edge of the plate and past it.
+        let mut restarted = false;
+        for _ in 0..3000 {
+            sim.step(1.0 / 60.0, &drive);
+            if ice(&sim) <= 1 {
+                restarted = true;
+                break;
+            }
+        }
+        assert!(restarted, "the flake filled the plate and the run stopped there");
+        let mut out = Vec::new();
+        sim.points(&mut out);
+        box_ok(&out);
+    }
+
+    /// A vortex ring on its own moves along its own axis, at a speed
+    /// set by its circulation — Helmholtz's result, and the one thing
+    /// every filament method has to get right before any of the rest
+    /// of it means anything.
+    #[test]
+    fn a_ring_moves_along_its_axis() {
+        let mut sim = Vortex::new();
+        // One ring, flat in the x–z plane, alone in the box.
+        for r in 0..RINGS {
+            sim.gamma[r] = 0.0;
+        }
+        sim.gamma[0] = 1.0;
+        for n in 0..NODES {
+            let a = n as f32 / NODES as f32 * std::f32::consts::TAU;
+            let (sa, ca) = a.sin_cos();
+            sim.node[n] = [ca * 0.3, 0.0, sa * 0.3];
+        }
+        let drive = Drive::default();
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &drive);
+        }
+        let mean = |s: &Vortex| -> [f32; 3] {
+            let mut m = [0.0f32; 3];
+            for n in 0..NODES {
+                for (k, c) in m.iter_mut().enumerate() {
+                    *c += s.node[n][k] / NODES as f32;
+                }
+            }
+            m
+        };
+        let m = mean(&sim);
+        assert!(
+            m[1].abs() > 0.05,
+            "the ring did not travel along its axis: centre at {m:?}"
+        );
+        assert!(
+            m[0].abs() < 0.05 && m[2].abs() < 0.05,
+            "the ring drifted sideways, which it has nothing to push against for: {m:?}"
+        );
+        let mut out = Vec::new();
+        sim.points(&mut out);
+        box_ok(&out);
+        assert_eq!(out.len(), POINTS);
     }
 
     /// Every simulation is reachable by id, and nothing else is.

@@ -583,7 +583,7 @@ mod tests {
         let count = (0..H as usize)
             .flat_map(|row| {
                 let start = row * padded as usize;
-                data[start..start + (W * 4) as usize].chunks_exact(4)
+                data[start..start + (W * 4) as usize].as_chunks::<4>().0.iter()
             })
             .filter(|px| px[0] > 8 || px[1] > 8 || px[2] > 8)
             .count();

@@ -149,7 +149,7 @@ fn read_packed_patient(
         return Ok(None);
     }
     let points = body
-        .chunks_exact(PACKED_STRIDE)
+        .as_chunks::<PACKED_STRIDE>().0.iter()
         .map(|c| Point {
             pos: [
                 f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
