@@ -1,0 +1,65 @@
+name: Release notes
+
+# Repairing the text on a release that already exists, which the release
+# workflow deliberately will not do: it leaves an existing release's
+# notes alone, because clobbering notes somebody wrote by hand to fix one
+# sentence is the worse trade. That is the right default and this does
+# not change it — it is a separate, explicit action.
+#
+# It is its own workflow rather than a branch inside release.yml so that
+# fixing a paragraph does not re-run a five-minute macOS build and a
+# round-trip to Apple's notary service. Nothing here touches the tag or
+# the attached download.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose notes to set (e.g. v0.26.0)."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The notes live in the repository, next to the code they describe,
+      # for the reason this workflow exists at all: GitHub's generated
+      # notes are a list of merged pull requests, and work that reaches
+      # main as a direct push is invisible to them. A release that says
+      # "one PR" for thirty commits is worse than no notes, because it
+      # reads as complete.
+      - name: Set the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          file="docs/release-notes/$TAG.md"
+          if [ ! -f "$file" ]; then
+            echo "::error::no $file in this repository — write the notes first"
+            exit 1
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || { echo "::error::no release $TAG to edit"; exit 1; }
+          # Keep the release's opening paragraph: it says whether this
+          # bundle is signed and notarized or ad-hoc, which the build
+          # determined and nothing here can re-derive. Everything after
+          # it is replaced.
+          body="$RUNNER_TEMP/notes.md"
+          gh release view "$TAG" --json body --jq '.body' \
+            | awk '/^$/ { exit } { print }' > "$body"
+          printf '\n' >> "$body"
+          cat "$file" >> "$body"
+          gh release edit "$TAG" --notes-file "$body"
+          # Read it back: `gh release edit` exits zero on an empty body,
+          # and a release whose notes were silently blanked is a worse
+          # outcome than the generated ones this replaced.
+          got=$(gh release view "$TAG" --json body --jq '.body' | wc -c)
+          want=$(wc -c < "$file")
+          echo "release body is now $got bytes, from a $want byte file"
+          # The body is the kept paragraph plus the file, so it cannot be
+          # shorter than the file unless the edit did not land.
+          [ "$got" -ge "$want" ] \
+            || { echo "::error::the notes did not take"; exit 1; }

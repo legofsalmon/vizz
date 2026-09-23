@@ -209,10 +209,24 @@ jobs:
             # release text to fix one sentence is the worse trade.
           else
             echo "Creating release $RELEASE_TAG with bundle."
+            # Notes written for the release, if there are any. GitHub's
+            # generated notes list merged pull requests, so work that
+            # reached main as a direct push does not appear in them at
+            # all — which gave v0.26.0 a one-line changelog for thirty
+            # commits. A file here takes precedence; --generate-notes
+            # still appends the compare link and any PRs there were.
+            written="docs/release-notes/$RELEASE_TAG.md"
+            body="$RUNNER_TEMP/notes.md"
+            printf '%s\n' "$notes" > "$body"
+            if [ -f "$written" ]; then
+              echo "Appending $written to the release notes."
+              printf '\n' >> "$body"
+              cat "$written" >> "$body"
+            fi
             gh release create "$RELEASE_TAG" "dist/$ASSET" \
               --title "vizz $RELEASE_TAG" \
               --generate-notes \
-              --notes "$notes"
+              --notes-file "$body"
           fi
           # Fail loudly if the asset somehow did not land — a release with
           # no download silently breaks scripts/install.sh and the site's
