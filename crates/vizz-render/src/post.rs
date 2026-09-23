@@ -45,6 +45,29 @@ pub struct PostUniforms {
     /// One output pixel, in uv.
     pub out_texel_x: f32,
     pub out_texel_y: f32,
+    /// The graded path, 0..1: metered exposure, mip-chain bloom and a
+    /// filmic curve (AgX), mixed over the original picture. At 0 none of
+    /// it runs and the frame is the one this chain always drew.
+    pub grade: f32,
+    /// Exposure bias for the graded path, in stops.
+    pub ev: f32,
+    /// Share of the way to the metered exposure to move this frame, 0..1.
+    /// 1 lands at once; the app eases it by frame time.
+    pub adapt: f32,
+    /// Most the meter may brighten. The app uses 1: grading may darken a
+    /// look that clips but never lift a fade back up.
+    pub max_gain: f32,
+    /// Set by [`PostChain::render`]: how many bloom levels were summed.
+    pub bloom_levels: f32,
+    /// The background the scene was cleared to, linear. The graded path
+    /// grades the light *above* it and puts it back untouched, so a
+    /// background matched to a venue stays that colour with grading on.
+    pub bg_r: f32,
+    pub bg_g: f32,
+    pub bg_b: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 /// Whether the composite needs more than one tap to bring a scene of
@@ -79,6 +102,7 @@ pub struct PostChain {
     history_tex: [wgpu::Texture; 2],
     /// Which history slot holds the previous frame.
     front: usize,
+    grade: crate::grade::Grade,
 }
 
 impl PostChain {
@@ -151,6 +175,18 @@ impl PostChain {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // The graded path's bloom and metered exposure.
+                tex_entry(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -208,6 +244,7 @@ impl PostChain {
             history,
             history_tex,
             front: 0,
+            grade: crate::grade::Grade::new(ctx, width, height, HDR),
         }
     }
 
@@ -229,8 +266,10 @@ impl PostChain {
             },
             out_texel_x: 1.0 / out.width.max(1) as f32,
             out_texel_y: 1.0 / out.height.max(1) as f32,
+            bloom_levels: self.grade.level_count() as f32,
             ..*uniforms
         };
+        let graded = uniforms.grade > 0.0;
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
@@ -238,6 +277,26 @@ impl PostChain {
         // Pass 1: scene + previous history -> the other history slot.
         let bind = self.bind(ctx, &self.scene_view, &self.history[self.front]);
         self.pass(encoder, &self.feedback_pipeline, &self.history[back], &bind, "post-feedback");
+
+        // Between them, when grading: meter the fed-back frame and build
+        // the bloom from it — the picture that is about to be shown, trails
+        // included, so a bright trail is exposed for like anything else.
+        self.grade.run(
+            ctx,
+            encoder,
+            &self.history[back],
+            crate::grade::MeterUniforms {
+                adapt: uniforms.adapt,
+                ev: uniforms.ev,
+                max_gain: uniforms.max_gain,
+                key: crate::grade::KEY,
+                percentile: crate::grade::PERCENTILE,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+            },
+            graded,
+        );
 
         // Pass 2: that result -> master. The history texture is bound as
         // the "scene" slot here; the second texture binding is unused but
@@ -265,6 +324,11 @@ impl PostChain {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(self.grade.bloom_view()),
+                },
+                wgpu::BindGroupEntry { binding: 5, resource: self.grade.exposure.as_entire_binding() },
             ],
         })
     }
@@ -374,6 +438,22 @@ mod tests {
         flash: f32,
         black: f32,
     ) -> Vec<u8> {
+        render_chain_graded(ctx, background, glow, trail, flash, black, 0.0, 1.0)
+    }
+
+    /// As above, with the graded path at `grade` and the particles at
+    /// `brightness`.
+    #[allow(clippy::too_many_arguments)]
+    fn render_chain_graded(
+        ctx: &GpuContext,
+        background: wgpu::Color,
+        glow: f32,
+        trail: f32,
+        flash: f32,
+        black: f32,
+        grade: f32,
+        brightness: f32,
+    ) -> Vec<u8> {
         let mut post = PostChain::new(ctx, W, W, crate::output::OUTPUT_FORMAT);
         let scene = ParticleScene::new(ctx, SCENE_FORMAT);
         let master = ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -409,7 +489,7 @@ mod tests {
             spread: 1.0,
             hue: 0.5,
             saturation: 0.8,
-            brightness: 1.0,
+            brightness,
             shape: 0.0,
             morph: 0.0,
             twist: 0.0,
@@ -445,6 +525,17 @@ mod tests {
             downsample: 0.0,
             out_texel_x: 0.0,
             out_texel_y: 0.0,
+            grade,
+            ev: 0.0,
+            adapt: 1.0,
+            max_gain: 1.0,
+            bloom_levels: 0.0,
+            bg_r: background.r as f32,
+            bg_g: background.g as f32,
+            bg_b: background.b as f32,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
 
         let mut enc = ctx
@@ -476,6 +567,82 @@ mod tests {
         let pixels = slice.get_mapped_range().unwrap().to_vec();
         drop(buffer);
         pixels
+    }
+
+    fn clipped(pixels: &[u8]) -> f32 {
+        let lit: Vec<_> = pixels.as_chunks::<4>().0.iter().filter(|p| p[0].max(p[1]).max(p[2]) > 8).collect();
+        let hot = lit.iter().filter(|p| p[0].max(p[1]).max(p[2]) == 255).count();
+        hot as f32 / lit.len().max(1) as f32
+    }
+
+    /// Mean linear light of an sRGB-encoded frame, 0..1.
+    fn mean(pixels: &[u8]) -> f32 {
+        let lin = |v: u8| {
+            let c = v as f64 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let sum: f64 = pixels.as_chunks::<4>().0.iter().map(|p| (lin(p[0]) + lin(p[1]) + lin(p[2])) / 3.0).sum();
+        (sum / (pixels.len() / 4) as f64) as f32
+    }
+
+    /// The point of grading: a look that clips stops clipping.
+    ///
+    /// Driven hot on purpose — twenty thousand overlapping sprites at
+    /// three times full brightness, which is the shape of the problem the
+    /// 2026-09-23 previz review measured (7–58% of lit pixels clipped on
+    /// the shipped looks).
+    #[test]
+    fn grading_pulls_clipped_highlights_back() {
+        let Some(ctx) = gpu() else { return };
+        let bg = crate::particles::SCENE_CLEAR;
+        let flat = render_chain_graded(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 0.0, 3.0);
+        let graded = render_chain_graded(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 1.0, 3.0);
+        let (before, after) = (clipped(&flat), clipped(&graded));
+        assert!(before > 0.2, "the test scene should clip ungraded, got {before:.2}");
+        assert!(after < before * 0.25, "grading left {after:.2} clipped (was {before:.2})");
+    }
+
+    /// The meter only darkens. A fade, a master dim, a look that is
+    /// meant to be dim: all of them have to stay dim with grading on,
+    /// or the meter is fighting the performer.
+    #[test]
+    fn grading_never_lifts_a_fade() {
+        let Some(ctx) = gpu() else { return };
+        let bg = crate::particles::SCENE_CLEAR;
+        let full = mean(&render_chain_graded(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 1.0, 0.2));
+        let faded = mean(&render_chain_graded(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 1.0, 0.05));
+        assert!(faded > 0.0 && faded < full * 0.5, "a quarter of the light came out as {:.2} of it", faded / full);
+    }
+
+    /// A background chosen to match a venue is still that colour with
+    /// grading on: the curve grades the light above it, not the backdrop.
+    #[test]
+    fn grading_leaves_the_background_alone() {
+        let Some(ctx) = gpu() else { return };
+        let navy = wgpu::Color { r: 0.02, g: 0.025, b: 0.05, a: 1.0 };
+        let graded = render_chain_graded(&ctx, navy, 0.25, 0.0, 0.0, 0.0, 1.0, 1.0);
+        let srgb = |l: f64| {
+            let c = if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+            (c * 255.0).round() as u8
+        };
+        // The master is BGRA. A corner, well away from the field.
+        let want = [srgb(navy.b), srgb(navy.g), srgb(navy.r)];
+        let got = &graded[0..3];
+        for c in 0..3 {
+            assert!(want[c].abs_diff(got[c]) <= 1, "the background moved: {want:?} -> {got:?}");
+        }
+    }
+
+    /// Half grade is between the two pictures, so the knob fades rather
+    /// than switching.
+    #[test]
+    fn grade_fades_between_the_two_pictures() {
+        let Some(ctx) = gpu() else { return };
+        let bg = crate::particles::SCENE_CLEAR;
+        let at = |g: f32| mean(&render_chain_graded(&ctx, bg, 0.25, 0.0, 0.0, 0.0, g, 3.0));
+        let (a, m, b) = (at(0.0), at(0.5), at(1.0));
+        assert!((a.min(b)..=a.max(b)).contains(&m), "half grade {m:.3} is outside {a:.3}..{b:.3}");
+        assert!((a - b).abs() > 0.005, "grading changed nothing: {a:.3} vs {b:.3}");
     }
 
     /// Transparency must survive the *whole* chain, not just the clear.

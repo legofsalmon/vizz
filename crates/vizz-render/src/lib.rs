@@ -12,6 +12,7 @@ pub mod blit;
 pub mod camera;
 pub mod cameramove;
 pub mod generate;
+pub mod grade;
 
 /// Re-exported so callers can build the vector types this crate's public
 /// API takes without depending on `glam` themselves — and, more to the
@@ -132,6 +133,8 @@ mod shader_validation {
         ("blit.wgsl", include_str!("shaders/blit.wgsl")),
         ("room.wgsl", include_str!("shaders/room.wgsl")),
         ("vector.wgsl", include_str!("shaders/vector.wgsl")),
+        ("meter.wgsl", include_str!("shaders/meter.wgsl")),
+        ("bloom.wgsl", include_str!("shaders/bloom.wgsl")),
     ];
 
     #[test]

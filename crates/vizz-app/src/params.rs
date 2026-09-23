@@ -94,6 +94,8 @@ pub struct AppParams {
     pub mirror: ParamId,
     pub glow: ParamId,
     pub shift: ParamId,
+    pub grade: ParamId,
+    pub exposure: ParamId,
     pub punch_flash: ParamId,
     pub punch_black: ParamId,
     pub punch_invert: ParamId,
@@ -194,6 +196,8 @@ const HELP: &[(&str, &str)] = &[
     ("/fx/mirror", "0 off · 1 mirror · 2 quad · 3 kaleido"),
     ("/fx/glow", "bloom lift"),
     ("/fx/shift", "radial RGB split (chromatic aberration)"),
+    ("/fx/grade", "filmic grade: metered exposure, mip bloom and AgX, mixed over the original picture"),
+    ("/fx/exposure", "graded exposure bias, in stops"),
     ("/punch/flash", "white-out while held — Space, a punch button, or a learned MIDI note"),
     ("/punch/black", "blackout while held; rgb only, coverage stays"),
     ("/punch/invert", "invert the finished picture while held"),
@@ -439,6 +443,12 @@ impl AppParams {
         let glow = b.add(ParamDef::new("/fx/glow", 0.0, 1.0, 0.25).smooth(0.2));
         // Chromatic aberration. Subtle at the low end, prismatic at the top.
         let shift = b.add(ParamDef::new("/fx/shift", 0.0, 1.0, 0.0).smooth(0.2));
+        // The filmic finish, faded in over the original. Zero by default,
+        // so every look saved before it existed draws exactly as it did
+        // and pays nothing for it — at 0 the meter and bloom passes do
+        // not run at all.
+        let grade = b.add(ParamDef::new("/fx/grade", 0.0, 1.0, 0.0).smooth(0.3));
+        let exposure = b.add(ParamDef::new("/fx/exposure", -4.0, 4.0, 0.0).smooth(0.2));
         // Punch effects: the things you do on the drop. All gestures —
         // resting at zero, never smoothed (a flash that fades in is not a
         // flash), excluded from presets (recalling a look must not replay
@@ -902,6 +912,8 @@ impl AppParams {
             mirror,
             glow,
             shift,
+            grade,
+            exposure,
             palette,
             color_spread,
             color_drive,

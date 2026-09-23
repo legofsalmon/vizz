@@ -302,8 +302,9 @@ camera or a file — and {generators} of them come from mathematics, with
 {simulations} more that are still running while you watch.</p>
 
 <p>Every picture on this page was drawn by the app's own code, from the same
-functions that fill a slot when you pick one from the menu. Nothing here is an
-artist's impression of what a generator makes.</p>
+functions that fill a slot when you pick one from the menu, and through the
+same renderer that puts it on screen. Nothing here is an artist's impression
+of what a generator makes.</p>
 
 <p><strong>To use one:</strong> open the clouds section of the panel and pick from
 <em>generate…</em>, or start vizz with <code>--cloud gen:thomas</code>. A made cloud
@@ -534,7 +535,7 @@ const ENGINE: &[Part] = &[
             },
             Piece {
                 name: "The tone shoulder",
-                about: r#"<p>Glow and trails push values well past 1, and a hard clip turns highlights into flat white blobs. The composite pass ends with <code>c / (1 + 0.15c)</code>, which rolls the top off and leaves midtones essentially untouched.</p>"#,
+                about: r#"<p>Glow and trails push values well past 1, and a hard clip turns highlights into flat white blobs. The composite pass ends with <code>c / (1 + 0.15c)</code>, which rolls the top off and leaves midtones essentially untouched. It is the default finish; the graded one below replaces it when asked.</p>"#,
                 source: r#"the <code>c/(1+c)</code> curve from Reinhard, Stark, Shirley and Ferwerda, <a href="https://www.cs.utah.edu/docs/techreports/2002/pdf/UUCS-02-001.pdf">“Photographic Tone Reproduction for Digital Images”</a>, SIGGRAPH 2002. The <code>0.15</code> is tuned for this picture, not from the paper."#,
                 ours: false,
             },
@@ -631,6 +632,12 @@ const ENGINE: &[Part] = &[
                 about: r#"<p>Mirror, quad mirror and a six-wedge kaleidoscope, all done as a fold of UV space before sampling; a radial RGB split that leaves green alone, so the frame fringes towards the edges the way a lens does instead of shifting hue; and a cheap six-tap bloom.</p>"#,
                 source: "vizz. Standard screen-space constructions with no particular paper behind them.",
                 ours: true,
+            },
+            Piece {
+                name: "The graded finish",
+                about: r#"<p>An alternative to the shoulder, faded in with <code>/fx/grade</code>. Three things change together. The exposure is metered: a histogram of log luminance over the lit pixels every frame, with the exposure eased towards putting the brightest one percent on the curve's shoulder. In the app the meter only ever darkens, so a look that clips is pulled back while a fade still reaches black. The glow becomes a mip chain: the frame halved six times and summed back up, so it falls off from a sharp core to a wide haze instead of showing its taps. And the curve is AgX, which compresses highlights over about sixteen stops in log space and desaturates as it goes, so a dense core of coloured sprites reads as a hot centre fading into its colour rather than a flat disc of clipped primary. The background is taken out before grading and put back after, so a colour chosen to match a room stays that colour. Every plate on this page is drawn through it, metered per plate.</p>"#,
+                source: r#"the curve is Troy Sobotka's <a href="https://github.com/sobotka/AgX">AgX</a>, in the polynomial fit from Benjamin Wrensch's <a href="https://iolite-engine.com/blog_posts/minimal_agx_implementation">“Minimal AgX Implementation”</a> (2023). The bloom filters are from Jorge Jimenez, <a href="https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/">“Next Generation Post Processing in Call of Duty: Advanced Warfare”</a>, SIGGRAPH 2014: a thirteen-tap downsample, Karis-averaged on the first step, and a tent on the way up. Metering from a percentile of a log-luminance histogram is how game engines' auto-exposure works, <a href="https://dev.epicgames.com/documentation/en-us/unreal-engine/auto-exposure-in-unreal-engine">Unreal's</a> among them."#,
+                ours: false,
             },
             Piece {
                 name: "Gravity wells",

@@ -66,6 +66,8 @@ fn main() {
         "/fx/mirror",
         "/fx/glow",
         "/fx/shift",
+        "/fx/grade",
+        "/fx/exposure",
         "/punch/flash",
         "/punch/black",
         "/punch/invert",

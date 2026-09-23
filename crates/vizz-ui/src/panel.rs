@@ -3178,7 +3178,7 @@ const SECTIONS: &[SectionSpec] = &[
         groups: &[
             (&["color"], "colour", "palette choice, hue spread and saturation"),
             (&["bg"], "background", "paper colour behind everything, and its alpha"),
-            (&["fx"], "effects", "the feedback chain: trails, zoom, spin, mirror, glow"),
+            (&["fx"], "effects", "the feedback chain: trails, zoom, spin, mirror, glow, and the graded finish"),
         ],
     },
     SectionSpec {

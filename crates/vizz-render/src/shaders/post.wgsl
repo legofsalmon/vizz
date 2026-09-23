@@ -21,12 +21,27 @@ struct Post {
     // would align to 8 bytes and leave a hole the Rust side does not have.
     out_texel_x: f32,
     out_texel_y: f32,
+    grade: f32,       // 0 = the original picture, 1 = fully graded
+    ev: f32,          // (meter input; the composite reads the result)
+    adapt: f32,       // (meter input)
+    max_gain: f32,    // (meter input)
+    bloom_levels: f32, // levels summed into t_bloom
+    bg_r: f32,        // the background the scene cleared to, linear
+    bg_g: f32,
+    bg_b: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Post;
 @group(0) @binding(1) var t_scene: texture_2d<f32>;
 @group(0) @binding(2) var t_history: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
+// The graded path's inputs, from grade.rs: the bloom chain's top level,
+// and the metered exposure in [0].
+@group(0) @binding(4) var t_bloom: texture_2d<f32>;
+@group(0) @binding(5) var<storage, read> exposure: array<f32, 4>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -76,6 +91,41 @@ fn fs_feedback(in: VsOut) -> @location(0) vec4<f32> {
         mix(scene.rgb, history.rgb, u.trail),
         mix(scene.a, history.a, u.trail),
     );
+}
+
+// AgX, Troy Sobotka's filmic view transform (2022), as the polynomial fit
+// in Benjamin Wrensch's "Minimal AgX implementation" (iolite, 2023).
+//
+// Scene-linear in, display-linear out. What it does that the old
+// `c / (1 + 0.15c)` shoulder cannot: compress a highlight towards white in
+// log space over about sixteen stops, and desaturate as it goes, so a
+// dense core of saturated sprites reads as a hot white centre fading into
+// its colour instead of a flat disc of clipped primary. That flat disc is
+// most of why the shipped looks read as "blown out".
+fn agx(c: vec3<f32>) -> vec3<f32> {
+    // Column-major, as the reference writes them.
+    let inset = mat3x3<f32>(
+        vec3<f32>(0.842479062253094, 0.0423282422610123, 0.0423756549057051),
+        vec3<f32>(0.0784335999999992, 0.878468636469772, 0.0784336),
+        vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104),
+    );
+    let outset = mat3x3<f32>(
+        vec3<f32>(1.19687900512017, -0.0528968517574562, -0.0529716355144438),
+        vec3<f32>(-0.0980208811401368, 1.15190312990417, -0.0980434501171241),
+        vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116),
+    );
+    let min_ev = -12.47393;
+    let max_ev = 4.026069;
+    var v = inset * max(c, vec3<f32>(0.0));
+    v = clamp(log2(max(v, vec3<f32>(1e-10))), vec3<f32>(min_ev), vec3<f32>(max_ev));
+    v = (v - min_ev) / (max_ev - min_ev);
+    let x2 = v * v;
+    let x4 = x2 * x2;
+    v = 15.5 * x4 * x2 - 40.14 * x4 * v + 31.96 * x4 - 6.868 * x2 * v + 0.4298 * x2 + 0.1191 * v - 0.00232;
+    v = outset * v;
+    // The fit's output is display-encoded with a 2.2 power; back to linear
+    // for the sRGB (or float) master to encode.
+    return pow(clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2));
 }
 
 // Fold UV space for mirror/kaleidoscope modes.
@@ -134,9 +184,29 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
         color.b = textureSample(t_scene, samp, uv - radial).b;
     }
 
+    // The graded picture, when asked for. Computed from the same sample
+    // before the old glow and shoulder touch it, and mixed over the old
+    // picture at the end, so the knob fades between the two.
+    var graded = vec3<f32>(0.0);
+    var graded_alpha = alpha;
+    if (u.grade > 0.0) {
+        let bloom = textureSample(t_bloom, samp, uv) / max(u.bloom_levels, 1.0);
+        // Energy-conserving: the bloom is mixed in rather than added, so
+        // raising it spreads the light rather than making more of it.
+        let spread = clamp(u.glow * 0.3, 0.0, 0.3);
+        let hdr = mix(color, bloom.rgb, spread);
+        // Grade the light, not the backdrop: take the background out, grade
+        // what is left, and put it back as it was. Graded whole, a navy
+        // chosen to match a venue comes out nearly black — the curve's toe
+        // is doing its job, on something that is not the subject.
+        let bg = vec3<f32>(u.bg_r, u.bg_g, u.bg_b);
+        graded = bg + agx(max(hdr - bg, vec3<f32>(0.0)) * exposure[0]);
+        graded_alpha = clamp(mix(alpha, bloom.a, spread), 0.0, 1.0);
+    }
+
     // Cheap bloom: a few wide taps added back, enough to make additive
     // particles read as luminous without a separate blur chain.
-    if (u.glow > 0.001) {
+    if (u.glow > 0.001 && u.grade < 1.0) {
         let d = 0.004 + 0.02 * u.glow;
         var sum = vec3<f32>(0.0);
         var sum_a = 0.0;
@@ -163,6 +233,10 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     // highlights into flat white blobs. Weak enough to leave midtones
     // essentially untouched.
     color = color / (vec3<f32>(1.0) + color * 0.15);
+    if (u.grade > 0.0) {
+        color = mix(color, graded, clamp(u.grade, 0.0, 1.0));
+        alpha = mix(alpha, graded_alpha, clamp(u.grade, 0.0, 1.0));
+    }
 
     // Punch gestures, last so they act on the finished picture. Invert
     // sits after the shoulder on purpose — inverting HDR would make

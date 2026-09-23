@@ -1732,6 +1732,18 @@ amount is what makes it read as a lens: the middle stays sharp and the
 fringing grows towards the edges. Green is left alone, so the image
 fringes without shifting hue overall.
 
+**Grade** (`/fx/grade`) swaps the finish for a filmic one, and fades
+between the two. Three things change together. Exposure is metered: a
+histogram of the lit pixels each frame, with the exposure eased towards
+putting the brightest 1% on the curve's shoulder. It only ever darkens, so
+a look that clips is pulled back while a fade or a master dim still
+reaches black. **Exposure** (`/fx/exposure`) biases it in stops. The glow
+becomes a mip-chain bloom (Jimenez, SIGGRAPH 2014) that falls off from a
+sharp core to a wide haze, still set by `/fx/glow`. And the curve is AgX
+(Sobotka), which rolls a dense core of saturated sprites off to white
+rather than clipping it to a flat disc of colour. At 0, the default, none
+of it runs, so every saved look draws exactly as it did.
+
 Buffers are `Rgba16Float`: trails accumulate past 1.0, and 8-bit would
 band and clip before the tone-map could roll it off.
 
@@ -1874,6 +1886,8 @@ and the aliases are read on the way in only.
 | `/fx/mirror` | 0 – 3 | 0 | 0 off · 1 mirror · 2 quad · 3 kaleido |
 | `/fx/glow` | 0 – 1 | 0.25 | bloom lift |
 | `/fx/shift` | 0 – 1 | 0 | radial RGB split (chromatic aberration) |
+| `/fx/grade` | 0 – 1 | 0 | filmic grade: metered exposure, mip bloom and AgX, mixed over the original picture |
+| `/fx/exposure` | -4 – 4 | 0 | graded exposure bias, in stops |
 | `/punch/flash` | 0 – 1 | 0 | white-out while held — Space, a punch button, or a learned MIDI note |
 | `/punch/black` | 0 – 1 | 0 | blackout while held; rgb only, coverage stays |
 | `/punch/invert` | 0 – 1 | 0 | invert the finished picture while held |
