@@ -2256,6 +2256,9 @@ mod tests {
         // rather than left as an empty field to guess at.
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("receive"), "no way to start a stream: {text}");
+        // The video input has a rescan button of its own, so counting
+        // against an empty slot is what isolates the stream's.
+        let rescans_idle = text.matches("rescan").count();
         assert!(
             text.contains("9848"),
             "the default streaming port is not offered: {text}"
@@ -2268,6 +2271,7 @@ mod tests {
             connected: false,
             points: 0,
             dropped: 0,
+            simulation: None,
         });
         let text = run_panel(&ctx, &reg, &state);
         assert!(
@@ -2282,10 +2286,44 @@ mod tests {
             connected: true,
             points: 40_000,
             dropped: 3,
+            simulation: None,
         });
         let text = run_panel(&ctx, &reg, &state);
         assert!(text.contains("40000 pts"), "no point count: {text}");
         assert!(text.contains("stop"), "no way to stop the stream: {text}");
+        assert_eq!(
+            text.matches("rescan").count(),
+            rescans_idle + 1,
+            "a stream does not offer rescan: {text}"
+        );
+
+        // A running simulation still offers the menu. The app brings the
+        // last simulation back on launch, so this is the state the panel
+        // is most often in, and the way to pick another one used to be
+        // hidden behind stopping the one playing.
+        state.live_cloud = Some(LiveCloudStatus {
+            label: "cyclic — simulation".into(),
+            connected: true,
+            points: 65_536,
+            dropped: 0,
+            simulation: Some("cyclic".into()),
+        });
+        let text = run_panel(&ctx, &reg, &state);
+        assert!(
+            text.contains("simulate"),
+            "a running simulation hides the way to run another: {text}"
+        );
+        assert!(text.contains("stop"), "no way to stop the simulation: {text}");
+        // A simulation has no sender, and rescan listened on the address
+        // in the stream field — which swapped the simulation for a
+        // network listener.
+        assert_eq!(
+            text.matches("rescan").count(),
+            rescans_idle,
+            "rescan is offered for a simulation, which has no sender to \
+             drop — it listened on the stream address instead, quietly \
+             replacing the simulation: {text}"
+        );
     }
 
     /// Looks are grouped by what they were built on.

@@ -537,6 +537,11 @@ pub struct LiveCloud {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     label: String,
+    /// The spec, when this is a simulation rather than something on the
+    /// wire. The panel offers different controls for the two — a
+    /// simulation has no sender to re-listen for — and the label is
+    /// prose meant for reading, not for deciding that from.
+    simulation: Option<String>,
 }
 
 impl LiveCloud {
@@ -551,15 +556,24 @@ impl LiveCloud {
             }
             other => format!("{other:?}"),
         };
+        let simulation = match &source {
+            Source::Simulate(spec) => Some(spec.clone()),
+            _ => None,
+        };
         let (s, st) = (Arc::clone(&slot), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("ply-stream".into())
             .spawn(move || source_loop(source, &s, &st))?;
-        Ok(Self { slot, stop, thread: Some(thread), label })
+        Ok(Self { slot, stop, thread: Some(thread), label, simulation })
     }
 
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// The simulation spec this is running, or `None` for a stream.
+    pub fn simulation(&self) -> Option<&str> {
+        self.simulation.as_deref()
     }
 
     /// Tell a running simulation what the room sounds like this frame.
@@ -646,6 +660,7 @@ mod handover_tests {
             stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             thread: None,
             label: "test".into(),
+            simulation: None,
         };
 
         let mut mine = Vec::with_capacity(64);
@@ -671,6 +686,7 @@ mod handover_tests {
             stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             thread: None,
             label: "test".into(),
+            simulation: None,
         };
 
         let mut mine = Vec::new();

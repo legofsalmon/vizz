@@ -1513,6 +1513,7 @@ impl App {
                     connected: live.connected(),
                     points: live.with_latest(|pts| pts.len()).unwrap_or(0),
                     dropped: live.dropped(),
+                    simulation: live.simulation().map(str::to_string),
                 }),
                 video_sources: self.video_sources.clone(),
                 video: self.video.as_ref().map(|v| vizz_ui::VideoStatus {
