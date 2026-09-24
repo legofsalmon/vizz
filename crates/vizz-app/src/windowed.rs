@@ -63,6 +63,11 @@ pub struct WindowedOpts {
     pub columns: Arc<vizz_osc::ColumnSync>,
     /// The licence, already decided offline by the caller.
     pub licence: vizz_licence::Licence,
+    /// Crash reports and feedback. `None` runs without either.
+    pub reporter: Option<vizz_report::Reporter>,
+    /// How the last run ended: after an unclean exit the look and the
+    /// outputs come back, and the person is asked about a report.
+    pub previous: vizz_report::Previous,
 }
 
 struct RenderState {
@@ -255,6 +260,112 @@ struct App {
     licence_view: Option<vizz_licence::Snapshot>,
     /// The words on the mark, chosen at launch from why there is one.
     mark_text: &'static str,
+    /// Crash reports and feedback, and what the help section shows.
+    help: Help,
+    /// What was live when the recovery snapshot was last written, so it
+    /// is only written when something changed.
+    recovery_saved: Vec<u8>,
+    recovery_checked: Instant,
+    /// Frames in a row that panicked and were skipped. See `redraw`.
+    frame_failures: u32,
+}
+
+/// The app's side of help & feedback.
+struct Help {
+    reporter: Option<vizz_report::Reporter>,
+    /// Ask about this many crash reports on the first frame — after the
+    /// show, the look and the outputs are back, never before.
+    prompt: Option<usize>,
+    message: Option<(bool, String)>,
+    sent_revision: u64,
+    /// Waiting and queued report counts, refreshed every couple of
+    /// seconds rather than listed from disk every frame.
+    counts: (usize, usize),
+    counts_at: Option<Instant>,
+}
+
+impl Help {
+    fn view(&mut self, has_licence: bool) -> Option<vizz_ui::help::HelpView> {
+        let reporter = self.reporter.as_ref()?;
+        if self.counts_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) {
+            self.counts = (reporter.pending().len(), reporter.outbox().len());
+            self.counts_at = Some(Instant::now());
+        }
+        Some(vizz_ui::help::HelpView {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            has_licence,
+            auto_crash: reporter.auto(),
+            pending_crashes: self.counts.0,
+            outbox: self.counts.1,
+            message: self.message.clone(),
+            sent_revision: self.sent_revision,
+        })
+    }
+
+    /// The answer to the after-a-crash question.
+    fn answer(&mut self, answer: vizz_ui::help::CrashAnswer) {
+        let Some(reporter) = &self.reporter else { return };
+        if answer.send {
+            if answer.always {
+                reporter.set_auto(true);
+                if let Err(e) = crate::settings::save_crash_reports_auto(true) {
+                    log::warn!("could not remember to send crash reports: {e:#}");
+                }
+            }
+            let n = reporter.send_pending(&answer.note);
+            log::info!("crash reports: {n} agreed to and on their way");
+        } else {
+            reporter.discard_pending();
+            log::info!("crash reports: declined, deleted");
+        }
+        self.counts_at = None;
+    }
+
+    fn apply(&mut self, actions: &vizz_ui::help::HelpActions, licence: &vizz_licence::Licence) {
+        let Some(reporter) = &self.reporter else { return };
+        if let Some(on) = actions.set_auto_crash {
+            reporter.set_auto(on);
+            if let Err(e) = crate::settings::save_crash_reports_auto(on) {
+                log::warn!("could not remember the crash-report setting: {e:#}");
+            }
+            self.counts_at = None;
+        }
+        if actions.send_pending {
+            reporter.send_pending("");
+            self.counts_at = None;
+        }
+        if actions.discard_pending {
+            reporter.discard_pending();
+            self.counts_at = None;
+        }
+        if let Some(draft) = &actions.feedback {
+            use vizz_ui::help::FeedbackType as T;
+            let kind = match draft.kind {
+                T::Bug => vizz_report::FeedbackKind::Bug,
+                T::Idea => vizz_report::FeedbackKind::Idea,
+                T::Question => vizz_report::FeedbackKind::Question,
+                T::Praise => vizz_report::FeedbackKind::Praise,
+            };
+            let form = vizz_report::FeedbackForm {
+                message: draft.message.clone(),
+                email: draft.email.clone(),
+                name: String::new(),
+                include_licence: draft.include_licence,
+                public: draft.public,
+            };
+            // Read only when the box was ticked: the key is never touched
+            // for a message that did not ask for it.
+            let key = draft.include_licence.then(|| licence.key()).flatten();
+            self.message = Some(match reporter.send_feedback(kind, &form, key.as_deref()) {
+                Ok(()) => {
+                    self.sent_revision += 1;
+                    (false, "thank you — it is on its way, and waits for a network if there is none".into())
+                }
+                Err(e) => (true, e),
+            });
+            self.counts_at = None;
+        }
+    }
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -411,8 +522,24 @@ impl App {
             // compatibility, and without these an uncaptured validation
             // or out-of-memory error panics the process mid-set — wgpu's
             // default handler — and a lost device dies silently.
-            device.set_device_lost_callback(|reason, msg| {
+            // A lost device is also a crash worth knowing about, by the
+            // same consent rules as a panic — but not the ordinary
+            // `Destroyed` every device reports on its way out.
+            let lost_reporter = self.help.reporter.clone();
+            device.set_device_lost_callback(move |reason, msg| {
                 log::error!("GPU device lost ({reason:?}): {msg}");
+                if reason != wgpu::DeviceLostReason::Destroyed
+                    && let Some(reporter) = &lost_reporter
+                {
+                    reporter.record(
+                        vizz_report::CrashKind::Gpu,
+                        vizz_report::payload::Raw {
+                            summary: format!("GPU device lost ({reason:?}): {msg}"),
+                            detail: None,
+                            occurred_at: Some(vizz_report::crash::iso8601(vizz_report::crash::now())),
+                        },
+                    );
+                }
             });
             vizz_render::install_error_guard(&device);
             anyhow::Ok(GpuContext {
@@ -1064,7 +1191,45 @@ impl App {
         }
     }
 
+    /// One frame, with a panic in it caught and the frame skipped.
+    ///
+    /// A live-output app has one job, and exiting is the worst way to fail
+    /// at it: a bug that trips on one frame — a bad cloud, an odd
+    /// parameter, a shader edge case — used to take the whole show down.
+    /// Now that frame is dropped, the panic is logged (and written as a
+    /// crash report, which is sent only by the usual consent rules), the
+    /// performer is told once, and the next frame is drawn. A frame that
+    /// panics every time leaves the last good picture on the outputs and
+    /// the panel still working, which is strictly better than a desktop.
     fn redraw(&mut self) {
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.redraw_frame()));
+        match caught {
+            Ok(()) => self.frame_failures = 0,
+            Err(_) => {
+                self.frame_failures = self.frame_failures.saturating_add(1);
+                log::error!("a frame panicked and was skipped ({} in a row)", self.frame_failures);
+                if let Some(state) = &mut self.state {
+                    if self.frame_failures == 1 {
+                        state.gui.notify_error("a frame failed and was skipped — vizz carried on");
+                    }
+                    state.window.request_redraw();
+                }
+                if let Some(reporter) = &self.help.reporter
+                    && reporter.auto()
+                {
+                    reporter.flush_in_background(std::time::Duration::from_secs(5));
+                }
+                self.help.counts_at = None;
+                // Give a frame that fails every time a breath, so the
+                // failure is not a busy loop that starves the panel.
+                if self.frame_failures > 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
+    fn redraw_frame(&mut self) {
         self.finish_pending_clouds();
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
@@ -1382,6 +1547,25 @@ impl App {
             }
         }
 
+        // The recovery snapshot: what is live, written only when it moved,
+        // so a crash can put the look and the outputs back. See
+        // `crate::recovery`.
+        if self.recovery_checked.elapsed() >= crate::recovery::EVERY {
+            self.recovery_checked = Instant::now();
+            let snap = crate::recovery::Recovery::capture(
+                &self.params.registry,
+                current_look_name(&self.engine, &self.library),
+                self.opts.outputs.ndi.then(|| self.opts.outputs.ndi_name.clone()),
+            );
+            let bytes = snap.bytes();
+            if bytes != self.recovery_saved {
+                match crate::recovery::save_bytes(&bytes) {
+                    Ok(()) => self.recovery_saved = bytes,
+                    Err(e) => log::warn!("could not write the recovery snapshot: {e:#}"),
+                }
+            }
+        }
+
         // Everything below describes the app to a panel, and with nothing
         // on screen it described it to nobody: a health snapshot sorting six
         // hundred frame times, the settings file read and parsed, the MIDI
@@ -1399,6 +1583,15 @@ impl App {
         // been seen, it has been seen.
         if std::mem::take(&mut self.welcome_pending) {
             state.gui.welcome = true;
+        }
+        // The after-a-crash question, on the first frame: by now the show,
+        // the look and the outputs are back, so answering it is never
+        // between the performer and the projector.
+        if let Some(count) = self.help.prompt.take() {
+            state.gui.crash_prompt = Some(count);
+        }
+        if let Some(answer) = state.gui.crash_answer.take() {
+            self.help.answer(answer);
         }
         // The screen you were on is the screen you get back.
         if std::mem::take(&mut self.start_on_stage_pending) {
@@ -1571,6 +1764,7 @@ impl App {
                         locked: self.session.locked(),
                     })
                 },
+                help: self.help.view(self.licence_view.as_ref().is_some_and(|l| l.has_key)),
                 health: Some(self.engine.health.snapshot()),
                 outputs: outputs_status,
                 frame_times_ms: Vec::new(),
@@ -1702,6 +1896,7 @@ impl App {
         match actions {
             Ok(actions) => {
                 apply_licence_actions(&actions.licence, &self.licence);
+                self.help.apply(&actions.help, &self.licence);
                 apply_audio_actions(
                     &actions,
                     &mut self.engine,
@@ -4087,6 +4282,39 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     }
     engine.adopt_column_sync(Arc::clone(&opts.columns));
 
+    // Recover first, report second. After a run that did not end cleanly,
+    // what was live comes back before the first frame — the look and the
+    // NDI feed; the show, pads, modulation, clouds and output size came
+    // back above as they do on every launch — and only then, on that
+    // first frame, is the person asked about a report.
+    if opts.previous.unclean {
+        match crate::recovery::load() {
+            Some(snap) => {
+                let applied = snap.apply(&params.registry);
+                let mut back = vec!["the show".to_string()];
+                back.push(match &snap.recalled {
+                    Some(name) => format!("the look ({name} and what was changed on it)"),
+                    None => "the look".to_string(),
+                });
+                if let Some(name) = snap.ndi.as_ref().filter(|_| !opts.outputs.ndi) {
+                    opts.outputs.ndi = true;
+                    opts.outputs.ndi_name = name.clone();
+                    back.push(format!("NDI '{name}'"));
+                }
+                log::info!("recovered after an unclean exit: {applied} parameters, {}", back.join(", "));
+                startup_notes.push((false, format!("vizz closed unexpectedly — {} are back", back.join(", "))));
+            }
+            None => startup_notes.push((
+                false,
+                "vizz closed unexpectedly — the show is back; no look had been saved to restore".into(),
+            )),
+        }
+    }
+    let crash_prompt = opts.reporter.as_ref().and_then(|r| {
+        let waiting = r.pending().len();
+        (opts.previous.unclean && !r.auto() && waiting > 0).then_some(waiting)
+    });
+
     // The licence, decided offline before the first frame: what this
     // session does about it is fixed here and only ever relaxed after.
     let licence = opts.licence.clone();
@@ -4110,6 +4338,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // frame, and daily after that.
     licence.start_heartbeat(std::time::Duration::from_secs(60));
     let opts_show_gui = opts.show_gui;
+    let opts_reporter = opts.reporter.clone();
     let mut app = App {
         engine,
         params,
@@ -4190,6 +4419,17 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         session,
         licence_revision: 0,
         licence_view: None,
+        help: Help {
+            reporter: opts_reporter,
+            prompt: crash_prompt,
+            message: None,
+            sent_revision: 0,
+            counts: (0, 0),
+            counts_at: None,
+        },
+        recovery_saved: Vec::new(),
+        recovery_checked: Instant::now(),
+        frame_failures: 0,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

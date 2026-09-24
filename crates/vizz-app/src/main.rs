@@ -2,6 +2,7 @@ mod engine;
 mod headless;
 mod outputs;
 mod params;
+mod recovery;
 mod settings;
 mod textcloud;
 mod thumbshot;
@@ -327,7 +328,12 @@ fn main() -> Result<()> {
         } else {
             format!("vizz{osc}")
         };
-        windowed::run(
+        // Crash reporting and recovery belong to the windowed app, where
+        // there is a person to ask and a show to put back. Headless runs
+        // are CI and benchmarks: a panic there should fail the run, loudly,
+        // and nobody is there to answer a prompt.
+        let (reporter, previous) = start_reports();
+        let result = windowed::run(
             params,
             windowed::WindowedOpts {
                 width,
@@ -347,7 +353,37 @@ fn main() -> Result<()> {
                 outputs: output_opts,
                 columns,
                 licence,
+                reporter: Some(reporter.clone()),
+                previous,
             },
-        )
+        );
+        // However the loop ended — the window closed, Escape twice, an
+        // update's restart, or a start-up error already logged — it ended
+        // here rather than in a crash, so the marker goes.
+        reporter.end_session();
+        result
     }
+}
+
+/// Start the crash reporter: the panic hook on, this run marked, and how
+/// the last run ended decided. Offline and quick — a directory listing
+/// and a file write — so it costs startup nothing; sending waits for a
+/// background thread well after the first frame.
+fn start_reports() -> (vizz_report::Reporter, vizz_report::Previous) {
+    let s = settings::load();
+    let reporter = vizz_report::Reporter::new(vizz_report::Config::for_this_machine(
+        vizz_mod::project::root().join("reports"),
+        env!("CARGO_PKG_VERSION"),
+        settings::install_id(),
+        s.crash_reports_auto,
+    ));
+    reporter.install_panic_hook();
+    let previous = reporter.begin_session(&vizz_report::crash::vizz_is_running);
+    if previous.unclean {
+        log::warn!("the last run did not exit cleanly — putting back what was on screen");
+    }
+    // Whatever was agreed to on an earlier launch and never reached the
+    // service. Ten seconds in, so it is never competing with start-up.
+    reporter.flush_in_background(std::time::Duration::from_secs(10));
+    (reporter, previous)
 }

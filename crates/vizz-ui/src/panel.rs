@@ -140,6 +140,8 @@ pub struct PanelActions {
     pub open_shortcuts: bool,
     /// What the licence section asks for.
     pub licence: LicenceActions,
+    /// What the help & feedback section asks for.
+    pub help: crate::help::HelpActions,
 }
 
 /// What the licence section asks the app to do. Each is a network call or
@@ -222,6 +224,9 @@ pub struct PanelState {
     /// The licence, or `None` where there is no licence handle at all —
     /// mockups and tests that are not about it.
     pub licence: Option<LicenceView>,
+    /// Help, feedback and crash reports, or `None` where the app has no
+    /// reporter — mockups and tests that are not about it.
+    pub help: Option<crate::help::HelpView>,
     pub health: Option<HealthSnapshot>,
     pub outputs: Vec<OutputStatus>,
     /// Recent frame times in ms, oldest first, for the sparkline.
@@ -325,6 +330,7 @@ impl Default for PanelState {
             update_available: Default::default(),
             update: Default::default(),
             licence: None,
+            help: None,
             thumb_revision: 0,
             health: Default::default(),
             outputs: Default::default(),
@@ -578,6 +584,12 @@ pub fn draw(
                     .id_salt("licence")
                     .default_open(state.expand_sections)
                     .show(ui, |ui| licence_section(ui, licence, &mut actions.licence));
+            }
+            if let Some(help) = state.help.as_ref() {
+                egui::CollapsingHeader::new("help & feedback")
+                    .id_salt("help")
+                    .default_open(state.expand_sections)
+                    .show(ui, |ui| crate::help::section(ui, help, &mut actions.help));
             }
             ui.separator();
             // No scene grid here any more.
