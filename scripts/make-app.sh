@@ -102,8 +102,11 @@ cat > "$app/Contents/Info.plist" <<EOF
          gates the camera. The failure looks like nothing at all: the
          listener binds, the sender reports it is sending, and no bytes
          cross. Same lesson as NSCameraUsageDescription above, on a
-         different permission. -->
-    <key>NSLocalNetworkUsageDescription</key><string>vizz receives live point clouds and video from apps on your local network.</string>
+         different permission.
+         The text is what the person is asked to agree to, so it names
+         everything vizz does there: OSC control in, live point clouds
+         in, NDI video in (and finding NDI sources), NDI output out. -->
+    <key>NSLocalNetworkUsageDescription</key><string>vizz takes OSC control, live point clouds and NDI video from devices on your local network, and sends its picture to them over NDI.</string>
 </dict>
 </plist>
 EOF
