@@ -3491,6 +3491,7 @@ dependencies = [
  "vizz-osc",
  "vizz-params",
  "vizz-render",
+ "vizz-report",
  "vizz-ui",
  "vizz-update",
  "wgpu",
@@ -3540,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "vizz-licence"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "base64",
  "log",
@@ -3604,6 +3605,18 @@ dependencies = [
  "naga",
  "pollster",
  "wgpu",
+]
+
+[[package]]
+name = "vizz-report"
+version = "0.28.0"
+dependencies = [
+ "log",
+ "ring",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "ureq",
 ]
 
 [[package]]
