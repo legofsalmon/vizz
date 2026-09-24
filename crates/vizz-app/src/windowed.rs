@@ -285,6 +285,8 @@ struct App {
     recovery_checked: Instant,
     /// Frames in a row that panicked and were skipped. See `redraw`.
     frame_failures: u32,
+    /// The same for window events. See `window_event`.
+    event_failures: u32,
     /// Whether the GPU device has been lost, and when to try rebuilding.
     device_lost: crate::devicelost::DeviceRecovery,
     /// The window and the panel, while the renderer is being rebuilt on a
@@ -1416,25 +1418,35 @@ impl App {
             Ok(()) => self.frame_failures = 0,
             Err(_) => {
                 self.frame_failures = self.frame_failures.saturating_add(1);
-                log::error!("a frame panicked and was skipped ({} in a row)", self.frame_failures);
-                if let Some(state) = &mut self.state {
-                    if self.frame_failures == 1 {
-                        state.gui.notify_error("a frame failed and was skipped — vizz carried on");
-                    }
-                    state.window.request_redraw();
-                }
-                if let Some(reporter) = &self.help.reporter
-                    && reporter.auto()
-                {
-                    reporter.flush_in_background(std::time::Duration::from_secs(5));
-                }
-                self.help.counts_at = None;
-                // Give a frame that fails every time a breath, so the
-                // failure is not a busy loop that starves the panel.
-                if self.frame_failures > 3 {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                self.carry_on_after_panic("a frame", self.frame_failures);
             }
+        }
+    }
+
+    /// What a caught panic leaves behind, for a frame or a window event
+    /// alike: a log line (the panic hook has already written the report),
+    /// a notice on the first of a run, a redraw so the panel keeps
+    /// answering, the report on its way if the person said always — and,
+    /// once the same thing has failed a few times in a row, a breath, so
+    /// a failure that repeats is not a busy loop that starves the panel.
+    fn carry_on_after_panic(&mut self, what: &str, in_a_row: u32) {
+        log::error!("{what} panicked and was skipped ({in_a_row} in a row)");
+        if let Some(state) = &mut self.state {
+            if in_a_row == 1 {
+                state
+                    .gui
+                    .notify_error(format!("{what} failed and was skipped — vizz carried on"));
+            }
+            state.window.request_redraw();
+        }
+        if let Some(reporter) = &self.help.reporter
+            && reporter.auto()
+        {
+            reporter.flush_in_background(std::time::Duration::from_secs(5));
+        }
+        self.help.counts_at = None;
+        if in_a_row > 3 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
@@ -2679,6 +2691,110 @@ impl App {
         }
     }
 
+    /// Everything `window_event` does, run inside its guard. Returns
+    /// whether a frame is due, so the frame runs outside it — under its
+    /// own guard, in `redraw` — and one panic is never counted twice.
+    fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) -> bool {
+        // Any keystroke that is not Escape means you are still working, so
+        // the quit prompt goes away. Checked before the panel gets the
+        // event, because the panel *consumes* most of the keys that would
+        // say so — the number keys, `p`, Tab — and a prompt that outlived
+        // firing a preset would be saying "still waiting" while the show
+        // visibly carried on.
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state.is_pressed()
+            && key.logical_key != Key::Named(NamedKey::Escape)
+        {
+            self.quit_armed = None;
+        }
+        // The panel sees events first; if it used one (dragging a slider,
+        // typing in a field) the app must not also act on it.
+        if let Some(state) = &mut self.state {
+            let window = Arc::clone(&state.window);
+            if state.gui.on_window_event(&window, &event) && !matches!(event, WindowEvent::RedrawRequested) {
+                window.request_redraw();
+                return false;
+            }
+        }
+        match event {
+            // Closing the window is an aimed gesture — the title bar, or
+            // the platform's own quit. Nothing to confirm.
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event, .. }
+                if event.logical_key == Key::Named(NamedKey::F11)
+                    && event.state.is_pressed()
+                    && !event.repeat =>
+            {
+                if let Some(state) = &self.state {
+                    let going_full = state.window.fullscreen().is_none();
+                    state.window.set_fullscreen(going_full.then(|| {
+                        winit::window::Fullscreen::Borderless(state.window.current_monitor())
+                    }));
+                    if let Err(e) = crate::settings::save_fullscreen(going_full) {
+                        log::warn!("could not remember the fullscreen choice: {e:#}");
+                    }
+                }
+            }
+            // Not on a repeat: a held Escape used to deliver its own
+            // second press well inside the confirmation window, so leaning
+            // on one key ended the show — the very thing the two-step
+            // quit exists to prevent.
+            WindowEvent::KeyboardInput { event, .. }
+                if event.logical_key == Key::Named(NamedKey::Escape)
+                    && event.state.is_pressed()
+                    && !event.repeat =>
+            {
+                // In fullscreen the first Escape leaves fullscreen — the
+                // standard meaning, and strictly safer than arming quit.
+                if let Some(state) = &self.state
+                    && state.window.fullscreen().is_some()
+                {
+                    state.window.set_fullscreen(None);
+                    if let Err(e) = crate::settings::save_fullscreen(false) {
+                        log::warn!("could not remember the fullscreen choice: {e:#}");
+                    }
+                    return false;
+                }
+                // Escape is not. It is one key, next to nothing, and it
+                // used to end the show on the first press — the only
+                // destructive single keystroke in the app, on a machine
+                // whose whole job is not going black. So it asks, once,
+                // and a second press within a few seconds means it.
+                match self.quit_armed {
+                    Some(at) if at.elapsed() < QUIT_CONFIRM_WINDOW => event_loop.exit(),
+                    _ => {
+                        self.quit_armed = Some(Instant::now());
+                        log::info!("press Esc again to quit");
+                        if let Some(state) = &self.state {
+                            state.window.request_redraw();
+                        }
+                    }
+                }
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(state) = &mut self.state
+                    && size.width > 0
+                    && size.height > 0
+                {
+                    state.config.width = size.width;
+                    state.config.height = size.height;
+                    state.surface.configure(&state.ctx.device, &state.config);
+                }
+            }
+            // Drag a cloud onto the window and it loads.
+            //
+            // A drop rather than a file dialog, for two reasons. It is the
+            // gesture people already use for this — you have the scan in a
+            // folder and you want it in the visualiser — and a dialog
+            // would mean a new dependency that pulls GTK in on Linux, for
+            // a modal window that is strictly more work to operate.
+            WindowEvent::DroppedFile(path) => self.load_dropped(path),
+            WindowEvent::RedrawRequested => return true,
+            _ => {}
+        }
+        false
+    }
+
     /// Move to another input device, remembering the choice.
     fn switch_audio_device(&mut self, want: Option<String>) {
         // Reopen rather than rebuild: the band gains live in the settings
@@ -2783,104 +2899,41 @@ impl ApplicationHandler for App {
         }
     }
 
+    /// A panic in any window event — a key, a resize, a dropped file —
+    /// is caught, and the event is dropped instead of the show. Only the
+    /// frame was guarded before, so everything else here still exited the
+    /// app mid-set. Handled the way a failing frame is: see
+    /// `carry_on_after_panic`.
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // Any keystroke that is not Escape means you are still working, so
-        // the quit prompt goes away. Checked before the panel gets the
-        // event, because the panel *consumes* most of the keys that would
-        // say so — the number keys, `p`, Tab — and a prompt that outlived
-        // firing a preset would be saying "still waiting" while the show
-        // visibly carried on.
-        if let WindowEvent::KeyboardInput { event: key, .. } = &event
-            && key.state.is_pressed()
-            && key.logical_key != Key::Named(NamedKey::Escape)
-        {
-            self.quit_armed = None;
-        }
-        // The panel sees events first; if it used one (dragging a slider,
-        // typing in a field) the app must not also act on it.
-        if let Some(state) = &mut self.state {
-            let window = Arc::clone(&state.window);
-            if state.gui.on_window_event(&window, &event) && !matches!(event, WindowEvent::RedrawRequested) {
-                window.request_redraw();
-                return;
+        let what = event_name(&event);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.handle_window_event(event_loop, event)
+        }));
+        match caught {
+            Ok(draw) => {
+                self.event_failures = 0;
+                if draw {
+                    self.redraw();
+                }
+            }
+            Err(_) => {
+                self.event_failures = self.event_failures.saturating_add(1);
+                self.carry_on_after_panic(what, self.event_failures);
             }
         }
-        match event {
-            // Closing the window is an aimed gesture — the title bar, or
-            // the platform's own quit. Nothing to confirm.
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::F11)
-                    && event.state.is_pressed()
-                    && !event.repeat =>
-            {
-                if let Some(state) = &self.state {
-                    let going_full = state.window.fullscreen().is_none();
-                    state.window.set_fullscreen(going_full.then(|| {
-                        winit::window::Fullscreen::Borderless(state.window.current_monitor())
-                    }));
-                    if let Err(e) = crate::settings::save_fullscreen(going_full) {
-                        log::warn!("could not remember the fullscreen choice: {e:#}");
-                    }
-                }
-            }
-            // Not on a repeat: a held Escape used to deliver its own
-            // second press well inside the confirmation window, so leaning
-            // on one key ended the show — the very thing the two-step
-            // quit exists to prevent.
-            WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::Escape)
-                    && event.state.is_pressed()
-                    && !event.repeat =>
-            {
-                // In fullscreen the first Escape leaves fullscreen — the
-                // standard meaning, and strictly safer than arming quit.
-                if let Some(state) = &self.state
-                    && state.window.fullscreen().is_some()
-                {
-                    state.window.set_fullscreen(None);
-                    if let Err(e) = crate::settings::save_fullscreen(false) {
-                        log::warn!("could not remember the fullscreen choice: {e:#}");
-                    }
-                    return;
-                }
-                // Escape is not. It is one key, next to nothing, and it
-                // used to end the show on the first press — the only
-                // destructive single keystroke in the app, on a machine
-                // whose whole job is not going black. So it asks, once,
-                // and a second press within a few seconds means it.
-                match self.quit_armed {
-                    Some(at) if at.elapsed() < QUIT_CONFIRM_WINDOW => event_loop.exit(),
-                    _ => {
-                        self.quit_armed = Some(Instant::now());
-                        log::info!("press Esc again to quit");
-                        if let Some(state) = &self.state {
-                            state.window.request_redraw();
-                        }
-                    }
-                }
-            }
-            WindowEvent::Resized(size) => {
-                if let Some(state) = &mut self.state
-                    && size.width > 0
-                    && size.height > 0
-                {
-                    state.config.width = size.width;
-                    state.config.height = size.height;
-                    state.surface.configure(&state.ctx.device, &state.config);
-                }
-            }
-            // Drag a cloud onto the window and it loads.
-            //
-            // A drop rather than a file dialog, for two reasons. It is the
-            // gesture people already use for this — you have the scan in a
-            // folder and you want it in the visualiser — and a dialog
-            // would mean a new dependency that pulls GTK in on Linux, for
-            // a modal window that is strictly more work to operate.
-            WindowEvent::DroppedFile(path) => self.load_dropped(path),
-            WindowEvent::RedrawRequested => self.redraw(),
-            _ => {}
-        }
+    }
+}
+
+/// What a window event is, for the notice when handling one panics.
+fn event_name(event: &WindowEvent) -> &'static str {
+    match event {
+        WindowEvent::KeyboardInput { .. } => "a key press",
+        WindowEvent::Resized(_) => "a window resize",
+        WindowEvent::DroppedFile(_) => "a dropped file",
+        WindowEvent::MouseInput { .. }
+        | WindowEvent::CursorMoved { .. }
+        | WindowEvent::MouseWheel { .. } => "a mouse event",
+        _ => "a window event",
     }
 }
 
@@ -4643,6 +4696,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         recovery_saved: Vec::new(),
         recovery_checked: Instant::now(),
         frame_failures: 0,
+        event_failures: 0,
         device_lost: Default::default(),
         parked: None,
         video_spec: None,
