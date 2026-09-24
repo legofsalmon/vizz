@@ -342,6 +342,7 @@ fn main() {
             blocker: None,
             recording: false,
         }),
+        licence: Some(licence_view()),
         health: Some(health.snapshot()),
         outputs: vec![
             OutputStatus { name: "syphon:vizz".into(), live: true },
@@ -544,6 +545,49 @@ fn gpu() -> (wgpu::Device, wgpu::Queue) {
         trace: wgpu::Trace::Off,
     }))
     .expect("no device")
+}
+
+/// The licence section as it looks on a licensed machine, or — with
+/// `unlicensed` on the command line — on a copy with no licence under the
+/// lock, which is the screen such a copy opens on.
+///
+///     cargo run -p vizz-ui --example render_panel -- locked.png 460 900 expand unlicensed
+fn licence_view() -> vizz_ui::LicenceView {
+    let unlicensed = std::env::args().any(|a| a == "unlicensed");
+    let snapshot = if unlicensed {
+        vizz_licence::Snapshot {
+            status: vizz_licence::Status::Invalid,
+            headline: vizz_licence::Headline {
+                text: "Unlicensed".into(),
+                tone: vizz_licence::Tone::Bad,
+            },
+            details: Vec::new(),
+            has_key: false,
+            key: None,
+            busy: None,
+            message: None,
+            request_code: Some("9E5B4C1A-0000-4000-8000-ABCDEF012345".into()),
+            machine: "8b9dd6da".into(),
+            key_configured: true,
+        }
+    } else {
+        vizz_licence::Snapshot {
+            status: vizz_licence::Status::Active,
+            headline: vizz_licence::Headline {
+                text: "Licensed to Test Buyer".into(),
+                tone: vizz_licence::Tone::Good,
+            },
+            details: vec!["updates until 9 Oct 2026".into(), "checks in by 8 Nov 2025".into(), "2 seats".into()],
+            has_key: true,
+            key: Some("LT-V1ZZ-····-····-4XTC".into()),
+            busy: None,
+            message: None,
+            request_code: Some("9E5B4C1A-0000-4000-8000-ABCDEF012345".into()),
+            machine: "8b9dd6da".into(),
+            key_configured: true,
+        }
+    };
+    vizz_ui::LicenceView { snapshot, marked: false, locked: unlicensed }
 }
 
 fn save_png(

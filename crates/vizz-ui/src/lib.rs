@@ -31,7 +31,7 @@ pub use performance::{PerformanceActions, PerformanceState};
 pub use egui::Color32;
 
 pub use panel::{
-    UpdateView,
+    UpdateView, LicenceActions, LicenceView,
     AudioEdits, AudioView, LiveCloudStatus, MidiView, OutputSetup, OutputStatus, PanelActions,
     PanelState, PresetEntry, RecordSetup, RecordingView, VideoSources, VideoStatus,
 };
@@ -1331,6 +1331,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1387,6 +1388,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1452,6 +1454,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
             frame_times_ms: vec![16.0, 17.0, 15.5],
@@ -1510,6 +1513,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1560,6 +1564,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1667,6 +1672,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1726,6 +1732,7 @@ mod tests {
             preset_current: None,
             update_available: update,
             update: None,
+            licence: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1892,6 +1899,7 @@ mod tests {
             preset_current: current,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1946,6 +1954,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2029,6 +2038,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2089,6 +2099,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2159,6 +2170,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2227,6 +2239,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2390,6 +2403,7 @@ mod tests {
             preset_current: None,
             update_available: None,
             update: None,
+            licence: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2417,4 +2431,87 @@ mod tests {
         }
     }
 
+    fn licence(status: vizz_licence::Status, text: &str, locked: bool, marked: bool) -> LicenceView {
+        LicenceView {
+            snapshot: vizz_licence::Snapshot {
+                status,
+                headline: vizz_licence::Headline { text: text.into(), tone: vizz_licence::Tone::Bad },
+                details: Vec::new(),
+                has_key: status != vizz_licence::Status::Invalid,
+                key: None,
+                busy: None,
+                message: None,
+                request_code: Some("9E5B4C1A-0000-4000-8000-ABCDEF012345".into()),
+                machine: "8b9dd6da".into(),
+                key_configured: true,
+            },
+            marked,
+            locked,
+        }
+    }
+
+    /// A copy waiting on a licence opens with the licence first, unfolded,
+    /// and says plainly that nothing is going out — whatever else the
+    /// sections are doing.
+    #[test]
+    fn a_locked_copy_leads_with_the_licence() {
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            licence: Some(licence(vizz_licence::Status::Invalid, "Unlicensed", true, false)),
+            ..Default::default()
+        };
+        let text = run_panel(&ctx, &registry(), &state);
+        assert!(text.contains("nothing is being sent"), "no word that the output is held: {text}");
+        assert!(text.contains("Unlicensed"), "{text}");
+        assert!(text.contains("activate"), "no way to enter a key: {text}");
+        assert!(text.contains("start 30-day trial"), "no way to start a trial: {text}");
+        let licence_at = text.find("Unlicensed").unwrap();
+        let signal_at = text.find("SIGNAL").expect("the clusters still draw");
+        assert!(licence_at < signal_at, "the licence is below the fold of a copy that can do nothing else");
+    }
+
+    /// Licensed, the section folds away among the machine settings and the
+    /// top of the panel says nothing about it.
+    #[test]
+    fn a_licensed_copy_keeps_the_licence_out_of_the_way() {
+        let ctx = egui::Context::default();
+        let mut view = licence(vizz_licence::Status::Active, "Licensed to Test Buyer", false, false);
+        view.snapshot.headline.tone = vizz_licence::Tone::Good;
+        let state = PanelState { licence: Some(view), ..Default::default() };
+        let text = run_panel(&ctx, &registry(), &state);
+        assert!(text.contains("licence"), "no licence section at all: {text}");
+        assert!(!text.contains("Licensed to Test Buyer"), "folded section drew its contents");
+        assert!(!text.contains("nothing is being sent") && !text.contains("VIZZ mark"));
+        // Opened, it has the controls a licensed machine needs.
+        let state = PanelState { expand_sections: true, ..state };
+        let text = run_panel(&egui::Context::default(), &registry(), &state);
+        assert!(text.contains("Licensed to Test Buyer"), "{text}");
+        assert!(text.contains("release this machine"), "{text}");
+        assert!(!text.contains("start 30-day trial"), "a trial offered to a licensed machine");
+    }
+
+    #[test]
+    fn a_marked_output_is_named_at_the_top() {
+        let ctx = egui::Context::default();
+        let state = PanelState {
+            licence: Some(licence(vizz_licence::Status::Expired, "Trial ended", false, true)),
+            ..Default::default()
+        };
+        let text = run_panel(&ctx, &registry(), &state);
+        assert!(text.contains("Trial ended") && text.contains("VIZZ mark"), "{text}");
+    }
+
+    /// A key for another of the vendor's apps gets a sentence before the
+    /// round trip, not after it.
+    #[test]
+    fn a_key_for_another_product_is_named_as_it_is_typed() {
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("licence-key-draft"), "lt-ligh-aaaa-bbbb-cccc".to_string()));
+        let state = PanelState {
+            licence: Some(licence(vizz_licence::Status::Invalid, "Unlicensed", true, false)),
+            ..Default::default()
+        };
+        let text = run_panel(&ctx, &registry(), &state);
+        assert!(text.contains("a key for Light"), "{text}");
+    }
 }

@@ -61,6 +61,8 @@ pub struct WindowedOpts {
     /// Shared with the OSC listener: whether Resolume's columns are being
     /// followed, and which of them the live deck covers.
     pub columns: Arc<vizz_osc::ColumnSync>,
+    /// The licence, already decided offline by the caller.
+    pub licence: vizz_licence::Licence,
 }
 
 struct RenderState {
@@ -89,6 +91,9 @@ struct RenderState {
     publish: Option<OutputTarget>,
     /// Blit used for that conversion, with its bind group.
     publish_blit: Option<(BlitPass, wgpu::BindGroup)>,
+    /// The licence mark, while this session carries it. Built at the
+    /// master's size and format, so rebuilt with the master.
+    watermark: Option<vizz_render::watermark::Watermark>,
 }
 
 struct App {
@@ -236,6 +241,20 @@ struct App {
     recorder: Option<vizz_io::recorder::Recorder>,
     /// Takes the pictures the preset tiles wear. See [`crate::thumbshot`].
     thumbs: crate::thumbshot::Shutter,
+    /// The licence handle: the cached verdict, and the panel's actions run
+    /// on threads of its own.
+    licence: vizz_licence::Licence,
+    /// What this session does about the licence. Decided at launch and
+    /// only ever relaxed — see [`vizz_licence::Session`].
+    session: vizz_licence::Session,
+    /// The licence revision last acted on, so noticing a change costs one
+    /// atomic load a frame.
+    licence_revision: u64,
+    /// The last licence snapshot, reused on a frame where a licence thread
+    /// holds the lock.
+    licence_view: Option<vizz_licence::Snapshot>,
+    /// The words on the mark, chosen at launch from why there is one.
+    mark_text: &'static str,
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -586,6 +605,17 @@ impl App {
             gui.restore_graph_view(canvas.into());
         }
 
+        let watermark = self.session.marked().then(|| {
+            vizz_render::watermark::Watermark::new(
+                &ctx.device,
+                &ctx.queue,
+                master_format,
+                self.mark_text,
+                ow,
+                oh,
+            )
+        });
+
         Ok(RenderState {
             window,
             surface,
@@ -603,6 +633,7 @@ impl App {
             gui,
             publish,
             publish_blit,
+            watermark,
         })
     }
 
@@ -638,6 +669,18 @@ impl App {
         state.output = OutputTarget::with_format(&state.ctx.device, ow, oh, format);
         state.post = PostChain::new(&state.ctx, rw, rh, format);
         state.vector_print = vizz_render::vector::VectorScene::new(&state.ctx, format);
+        // The mark is laid out for the master's size and built for its
+        // format, so it is remade with it.
+        state.watermark = self.session.marked().then(|| {
+            vizz_render::watermark::Watermark::new(
+                &state.ctx.device,
+                &state.ctx.queue,
+                format,
+                self.mark_text,
+                ow,
+                oh,
+            )
+        });
         state.blit_bind = state.blit.bind(&state.ctx.device, &state.output.view);
         // The performance layout draws the master rather than leaving a
         // hole to see it through, so it needs re-pointing whenever the
@@ -1022,6 +1065,29 @@ impl App {
         self.finish_pending_clouds();
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
+        // A licence arriving mid-session — a trial started, a key entered,
+        // a check-in — can lift this session's mark or lock at once. The
+        // reverse never happens here: a trial running out mid-set changes
+        // nothing until the next launch. One atomic load when nothing has
+        // changed; a lock not waited on when something has.
+        let revision = self.licence.revision();
+        if revision != self.licence_revision
+            && let Some(restriction) = self.licence.try_restriction(vizz_licence::POLICY)
+        {
+            self.licence_revision = revision;
+            let was_locked = self.session.locked();
+            if self.session.relax(restriction) {
+                if !self.session.marked() {
+                    state.watermark = None;
+                }
+                state.gui.notify_info(if was_locked {
+                    "licensed — the output is live"
+                } else {
+                    "licensed — the mark is off the output"
+                });
+                log::info!("licence accepted mid-session: now {:?}", self.session.restriction());
+            }
+        }
         // Same shape as the point stream below: upload only when the
         // source says there is something new, and show it the first time
         // a frame lands so a connected input is never invisible.
@@ -1206,6 +1272,15 @@ impl App {
             state
                 .vector_print
                 .render(&state.ctx, &mut encoder, &state.output.view, &print);
+        }
+        // The licence, last into the master so everything downstream of it
+        // — preview, thumbnail, Syphon, NDI, recording — carries the same
+        // frame. A locked session shows black behind the licence panel and
+        // sends nothing at all (below).
+        if self.session.locked() {
+            vizz_render::watermark::blackout(&mut encoder, &state.output.view);
+        } else if let Some(mark) = &state.watermark {
+            mark.draw(&mut encoder, &state.output.view);
         }
 
         // Only now does the window enter into it. The master above is the
@@ -1483,6 +1558,16 @@ impl App {
                 // the render thread still never waits on it.
                 update_available: update_view.0,
                 update: update_view.1,
+                licence: {
+                    if let Some(snap) = self.licence.snapshot() {
+                        self.licence_view = Some(snap);
+                    }
+                    self.licence_view.clone().map(|snapshot| vizz_ui::LicenceView {
+                        snapshot,
+                        marked: self.session.marked(),
+                        locked: self.session.locked(),
+                    })
+                },
                 health: Some(self.engine.health.snapshot()),
                 outputs: outputs_status,
                 frame_times_ms: Vec::new(),
@@ -1613,6 +1698,7 @@ impl App {
         let mut pending_generate = None;
         match actions {
             Ok(actions) => {
+                apply_licence_actions(&actions.licence, &self.licence);
                 apply_audio_actions(
                     &actions,
                     &mut self.engine,
@@ -1946,13 +2032,23 @@ impl App {
             Some(p) => &p.texture,
             None => &state.output.texture,
         };
-        state
-            .outputs
-            .publish(&state.ctx.device, &state.ctx.queue, publish);
+        // Nothing goes out while the session waits on a licence.
+        if !self.session.locked() {
+            state
+                .outputs
+                .publish(&state.ctx.device, &state.ctx.queue, publish);
+        }
         // The preset tiles' pictures come off the same eight-bit master,
         // after it has been published rather than before: a photograph is
         // a convenience and the feed is not.
-        self.thumbs.tick(&state.ctx.device, &state.ctx.queue, publish);
+        //
+        // Not while the master carries the licence mark or is black: a
+        // tile keeps its picture for good, and a licence entered later
+        // should not leave the mark baked into the library. A picture
+        // asked for meanwhile waits and is taken once the mark is off.
+        if self.session.restriction() == vizz_licence::Restriction::None {
+            self.thumbs.tick(&state.ctx.device, &state.ctx.queue, publish);
+        }
         // Recording rides the same eight-bit master the senders get. The
         // parameter is the source of truth: up with no recorder running
         // starts one, down with one running stops it — which is what lets
@@ -1976,6 +2072,14 @@ impl App {
                 &mut self.tap,
                 &mut self.clock_source,
             );
+        }
+        // Nor is anything recorded. The control is put back down, so the
+        // button does not claim a take that is not happening.
+        if self.session.locked() && self.params.registry.target(self.params.record_active) >= 0.5 {
+            self.params.registry.set(self.params.record_active, 0.0);
+            state
+                .gui
+                .notify_error("nothing is recorded until a trial or a licence key is entered");
         }
         let want_recording = self.params.registry.target(self.params.record_active) >= 0.5;
         match (&mut self.recorder, want_recording) {
@@ -2486,6 +2590,32 @@ fn update_view(
 /// more urgent of the two. It is a refusal rather than a queue: "it
 /// will install when you stop" is the app choosing the moment again,
 /// which is the whole thing this is supposed to avoid.
+/// Hand the licence section's requests to the licence handle. Each runs on
+/// a thread of its own; the answer comes back in a later snapshot.
+fn apply_licence_actions(actions: &vizz_ui::LicenceActions, licence: &vizz_licence::Licence) {
+    if let Some(key) = &actions.activate {
+        licence.activate(key.clone(), machine_label());
+    }
+    if let Some((email, name)) = &actions.trial {
+        licence.start_trial(email.clone(), name.clone());
+    }
+    if let Some(token) = &actions.offline_token {
+        licence.use_token(token.clone());
+    }
+    if actions.check_in {
+        licence.check_in();
+    }
+    if actions.release {
+        licence.release();
+    }
+}
+
+/// What the account page calls this machine among its seats: its host
+/// name, so "release a seat" is a choice between names someone recognises.
+fn machine_label() -> String {
+    sysinfo::System::host_name().unwrap_or_default()
+}
+
 fn apply_update_actions(
     actions: &vizz_ui::PanelActions,
     update: &SharedUpdate,
@@ -3953,6 +4083,29 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         }
     }
     engine.adopt_column_sync(Arc::clone(&opts.columns));
+
+    // The licence, decided offline before the first frame: what this
+    // session does about it is fixed here and only ever relaxed after.
+    let licence = opts.licence.clone();
+    let launch_status = licence.verdict().status;
+    let session = vizz_licence::Session::begin(licence.restriction(vizz_licence::POLICY));
+    if session.locked() {
+        // Opens on the licence section, whatever the flags and the last
+        // screen said: it is the only thing a locked copy can do.
+        opts.show_gui = true;
+        startup_notes.push((
+            true,
+            "vizz needs a licence or a trial before it sends any output — see licence, in the panel".into(),
+        ));
+        log::warn!("licence: {} — nothing is published until a trial or a key is entered", launch_status.as_str());
+    } else if session.marked() {
+        log::warn!("licence: {} — the output carries the mark", launch_status.as_str());
+    } else {
+        log::info!("licence: {}", launch_status.as_str());
+    }
+    // Check in off the startup path: a minute in, long after the first
+    // frame, and daily after that.
+    licence.start_heartbeat(std::time::Duration::from_secs(60));
     let opts_show_gui = opts.show_gui;
     let mut app = App {
         engine,
@@ -4007,7 +4160,9 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         presentable: true,
         startup_notes,
         welcome_pending: !restored.welcomed && opts_show_gui,
-        start_on_stage_pending: restored.start_on_stage && opts_show_gui,
+        // A locked copy opens on the panel, where the licence section is,
+        // not on the play screen.
+        start_on_stage_pending: restored.start_on_stage && opts_show_gui && !session.locked(),
         takes_root: crate::settings::takes_root().display().to_string(),
         audio_live: None,
         midi_ports_seen: Vec::new(),
@@ -4027,6 +4182,11 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         library: vizz_mod::preset::Library::new(),
         saved_revision: 0,
         update,
+        mark_text: vizz_licence::policy::mark_text(launch_status),
+        licence,
+        session,
+        licence_revision: 0,
+        licence_view: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

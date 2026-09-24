@@ -30,6 +30,7 @@ pub mod simulate;
 pub mod surface;
 pub mod vector;
 pub mod video;
+pub mod watermark;
 
 /// Owned GPU handles, shared by scenes and (later) I/O backends.
 pub struct GpuContext {
@@ -136,6 +137,7 @@ mod shader_validation {
         ("vector.wgsl", include_str!("shaders/vector.wgsl")),
         ("meter.wgsl", include_str!("shaders/meter.wgsl")),
         ("bloom.wgsl", include_str!("shaders/bloom.wgsl")),
+        ("watermark.wgsl", include_str!("shaders/watermark.wgsl")),
         // Appended to particles.wgsl, and only valid that way.
         ("particles.wgsl + surface.wgsl", crate::surface::SOURCE),
     ];

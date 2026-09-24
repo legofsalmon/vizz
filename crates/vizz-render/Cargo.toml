@@ -10,6 +10,10 @@ bytemuck.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 log.workspace = true
+# The licence mark's lettering, in the panel's own face. Both already in
+# the build through egui.
+ab_glyph.workspace = true
+epaint_default_fonts.workspace = true
 
 [dev-dependencies]
 naga.workspace = true

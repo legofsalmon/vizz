@@ -138,6 +138,36 @@ pub struct PanelActions {
     pub open_performance: bool,
     /// Open the shortcut list.
     pub open_shortcuts: bool,
+    /// What the licence section asks for.
+    pub licence: LicenceActions,
+}
+
+/// What the licence section asks the app to do. Each is a network call or
+/// a file write, so the panel only ever asks; the app hands it to the
+/// licence handle, which runs it on a thread of its own.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LicenceActions {
+    /// Activate this key, as typed.
+    pub activate: Option<String>,
+    /// Start a trial: `(email, name)`.
+    pub trial: Option<(String, String)>,
+    /// A token pasted in for offline activation.
+    pub offline_token: Option<String>,
+    /// Check in now rather than waiting for the daily one.
+    pub check_in: bool,
+    /// Give this machine's seat back and forget the licence here.
+    pub release: bool,
+}
+
+/// What the licence section draws.
+#[derive(Debug, Clone)]
+pub struct LicenceView {
+    pub snapshot: vizz_licence::Snapshot,
+    /// The output carries the licence mark this session.
+    pub marked: bool,
+    /// Publishing waits on a licence: the app opened on this section and
+    /// sends nothing until a trial or a key is in.
+    pub locked: bool,
 }
 
 /// How big the output is and how hard it is worked.
@@ -189,6 +219,9 @@ pub struct PanelState {
     /// How far along an install is, and why it cannot start if it
     /// cannot. `None` where there is no update machinery at all.
     pub update: Option<UpdateView>,
+    /// The licence, or `None` where there is no licence handle at all —
+    /// mockups and tests that are not about it.
+    pub licence: Option<LicenceView>,
     pub health: Option<HealthSnapshot>,
     pub outputs: Vec<OutputStatus>,
     /// Recent frame times in ms, oldest first, for the sparkline.
@@ -291,6 +324,7 @@ impl Default for PanelState {
         Self {
             update_available: Default::default(),
             update: Default::default(),
+            licence: None,
             thumb_revision: 0,
             health: Default::default(),
             outputs: Default::default(),
@@ -460,6 +494,7 @@ pub fn draw(
         .resizable(true)
         .show(ctx, |ui| {
             update_banner(ui, state, &mut actions);
+            licence_banner(ui, state);
             // One line of everything you need to glance at mid-set: is it
             // keeping up, is it going out, is audio arriving, what tempo.
             // The detail behind each is setup, not performance, so it
@@ -467,6 +502,14 @@ pub fn draw(
             // and left the parameter list three rows tall.
             status_strip(ui, state, &mut actions);
             ui.separator();
+            // A copy waiting on a licence has one thing to do, so it is the
+            // first thing on the panel and it cannot be folded away. Once
+            // licensed it goes back among the machine settings.
+            if let Some(licence) = state.licence.as_ref().filter(|l| l.locked) {
+                ui.label(egui::RichText::new("Licence").strong());
+                licence_section(ui, licence, &mut actions.licence);
+                ui.separator();
+            }
             // Three clusters, not ten items.
             //
             // Ten collapsed sections in a flat list are ten labels to
@@ -530,6 +573,12 @@ pub fn draw(
                 .id_salt("health")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| health_section(ui, state));
+            if let Some(licence) = state.licence.as_ref().filter(|l| !l.locked) {
+                egui::CollapsingHeader::new("licence")
+                    .id_salt("licence")
+                    .default_open(state.expand_sections)
+                    .show(ui, |ui| licence_section(ui, licence, &mut actions.licence));
+            }
             ui.separator();
             // No scene grid here any more.
             //
@@ -979,6 +1028,215 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
     ui.separator();
 }
 
+
+fn tone_colour(tone: vizz_licence::Tone) -> egui::Color32 {
+    match tone {
+        vizz_licence::Tone::Good => GOOD,
+        vizz_licence::Tone::Note => WARN,
+        vizz_licence::Tone::Bad => vizz_design::state::ARMED,
+    }
+}
+
+/// One line at the top of the panel when the licence is doing something
+/// to the output, or has something to say: the mark, the lock, a lease to
+/// renew. The detail, and every control, is in the licence section.
+fn licence_banner(ui: &mut egui::Ui, state: &PanelState) {
+    let Some(view) = &state.licence else { return };
+    let snap = &view.snapshot;
+    let line = if view.locked {
+        Some((
+            vizz_design::state::ARMED,
+            "nothing is being sent until a trial or a licence key is entered".to_string(),
+        ))
+    } else if view.marked {
+        Some((WARN, format!("{} — the output carries the VIZZ mark · see licence, below", snap.headline.text)))
+    } else if matches!(snap.status, vizz_licence::Status::UpdateRequired | vizz_licence::Status::CheckInRequired)
+        && snap.key_configured
+    {
+        Some((WARN, format!("{} · see licence, below", snap.headline.text)))
+    } else {
+        None
+    };
+    if let Some((colour, text)) = line {
+        ui.colored_label(colour, text);
+        ui.separator();
+    }
+}
+
+/// The licence: what this copy is, and every way to change that.
+///
+/// Every button hands a request to the app and returns; the work happens
+/// on a licence thread and the answer comes back in the next snapshot.
+/// Nothing here waits on the network, so nothing here can hitch a frame.
+fn licence_section(ui: &mut egui::Ui, view: &LicenceView, actions: &mut LicenceActions) {
+    let snap = &view.snapshot;
+    ui.label(
+        egui::RichText::new(&snap.headline.text)
+            .strong()
+            .color(tone_colour(snap.headline.tone)),
+    );
+    if let Some(key) = &snap.key {
+        ui.small(format!("key {key}"));
+    }
+    for line in &snap.details {
+        ui.label(egui::RichText::new(line).small().color(vizz_design::ink::TERTIARY));
+    }
+    if view.marked {
+        ui.label(
+            egui::RichText::new(
+                "the mark is burned into the output — Syphon, NDI, recordings — and comes off \
+                 the moment a trial or a key is in",
+            )
+            .small()
+            .color(vizz_design::ink::TERTIARY),
+        );
+    }
+    if view.locked {
+        ui.label(
+            egui::RichText::new("start a trial or enter a key and the output starts at once")
+                .small()
+                .color(vizz_design::ink::SECONDARY),
+        );
+    }
+    if let Some(busy) = snap.busy {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.small(busy);
+        });
+    } else if let Some(msg) = &snap.message {
+        let colour = if msg.error { vizz_design::feedback::ERR_TEXT } else { vizz_design::feedback::OK_TEXT };
+        ui.label(egui::RichText::new(&msg.text).color(colour));
+    }
+    let idle = snap.busy.is_none();
+    ui.separator();
+
+    // A key: the shop's, one issued by hand, or a trial key from an email.
+    ui.add_enabled_ui(idle, |ui| {
+        let id = egui::Id::new("licence-key-draft");
+        let mut draft: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+        ui.horizontal(|ui| {
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut draft)
+                    .hint_text("LT-XXXX-XXXX-XXXX-XXXX")
+                    .desired_width(190.0),
+            );
+            let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("activate").clicked() || submitted) && !draft.trim().is_empty() {
+                actions.activate = Some(draft.trim().to_string());
+            }
+        });
+        if let Some(hint) = vizz_licence::key::other_product_hint(&draft) {
+            ui.colored_label(WARN, hint);
+        }
+        ui.data_mut(|d| d.insert_temp(id, draft));
+    });
+
+    // A trial, for a copy with nothing at all. A finished trial or a
+    // licence on another machine is past the point where one helps — the
+    // service allows one per machine and would say so.
+    if snap.status == vizz_licence::Status::Invalid && snap.key_configured {
+        ui.add_enabled_ui(idle, |ui| {
+            let email_id = egui::Id::new("licence-trial-email");
+            let name_id = egui::Id::new("licence-trial-name");
+            let mut email: String = ui.data_mut(|d| d.get_temp(email_id).unwrap_or_default());
+            let mut name: String = ui.data_mut(|d| d.get_temp(name_id).unwrap_or_default());
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut email).hint_text("email").desired_width(150.0));
+                ui.add(egui::TextEdit::singleline(&mut name).hint_text("name (optional)").desired_width(110.0));
+            });
+            let label = format!("start {}-day trial", vizz_licence::TRIAL_DAYS);
+            if ui
+                .add_enabled(email.contains('@'), egui::Button::new(label))
+                .on_hover_text("one per machine — everything works, and the trial key is emailed to you")
+                .clicked()
+            {
+                actions.trial = Some((email.trim().to_string(), name.trim().to_string()));
+            }
+            ui.data_mut(|d| {
+                d.insert_temp(email_id, email);
+                d.insert_temp(name_id, name);
+            });
+        });
+    }
+
+    // Offline: the owner signs in on any other device, types this code
+    // against the licence, and pastes back what it gives them.
+    egui::CollapsingHeader::new("offline activation")
+        .id_salt("licence-offline")
+        .show(ui, |ui| {
+            ui.small(format!(
+                "for a machine with no internet: sign in at {}, choose the licence, \
+                 and enter this machine's request code",
+                vizz_licence::ACCOUNT_URL.trim_start_matches("https://")
+            ));
+            match &snap.request_code {
+                Some(code) => {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(code).monospace());
+                        if ui.small_button("copy").clicked() {
+                            ui.ctx().copy_text(code.clone());
+                        }
+                    });
+                }
+                None => {
+                    ui.colored_label(
+                        vizz_design::state::ARMED,
+                        "this machine will not report a hardware id, so it has no request code",
+                    );
+                }
+            }
+            ui.small("then paste the token it gives you:");
+            ui.add_enabled_ui(idle, |ui| {
+                let id = egui::Id::new("licence-token-draft");
+                let mut token: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+                ui.add(
+                    egui::TextEdit::multiline(&mut token)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("token"),
+                );
+                if ui.add_enabled(!token.trim().is_empty(), egui::Button::new("use token")).clicked() {
+                    actions.offline_token = Some(token.trim().to_string());
+                    token.clear();
+                }
+                ui.data_mut(|d| d.insert_temp(id, token));
+            });
+        });
+
+    ui.horizontal_wrapped(|ui| {
+        if snap.has_key {
+            if ui
+                .add_enabled(idle, egui::Button::new("check in now").small())
+                .on_hover_text("renew the lease now — vizz also does this by itself once a day")
+                .clicked()
+            {
+                actions.check_in = true;
+            }
+            // Two presses, the second within a few seconds: this gives a
+            // seat back, and the button sits beside one that does not.
+            let armed_id = egui::Id::new("licence-release-armed");
+            let now = ui.input(|i| i.time);
+            let armed_at: Option<f64> = ui.data_mut(|d| d.get_temp(armed_id));
+            let armed = armed_at.is_some_and(|t| now - t < 4.0);
+            let label = if armed { "press again to release" } else { "release this machine" };
+            if ui
+                .add_enabled(idle, egui::Button::new(label).small())
+                .on_hover_text("give this machine's seat back so the licence can be used on another")
+                .clicked()
+            {
+                if armed {
+                    actions.release = true;
+                    ui.data_mut(|d| d.remove::<f64>(armed_id));
+                } else {
+                    ui.data_mut(|d| d.insert_temp(armed_id, now));
+                }
+            }
+        }
+        ui.hyperlink_to("buy", vizz_licence::SHOP_URL);
+        ui.hyperlink_to("your account", vizz_licence::ACCOUNT_URL);
+    });
+    ui.small(format!("machine {}", snap.machine));
+}
 
 /// What a running live-cloud stream is doing, for the panel to show.
 #[derive(Clone, Debug, PartialEq, Default)]

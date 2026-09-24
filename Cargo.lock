@@ -3481,9 +3481,11 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "sysinfo",
  "vizz-audio",
  "vizz-health",
  "vizz-io",
+ "vizz-licence",
  "vizz-midi",
  "vizz-mod",
  "vizz-osc",
@@ -3537,6 +3539,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vizz-licence"
+version = "0.27.0"
+dependencies = [
+ "base64",
+ "log",
+ "ring",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "vizz-midi"
 version = "0.28.0"
 dependencies = [
@@ -3580,8 +3594,10 @@ dependencies = [
 name = "vizz-render"
 version = "0.28.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "bytemuck",
+ "epaint_default_fonts",
  "glam",
  "image",
  "log",
@@ -3604,6 +3620,7 @@ dependencies = [
  "vizz-audio",
  "vizz-design",
  "vizz-health",
+ "vizz-licence",
  "vizz-midi",
  "vizz-mod",
  "vizz-params",
