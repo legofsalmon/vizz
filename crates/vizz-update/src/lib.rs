@@ -122,7 +122,7 @@ pub fn spawn_check(shared: SharedUpdate) {
     let _ = std::thread::Builder::new()
         .name("vizz-update".into())
         .spawn(move || match fetch_latest() {
-            Ok(release) if release.version > current => {
+            Ok(release) if is_update(current, release.version) => {
                 let latest = release.version;
                 log::info!("update available: {latest} (running {current}) — {RELEASES_URL}");
                 if let Ok(mut status) = shared.lock() {
@@ -138,6 +138,21 @@ pub fn spawn_check(shared: SharedUpdate) {
         });
 }
 
+/// Whether `latest` is worth offering to a build at `current`.
+///
+/// A plain version comparison, and deliberately nothing cleverer. The
+/// 1.0.0 reset (2026-09-24) was checked against this before it was made:
+/// every release published before it is numbered 0.x, below 1.0.0, so a
+/// 1.0.0 build can never be offered one of them as an "update", and every
+/// installed 0.x build sees 1.0.0 as newer and is offered it. No date
+/// epoch is needed while that holds. It stops holding the day a pre-reset
+/// release numbered 1.0.0 or above exists — there is none, and a test
+/// below fails if the reasoning is ever applied to a payload that says
+/// otherwise.
+pub fn is_update(current: Version, latest: Version) -> bool {
+    latest > current
+}
+
 fn fetch_latest() -> anyhow::Result<Release> {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
@@ -151,13 +166,18 @@ fn fetch_latest() -> anyhow::Result<Release> {
         .call()?
         .body_mut()
         .read_to_string()?;
-    let tag = extract_tag(&body)
+    parse_release(&body)
+}
+
+/// A release from the body of `GET /releases/latest`.
+fn parse_release(body: &str) -> anyhow::Result<Release> {
+    let tag = extract_tag(body)
         .ok_or_else(|| anyhow::anyhow!("no tag_name in the release response"))?;
     let version = Version::parse(&tag)
         .ok_or_else(|| anyhow::anyhow!("could not parse version from {tag:?}"))?;
     // The asset is optional: a release can exist and be worth telling
     // somebody about even if this build cannot install it.
-    let (asset_url, asset_name, size) = extract_asset(&body).unwrap_or_default();
+    let (asset_url, asset_name, size) = extract_asset(body).unwrap_or_default();
     Ok(Release { version, asset_url, asset_name, size })
 }
 
@@ -252,6 +272,60 @@ mod tests {
         assert!(v("v0.1.10") > v("v0.1.9"));
         assert!((v("v0.1.0") <= v("v0.1.0")), "same version is not an update");
         assert!((v("v0.0.9") <= v("v0.1.0")), "older must never look newer");
+    }
+
+    /// The 1.0.0 reset, against the payloads GitHub actually serves.
+    ///
+    /// `releases/latest` returns one release: the newest non-draft,
+    /// non-prerelease by date. Before 1.0.0 is published that is v0.28.0,
+    /// and after it is v1.0.0. Both directions matter: a 1.0.0 build must
+    /// never offer the old 0.28.0 as an update (that would put a licensed
+    /// build back on an unlicensed one), and an installed 0.28.0 must see
+    /// 1.0.0 — the in-app updater is how existing users reach it.
+    #[test]
+    fn the_one_point_oh_reset_never_offers_a_pre_reset_release() {
+        let old = r#"{"url":"https://api.github.com/repos/legofsalmon/vizz/releases/250000001",
+            "tag_name":"v0.28.0","target_commitish":"main","name":"vizz v0.28.0",
+            "draft":false,"prerelease":false,"created_at":"2026-09-24T00:52:11Z",
+            "published_at":"2026-09-24T00:58:31Z","assets":[{"id":1,
+            "name":"vizz-0.28.0.app.zip","content_type":"application/zip","size":9164983,
+            "browser_download_url":"https://github.com/legofsalmon/vizz/releases/download/v0.28.0/vizz-0.28.0.app.zip"}]}"#;
+        let new = r#"{"url":"https://api.github.com/repos/legofsalmon/vizz/releases/250000002",
+            "tag_name":"v1.0.0","target_commitish":"main","name":"vizz v1.0.0",
+            "draft":false,"prerelease":false,"created_at":"2026-09-25T09:00:00Z",
+            "published_at":"2026-09-25T09:10:00Z","assets":[{"id":2,
+            "name":"vizz-1.0.0.app.zip","content_type":"application/zip","size":9364983,
+            "browser_download_url":"https://github.com/legofsalmon/vizz/releases/download/v1.0.0/vizz-1.0.0.app.zip"}]}"#;
+        let one = Version::parse("1.0.0").unwrap();
+        let old_build = Version::parse("0.28.0").unwrap();
+
+        let r = parse_release(old).unwrap();
+        assert_eq!(r.version, old_build);
+        assert!(!is_update(one, r.version), "a 1.0.0 build was offered the pre-reset 0.28.0");
+
+        let r = parse_release(new).unwrap();
+        assert_eq!(r.version, one);
+        assert!(is_update(old_build, r.version), "an installed 0.28.0 must be offered 1.0.0");
+        assert!(r.asset_url.ends_with("/v1.0.0/vizz-1.0.0.app.zip"));
+        assert!(!is_update(one, r.version), "1.0.0 is not an update to itself");
+    }
+
+    /// Every release published before the reset is below 1.0.0 — the
+    /// premise the plain comparison above rests on. The list is what
+    /// GitHub held on 2026-09-24; were a pre-reset tag at or above 1.0.0
+    /// ever added, this is where the need for a date epoch would show.
+    #[test]
+    fn every_pre_reset_release_is_below_one_point_oh() {
+        let pre_reset = [
+            "v0.5.1", "v0.6.0", "v0.6.1", "v0.7.0", "v0.8.0", "v0.9.0", "v0.10.0", "v0.11.0",
+            "v0.12.0", "v0.13.0", "v0.14.0", "v0.15.0", "v0.15.1", "v0.15.2", "v0.15.3", "v0.16.0",
+            "v0.17.0", "v0.18.0", "v0.19.0", "v0.20.0", "v0.21.0", "v0.21.1", "v0.21.2", "v0.22.0",
+            "v0.23.0", "v0.24.0", "v0.25.0", "v0.26.0", "v0.27.0", "v0.28.0",
+        ];
+        let one = Version::parse("1.0.0").unwrap();
+        for tag in pre_reset {
+            assert!(!is_update(one, Version::parse(tag).unwrap()), "{tag} would be offered to 1.0.0");
+        }
     }
 
     #[test]
