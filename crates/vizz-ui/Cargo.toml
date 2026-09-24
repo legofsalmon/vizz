@@ -12,6 +12,7 @@ vizz-mod.workspace = true
 vizz-audio.workspace = true
 vizz-design.workspace = true
 vizz-update.workspace = true
+vizz-licence.workspace = true
 
 egui.workspace = true
 egui-winit.workspace = true
