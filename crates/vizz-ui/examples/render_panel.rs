@@ -55,6 +55,7 @@ fn main() {
         "/particles/hue",
         "/particles/saturation",
         "/particles/brightness",
+        "/particles/surface",
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",

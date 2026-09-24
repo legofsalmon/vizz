@@ -82,6 +82,7 @@ pub struct AppParams {
     pub hue: ParamId,
     pub saturation: ParamId,
     pub brightness: ParamId,
+    pub surface: ParamId,
     pub dim: ParamId,
     pub shape: ParamId,
     pub morph: ParamId,
@@ -185,6 +186,7 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/hue", "base hue"),
     ("/particles/saturation", "color saturation"),
     ("/particles/brightness", "value multiplier"),
+    ("/particles/surface", "draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
@@ -390,6 +392,12 @@ impl AppParams {
         let hue = b.add(ParamDef::new("/particles/hue", 0.0, 1.0, 0.58).smooth(0.15));
         let saturation = b.add(ParamDef::new("/particles/saturation", 0.0, 1.0, 0.8).smooth(0.15));
         let brightness = b.add(ParamDef::new("/particles/brightness", 0.0, 2.0, 1.0).smooth(0.1));
+        // What a particle is: light that sums, or an opaque lit surfel.
+        // Stepped and unsmoothed, since there is no picture halfway
+        // between occluding and not.
+        let surface = b.add(
+            ParamDef::new("/particles/surface", 0.0, 1.0, 0.0).labels(&["glow", "surface"]),
+        );
         // Geometry: sphere, torus, knot, grid, shell, Lorenz, Aizawa,
         // cloud pair.
         // Fractional values sit between two forms, so this is a sweep, not
@@ -892,6 +900,7 @@ impl AppParams {
             hue,
             saturation,
             brightness,
+            surface,
             dim,
             shape,
             morph,

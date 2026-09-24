@@ -27,6 +27,7 @@ pub mod pointcloud;
 pub mod post;
 pub mod room;
 pub mod simulate;
+pub mod surface;
 pub mod vector;
 pub mod video;
 
@@ -135,6 +136,8 @@ mod shader_validation {
         ("vector.wgsl", include_str!("shaders/vector.wgsl")),
         ("meter.wgsl", include_str!("shaders/meter.wgsl")),
         ("bloom.wgsl", include_str!("shaders/bloom.wgsl")),
+        // Appended to particles.wgsl, and only valid that way.
+        ("particles.wgsl + surface.wgsl", crate::surface::SOURCE),
     ];
 
     #[test]

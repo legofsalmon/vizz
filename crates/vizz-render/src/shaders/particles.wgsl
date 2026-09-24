@@ -527,16 +527,26 @@ fn drive_value(mode: f32, h: f32, radius: f32, depth: f32, height: f32) -> f32 {
     return h;
 }
 
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    let pi = vi / 6u;
-    let corner = vi % 6u;
-    var offsets = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
-        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
-    );
-    let off = offsets[corner];
+/// One particle before the camera sees it: where it is, the scale the
+/// room gave it, and what the colour and normal lookups need.
+///
+/// Split out of `vs_main` so the surface pass (surface.wgsl) evaluates a
+/// particle exactly as the additive pass does. Two copies of this would
+/// drift, and the first sign would be a cloud that changed shape when the
+/// draw mode was switched.
+struct Body {
+    p: vec3<f32>,
+    // The scale the room's perspective gave the point; 1 with no room.
+    scale: f32,
+    // Distance from the centre before breathing, for the radius drive.
+    radius: f32,
+    h1: f32,
+    mode_a: u32,
+    mode_b: u32,
+    blend: f32,
+};
 
+fn body(pi: u32) -> Body {
     let h1 = hash01(pi, 0u);
     let h2 = hash01(pi, 1u);
     let h3 = hash01(pi, 2u);
@@ -601,7 +611,49 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // twist, breathing — still works in the object's own space and only
     // the result is fitted into the set.
     let placed = room_place(p);
-    p = placed.xyz;
+
+    var b: Body;
+    b.p = placed.xyz;
+    b.scale = placed.w;
+    b.radius = radius;
+    b.h1 = h1;
+    b.mode_a = mode_a;
+    b.mode_b = mode_b;
+    b.blend = blend;
+    return b;
+}
+
+/// What colour a particle is before any light or fade reaches it.
+/// `view_depth` is the view-space depth, which the depth drive reads.
+fn body_albedo(b: Body, view_depth: f32) -> vec3<f32> {
+    let drive = drive_value(u.color_drive, b.h1, b.radius, view_depth, b.p.y);
+    let t = drive * u.color_spread + 0.03 * sin(u.time * 0.2);
+    // An imported cloud's own colour multiplies the palette rather than
+    // replacing it, so the palette still works as a tint and a white
+    // procedural cloud is unaffected.
+    let tint = cloud_tint(b.mode_a, b.mode_b, smoothstep(0.0, 1.0, b.blend), b.h1, u.time);
+    return palette_color(u.palette, t, u.saturation, u.hue) * tint * u.brightness;
+}
+
+/// The surface's own direction, where the cloud knows it, or zero.
+/// Taken from whichever of the morph pair is contributing more — see
+/// `slot_normal`.
+fn body_normal(b: Body) -> vec3<f32> {
+    return slot_normal(select(b.mode_a, b.mode_b, b.blend > 0.5), b.h1, u.time);
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    let pi = vi / 6u;
+    let corner = vi % 6u;
+    var offsets = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let off = offsets[corner];
+
+    let b = body(pi);
+    let p = b.p;
 
     // Real projection, so the camera can move and the room can line up
     // with the frame. The old fixed transform could not express either.
@@ -624,7 +676,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // Sprites shrink with the object they belong to. Leaving them at a
     // fixed size while the shape around them compresses is what gives a
     // miniature away — the grain of the thing has to scale too.
-    var half = u.size * coc * placed.w;
+    var half = u.size * coc * b.scale;
 
     // Footprint floor. A sprite smaller than a pixel is point-sampled by
     // the rasteriser: it lands on a pixel centre or it does not, so a
@@ -637,9 +689,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // previz review.
     var energy = 1.0;
     if (u.viewport_h > 0.0) {
-        let probe = u.view_proj * vec4<f32>(p + u.cam_up * half, 1.0);
-        let r_px = abs(probe.y / probe.w - centre.y / centre.w) * (u.viewport_h * 0.5);
-        let grow = max(FOOTPRINT_MIN_PX / max(r_px, 1e-4), 1.0);
+        let grow = footprint_grow(p, half, centre, FOOTPRINT_MIN_PX);
         half = half * grow;
         energy = 1.0 / (grow * grow);
     }
@@ -657,15 +707,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
     // `w` after the view-projection is the view-space depth, which is what
     // the depth-driven palette wants.
-    let drive = drive_value(u.color_drive, h1, radius, centre.w, p.y);
-    let t = drive * u.color_spread + 0.03 * sin(u.time * 0.2);
-    // An imported cloud's own colour multiplies the palette rather than
-    // replacing it, so the palette still works as a tint and a white
-    // procedural cloud is unaffected.
-    let tint = cloud_tint(mode_a, mode_b, smoothstep(0.0, 1.0, blend), h1, u.time);
-    // The surface's own direction, where the cloud knows it. Taken from
-    // whichever of the morph pair is contributing more — see `slot_normal`.
-    var normal = slot_normal(select(mode_a, mode_b, blend > 0.5), h1, u.time);
+    var normal = body_normal(b);
     // Two-sided. A plane fit cannot tell a normal from its opposite, and
     // resolving that across a whole cloud is a global problem that still
     // comes out backwards for a scan of a room, where the surfaces you
@@ -676,14 +718,21 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     // front of a stage.
     let to_eye = u.cam_position - p;
     normal = normal * select(-1.0, 1.0, dot(normal, to_eye) >= 0.0);
-    let col = palette_color(u.palette, t, u.saturation, u.hue)
-        * tint * u.brightness * fade * light_at(p, normal);
+    let col = body_albedo(b, centre.w) * fade * light_at(p, normal);
 
     var out: VsOut;
     out.pos = clip4;
     out.uv = off;
     out.color = col;
     return out;
+}
+
+/// How much a sprite of half-size `half` at `p` must grow to be at least
+/// `min_px` target pixels across its half-width. 1 when it already is.
+fn footprint_grow(p: vec3<f32>, half: f32, centre: vec4<f32>, min_px: f32) -> f32 {
+    let probe = u.view_proj * vec4<f32>(p + u.cam_up * half, 1.0);
+    let r_px = abs(probe.y / probe.w - centre.y / centre.w) * (u.viewport_h * 0.5);
+    return max(min_px / max(r_px, 1e-4), 1.0);
 }
 
 // Attractors and deflectors, as a displacement of the finished shape.

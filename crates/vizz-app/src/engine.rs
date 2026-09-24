@@ -132,6 +132,9 @@ pub struct FrameInputs {
     /// Skip the room pass entirely when it is dark — it is off by default,
     /// and drawing invisible lines every frame is wasted work.
     pub room_visible: bool,
+    /// Draw the particles as opaque, lit surfels, and the room (when it
+    /// is visible) as lit surfaces instead of lines.
+    pub surface: bool,
     pub count: u32,
     /// What an empty frame looks like, alpha included. At alpha 0 the
     /// field is delivered on a transparent background so vizz can be a
@@ -150,6 +153,17 @@ pub struct FrameInputs {
     /// True when `/vec/place` says "print": the stack draws after the
     /// post chain instead of into it.
     pub vector_print: bool,
+}
+
+impl FrameInputs {
+    /// The room as the surface mode draws it: solid and lit, when it is
+    /// up at all.
+    pub fn walls(&self) -> Option<vizz_render::surface::Walls> {
+        self.room_visible.then_some(vizz_render::surface::Walls {
+            brightness: self.room.brightness,
+            fade: self.room.fade,
+        })
+    }
 }
 
 impl FrameEngine {
@@ -1036,6 +1050,7 @@ impl FrameEngine {
             },
             room,
             room_visible: room_brightness > 0.002,
+            surface: self.snapshot.get(p.surface).round() >= 0.5,
             vector,
             vector_active,
             vector_print: self.snapshot.get(p.vec_place).round() >= 0.5,

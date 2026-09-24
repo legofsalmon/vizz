@@ -1043,6 +1043,24 @@ so the palette still works as a tint and an uncoloured cloud is unaffected.</p>
 </table>
 </div>
 
+<h3 id="surface">Solid surfaces</h3>
+
+<p><code>/particles/surface</code> changes what a particle is. At 0, the
+default, it is light: sprites add up, nothing hides anything, and a dense core
+reads as a bright one. At 1 it is a small opaque disc with a depth, and the
+cloud becomes an object. Nearer discs hide farther ones. Lamps light the side
+of the form that faces them. The sun casts the cloud's shadow, onto itself and
+onto the room. And the room, when it is up, is drawn as dark plaster walls,
+floor and ceiling (with its grid still in them) that catch the lamps and the
+shadow.</p>
+
+<p>It works on every cloud, normals or not. The lighting reads which way the
+surface faces from the picture's depth, a few discs across, so a procedural
+sphere shades as a sphere. Where a scan carries its own normals, those win. In
+this mode the ambient light is a sky rather than a flat fill: full on surfaces
+facing up, dimmer on those facing down, so a form still has a top and a bottom
+with every lamp off. The additive mode is untouched.</p>
+
 <h2 id="camera">Camera and room</h2>
 
 <p>A real camera looks into the field: <code>/camera/distance</code>,
@@ -1353,6 +1371,7 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/hue</code></td><td>0 – 1</td><td>0.58</td><td>base hue</td></tr>
     <tr><td><code>/particles/saturation</code></td><td>0 – 1</td><td>0.8</td><td>color saturation</td></tr>
     <tr><td><code>/particles/brightness</code></td><td>0 – 2</td><td>1</td><td>value multiplier</td></tr>
+    <tr><td><code>/particles/surface</code></td><td>0 – 1</td><td>0</td><td>draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>
