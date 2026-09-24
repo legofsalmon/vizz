@@ -14,6 +14,10 @@ use vizz_render::particles::Uniforms;
 use vizz_render::post::PostUniforms;
 use vizz_render::room::RoomUniforms;
 
+/// Time constant of the graded path's exposure, in seconds. Long enough
+/// not to pump on a kick drum, short enough to catch a drop.
+const EXPOSURE_TAU: f32 = 0.5;
+
 use crate::params::AppParams;
 
 pub struct FrameEngine {
@@ -1014,6 +1018,21 @@ impl FrameEngine {
                 downsample: 0.0,
                 out_texel_x: 0.0,
                 out_texel_y: 0.0,
+                bloom_levels: 0.0,
+                grade: self.snapshot.get(p.grade),
+                ev: self.snapshot.get(p.exposure),
+                // Eased over about half a second, by frame time, so the
+                // meter follows a drop without pumping on every kick.
+                adapt: 1.0 - (-dt_s / EXPOSURE_TAU).exp(),
+                // Darken only: a fade has to reach black.
+                max_gain: 1.0,
+                // The same background the scene clears to, below.
+                bg_r: self.snapshot.get(p.bg_r) * dim,
+                bg_g: self.snapshot.get(p.bg_g) * dim,
+                bg_b: self.snapshot.get(p.bg_b) * dim,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
             },
             room,
             room_visible: room_brightness > 0.002,

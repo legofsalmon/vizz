@@ -1027,7 +1027,7 @@ so the palette still works as a tint and an uncoloured cloud is unaffected.</p>
 
 <h2 id="effects">Effects</h2>
 
-<p>The output chain, in order: feedback, mirror, glow, RGB shift.</p>
+<p>The output chain, in order: feedback, mirror, glow, RGB shift, then the finish: the tone shoulder, or the graded finish when <code>/fx/grade</code> is up.</p>
 
 <div class="scroll">
 <table>
@@ -1038,6 +1038,8 @@ so the palette still works as a tint and an uncoloured cloud is unaffected.</p>
 <tr><td><code>/fx/mirror</code></td><td>Off, mirror, quad, kaleido. A switch, not a sweep.</td></tr>
 <tr><td><code>/fx/glow</code></td><td>Bloom lift.</td></tr>
 <tr><td><code>/fx/shift</code></td><td>Radial RGB split — chromatic aberration.</td></tr>
+<tr><td><code>/fx/grade</code></td><td>The filmic finish, faded in over the original. Metered exposure that only ever darkens (so a look that clips is pulled back and a fade still reaches black), a mip-chain bloom set by glow, and the AgX curve. The background stays the colour you set. At 0 none of it runs.</td></tr>
+<tr><td><code>/fx/exposure</code></td><td>Exposure bias for the graded finish, in stops.</td></tr>
 </table>
 </div>
 
@@ -1362,6 +1364,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/fx/mirror</code></td><td>0 – 3</td><td>0</td><td>0 off · 1 mirror · 2 quad · 3 kaleido</td></tr>
     <tr><td><code>/fx/glow</code></td><td>0 – 1</td><td>0.25</td><td>bloom lift</td></tr>
     <tr><td><code>/fx/shift</code></td><td>0 – 1</td><td>0</td><td>radial RGB split (chromatic aberration)</td></tr>
+    <tr><td><code>/fx/grade</code></td><td>0 – 1</td><td>0</td><td>filmic grade: metered exposure, mip bloom and AgX, mixed over the original picture</td></tr>
+    <tr><td><code>/fx/exposure</code></td><td>-4 – 4</td><td>0</td><td>graded exposure bias, in stops</td></tr>
     <tr><td><code>/punch/flash</code></td><td>0 – 1</td><td>0</td><td>white-out while held — Space, a punch button, or a learned MIDI note</td></tr>
     <tr><td><code>/punch/black</code></td><td>0 – 1</td><td>0</td><td>blackout while held; rgb only, coverage stays</td></tr>
     <tr><td><code>/punch/invert</code></td><td>0 – 1</td><td>0</td><td>invert the finished picture while held</td></tr>
