@@ -656,7 +656,11 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
     });
     match &state.live_cloud {
         Some(live) => {
-            ui.horizontal(|ui| {
+            // Wrapped rather than a plain row: with the simulation menu
+            // on it this is three buttons behind a label whose length is
+            // the stream address, and a plain row would push `stop` off
+            // the edge of a narrow panel rather than move it down.
+            ui.horizontal_wrapped(|ui| {
                 // Connected is not the same as receiving: a listener with
                 // nobody attached, and a sender that has gone quiet, both
                 // look identical without the point count.
@@ -664,12 +668,28 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                 ui.small(&live.label);
                 if live.connected {
                     ui.small(format!("{} pts", live.points));
-                } else {
+                } else if live.simulation.is_none() {
                     // Which address to point the sender at is the whole
                     // question while nothing is attached, and the label
-                    // already carries it.
+                    // already carries it. A simulation has no sender and
+                    // is never waiting for one.
                     ui.small("waiting — point the sender here");
                 }
+                // Changing your mind about which simulation is running
+                // is the common move, and it used to mean stopping first:
+                // this menu lived only in the empty state, so the act of
+                // running one hid the way to run another. Starting one
+                // replaces whatever is in the slot, which is what the
+                // empty state's menu already did to an empty slot.
+                ui.menu_button("simulate…", |ui| {
+                    if let Some(id) = simulation_menu(ui, vizz_mod::generators::SIMULATIONS) {
+                        actions.live_cloud = Some(Some(format!("sim:{id}")));
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "run a simulation in the live slot, in place of what is there now",
+                );
                 // Letting go of the sender in hand is a thing to ask
                 // for, not a thing to wait for. The newest sender takes
                 // over on its own, so this is for the case that leaves
@@ -678,24 +698,41 @@ fn live_cloud_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActi
                 // and the address to listen on has not changed. Doing it
                 // as stop-then-receive works and always has; it is two
                 // clicks and a re-typed address in a dark room.
-                if ui
-                    .small_button("rescan")
-                    .on_hover_text(
-                        "drop the sender in hand and listen again, on the same \
-                         address — for one that is attached but has gone quiet",
-                    )
-                    .clicked()
+                //
+                // Only for a stream. On a simulation there is no sender
+                // to drop, and it listened on the address in the field
+                // instead — which is to say it quietly replaced the
+                // simulation with a network listener.
+                if live.simulation.is_none()
+                    && ui
+                        .small_button("rescan")
+                        .on_hover_text(
+                            "drop the sender in hand and listen again, on the same \
+                             address — for one that is attached but has gone quiet",
+                        )
+                        .clicked()
                 {
                     actions.live_cloud = Some(Some(addr.clone()));
                 }
                 if ui
                     .small_button("stop")
-                    .on_hover_text("stop receiving; loaded clouds are unaffected")
+                    .on_hover_text(if live.simulation.is_some() {
+                        "stop the simulation; loaded clouds are unaffected"
+                    } else {
+                        "stop receiving; loaded clouds are unaffected"
+                    })
                     .clicked()
                 {
                     actions.live_cloud = Some(None);
                 }
             });
+            // The knobs of a picked simulation, on the same scope the
+            // empty state uses, so a simulation with settings can be set
+            // up and run from here too rather than opening a row that
+            // nothing draws.
+            if let Some(spec) = settings_row(ui, "sim", vizz_mod::generators::SIMULATIONS, "run") {
+                actions.live_cloud = Some(Some(format!("sim:{spec}")));
+            }
         }
         None => {
             ui.horizontal(|ui| {
@@ -957,6 +994,10 @@ pub struct LiveCloudStatus {
     /// dropping is normal and healthy; all of them means the sender is
     /// outrunning us.
     pub dropped: u64,
+    /// The spec, when the slot is running a simulation rather than
+    /// reading something off the wire. The two want different controls:
+    /// a simulation has no sender to wait for or re-listen for.
+    pub simulation: Option<String>,
 }
 
 /// What is in each cloud slot, and how to put something there.
