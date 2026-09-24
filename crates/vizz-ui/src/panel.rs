@@ -2264,6 +2264,14 @@ fn video_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
         }
     };
     list(ui, "NDI on the network", "ndi:", &src.ndi);
+    if !src.ndi.is_empty() {
+        // The NDI SDK's terms ask for a link to ndi.video close to every
+        // place NDI is selected, and the trademark line with it.
+        ui.horizontal_wrapped(|ui| {
+            ui.small("NDI® is a registered trademark of Vizrt NDI AB —");
+            ui.hyperlink_to(egui::RichText::new("ndi.video").small(), "https://ndi.video/");
+        });
+    }
     list(ui, "Syphon on this Mac", "syphon:", &src.syphon);
     list(ui, "cameras and capture cards", "camera:", &src.cameras);
 
