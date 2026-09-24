@@ -1,0 +1,18 @@
+[package]
+name = "vizz-licence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Every dependency here was already in the build: ring and base64 come in
+# under ureq's rustls, ureq is vizz-update's, and serde is everyone's. The
+# vendor's reference SDK names ed25519-dalek, sha2 and hex instead; ring
+# does the same two jobs, so taking it avoids adding three crates to a
+# binary that already carries the one that suffices.
+[dependencies]
+ring = "0.17"
+base64 = "0.22"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true

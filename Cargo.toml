@@ -12,6 +12,7 @@ members = [
     "crates/vizz-design",
     "crates/vizz-ui",
     "crates/vizz-update",
+    "crates/vizz-licence",
     "crates/vizz-app",
 ]
 
@@ -33,6 +34,7 @@ vizz-audio = { path = "crates/vizz-audio" }
 vizz-design = { path = "crates/vizz-design" }
 vizz-ui = { path = "crates/vizz-ui" }
 vizz-update = { path = "crates/vizz-update" }
+vizz-licence = { path = "crates/vizz-licence" }
 
 anyhow = "1"
 log = "0.4"
