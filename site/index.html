@@ -144,7 +144,7 @@
            that this link moves with every release; a test in
            vizz-update fails the build if it stops matching the
            workspace version, so it cannot quietly go stale. -->
-      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.27.0/vizz-0.27.0.app.zip">Download for macOS</a>
+      <a class="btn" href="https://github.com/legofsalmon/vizz/releases/download/v0.28.0/vizz-0.28.0.app.zip">Download for macOS</a>
       <a class="btn ghost" href="/docs">Read the docs</a>
       <a class="btn ghost" href="/clouds">Clouds from equations</a>
       <a class="btn ghost" href="https://github.com/legofsalmon/vizz">Source on GitHub</a>
@@ -249,6 +249,37 @@
   <div class="wrap">
     <h2 id="changelog">Changelog</h2>
     <p class="sub">Newest first. Full notes on each release page.</p>
+
+    <div class="rel">
+      <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.28.0">0.28.0</a></div>
+      <ul>
+        <li><strong>Sharper by default.</strong> Outputs up to 1080p now
+          render at twice their size and are filtered down, which takes
+          out most of the shimmer in fine particle fields. The room's lines
+          are drawn anti-aliased, one output pixel wide, and put the same
+          light into the frame at every render scale. Sprites smaller than
+          a pixel are widened and dimmed rather than left to flicker. A
+          machine that can't hold 2× can set 1× in the output panel.</li>
+        <li><strong>A graded finish.</strong> <em>grade</em> in the FX
+          panel meters each frame and eases the exposure, rolls highlights
+          off through AgX instead of clipping them to flat discs, and
+          swaps the glow for a mip-chain bloom. At 0, the default, every
+          frame is exactly what it was. The pictures on
+          <a href="/clouds">/clouds</a> are now drawn by the same renderer
+          the app uses, with the palette and the grade on.</li>
+        <li><strong>Solid surfaces.</strong> <em>surface</em> in the
+          particles panel draws the cloud as solid, lit discs instead of
+          glowing sprites: they hide each other, the lamps light the side
+          that faces them, the sun casts the cloud's shadow on the floor,
+          and the room becomes lit walls with a glowing grid. It costs
+          more than glow, so it is a switch, not the default.</li>
+        <li><strong>Switch simulations without stopping.</strong> The
+          <em>simulate…</em> menu is now on the live slot while a
+          simulation is running, so picking another one replaces it in one
+          press. <em>rescan</em> is no longer offered on a running
+          simulation, where it swapped it for a network listener.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <div class="v"><a href="https://github.com/legofsalmon/vizz/releases/tag/v0.27.0">0.27.0</a></div>
