@@ -2863,11 +2863,13 @@ impl ApplicationHandler for App {
         // race to MIDI traffic — a binding learned in the final moments
         // would vanish while its chip showed as bound. Exit is the one
         // place a blocking lock costs nothing.
-        if let Ok(midi) = self.midi_shared.lock()
-            && midi.revision != self.saved_revision
-            && let Err(e) = vizz_midi::save_map(&self.opts.midi_map_path, &midi.map)
         {
-            log::error!("could not save the MIDI map on exit: {e:#}");
+            let midi = vizz_midi::lock(&self.midi_shared);
+            if midi.revision != self.saved_revision
+                && let Err(e) = vizz_midi::save_map(&self.opts.midi_map_path, &midi.map)
+            {
+                log::error!("could not save the MIDI map on exit: {e:#}");
+            }
         }
         // The canvas view is user state too, just cheap enough to keep in
         // settings. Written only when it moved, like everything else here.
@@ -2964,7 +2966,7 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     if midi.is_none() {
         return;
     }
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     view.available = true;
     view.connected = state.connected.clone();
     view.map = state.map.clone();
@@ -3007,7 +3009,7 @@ fn publish_midi_surface(
         }
         bank
     }
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     state.surface = vizz_midi::feedback::Surface {
         scenes: bank(scenes),
         gravity: bank(gravity),
@@ -3821,7 +3823,7 @@ fn apply_grid_actions(
     // one is a dropped frame on stage. The revision bump is picked up by
     // the flush in `apply_panel_actions`, which runs later in the frame.
     if actions.learn.is_some() || actions.unlearn.is_some() {
-        if let Ok(mut state) = midi.try_lock() {
+        if let Some(mut state) = vizz_midi::try_lock(midi) {
             if let Some(target) = actions.learn {
                 state.learn_target = target.map(|slot| {
                     vizz_midi::LearnTarget::value(
@@ -4191,7 +4193,7 @@ fn follow_recall_bindings(
     }
     // `try_lock`, as every other touch of the map from this thread: the
     // render loop never waits on the MIDI thread.
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     let had = state.map.bindings.len();
     for v in &gone {
         state.map.unbind_value(PRESET_RECALL, *v);
@@ -4322,7 +4324,7 @@ fn apply_panel_actions(
     // `try_lock`, because this now runs every frame and the render thread
     // must never wait on the MIDI thread. A missed flush is picked up on
     // the next frame.
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     if let Some(target) = actions.set_learn_target {
         state.learn_target = target;
     }
