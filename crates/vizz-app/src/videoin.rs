@@ -512,6 +512,19 @@ mod tests {
             "the Info.plist has no local network usage description — \
              receiving from a device on the wifi will silently do nothing"
         );
+        // And it says what vizz does there, which is what the person is
+        // agreeing to: control comes in over OSC, and NDI goes both ways.
+        let asks = plist
+            .split("<key>NSLocalNetworkUsageDescription</key><string>")
+            .nth(1)
+            .and_then(|rest| rest.split("</string>").next())
+            .expect("the local network usage description is not a <string>");
+        for what in ["OSC", "point clouds", "NDI video from", "over NDI"] {
+            assert!(
+                asks.contains(what),
+                "the local network permission text does not mention {what:?}: {asks}"
+            );
+        }
         let ents = std::fs::read_to_string(root.join("scripts/vizz.entitlements"))
             .expect("vizz.entitlements missing");
         assert!(

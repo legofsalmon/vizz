@@ -63,6 +63,11 @@ pub struct WindowedOpts {
     pub columns: Arc<vizz_osc::ColumnSync>,
     /// The licence, already decided offline by the caller.
     pub licence: vizz_licence::Licence,
+    /// Crash reports and feedback. `None` runs without either.
+    pub reporter: Option<vizz_report::Reporter>,
+    /// How the last run ended: after an unclean exit the look and the
+    /// outputs come back, and the person is asked about a report.
+    pub previous: vizz_report::Previous,
 }
 
 struct RenderState {
@@ -94,6 +99,23 @@ struct RenderState {
     /// The licence mark, while this session carries it. Built at the
     /// master's size and format, so rebuilt with the master.
     watermark: Option<vizz_render::watermark::Watermark>,
+}
+
+/// The master as it is built: output size, render size, and whether it
+/// is the wide format.
+#[derive(Clone, Copy)]
+struct Master {
+    size: [u32; 2],
+    render: [u32; 2],
+    wide: bool,
+}
+
+/// What outlives a lost GPU device while the renderer is rebuilt.
+struct Parked {
+    window: Arc<Window>,
+    /// `None` only after an attempt that panicked part-way.
+    gui: Option<Gui>,
+    master: Master,
 }
 
 struct App {
@@ -255,6 +277,122 @@ struct App {
     licence_view: Option<vizz_licence::Snapshot>,
     /// The words on the mark, chosen at launch from why there is one.
     mark_text: &'static str,
+    /// Crash reports and feedback, and what the help section shows.
+    help: Help,
+    /// What was live when the recovery snapshot was last written, so it
+    /// is only written when something changed.
+    recovery_saved: Vec<u8>,
+    recovery_checked: Instant,
+    /// Frames in a row that panicked and were skipped. See `redraw`.
+    frame_failures: u32,
+    /// The same for window events. See `window_event`.
+    event_failures: u32,
+    /// Whether the GPU device has been lost, and when to try rebuilding.
+    device_lost: crate::devicelost::DeviceRecovery,
+    /// The window and the panel, while the renderer is being rebuilt on a
+    /// new device and `state` is empty.
+    parked: Option<Parked>,
+    /// What the live video input was opened from, for reopening it on a
+    /// new device.
+    video_spec: Option<String>,
+}
+
+/// The app's side of help & feedback.
+struct Help {
+    reporter: Option<vizz_report::Reporter>,
+    /// Ask about this many crash reports on the first frame — after the
+    /// show, the look and the outputs are back, never before.
+    prompt: Option<usize>,
+    message: Option<(bool, String)>,
+    sent_revision: u64,
+    /// Waiting and queued report counts, refreshed every couple of
+    /// seconds rather than listed from disk every frame.
+    counts: (usize, usize),
+    counts_at: Option<Instant>,
+}
+
+impl Help {
+    fn view(&mut self, has_licence: bool) -> Option<vizz_ui::help::HelpView> {
+        let reporter = self.reporter.as_ref()?;
+        if self.counts_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) {
+            self.counts = (reporter.pending().len(), reporter.outbox().len());
+            self.counts_at = Some(Instant::now());
+        }
+        Some(vizz_ui::help::HelpView {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            has_licence,
+            auto_crash: reporter.auto(),
+            pending_crashes: self.counts.0,
+            outbox: self.counts.1,
+            message: self.message.clone(),
+            sent_revision: self.sent_revision,
+        })
+    }
+
+    /// The answer to the after-a-crash question.
+    fn answer(&mut self, answer: vizz_ui::help::CrashAnswer) {
+        let Some(reporter) = &self.reporter else { return };
+        if answer.send {
+            if answer.always {
+                reporter.set_auto(true);
+                if let Err(e) = crate::settings::save_crash_reports_auto(true) {
+                    log::warn!("could not remember to send crash reports: {e:#}");
+                }
+            }
+            let n = reporter.send_pending(&answer.note);
+            log::info!("crash reports: {n} agreed to and on their way");
+        } else {
+            reporter.discard_pending();
+            log::info!("crash reports: declined, deleted");
+        }
+        self.counts_at = None;
+    }
+
+    fn apply(&mut self, actions: &vizz_ui::help::HelpActions, licence: &vizz_licence::Licence) {
+        let Some(reporter) = &self.reporter else { return };
+        if let Some(on) = actions.set_auto_crash {
+            reporter.set_auto(on);
+            if let Err(e) = crate::settings::save_crash_reports_auto(on) {
+                log::warn!("could not remember the crash-report setting: {e:#}");
+            }
+            self.counts_at = None;
+        }
+        if actions.send_pending {
+            reporter.send_pending("");
+            self.counts_at = None;
+        }
+        if actions.discard_pending {
+            reporter.discard_pending();
+            self.counts_at = None;
+        }
+        if let Some(draft) = &actions.feedback {
+            use vizz_ui::help::FeedbackType as T;
+            let kind = match draft.kind {
+                T::Bug => vizz_report::FeedbackKind::Bug,
+                T::Idea => vizz_report::FeedbackKind::Idea,
+                T::Question => vizz_report::FeedbackKind::Question,
+                T::Praise => vizz_report::FeedbackKind::Praise,
+            };
+            let form = vizz_report::FeedbackForm {
+                message: draft.message.clone(),
+                email: draft.email.clone(),
+                name: String::new(),
+                include_licence: draft.include_licence,
+                public: draft.public,
+            };
+            // Read only when the box was ticked: the key is never touched
+            // for a message that did not ask for it.
+            let key = draft.include_licence.then(|| licence.key()).flatten();
+            self.message = Some(match reporter.send_feedback(kind, &form, key.as_deref()) {
+                Ok(()) => {
+                    self.sent_revision += 1;
+                    (false, "thank you — it is on its way, and waits for a network if there is none".into())
+                }
+                Err(e) => (true, e),
+            });
+            self.counts_at = None;
+        }
+    }
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
@@ -375,10 +513,107 @@ impl App {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
+        let (ctx, surface, config) = self.open_gpu(&window)?;
 
+        // Render size and output size are separate things.
+        //
+        // The output is what receivers get and what the aspect is judged
+        // against. The render size is how large the scene and the post
+        // chain actually work, and above 1× the downscale into the master
+        // is free anti-aliasing — which is the only thing that reliably
+        // cleans up a field of one-pixel sprites. Below 1× it buys frame
+        // rate on a machine that cannot hold the budget.
+        let s = crate::settings::load();
+        // An explicit --width/--height wins for this launch: the scripted
+        // venue start must not be overridden by whatever was clicked on a
+        // laptop last week. Without the flags, the remembered size wins.
+        let [ow, oh] = if self.opts.size_from_cli {
+            crate::settings::fit([self.opts.width, self.opts.height])
+        } else {
+            s.output_or([self.opts.width, self.opts.height])
+        };
+        let [rw, rh] = s.render_size([ow, oh]);
+        log::info!(
+            "output {ow}x{oh} ({}), rendering at {rw}x{rh} ({:.2}x)",
+            if s.wide_output { "16-bit float" } else { "8-bit" },
+            s.scale_for([ow, oh])
+        );
+        // What the panel shows, and what a later output change starts
+        // from: the scale actually in use, which for a settings file that
+        // never chose one depends on the output size.
+        self.render_scale = s.scale_for([ow, oh]);
+        let master = Master { size: [ow, oh], render: [rw, rh], wide: s.wide_output };
+
+        // A stream that will not start is a warning, never a startup
+        // failure — the same trade as a cloud file that will not parse.
+        if let Some(spec) = self.opts.video_source.clone() {
+            match crate::videoin::open(&spec, Some(&ctx.device)) {
+                Ok(v) => {
+                    log::info!("video input: {}", v.label());
+                    self.video = Some(v);
+                    self.video_spec = Some(spec);
+                }
+                // Degraded, not fatal, for the same reason a malformed
+                // cloud is: arriving at a venue to find the app will not
+                // open because a camera is unplugged is the wrong trade.
+                Err(e) => log::warn!("could not open the video input: {e:#}"),
+            }
+        }
+        // A remembered simulation comes back unless the command line
+        // named a stream: the stream is the explicit ask.
+        let live_source = self.opts.live_cloud.clone().or_else(|| {
+            crate::settings::load()
+                .simulation
+                .map(vizz_render::plystream::Source::Simulate)
+        });
+        if let Some(source) = live_source {
+            match vizz_render::plystream::LiveCloud::start(source) {
+                Ok(live) => {
+                    log::info!("live cloud: {}", live.label());
+                    self.live = Some(live);
+                }
+                Err(e) => log::warn!("could not start the live cloud: {e:#}"),
+            }
+        }
+
+        let gui = self.fresh_gui(&window, &ctx.device, config.format);
+        let state = self.build_render_state(window, ctx, surface, config, gui, master);
+        // Show what was asked for. `load_clouds` fills slots and nothing
+        // more, so without this `vizz --cloud scan.ply` opened on the
+        // default sphere with the scan sitting unseen in a slot.
+        if self.opts.clouds_from_cli
+            && let Some(last) = self
+                .opts
+                .clouds
+                .iter()
+                .rposition(|p| !p.as_os_str().is_empty())
+            && let Some(slot) = ParticleScene::loadable_slot(last)
+        {
+            Self::show_cloud_slot(&self.params, slot);
+        }
+        // An output asked for that did not come up is said on screen,
+        // once, with its reason. The slot keeps retrying; until now the
+        // only record was a log line, and the first sign in the room was
+        // a receiver with nothing in it.
+        for (name, why) in state.outputs.failures() {
+            self.startup_notes.push((
+                true,
+                format!("output '{name}' did not start — {why}; retrying in the background"),
+            ));
+        }
+        Ok(state)
+    }
+
+    /// An instance, an adapter that can present to `window`, a device and
+    /// a configured surface: the part of bringing the renderer up that can
+    /// fail. At launch and again after a lost device.
+    fn open_gpu(
+        &self,
+        window: &Arc<Window>,
+    ) -> Result<(GpuContext, wgpu::Surface<'static>, wgpu::SurfaceConfiguration)> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = instance.create_surface(window.clone())?;
+        let surface = instance.create_surface(Arc::clone(window))?;
         let ctx = pollster::block_on(async {
             // Reuse the instance the surface came from.
             let adapter = instance
@@ -411,8 +646,32 @@ impl App {
             // compatibility, and without these an uncaptured validation
             // or out-of-memory error panics the process mid-set — wgpu's
             // default handler — and a lost device dies silently.
-            device.set_device_lost_callback(|reason, msg| {
-                log::error!("GPU device lost ({reason:?}): {msg}");
+            // A lost device is also a crash worth knowing about, by the
+            // same consent rules as a panic — but not the ordinary
+            // `Destroyed` every device reports on its way out, which
+            // includes each one a rebuild replaces.
+            //
+            // And it is rebuilt from: the flag is what `redraw` checks.
+            // See `crate::devicelost`.
+            let lost_reporter = self.help.reporter.clone();
+            let lost_flag = self.device_lost.flag();
+            device.set_device_lost_callback(move |reason, msg| {
+                if !crate::devicelost::needs_rebuild(reason) {
+                    log::debug!("GPU device released ({reason:?}): {msg}");
+                    return;
+                }
+                log::error!("GPU device lost ({reason:?}): {msg} — rebuilding");
+                lost_flag.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(reporter) = &lost_reporter {
+                    reporter.record(
+                        vizz_report::CrashKind::Gpu,
+                        vizz_report::payload::Raw {
+                            summary: format!("GPU device lost ({reason:?}): {msg}"),
+                            detail: None,
+                            occurred_at: Some(vizz_report::crash::iso8601(vizz_report::crash::now())),
+                        },
+                    );
+                }
             });
             vizz_render::install_error_guard(&device);
             anyhow::Ok(GpuContext {
@@ -424,45 +683,53 @@ impl App {
         })?;
 
         let size = window.inner_size();
+        // An error rather than a panic: this is start-up, and "the GPU
+        // cannot draw to this window" deserves a sentence in the log and
+        // a clean exit, not a panic message and a crash report.
         let mut config = surface
             .get_default_config(&ctx.adapter, size.width.max(1), size.height.max(1))
-            .expect("surface not supported by adapter");
+            .ok_or_else(|| anyhow::anyhow!("the GPU adapter cannot present to this window"))?;
         // Fifo = vsync: never tear on the output projector.
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&ctx.device, &config);
+        Ok((ctx, surface, config))
+    }
 
-        // Render size and output size are separate things.
-        //
-        // The output is what receivers get and what the aspect is judged
-        // against. The render size is how large the scene and the post
-        // chain actually work, and above 1× the downscale into the master
-        // is free anti-aliasing — which is the only thing that reliably
-        // cleans up a field of one-pixel sprites. Below 1× it buys frame
-        // rate on a machine that cannot hold the budget.
-        let s = crate::settings::load();
-        // An explicit --width/--height wins for this launch: the scripted
-        // venue start must not be overridden by whatever was clicked on a
-        // laptop last week. Without the flags, the remembered size wins.
-        let [ow, oh] = if self.opts.size_from_cli {
-            crate::settings::fit([self.opts.width, self.opts.height])
-        } else {
-            s.output_or([self.opts.width, self.opts.height])
-        };
-        let [rw, rh] = s.render_size([ow, oh]);
-        let master_format = if s.wide_output {
+    /// A panel as a launch opens it.
+    fn fresh_gui(&self, window: &Window, device: &wgpu::Device, format: wgpu::TextureFormat) -> Gui {
+        let mut gui = Gui::new(window, device, format);
+        gui.visible = self.opts.show_gui;
+        // The canvas comes back where it was left — pan, zoom, patch
+        // name — instead of at the origin with the name field blank.
+        if let Some(canvas) = crate::settings::load().graph_view {
+            gui.restore_graph_view(canvas.into());
+        }
+        gui
+    }
+
+    /// Everything that draws, built on a device `open_gpu` brought up:
+    /// the master and the passes into it, the scene with its cloud slots
+    /// and palettes as the app lists them, and the senders.
+    ///
+    /// Nothing here fails — a cloud or a palette that will not load, or
+    /// an output that will not start, is a warning — which is what lets a
+    /// lost device be rebuilt without a half-built state to unwind.
+    fn build_render_state(
+        &mut self,
+        window: Arc<Window>,
+        ctx: GpuContext,
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+        mut gui: Gui,
+        master: Master,
+    ) -> RenderState {
+        let [ow, oh] = master.size;
+        let [rw, rh] = master.render;
+        let master_format = if master.wide {
             vizz_render::output::WIDE_FORMAT
         } else {
             vizz_render::output::OUTPUT_FORMAT
         };
-        log::info!(
-            "output {ow}x{oh} ({}), rendering at {rw}x{rh} ({:.2}x)",
-            if s.wide_output { "16-bit float" } else { "8-bit" },
-            s.scale_for([ow, oh])
-        );
-        // What the panel shows, and what a later output change starts
-        // from: the scale actually in use, which for a settings file that
-        // never chose one depends on the output size.
-        self.render_scale = s.scale_for([ow, oh]);
         let output = OutputTarget::with_format(&ctx.device, ow, oh, master_format);
         let post = PostChain::new(&ctx, rw, rh, master_format);
         // The scene draws into the post chain's HDR buffer, not straight
@@ -470,20 +737,20 @@ impl App {
         let vector = vizz_render::vector::VectorScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let vector_print = vizz_render::vector::VectorScene::new(&ctx, master_format);
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
-        scene.load_clouds(&ctx, &self.opts.clouds);
-        // Show what was asked for. `load_clouds` fills slots and nothing
-        // more, so without this `vizz --cloud scan.ply` opened on the
-        // default sphere with the scan sitting unseen in a slot.
-        if self.opts.clouds_from_cli
-            && let Some(last) = self
-                .opts
-                .clouds
-                .iter()
-                .rposition(|p| !p.as_os_str().is_empty())
-            && let Some(slot) = ParticleScene::loadable_slot(last)
-        {
-            Self::show_cloud_slot(&self.params, slot);
-        }
+        // The slots as listed. Text and generated entries hold their
+        // place as holes for the file loader and are re-made below.
+        let files: Vec<std::path::PathBuf> = self
+            .clouds
+            .iter()
+            .map(|p| {
+                if p.starts_with("text:") || p.starts_with("gen:") {
+                    std::path::PathBuf::new()
+                } else {
+                    std::path::PathBuf::from(p)
+                }
+            })
+            .collect();
+        scene.load_clouds(&ctx, &files);
         // Typed clouds restore by re-rasterizing — deterministic, so the
         // slot shows exactly what was on screen when it was saved. Their
         // saved entries are `text:WORD` pseudo-paths; the file loader
@@ -528,36 +795,6 @@ impl App {
                 scene.skip_palette_row();
             }
         }
-        // A stream that will not start is a warning, never a startup
-        // failure — the same trade as a cloud file that will not parse.
-        if let Some(spec) = self.opts.video_source.clone() {
-            match crate::videoin::open(&spec, Some(&ctx.device)) {
-                Ok(v) => {
-                    log::info!("video input: {}", v.label());
-                    self.video = Some(v);
-                }
-                // Degraded, not fatal, for the same reason a malformed
-                // cloud is: arriving at a venue to find the app will not
-                // open because a camera is unplugged is the wrong trade.
-                Err(e) => log::warn!("could not open the video input: {e:#}"),
-            }
-        }
-        // A remembered simulation comes back unless the command line
-        // named a stream: the stream is the explicit ask.
-        let live_source = self.opts.live_cloud.clone().or_else(|| {
-            crate::settings::load()
-                .simulation
-                .map(vizz_render::plystream::Source::Simulate)
-        });
-        if let Some(source) = live_source {
-            match vizz_render::plystream::LiveCloud::start(source) {
-                Ok(live) => {
-                    log::info!("live cloud: {}", live.label());
-                    self.live = Some(live);
-                }
-                Err(e) => log::warn!("could not start the live cloud: {e:#}"),
-            }
-        }
         let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
@@ -581,29 +818,12 @@ impl App {
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
         let senders = outputs::Outputs::new(&ctx.device, &self.opts.outputs);
-        // An output asked for that did not come up is said on screen,
-        // once, with its reason. The slot keeps retrying; until now the
-        // only record was a log line, and the first sign in the room was
-        // a receiver with nothing in it.
-        for (name, why) in senders.failures() {
-            self.startup_notes.push((
-                true,
-                format!("output '{name}' did not start — {why}; retrying in the background"),
-            ));
-        }
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
-        let mut gui = Gui::new(&window, &ctx.device, config.format);
         // The performance layout draws the master output rather than
         // leaving a hole in its scrim to see it through, so hand it the
         // texture up front. Re-pointed on every resize.
         gui.set_output_texture(&ctx.device, &output.view, ow, oh);
-        gui.visible = self.opts.show_gui;
-        // The canvas comes back where it was left — pan, zoom, patch
-        // name — instead of at the origin with the name field blank.
-        if let Some(canvas) = crate::settings::load().graph_view {
-            gui.restore_graph_view(canvas.into());
-        }
 
         let watermark = self.session.marked().then(|| {
             vizz_render::watermark::Watermark::new(
@@ -616,7 +836,7 @@ impl App {
             )
         });
 
-        Ok(RenderState {
+        RenderState {
             window,
             surface,
             vector,
@@ -634,7 +854,114 @@ impl App {
             publish,
             publish_blit,
             watermark,
-        })
+        }
+    }
+
+    /// Bring the renderer back on a new device after the old one was lost.
+    ///
+    /// [`crate::devicelost`] decides when, and how far apart the attempts
+    /// are. The window and the panel are kept. Everything else belonged
+    /// to the dead device and is dropped before anything new is built —
+    /// the senders among it, so the new Syphon server and NDI source can
+    /// take the same names. It is then built again from what the app
+    /// already holds: the output size, scale and format as they were, the
+    /// cloud slots and palettes as listed. The look needs nothing: it
+    /// lives in the parameters, which never touched the GPU.
+    fn recover_gpu(&mut self, attempt: u32) {
+        if let Some(old) = self.state.take() {
+            let master = Master {
+                size: [old.output.width, old.output.height],
+                render: crate::settings::fit([
+                    (old.output.width as f32 * self.render_scale) as u32,
+                    (old.output.height as f32 * self.render_scale) as u32,
+                ]),
+                wide: old.output.format == vizz_render::output::WIDE_FORMAT,
+            };
+            let RenderState { window, mut gui, .. } = old;
+            // Both hold readbacks on the dead device, which will never
+            // complete.
+            if self.recorder.take().is_some() {
+                self.params.registry.set(self.params.record_active, 0.0);
+                gui.notify_error("recording stopped — the GPU was lost");
+            }
+            self.thumbs = Default::default();
+            self.parked = Some(Parked { window, gui: Some(gui), master });
+        }
+        let Some(parked) = &self.parked else { return };
+        let window = Arc::clone(&parked.window);
+        let master = parked.master;
+        log::warn!("rebuilding the renderer on a new GPU device (attempt {attempt})");
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<RenderState> {
+            let (ctx, surface, config) = self.open_gpu(&window)?;
+            let gui = match self.parked.as_mut().and_then(|p| p.gui.take()) {
+                Some(mut gui) => {
+                    gui.replace_renderer(&ctx.device, &ctx.queue, config.format);
+                    gui
+                }
+                // Only after an attempt that panicked part-way: the
+                // panel's state went with it.
+                None => self.fresh_gui(&window, &ctx.device, config.format),
+            };
+            Ok(self.build_render_state(Arc::clone(&window), ctx, surface, config, gui, master))
+        }));
+        let why = match built {
+            Ok(Ok(mut state)) => {
+                self.parked = None;
+                self.device_lost.succeeded(Instant::now());
+                // A Syphon input is a client of the dead device's Metal
+                // device, so it is opened again on the new one. Every
+                // other kind is CPU-side and only needs its latest frame
+                // uploaded again, which a reset revision does.
+                if let Some(spec) = self.video_spec.clone().filter(|s| s.starts_with("syphon:"))
+                    && self.video.is_some()
+                {
+                    // The old client lets go of the server first.
+                    self.video = None;
+                    match crate::videoin::open(&spec, Some(&state.ctx.device)) {
+                        Ok(v) => self.video = Some(v),
+                        Err(e) => {
+                            log::warn!("could not reopen {spec} after the GPU came back: {e:#}");
+                            state.gui.notify_error(format!("{spec}: {e}"));
+                            self.video_spec = None;
+                        }
+                    }
+                }
+                self.video_revision = 0;
+                // The stream's last frame, so the slot is not empty until
+                // the next one arrives.
+                if self.live.is_some() && !self.live_points.is_empty() {
+                    state.scene.set_cloud_streaming(
+                        &state.ctx,
+                        ParticleScene::LIVE_SLOT,
+                        &self.live_points,
+                        "live",
+                    );
+                }
+                for (name, why) in state.outputs.failures() {
+                    state.gui.notify_error(format!(
+                        "output '{name}' did not come back — {why}; retrying in the background"
+                    ));
+                }
+                let [ow, oh] = master.size;
+                log::info!("renderer rebuilt after a lost GPU device: output {ow}x{oh}");
+                state.gui.notify_error(format!(
+                    "the GPU was lost and the renderer rebuilt — output {ow}x{oh} is live again"
+                ));
+                self.presentable = true;
+                state.window.request_redraw();
+                self.state = Some(state);
+                return;
+            }
+            Ok(Err(e)) => format!("{e:#}"),
+            Err(_) => "the rebuild panicked".to_string(),
+        };
+        self.device_lost.failed();
+        let wait = self
+            .device_lost
+            .next_attempt()
+            .map(|t| t.saturating_duration_since(Instant::now()).as_secs())
+            .unwrap_or_default();
+        log::error!("could not rebuild the renderer: {why} — trying again in {wait}s");
     }
 
     /// Rebuild the master, the post chain and the publish path.
@@ -1061,7 +1388,69 @@ impl App {
         }
     }
 
+    /// One frame, with a panic in it caught and the frame skipped.
+    ///
+    /// A live-output app has one job, and exiting is the worst way to fail
+    /// at it: a bug that trips on one frame — a bad cloud, an odd
+    /// parameter, a shader edge case — used to take the whole show down.
+    /// Now that frame is dropped, the panic is logged (and written as a
+    /// crash report, which is sent only by the usual consent rules), the
+    /// performer is told once, and the next frame is drawn. A frame that
+    /// panics every time leaves the last good picture on the outputs and
+    /// the panel still working, which is strictly better than a desktop.
     fn redraw(&mut self) {
+        // A lost GPU device is rebuilt here, between frames — see
+        // `recover_gpu` and `crate::devicelost`.
+        if let Some(attempt) = self.device_lost.begin(Instant::now()) {
+            self.recover_gpu(attempt);
+        }
+        if self.device_lost.lost() {
+            // Still gone, and waiting out the back-off. Anything drawn on
+            // a dead device reaches nobody, so nothing is. `about_to_wait`
+            // keeps calling while the window cannot present; the sleep is
+            // what keeps that from being a busy loop.
+            self.presentable = false;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            return;
+        }
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.redraw_frame()));
+        match caught {
+            Ok(()) => self.frame_failures = 0,
+            Err(_) => {
+                self.frame_failures = self.frame_failures.saturating_add(1);
+                self.carry_on_after_panic("a frame", self.frame_failures);
+            }
+        }
+    }
+
+    /// What a caught panic leaves behind, for a frame or a window event
+    /// alike: a log line (the panic hook has already written the report),
+    /// a notice on the first of a run, a redraw so the panel keeps
+    /// answering, the report on its way if the person said always — and,
+    /// once the same thing has failed a few times in a row, a breath, so
+    /// a failure that repeats is not a busy loop that starves the panel.
+    fn carry_on_after_panic(&mut self, what: &str, in_a_row: u32) {
+        log::error!("{what} panicked and was skipped ({in_a_row} in a row)");
+        if let Some(state) = &mut self.state {
+            if in_a_row == 1 {
+                state
+                    .gui
+                    .notify_error(format!("{what} failed and was skipped — vizz carried on"));
+            }
+            state.window.request_redraw();
+        }
+        if let Some(reporter) = &self.help.reporter
+            && reporter.auto()
+        {
+            reporter.flush_in_background(std::time::Duration::from_secs(5));
+        }
+        self.help.counts_at = None;
+        if in_a_row > 3 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn redraw_frame(&mut self) {
         self.finish_pending_clouds();
         let Some(state) = &mut self.state else { return };
         let frame_start = Instant::now();
@@ -1379,6 +1768,25 @@ impl App {
             }
         }
 
+        // The recovery snapshot: what is live, written only when it moved,
+        // so a crash can put the look and the outputs back. See
+        // `crate::recovery`.
+        if self.recovery_checked.elapsed() >= crate::recovery::EVERY {
+            self.recovery_checked = Instant::now();
+            let snap = crate::recovery::Recovery::capture(
+                &self.params.registry,
+                current_look_name(&self.engine, &self.library),
+                self.opts.outputs.ndi.then(|| self.opts.outputs.ndi_name.clone()),
+            );
+            let bytes = snap.bytes();
+            if bytes != self.recovery_saved {
+                match crate::recovery::save_bytes(&bytes) {
+                    Ok(()) => self.recovery_saved = bytes,
+                    Err(e) => log::warn!("could not write the recovery snapshot: {e:#}"),
+                }
+            }
+        }
+
         // Everything below describes the app to a panel, and with nothing
         // on screen it described it to nobody: a health snapshot sorting six
         // hundred frame times, the settings file read and parsed, the MIDI
@@ -1396,6 +1804,15 @@ impl App {
         // been seen, it has been seen.
         if std::mem::take(&mut self.welcome_pending) {
             state.gui.welcome = true;
+        }
+        // The after-a-crash question, on the first frame: by now the show,
+        // the look and the outputs are back, so answering it is never
+        // between the performer and the projector.
+        if let Some(count) = self.help.prompt.take() {
+            state.gui.crash_prompt = Some(count);
+        }
+        if let Some(answer) = state.gui.crash_answer.take() {
+            self.help.answer(answer);
         }
         // The screen you were on is the screen you get back.
         if std::mem::take(&mut self.start_on_stage_pending) {
@@ -1568,6 +1985,7 @@ impl App {
                         locked: self.session.locked(),
                     })
                 },
+                help: self.help.view(self.licence_view.as_ref().is_some_and(|l| l.has_key)),
                 health: Some(self.engine.health.snapshot()),
                 outputs: outputs_status,
                 frame_times_ms: Vec::new(),
@@ -1699,6 +2117,7 @@ impl App {
         match actions {
             Ok(actions) => {
                 apply_licence_actions(&actions.licence, &self.licence);
+                self.help.apply(&actions.help, &self.licence);
                 apply_audio_actions(
                     &actions,
                     &mut self.engine,
@@ -1804,6 +2223,7 @@ impl App {
                         // backend's Drop tears its thread or client down.
                         None => {
                             self.video = None;
+                            self.video_spec = None;
                             self.video_live = false;
                             state.gui.notify_info("video input stopped");
                         }
@@ -1813,6 +2233,7 @@ impl App {
                                 Ok(v) => {
                                     let label = v.label();
                                     self.video = Some(v);
+                                    self.video_spec = Some(spec.clone());
                                     self.video_revision = 0;
                                     self.video_shown = false;
                                     self.video_live = false;
@@ -2270,109 +2691,10 @@ impl App {
         }
     }
 
-    /// Move to another input device, remembering the choice.
-    fn switch_audio_device(&mut self, want: Option<String>) {
-        // Reopen rather than rebuild: the band gains live in the settings
-        // the analysis thread shares, and rebuilding would reset the one
-        // thing the user tuned to their interface.
-        self.engine.audio.reopen(want.as_deref());
-        // Remember it, so plugging the same interface in tomorrow does not
-        // mean finding this menu again.
-        if let Err(e) = crate::settings::save_audio_device(want.as_deref()) {
-            log::warn!("could not remember the audio device: {e:#}");
-        }
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
-            return;
-        }
-        match self.init(event_loop) {
-            Ok(state) => {
-                state.window.request_redraw();
-                self.state = Some(state);
-            }
-            Err(e) => {
-                log::error!("failed to initialize window/GPU: {e:#}");
-                event_loop.exit();
-            }
-        }
-    }
-
-    /// Last write before the process goes.
-    ///
-    /// winit calls this on the way out however the loop was ended — the
-    /// window closed, Escape confirmed, the platform's own quit — so the
-    /// few seconds since the last autosave are not lost to whichever route
-    /// out the user happened to take.
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // An update is staged and its installer is already waiting on
-        // this pid. Leaving through the normal door means `exiting` runs
-        // and the session is written out first.
-        if self.quit_for_update {
-            _event_loop.exit();
-            return;
-        }
-        // While the window cannot present, redraw events may stop coming
-        // at all — a miniaturised window gets none on some platforms — so
-        // the loop drives itself here, paced by the sleep in `redraw`.
-        // The moment presenting works again, `presentable` flips and the
-        // ordinary request_redraw cycle takes back over.
-        if !self.presentable && self.state.is_some() {
-            self.redraw();
-        }
-    }
-
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        let now = vizz_mod::library::session_bytes(&self.engine.modulation);
-        if now != self.saved_modulation
-            && let Err(e) = vizz_mod::library::save_session(&self.engine.modulation)
-        {
-            log::error!("could not save the modulation state on exit: {e:#}");
-        }
-        // The per-frame MIDI flush uses try_lock and can lose its last
-        // race to MIDI traffic — a binding learned in the final moments
-        // would vanish while its chip showed as bound. Exit is the one
-        // place a blocking lock costs nothing.
-        if let Ok(midi) = self.midi_shared.lock()
-            && midi.revision != self.saved_revision
-            && let Err(e) = vizz_midi::save_map(&self.opts.midi_map_path, &midi.map)
-        {
-            log::error!("could not save the MIDI map on exit: {e:#}");
-        }
-        // The canvas view is user state too, just cheap enough to keep in
-        // settings. Written only when it moved, like everything else here.
-        if let Some(state) = &self.state {
-            let mem: crate::settings::GraphCanvas = state.gui.graph_view_memory().into();
-            let mut s = crate::settings::load();
-            let mut changed = false;
-            if s.graph_view.as_ref() != Some(&mem) {
-                s.graph_view = Some(mem);
-                changed = true;
-            }
-            // The window's size, so it opens where it was dragged to. Not
-            // while fullscreen: that size is the monitor's, and it is
-            // remembered by the fullscreen flag instead.
-            if state.window.fullscreen().is_none() {
-                let size = state.window.inner_size().to_logical::<u32>(state.window.scale_factor());
-                let size = [size.width, size.height];
-                if size[0] >= MIN_WINDOW[0]
-                    && size[1] >= MIN_WINDOW[1]
-                    && s.window_size != Some(size)
-                {
-                    s.window_size = Some(size);
-                    changed = true;
-                }
-            }
-            if changed && let Err(e) = crate::settings::save(&s) {
-                log::warn!("could not remember the canvas view and window size: {e:#}");
-            }
-        }
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    /// Everything `window_event` does, run inside its guard. Returns
+    /// whether a frame is due, so the frame runs outside it — under its
+    /// own guard, in `redraw` — and one panic is never counted twice.
+    fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) -> bool {
         // Any keystroke that is not Escape means you are still working, so
         // the quit prompt goes away. Checked before the panel gets the
         // event, because the panel *consumes* most of the keys that would
@@ -2391,7 +2713,7 @@ impl ApplicationHandler for App {
             let window = Arc::clone(&state.window);
             if state.gui.on_window_event(&window, &event) && !matches!(event, WindowEvent::RedrawRequested) {
                 window.request_redraw();
-                return;
+                return false;
             }
         }
         match event {
@@ -2431,7 +2753,7 @@ impl ApplicationHandler for App {
                     if let Err(e) = crate::settings::save_fullscreen(false) {
                         log::warn!("could not remember the fullscreen choice: {e:#}");
                     }
-                    return;
+                    return false;
                 }
                 // Escape is not. It is one key, next to nothing, and it
                 // used to end the show on the first press — the only
@@ -2467,9 +2789,153 @@ impl ApplicationHandler for App {
             // would mean a new dependency that pulls GTK in on Linux, for
             // a modal window that is strictly more work to operate.
             WindowEvent::DroppedFile(path) => self.load_dropped(path),
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => return true,
             _ => {}
         }
+        false
+    }
+
+    /// Move to another input device, remembering the choice.
+    fn switch_audio_device(&mut self, want: Option<String>) {
+        // Reopen rather than rebuild: the band gains live in the settings
+        // the analysis thread shares, and rebuilding would reset the one
+        // thing the user tuned to their interface.
+        self.engine.audio.reopen(want.as_deref());
+        // Remember it, so plugging the same interface in tomorrow does not
+        // mean finding this menu again.
+        if let Err(e) = crate::settings::save_audio_device(want.as_deref()) {
+            log::warn!("could not remember the audio device: {e:#}");
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Parked is mid-rebuild after a lost device, not uninitialised: a
+        // second window would be the wrong answer.
+        if self.state.is_some() || self.parked.is_some() {
+            return;
+        }
+        match self.init(event_loop) {
+            Ok(state) => {
+                state.window.request_redraw();
+                self.state = Some(state);
+            }
+            Err(e) => {
+                log::error!("failed to initialize window/GPU: {e:#}");
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// Last write before the process goes.
+    ///
+    /// winit calls this on the way out however the loop was ended — the
+    /// window closed, Escape confirmed, the platform's own quit — so the
+    /// few seconds since the last autosave are not lost to whichever route
+    /// out the user happened to take.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // An update is staged and its installer is already waiting on
+        // this pid. Leaving through the normal door means `exiting` runs
+        // and the session is written out first.
+        if self.quit_for_update {
+            _event_loop.exit();
+            return;
+        }
+        // While the window cannot present, redraw events may stop coming
+        // at all — a miniaturised window gets none on some platforms — so
+        // the loop drives itself here, paced by the sleep in `redraw`.
+        // The moment presenting works again, `presentable` flips and the
+        // ordinary request_redraw cycle takes back over.
+        if !self.presentable && (self.state.is_some() || self.parked.is_some()) {
+            self.redraw();
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        let now = vizz_mod::library::session_bytes(&self.engine.modulation);
+        if now != self.saved_modulation
+            && let Err(e) = vizz_mod::library::save_session(&self.engine.modulation)
+        {
+            log::error!("could not save the modulation state on exit: {e:#}");
+        }
+        // The per-frame MIDI flush uses try_lock and can lose its last
+        // race to MIDI traffic — a binding learned in the final moments
+        // would vanish while its chip showed as bound. Exit is the one
+        // place a blocking lock costs nothing.
+        {
+            let midi = vizz_midi::lock(&self.midi_shared);
+            if midi.revision != self.saved_revision
+                && let Err(e) = vizz_midi::save_map(&self.opts.midi_map_path, &midi.map)
+            {
+                log::error!("could not save the MIDI map on exit: {e:#}");
+            }
+        }
+        // The canvas view is user state too, just cheap enough to keep in
+        // settings. Written only when it moved, like everything else here.
+        if let Some(state) = &self.state {
+            let mem: crate::settings::GraphCanvas = state.gui.graph_view_memory().into();
+            let mut s = crate::settings::load();
+            let mut changed = false;
+            if s.graph_view.as_ref() != Some(&mem) {
+                s.graph_view = Some(mem);
+                changed = true;
+            }
+            // The window's size, so it opens where it was dragged to. Not
+            // while fullscreen: that size is the monitor's, and it is
+            // remembered by the fullscreen flag instead.
+            if state.window.fullscreen().is_none() {
+                let size = state.window.inner_size().to_logical::<u32>(state.window.scale_factor());
+                let size = [size.width, size.height];
+                if size[0] >= MIN_WINDOW[0]
+                    && size[1] >= MIN_WINDOW[1]
+                    && s.window_size != Some(size)
+                {
+                    s.window_size = Some(size);
+                    changed = true;
+                }
+            }
+            if changed && let Err(e) = crate::settings::save(&s) {
+                log::warn!("could not remember the canvas view and window size: {e:#}");
+            }
+        }
+    }
+
+    /// A panic in any window event — a key, a resize, a dropped file —
+    /// is caught, and the event is dropped instead of the show. Only the
+    /// frame was guarded before, so everything else here still exited the
+    /// app mid-set. Handled the way a failing frame is: see
+    /// `carry_on_after_panic`.
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let what = event_name(&event);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.handle_window_event(event_loop, event)
+        }));
+        match caught {
+            Ok(draw) => {
+                self.event_failures = 0;
+                if draw {
+                    self.redraw();
+                }
+            }
+            Err(_) => {
+                self.event_failures = self.event_failures.saturating_add(1);
+                self.carry_on_after_panic(what, self.event_failures);
+            }
+        }
+    }
+}
+
+/// What a window event is, for the notice when handling one panics.
+fn event_name(event: &WindowEvent) -> &'static str {
+    match event {
+        WindowEvent::KeyboardInput { .. } => "a key press",
+        WindowEvent::Resized(_) => "a window resize",
+        WindowEvent::DroppedFile(_) => "a dropped file",
+        WindowEvent::MouseInput { .. }
+        | WindowEvent::CursorMoved { .. }
+        | WindowEvent::MouseWheel { .. } => "a mouse event",
+        _ => "a window event",
     }
 }
 
@@ -2500,7 +2966,7 @@ fn refresh_midi_view(midi: &Option<MidiEngine>, shared: &SharedMidi, view: &mut 
     if midi.is_none() {
         return;
     }
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     view.available = true;
     view.connected = state.connected.clone();
     view.map = state.map.clone();
@@ -2543,7 +3009,7 @@ fn publish_midi_surface(
         }
         bank
     }
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     state.surface = vizz_midi::feedback::Surface {
         scenes: bank(scenes),
         gravity: bank(gravity),
@@ -3357,7 +3823,7 @@ fn apply_grid_actions(
     // one is a dropped frame on stage. The revision bump is picked up by
     // the flush in `apply_panel_actions`, which runs later in the frame.
     if actions.learn.is_some() || actions.unlearn.is_some() {
-        if let Ok(mut state) = midi.try_lock() {
+        if let Some(mut state) = vizz_midi::try_lock(midi) {
             if let Some(target) = actions.learn {
                 state.learn_target = target.map(|slot| {
                     vizz_midi::LearnTarget::value(
@@ -3727,7 +4193,7 @@ fn follow_recall_bindings(
     }
     // `try_lock`, as every other touch of the map from this thread: the
     // render loop never waits on the MIDI thread.
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     let had = state.map.bindings.len();
     for v in &gone {
         state.map.unbind_value(PRESET_RECALL, *v);
@@ -3858,7 +4324,7 @@ fn apply_panel_actions(
     // `try_lock`, because this now runs every frame and the render thread
     // must never wait on the MIDI thread. A missed flush is picked up on
     // the next frame.
-    let Ok(mut state) = shared.try_lock() else { return };
+    let Some(mut state) = vizz_midi::try_lock(shared) else { return };
     if let Some(target) = actions.set_learn_target {
         state.learn_target = target;
     }
@@ -4084,6 +4550,39 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     }
     engine.adopt_column_sync(Arc::clone(&opts.columns));
 
+    // Recover first, report second. After a run that did not end cleanly,
+    // what was live comes back before the first frame — the look and the
+    // NDI feed; the show, pads, modulation, clouds and output size came
+    // back above as they do on every launch — and only then, on that
+    // first frame, is the person asked about a report.
+    if opts.previous.unclean {
+        match crate::recovery::load() {
+            Some(snap) => {
+                let applied = snap.apply(&params.registry);
+                let mut back = vec!["the show".to_string()];
+                back.push(match &snap.recalled {
+                    Some(name) => format!("the look ({name} and what was changed on it)"),
+                    None => "the look".to_string(),
+                });
+                if let Some(name) = snap.ndi.as_ref().filter(|_| !opts.outputs.ndi) {
+                    opts.outputs.ndi = true;
+                    opts.outputs.ndi_name = name.clone();
+                    back.push(format!("NDI '{name}'"));
+                }
+                log::info!("recovered after an unclean exit: {applied} parameters, {}", back.join(", "));
+                startup_notes.push((false, format!("vizz closed unexpectedly — {} are back", back.join(", "))));
+            }
+            None => startup_notes.push((
+                false,
+                "vizz closed unexpectedly — the show is back; no look had been saved to restore".into(),
+            )),
+        }
+    }
+    let crash_prompt = opts.reporter.as_ref().and_then(|r| {
+        let waiting = r.pending().len();
+        (opts.previous.unclean && !r.auto() && waiting > 0).then_some(waiting)
+    });
+
     // The licence, decided offline before the first frame: what this
     // session does about it is fixed here and only ever relaxed after.
     let licence = opts.licence.clone();
@@ -4107,6 +4606,7 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
     // frame, and daily after that.
     licence.start_heartbeat(std::time::Duration::from_secs(60));
     let opts_show_gui = opts.show_gui;
+    let opts_reporter = opts.reporter.clone();
     let mut app = App {
         engine,
         params,
@@ -4187,6 +4687,21 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         session,
         licence_revision: 0,
         licence_view: None,
+        help: Help {
+            reporter: opts_reporter,
+            prompt: crash_prompt,
+            message: None,
+            sent_revision: 0,
+            counts: (0, 0),
+            counts_at: None,
+        },
+        recovery_saved: Vec::new(),
+        recovery_checked: Instant::now(),
+        frame_failures: 0,
+        event_failures: 0,
+        device_lost: Default::default(),
+        parked: None,
+        video_spec: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

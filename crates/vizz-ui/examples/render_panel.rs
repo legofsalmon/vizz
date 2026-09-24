@@ -343,6 +343,11 @@ fn main() {
             recording: false,
         }),
         licence: Some(licence_view()),
+        help: Some(vizz_ui::help::HelpView {
+            version: env!("CARGO_PKG_VERSION").into(),
+            has_licence: true,
+            ..Default::default()
+        }),
         health: Some(health.snapshot()),
         outputs: vec![
             OutputStatus { name: "syphon:vizz".into(), live: true },

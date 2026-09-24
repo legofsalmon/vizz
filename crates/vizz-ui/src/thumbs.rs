@@ -64,6 +64,13 @@ pub fn texture(ui: &egui::Ui, name: &str, revision: u64) -> Option<egui::Texture
     slot
 }
 
+/// Drop every cached picture, so each is decoded and uploaded again the
+/// next time it is drawn. For a renderer that has been replaced: the
+/// handles cached here name textures only the old one had.
+pub fn forget(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_by_type::<Slot>());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +147,20 @@ mod tests {
             pass(&ctx, |ui| texture(ui, "peak", 1)).is_some(),
             "a bumped revision did not go back to the disk"
         );
+    }
+
+    /// After the GPU is replaced the cached handles name textures the new
+    /// renderer never had, so `forget` has to make the next draw go back
+    /// to the disk and upload a new texture.
+    #[test]
+    fn a_forgotten_picture_is_uploaded_again() {
+        let _guard = crate::project_bar::tests::scoped_config("thumb-cache-forget");
+        vizz_mod::thumb::save("tunnel", &a_picture()).expect("saving");
+        let ctx = egui::Context::default();
+        let first = pass(&ctx, |ui| texture(ui, "tunnel", 0)).expect("first look");
+        forget(&ctx);
+        let again = pass(&ctx, |ui| texture(ui, "tunnel", 0)).expect("looked again");
+        assert_ne!(first.id(), again.id(), "the picture kept the old renderer's texture");
     }
 
     /// Opening the desk on a full library must not decode all of it in

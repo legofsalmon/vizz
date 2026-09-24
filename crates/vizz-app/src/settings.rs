@@ -107,6 +107,17 @@ pub struct Settings {
     /// alive. A network stream is not remembered: its sender is another
     /// machine's business.
     pub simulation: Option<String>,
+    /// "Send crash reports automatically". Off until the person turns it
+    /// on — in help & feedback, or by ticking "Always send" when asked
+    /// after a crash. Off means nothing about a crash leaves the machine
+    /// without a Send pressed.
+    pub crash_reports_auto: bool,
+    /// A random id made once for this install, sent with reports so the
+    /// service can count how many installs a crash hits. Random rather
+    /// than derived from anything — the licence, the hardware, the user
+    /// name — so it says nothing about who or where. See
+    /// `vizz_report::new_install_id`.
+    pub install_id: Option<String>,
 }
 
 /// How a take is written. A mirror of the recorder's settings that can be
@@ -421,6 +432,29 @@ pub fn save_simulation(id: Option<&str>) -> Result<()> {
     save(&s)
 }
 
+/// Remember "Send crash reports automatically".
+pub fn save_crash_reports_auto(on: bool) -> Result<()> {
+    let mut s = load();
+    s.crash_reports_auto = on;
+    save(&s)
+}
+
+/// This install's random id, made and saved the first time it is asked
+/// for. `None` only if the OS will not supply randomness, in which case
+/// reports simply go without one.
+pub fn install_id() -> Option<String> {
+    let mut s = load();
+    if let Some(id) = s.install_id.clone().filter(|id| vizz_report::payload::valid_install(id)) {
+        return Some(id);
+    }
+    let id = vizz_report::new_install_id()?;
+    s.install_id = Some(id.clone());
+    if let Err(e) = save(&s) {
+        log::warn!("could not save the install id: {e:#}");
+    }
+    Some(id)
+}
+
 /// The first-launch card has done its job.
 pub fn save_welcomed() -> Result<()> {
     let mut s = load();
@@ -702,6 +736,33 @@ mod persistence_tests {
         assert!(!old.start_on_stage);
         assert_eq!(old.simulation, None);
         assert_eq!(RecordPrefs::default().quality, 92);
+    }
+}
+
+#[cfg(test)]
+mod report_settings_tests {
+    use super::*;
+
+    /// Crash reports are opt-in: a fresh install, and a settings file
+    /// from before the field existed, both say off. The install id is
+    /// made once and then stays put.
+    #[test]
+    fn crash_reports_start_off_and_the_install_id_is_stable() {
+        let (_guard, dir) = crate::test_env::scoped("settings-reports");
+        assert!(!load().crash_reports_auto);
+        std::fs::create_dir_all(path().parent().unwrap()).unwrap();
+        std::fs::write(path(), br#"{"palettes":[]}"#).unwrap();
+        assert!(!load().crash_reports_auto, "an old file must not opt anyone in");
+
+        let a = install_id().expect("an id");
+        let b = install_id().expect("an id");
+        assert_eq!(a, b, "the install id must be made once");
+        assert!(vizz_report::payload::valid_install(&a));
+        // And writing the setting keeps it.
+        save_crash_reports_auto(true).unwrap();
+        assert!(load().crash_reports_auto);
+        assert_eq!(load().install_id.as_deref(), Some(a.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

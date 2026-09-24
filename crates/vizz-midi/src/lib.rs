@@ -17,7 +17,7 @@ pub mod profile;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -206,6 +206,28 @@ impl MidiState {
 
 pub type SharedMidi = Arc<Mutex<MidiState>>;
 
+/// Lock the shared state, taking it back if a panic poisoned the lock.
+///
+/// Every lock of [`SharedMidi`] goes through this or [`try_lock`]. The
+/// state is plain data — the map, a learn target, port names, what is lit
+/// — and nothing in it is worse half-updated than lost. Treating a poison
+/// as "skip this" was worse: one caught panic while the lock was held,
+/// and learn, lights, the connected list and every binding stopped for
+/// the rest of the session, with nothing on screen to say why.
+pub fn lock(shared: &SharedMidi) -> MutexGuard<'_, MidiState> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// [`lock`] without waiting, for the render thread. `None` means another
+/// thread holds the lock right now — never that a panic poisoned it.
+pub fn try_lock(shared: &SharedMidi) -> Option<MutexGuard<'_, MidiState>> {
+    match shared.try_lock() {
+        Ok(state) => Some(state),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
 /// Running MIDI input. Dropping it disconnects and stops the thread.
 pub struct MidiEngine {
     shared: SharedMidi,
@@ -290,7 +312,7 @@ fn run(registry: Arc<ParamRegistry>, shared: SharedMidi, stop: Arc<AtomicBool>) 
 /// see [`profile::apply`].
 fn offer_profile(port_name: &str, shared: &SharedMidi) {
     let Some(profile) = profile::for_port(port_name) else { return };
-    let Ok(mut state) = shared.lock() else { return };
+    let mut state = lock(shared);
     if state.profiled.iter().any(|p| p == port_name) {
         return;
     }
@@ -323,10 +345,7 @@ fn run_out(shared: SharedMidi, stop: Arc<AtomicBool>) {
         }
         // One lock, one copy, then out of the way: the render thread
         // writes this every frame and must never wait on a port.
-        let wanted = match shared.lock() {
-            Ok(state) => state.surface,
-            Err(_) => return,
-        };
+        let wanted = lock(&shared).surface;
         for (name, conn, profile, lit) in &mut open {
             for msg in feedback::diff(lit, &wanted, profile) {
                 if let Err(e) = conn.send(&msg) {
@@ -417,9 +436,7 @@ fn scan_and_connect(
     // from *any* device — a drifting fader on a controller across the
     // room — silently takes the binding. Disarm instead; re-arming is
     // one click, un-learning a wrong control is a hunt.
-    if open.len() < before
-        && let Ok(mut state) = shared.lock()
-        && state.learn_target.take().is_some()
+    if open.len() < before && lock(shared).learn_target.take().is_some()
     {
         log::info!("MIDI learn cancelled — a device disconnected while it was armed");
     }
@@ -455,9 +472,7 @@ fn scan_and_connect(
         }
     }
 
-    if let Ok(mut state) = shared.lock() {
-        state.connected = open.iter().map(|(n, _)| n.clone()).collect();
-    }
+    lock(shared).connected = open.iter().map(|(n, _)| n.clone()).collect();
     Ok(())
 }
 
@@ -470,9 +485,9 @@ fn handle_message(
 ) {
     let Some(event) = message::parse(bytes) else { return };
 
-    // Poisoned mutex would mean a panic elsewhere; dropping the message is
-    // better than propagating the panic into the MIDI callback thread.
-    let Ok(mut state) = shared.lock() else { return };
+    // Through `lock`, which takes a poisoned lock back: dropping every
+    // message after one panic elsewhere silently ended MIDI control.
+    let mut state = lock(shared);
     // The realtime stream feeds the clock estimator and goes no further:
     // at 24 ticks a beat it must never arm a learn, land in last_source,
     // or reach the bindings.
@@ -735,6 +750,62 @@ mod tests {
         handle_message(&[0xB0, 7, 64], &reg, &shared, &mut d);
         let state = shared.lock().unwrap();
         assert!(state.learn_target.is_none(), "the real control did not bind");
+    }
+
+    /// Poison the lock the way the app would: a panic on another thread
+    /// while it holds the state, caught there.
+    fn poison(shared: &SharedMidi) {
+        let held = Arc::clone(shared);
+        let _ = std::thread::spawn(move || {
+            let _state = held.lock().unwrap();
+            panic!("deliberate: a panic while the MIDI state is locked");
+        })
+        .join();
+        assert!(shared.is_poisoned(), "the lock was not poisoned");
+    }
+
+    /// One panic while the lock was held used to end MIDI for the session:
+    /// every `if let Ok(..) = lock()` quietly skipped its work from then
+    /// on, so bound controls stopped moving anything and learn stopped
+    /// learning, with nothing said. The state is plain data, so the lock
+    /// is taken back instead.
+    #[test]
+    fn a_poisoned_lock_does_not_stop_midi() {
+        let reg = registry();
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        lock(&shared)
+            .map
+            .bind(Source::ControlChange { channel: 0, controller: 7 }, "/master/dim");
+        poison(&shared);
+        let mut d = Dispatcher::default();
+
+        handle_message(&[0xB0, 7, 0], &reg, &shared, &mut d);
+        assert_eq!(
+            reg.target(reg.id("/master/dim").unwrap()),
+            0.0,
+            "a bound control stopped moving its parameter after a poisoned lock"
+        );
+
+        lock(&shared).learn_target = Some(LearnTarget::param("/particles/hue"));
+        handle_message(&[0xB0, 21, 64], &reg, &shared, &mut d);
+        assert_eq!(
+            lock(&shared).map.param_for(&Source::ControlChange { channel: 0, controller: 21 }),
+            Some("/particles/hue"),
+            "learn stopped learning after a poisoned lock"
+        );
+    }
+
+    /// The render thread's side: a poisoned lock is not "busy". Only
+    /// another thread holding it is.
+    #[test]
+    fn try_lock_takes_a_poisoned_lock_back_and_waits_for_nobody() {
+        let shared: SharedMidi = Arc::new(Mutex::new(MidiState::default()));
+        poison(&shared);
+        assert!(try_lock(&shared).is_some(), "a poisoned lock read as busy forever");
+
+        let held = lock(&shared);
+        assert!(try_lock(&shared).is_none(), "try_lock waited for, or ignored, a held lock");
+        drop(held);
     }
 
     /// The whole path a real message takes, minus the hardware: parse ->

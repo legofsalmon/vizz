@@ -7,6 +7,7 @@
 //! and never introduces a synchronisation point.
 
 pub mod graph_view;
+pub mod help;
 pub mod notices;
 pub mod grid_view;
 pub mod panel;
@@ -421,6 +422,11 @@ pub struct Gui {
     macros: vizz_mod::perform::Macros,
     /// Slider working ranges, loaded once and saved when they change.
     ranges: vizz_mod::ranges::Ranges,
+    /// Ask the after-a-crash question, about this many waiting reports.
+    /// Set by the app once the show is restored; cleared when answered.
+    pub crash_prompt: Option<usize>,
+    /// The answer, taken by the app like `preset_key`.
+    pub crash_answer: Option<help::CrashAnswer>,
     /// On-screen notices — the channel runtime failures report through.
     notices: notices::Notices,
     history: Vec<f32>,
@@ -462,6 +468,8 @@ impl Gui {
             graph_view: graph_view::GraphView::default(),
             macros: vizz_mod::perform::Macros::load(),
             ranges: vizz_mod::ranges::Ranges::load(),
+            crash_prompt: None,
+            crash_answer: None,
             notices: notices::Notices::default(),
             history: Vec::with_capacity(HISTORY),
         }
@@ -497,6 +505,44 @@ impl Gui {
         } else {
             16.0 / 9.0
         };
+    }
+
+    /// Move the panel onto a new GPU device, after the old one was lost.
+    ///
+    /// Only the renderer belongs to the device. What the panel remembers —
+    /// open sections, typed text, notices, the canvas — is in the egui
+    /// context and carries over, which is the point of not building a new
+    /// `Gui`.
+    ///
+    /// egui uploads its font atlas once and then sends only changes, so a
+    /// new renderer is handed the whole atlas here or every glyph would
+    /// draw from a texture it does not have. The preset pictures are the
+    /// only other textures egui holds; they are forgotten, and decode and
+    /// upload again as their tiles are drawn. The master output is
+    /// re-registered by the caller through [`Gui::set_output_texture`].
+    pub fn replace_renderer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) {
+        self.renderer = renderer::EguiRenderer::new(device, target_format);
+        self.output_texture = None;
+        // Before the first pass there is no atlas yet, and the first pass
+        // sends all of it anyway.
+        if self.ctx.cumulative_pass_nr() > 0 {
+            let atlas = self.ctx.fonts(|f| f.image());
+            let delta = egui::TexturesDelta {
+                // The atlas's own options — see `TextureAtlas::texture_options`.
+                set: vec![(
+                    egui::TextureId::default(),
+                    egui::epaint::ImageDelta::full(atlas, egui::TextureOptions::LINEAR),
+                )],
+                free: Vec::new(),
+            };
+            self.renderer.update_textures(device, queue, &delta);
+        }
+        thumbs::forget(&self.ctx);
     }
 
     pub fn graph_view_memory(&self) -> graph_view::ViewMemory {
@@ -547,6 +593,7 @@ impl Gui {
             || self.performance
             || self.shortcuts_open
             || self.quit_armed
+            || self.crash_prompt.is_some()
             || !self.notices.is_empty()
     }
 
@@ -843,6 +890,14 @@ impl Gui {
         }
         if self.quit_armed {
             quit_prompt(&self.ctx);
+        }
+        // On every face and whether or not the panel is up: it is asked
+        // once, and a question nobody can see is a question never answered.
+        if let Some(count) = self.crash_prompt
+            && let Some(answer) = help::crash_prompt(&self.ctx, count)
+        {
+            self.crash_prompt = None;
+            self.crash_answer = Some(answer);
         }
         drop_hint(&self.ctx);
         self.notices.draw(&self.ctx);
@@ -1332,6 +1387,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1389,6 +1445,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1455,6 +1512,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: vec![OutputStatus { name: "syphon:vizz".into(), live: true }],
             frame_times_ms: vec![16.0, 17.0, 15.5],
@@ -1514,6 +1572,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1565,6 +1624,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1673,6 +1733,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1733,6 +1794,7 @@ mod tests {
             update_available: update,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: vec![],
             frame_times_ms: vec![],
@@ -1900,6 +1962,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -1955,6 +2018,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2039,6 +2103,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2100,6 +2165,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2171,6 +2237,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2240,6 +2307,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),
@@ -2404,6 +2472,7 @@ mod tests {
             update_available: None,
             update: None,
             licence: None,
+            help: None,
             health: None,
             outputs: Vec::new(),
             frame_times_ms: Vec::new(),

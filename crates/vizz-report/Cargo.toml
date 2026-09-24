@@ -1,0 +1,19 @@
+[package]
+name = "vizz-report"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Nothing new enters the build here. ureq is vizz-update's and
+# vizz-licence's, ring comes in under ureq's rustls and is vizz-licence's
+# direct dependency already, sysinfo is vizz-health's, and serde is
+# everyone's. ring supplies the two things std does not: a random install
+# id and a hash that is stable across Rust releases (std's DefaultHasher
+# is explicitly not), which the crash signature needs.
+[dependencies]
+ring = "0.17"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+sysinfo.workspace = true

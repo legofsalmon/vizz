@@ -20,6 +20,7 @@ vizz-audio.workspace = true
 vizz-ui.workspace = true
 vizz-update.workspace = true
 vizz-licence.workspace = true
+vizz-report.workspace = true
 
 anyhow.workspace = true
 log.workspace = true
