@@ -627,6 +627,49 @@ App Translocation (move it to Applications and it can update itself).
 
 Turn the check off entirely with `--no-update-check`.
 
+## After a crash
+
+A frame that panics is skipped: vizz notes it once in the panel and draws
+the next one, so a bad shader or a broken source costs a frame, not the
+show. What it cannot catch — a driver crash, the OS killing it, the power
+going — is noticed at the next launch, from a marker file that a clean exit
+removes.
+
+vizz saves the look that is playing (every value a preset holds, plus which
+preset was last recalled and whether NDI was on) to `recovery.json` in the
+config folder every five seconds. After an unclean exit the next launch puts
+that look back and turns NDI back on, on top of what every launch already
+restores (clouds, output size, audio device, modulation). After a clean exit the file is ignored.
+
+### Crash reports
+
+Nothing is sent without asking. After a crash vizz asks once — *Send a crash
+report to LeTissier Creative Studios?* — with a box for a note and a choice
+to always send. **Don't send** deletes the report. *Send crash reports
+automatically*, under **help & feedback** in the panel, is off unless you
+turn it on.
+
+A report carries: the product and version, the OS name, version and
+architecture, a random install id (not tied to the machine or the licence),
+the kind of crash, the panic message and backtrace with your home folder
+and user name replaced, a short signature for grouping, the time, and your
+note if you wrote one. It never carries shows, presets, media, sources,
+file names beyond the scrubbed backtrace, the licence key, an email or the
+machine id.
+
+Reports wait in `reports/pending` until you agree and `reports/outbox`
+until letissier.ie takes them, twenty at most in each; a failed send is
+tried again at the next launch. `LETISSIER_API` points them somewhere else
+for testing.
+
+## Feedback
+
+**help & feedback** in the panel sends a bug, an idea, a question or praise
+to LeTissier Creative Studios, with an email if you want a reply. Your licence
+key and permission to post it publicly (without your name or email) are
+each a separate box, both unticked. With no network it waits in the outbox and goes when
+there is one.
+
 ## Audio input
 
 ```sh
