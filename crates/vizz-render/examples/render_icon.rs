@@ -79,7 +79,7 @@ fn main() {
         cam_up: cam.up,
         defocus: camera.defocus,
         cam_position: cam.position,
-        _pad_cam: 0.0,
+        viewport_h: 0.0,
         // Fixed, so the icon is the same picture every time it is built.
         time: 7.5,
         aspect: 1.0,

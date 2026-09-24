@@ -57,7 +57,8 @@ pub struct Settings {
     /// Above 1 is supersampling: draw larger and let the downscale do the
     /// anti-aliasing, which is the one thing that reliably cleans up a
     /// field of one-pixel sprites. Below 1 buys frame rate on a machine
-    /// that cannot hold the budget. 1.0 renders at output size.
+    /// that cannot hold the budget. 1.0 renders at output size. `None`
+    /// means never chosen, and takes [`default_scale`] for the output.
     pub render_scale: Option<f32>,
     /// Sixteen-bit float master instead of eight-bit.
     ///
@@ -194,6 +195,24 @@ pub const MAX_SCALE: f32 = 2.0;
 /// multi-projector edge blend wants.
 pub const MAX_PIXELS: u64 = 8192 * 4320;
 
+/// Largest output that renders at 2× until told otherwise.
+pub const SUPERSAMPLE_UP_TO: u64 = 1920 * 1080;
+
+/// Render scale for an output nobody has chosen one for.
+///
+/// 2× up to 1080p, 1× above. The 2026-09-23 previz review measured 2×
+/// against a 4× reference: 43–68% less error and 50–74% less shimmer than
+/// 1× across the shipped looks, and it was the single largest quality
+/// step available. It was not the default because the room's one-pixel
+/// hardware lines lost half their light at 2×; they are drawn one output
+/// pixel wide now whatever the scale. Above 1080p the pixel count is
+/// already four times larger and output pixels are small enough that 2×
+/// is not worth sixteen times 1080p's fill, so bigger outputs stay at 1×
+/// unless the panel asks.
+pub fn default_scale([w, h]: [u32; 2]) -> f32 {
+    if w as u64 * h as u64 <= SUPERSAMPLE_UP_TO { 2.0 } else { 1.0 }
+}
+
 /// Bring a size inside every limit at once, proportionally.
 ///
 /// One factor, applied to both axes, rather than a clamp per axis. Clamping
@@ -230,13 +249,17 @@ impl Settings {
         fit(self.output_size.unwrap_or(fallback))
     }
 
-    pub fn scale(&self) -> f32 {
-        self.render_scale.unwrap_or(1.0).clamp(MIN_SCALE, MAX_SCALE)
+    /// Render scale for an output of this size: the one chosen in the
+    /// panel if there is one, otherwise [`default_scale`].
+    pub fn scale_for(&self, output: [u32; 2]) -> f32 {
+        self.render_scale
+            .unwrap_or_else(|| default_scale(output))
+            .clamp(MIN_SCALE, MAX_SCALE)
     }
 
     /// Internal render size for a given output size.
     pub fn render_size(&self, output: [u32; 2]) -> [u32; 2] {
-        let s = self.scale();
+        let s = self.scale_for(output);
         // Fitted after scaling, not before and not per axis. This is the
         // easier way to blow the budget and nobody types anything unusual
         // to do it: 2× on a 4K output is sixteen times the pixels of
@@ -563,15 +586,28 @@ mod tests {
         };
         let out = wild.output_or([1920, 1080]);
         assert_eq!(out, [MAX_DIM, MIN_DIM]);
-        assert_eq!(wild.scale(), MAX_SCALE);
+        assert_eq!(wild.scale_for(out), MAX_SCALE);
         let render = wild.render_size(out);
         assert!(render.iter().all(|d| (MIN_DIM..=MAX_DIM).contains(d)), "{render:?}");
 
-        // And an untouched settings file renders at exactly the size asked
-        // for, so this whole mechanism is invisible until used.
+        // And an untouched settings file gives the output asked for, and
+        // renders it at the default scale for that size.
         let plain = Settings::default();
         assert_eq!(plain.output_or([1920, 1080]), [1920, 1080]);
-        assert_eq!(plain.render_size([1920, 1080]), [1920, 1080]);
+        assert_eq!(plain.render_size([1920, 1080]), [3840, 2160]);
+        assert_eq!(plain.render_size([3840, 2160]), [3840, 2160]);
+    }
+
+    /// 2× up to 1080p, 1× above; a scale chosen in the panel always wins,
+    /// including 1× on a small output.
+    #[test]
+    fn small_outputs_supersample_unless_told_otherwise() {
+        assert_eq!(default_scale([1280, 720]), 2.0);
+        assert_eq!(default_scale([1920, 1080]), 2.0);
+        assert_eq!(default_scale([1920, 1200]), 1.0);
+        assert_eq!(default_scale([3840, 2160]), 1.0);
+        let chosen = Settings { render_scale: Some(1.0), ..Default::default() };
+        assert_eq!(chosen.scale_for([1280, 720]), 1.0);
     }
 
     /// The side limits constrain the sides; the cost is the area. A square

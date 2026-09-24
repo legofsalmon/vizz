@@ -72,8 +72,21 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             }
         }
     }
+    // Show what was asked for, as the windowed app does: the last cloud
+    // named, generated or read. Without this `--cloud gen:thomas` made
+    // the attractor and then rendered the default sphere.
+    if let Some(last) = opts.clouds.iter().rposition(|p| !p.as_os_str().is_empty())
+        && let Some(slot) = ParticleScene::loadable_slot(last)
+    {
+        params.show_cloud_slot(slot);
+    }
     let params_for_video = Arc::clone(&params);
     let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
+    // Start on the values that were set rather than gliding to them from
+    // the defaults. Nobody is watching the first frames of a headless run,
+    // and a short `--dump` otherwise catches the shape half way through
+    // morphing from the sphere into the cloud it was asked for.
+    engine.cut();
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
     let mut senders = outputs::Outputs::new(&ctx.device, &opts.outputs);
     let fixed_dt = Duration::from_nanos(16_666_667);
@@ -176,7 +189,8 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         }
         // Room next: it clears when nothing painted before it.
         if inputs.room_visible {
-            room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room, inputs.background,
+            room.render(&ctx, &mut encoder, &post.scene_view, &inputs.room, output.height,
+                inputs.background,
                 !vector_in_scene);
         }
         scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count,

@@ -44,7 +44,10 @@ pub struct Uniforms {
     pub cam_up: [f32; 3],
     pub defocus: f32,
     pub cam_position: [f32; 3],
-    pub _pad_cam: f32,
+    /// Target height in pixels, for the sprite footprint floor. Set by
+    /// [`ParticleScene::render`] from the target it draws into; whatever
+    /// the caller leaves here is overwritten.
+    pub viewport_h: f32,
     pub time: f32,
     pub aspect: f32,
     pub size: f32,
@@ -591,6 +594,9 @@ impl ParticleScene {
         // owns, not settings the parameter table could hold.
         uniforms.video[0] = if self.video.present { 1.0 } else { 0.0 };
         uniforms.video[1] = self.video.aspect();
+        // And the size of the target, for the footprint floor: a fact
+        // about where this pass draws, which only this call knows.
+        uniforms.viewport_h = target.texture().height() as f32;
         ctx.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
@@ -692,7 +698,7 @@ mod tests {
             cam_up: cam.up,
             defocus: 0.0,
             cam_position: cam.position,
-            _pad_cam: 0.0,
+            viewport_h: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,
@@ -849,7 +855,7 @@ mod tests {
             cam_up: cu.up,
             defocus: 0.0,
             cam_position: cu.position,
-            _pad_cam: 0.0,
+            viewport_h: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,
@@ -915,7 +921,7 @@ mod tests {
             cam_up: cu.up,
             defocus: 0.0,
             cam_position: cu.position,
-            _pad_cam: 0.0,
+            viewport_h: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,
@@ -962,6 +968,140 @@ mod tests {
             "a lamp at the origin did not brighten anything: {unlit:.2} → {lamped:.2}"
         );
     }
+
+    /// Linear luminance of every pixel of one frame, drawn into the
+    /// scene's float format so dim sub-pixel sprites are not rounded away.
+    fn frame_f16(ctx: &GpuContext, scene: &ParticleScene, u: &Uniforms) -> Vec<f32> {
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("footprint-test-target"),
+            size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::SCENE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        // 128 px × 8 bytes is already a multiple of 256.
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("footprint-test-readback"),
+            size: (W * W * 8) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        scene.render(ctx, &mut encoder, &view, u, 20_000, true, wgpu::Color::BLACK);
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 8),
+                    rows_per_image: Some(W),
+                },
+            },
+            texture.size(),
+        );
+        ctx.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = slice.get_mapped_range().unwrap().to_vec();
+        let half = |o: usize| {
+            let h = u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+            let exp = ((h >> 10) & 0x1f) as i32;
+            let frac = (h & 0x3ff) as f32;
+            match exp {
+                0 => frac * 2f32.powi(-24),
+                _ => (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+            }
+        };
+        (0..(W * W) as usize)
+            .map(|i| (half(i * 8) + half(i * 8 + 2) + half(i * 8 + 4)) / 3.0)
+            .collect()
+    }
+
+    fn small_sprites(size: f32, time: f32) -> Uniforms {
+        let cu = crate::camera::Camera { aspect: 1.0, ..Default::default() }.uniforms();
+        Uniforms {
+            view_proj: cu.view_proj,
+            cam_right: cu.right,
+            focus: 3.5,
+            cam_up: cu.up,
+            defocus: 0.0,
+            cam_position: cu.position,
+            viewport_h: 0.0,
+            time,
+            aspect: 1.0,
+            size,
+            spread: 1.0,
+            hue: 0.5,
+            saturation: 0.0,
+            brightness: 0.2,
+            shape: 0.0,
+            morph: 0.0,
+            twist: 0.0,
+            palette: 0.0,
+            color_spread: 0.0,
+            color_drive: 0.0,
+            cloud_a: 0.0,
+            cloud_b: 1.0,
+            cloud_morph: 0.0,
+            room: Default::default(),
+            lamp: Uniforms::UNLIT.lamp,
+            lamp_tint: Uniforms::UNLIT.lamp_tint,
+            light: Uniforms::UNLIT.light,
+            sun_dir: Uniforms::UNLIT.sun_dir,
+            sun_tint: Uniforms::UNLIT.sun_tint,
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
+            video: [0.0, 1.0, 0.0, 0.0],
+        }
+    }
+
+    /// Sprites below a pixel are widened and dimmed, not dropped: the
+    /// light a sprite carries is its area whatever size it is drawn, so
+    /// halving the size quarters the light, below the floor as above it.
+    #[test]
+    fn a_sub_pixel_sprite_keeps_its_light() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let total = |size: f32| frame_f16(&ctx, &scene, &small_sprites(size, 0.0)).iter().sum::<f32>();
+        // At 128 px these are roughly a third and a sixth of a pixel.
+        let (big, small) = (total(0.004), total(0.002));
+        let ratio = small / big;
+        assert!(
+            (0.22..0.28).contains(&ratio),
+            "halving a sub-pixel sprite should quarter its light, got {ratio:.3}"
+        );
+    }
+
+    /// And the point of the floor: a field of sub-pixel sprites does not
+    /// shimmer as it moves.
+    ///
+    /// Without it each sprite is point-sampled — it lands on a pixel
+    /// centre or it does not — so a small movement turns whole pixels on
+    /// and off. Measured as the share of the frame's light that changes
+    /// between two frames a fiftieth of a second apart: 134% without the
+    /// floor (light both appearing and vanishing), 4% with it, on lavapipe.
+    #[test]
+    fn sub_pixel_sprites_do_not_shimmer() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let a = frame_f16(&ctx, &scene, &small_sprites(0.003, 0.0));
+        let b = frame_f16(&ctx, &scene, &small_sprites(0.003, 0.02));
+        let changed: f32 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
+        let total: f32 = a.iter().sum();
+        let shimmer = changed / total;
+        assert!(shimmer < SHIMMER_LIMIT, "{:.0}% of the light flickers", shimmer * 100.0);
+    }
+    const SHIMMER_LIMIT: f32 = 0.2;
 
     /// A stream frame must not pay for normal estimation.
     ///
@@ -1403,7 +1543,7 @@ mod tests {
             cam_up: cam.up,
             defocus: 0.0,
             cam_position: cam.position,
-            _pad_cam: 0.0,
+            viewport_h: 0.0,
             time: 0.0,
             aspect: 1.0,
             size: 0.02,

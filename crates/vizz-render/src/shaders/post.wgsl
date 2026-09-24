@@ -16,9 +16,11 @@ struct Post {
     flash: f32,   // punch: mix toward white, 0..1
     invert: f32,  // punch: invert after the shoulder, 0..1
     black: f32,   // punch: darken rgb (alpha untouched), 0..1
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    downsample: f32,  // 1 = scene is 1–2× the output; filter it down
+    // One output pixel, in uv. Two scalars rather than a vec2, which
+    // would align to 8 bytes and leave a hole the Rust side does not have.
+    out_texel_x: f32,
+    out_texel_y: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Post;
@@ -102,7 +104,21 @@ fn fold(uv: vec2<f32>, mode: f32, aspect: f32) -> vec2<f32> {
 @fragment
 fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     let uv = fold(in.uv, u.mirror, u.aspect);
-    let sampled = textureSample(t_scene, samp, uv);
+    var sampled = textureSample(t_scene, samp, uv);
+    // Between 1× and 2× the single tap above reads only the 2×2 texels
+    // at the pixel centre, and the output pixel covers more than that.
+    // Four taps a quarter of an output pixel from the centre cover the
+    // whole footprint. Not taken at 1× or exactly 2×, where one tap is
+    // already exact, so those stay the picture they always were.
+    if (u.downsample > 0.5) {
+        let q = 0.25 * vec2<f32>(u.out_texel_x, u.out_texel_y);
+        sampled = 0.25 * (
+            textureSample(t_scene, samp, fold(in.uv + vec2<f32>(-q.x, -q.y), u.mirror, u.aspect)) +
+            textureSample(t_scene, samp, fold(in.uv + vec2<f32>( q.x, -q.y), u.mirror, u.aspect)) +
+            textureSample(t_scene, samp, fold(in.uv + vec2<f32>(-q.x,  q.y), u.mirror, u.aspect)) +
+            textureSample(t_scene, samp, fold(in.uv + vec2<f32>( q.x,  q.y), u.mirror, u.aspect))
+        );
+    }
     var color = sampled.rgb;
     var alpha = sampled.a;
 

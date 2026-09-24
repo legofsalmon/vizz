@@ -364,6 +364,18 @@ pub const MAX_DECKS: f32 = vizz_mod::deck::MAX_DECKS as f32;
 pub const MAX_BLEND: f32 = vizz_mod::scene::MAX_DURATION;
 
 impl AppParams {
+    /// Point the shape at a cloud slot: the cloud pair, with `slot` as A
+    /// and no morph towards B.
+    ///
+    /// Loading a cloud fills a slot and nothing more, so without this a
+    /// `--cloud` on the command line opens on the default sphere with the
+    /// cloud sitting unseen in its slot.
+    pub fn show_cloud_slot(&self, slot: usize) {
+        self.registry.set(self.cloud_a, slot as f32);
+        self.registry.set(self.cloud_morph, 0.0);
+        self.registry.set(self.shape, SHAPE_CLOUD_PAIR);
+    }
+
     pub fn build() -> Self {
         let mut b = ParamRegistry::builder();
         let count =
