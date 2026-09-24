@@ -352,9 +352,34 @@ impl Licence {
             .clone()
             .ok_or_else(|| net::Failure::Protocol("no licence key is stored on this machine".into()))?;
         let caller = self.caller().map_err(net::Failure::Protocol)?;
-        let issued = caller.heartbeat(&key)?;
+        let issued = match caller.heartbeat(&key) {
+            Ok(issued) => issued,
+            Err(refusal) if refusal.reason() == Some("revoked") => {
+                self.revoke()?;
+                return Err(refusal);
+            }
+            Err(other) => return Err(other),
+        };
         self.persist(issued, None).map_err(net::Failure::Protocol)?;
         Ok(format!("checked in — {}", self.verdict().status.as_str()))
+    }
+
+    /// The service says this licence was revoked — a full refund ends
+    /// it. Forget the token, so this copy decides as unlicensed from here
+    /// on, but keep the key: if the licence is reinstated, the next
+    /// check-in brings a fresh token back with no one re-typing anything.
+    ///
+    /// Only `revoked` does this. Every other refusal, and every network
+    /// failure, keeps the cached token exactly as it was. And like every
+    /// other change of verdict it restricts nothing in a session already
+    /// running — [`Session`] only relaxes — so it bites at the next launch.
+    fn revoke(&self) -> Result<(), net::Failure> {
+        let mut stored = self.lock().stored.clone();
+        stored.token = None;
+        store::save(&self.inner.cfg.dir, &stored).map_err(net::Failure::Protocol)?;
+        self.refresh(stored);
+        log::warn!("licence: the service revoked this licence; its token is forgotten, the key kept");
+        Ok(())
     }
 
     /// Offline activation: a token the owner fetched from the account page

@@ -310,3 +310,79 @@ fn a_pressed_button_runs_off_thread_and_reports_back() {
     };
     assert_eq!(snap.message, Some(Message { text: "No licence has that key.".into(), error: true }));
 }
+
+/// A full refund ends the licence: a check-in the service answers with
+/// `revoked` forgets the token and keeps the key, so this copy is
+/// unlicensed from the next launch — and a reinstated licence comes back
+/// with the next check-in, on the same key.
+#[test]
+fn a_revoked_licence_forgets_its_token_and_keeps_its_key() {
+    let msg = "This licence was refunded and is no longer valid.";
+    let stub = Arc::new(Stub::answering(vec![
+        refused(403, "revoked", msg),
+        ok(json!({
+            "ok": true, "token": token("valid"), "machine": HASH,
+            "checkInBy": "2025-12-08T00:00:00.000Z", "maintenanceUntil": "2026-10-09T00:00:00.000Z"
+        })),
+    ]));
+    let cfg = config("revoked", Arc::clone(&stub));
+    let dir = cfg.dir.clone();
+    store::save(&dir, &store::Stored { key: Some(KEY.into()), token: Some(token("valid")) }).unwrap();
+    let l = Licence::open(cfg);
+    assert_eq!(l.verdict().status, Status::Active);
+    let before = l.revision();
+
+    let err = l.check_in_now().unwrap_err();
+    assert_eq!(err.reason(), Some("revoked"));
+    assert_eq!(err.to_string(), msg, "the service's own words");
+    assert_eq!(
+        store::load(&dir),
+        store::Stored { key: Some(KEY.into()), token: None },
+        "the token must go and the key must stay"
+    );
+    assert_eq!(l.verdict().status, Status::Invalid);
+    assert!(l.revision() > before, "the render loop would not notice");
+    assert_eq!(l.restriction(Policy::Lock), Restriction::Lock);
+    // And a fresh start decides the same way.
+    assert_eq!(Licence::open(config_at(&dir)).verdict().status, Status::Invalid);
+
+    // Reinstated: the key still checks in, and the licence comes back.
+    assert!(l.wants_check_in(), "a revoked copy stopped checking in, so it can never be reinstated");
+    l.check_in_now().unwrap();
+    assert_eq!(l.verdict().status, Status::Active);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Only `revoked` ends a licence. Every other refusal, and a server
+/// error, keeps the cached token exactly as it was.
+#[test]
+fn any_other_refusal_keeps_the_token() {
+    for (status, reason) in [
+        (404, "not_activated"),
+        (404, "unknown_key"),
+        (403, "expired"),
+        (409, "wrong_product"),
+        (500, "server_error"),
+    ] {
+        let stub = Arc::new(Stub::answering(vec![refused(status, reason, "no")]));
+        let cfg = config(&format!("keep-{reason}"), stub);
+        let dir = cfg.dir.clone();
+        let stored = store::Stored { key: Some(KEY.into()), token: Some(token("valid")) };
+        store::save(&dir, &stored).unwrap();
+        let l = Licence::open(cfg);
+        assert_eq!(l.check_in_now().unwrap_err().reason(), Some(reason));
+        assert_eq!(store::load(&dir), stored, "{reason} changed the stored licence");
+        assert_eq!(l.verdict().status, Status::Active, "{reason}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    // And a 500 that is not even JSON.
+    let stub = Arc::new(Stub::answering(vec![Ok((500, "Internal Server Error".into()))]));
+    let cfg = config("keep-500", stub);
+    let dir = cfg.dir.clone();
+    let stored = store::Stored { key: Some(KEY.into()), token: Some(token("valid")) };
+    store::save(&dir, &stored).unwrap();
+    let l = Licence::open(cfg);
+    assert!(matches!(l.check_in_now(), Err(net::Failure::Protocol(_))));
+    assert_eq!(store::load(&dir), stored);
+    let _ = std::fs::remove_dir_all(dir);
+}
