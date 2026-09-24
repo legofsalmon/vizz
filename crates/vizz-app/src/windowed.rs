@@ -101,6 +101,23 @@ struct RenderState {
     watermark: Option<vizz_render::watermark::Watermark>,
 }
 
+/// The master as it is built: output size, render size, and whether it
+/// is the wide format.
+#[derive(Clone, Copy)]
+struct Master {
+    size: [u32; 2],
+    render: [u32; 2],
+    wide: bool,
+}
+
+/// What outlives a lost GPU device while the renderer is rebuilt.
+struct Parked {
+    window: Arc<Window>,
+    /// `None` only after an attempt that panicked part-way.
+    gui: Option<Gui>,
+    master: Master,
+}
+
 struct App {
     engine: FrameEngine,
     opts: WindowedOpts,
@@ -268,6 +285,14 @@ struct App {
     recovery_checked: Instant,
     /// Frames in a row that panicked and were skipped. See `redraw`.
     frame_failures: u32,
+    /// Whether the GPU device has been lost, and when to try rebuilding.
+    device_lost: crate::devicelost::DeviceRecovery,
+    /// The window and the panel, while the renderer is being rebuilt on a
+    /// new device and `state` is empty.
+    parked: Option<Parked>,
+    /// What the live video input was opened from, for reopening it on a
+    /// new device.
+    video_spec: Option<String>,
 }
 
 /// The app's side of help & feedback.
@@ -486,10 +511,107 @@ impl App {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
+        let (ctx, surface, config) = self.open_gpu(&window)?;
 
+        // Render size and output size are separate things.
+        //
+        // The output is what receivers get and what the aspect is judged
+        // against. The render size is how large the scene and the post
+        // chain actually work, and above 1× the downscale into the master
+        // is free anti-aliasing — which is the only thing that reliably
+        // cleans up a field of one-pixel sprites. Below 1× it buys frame
+        // rate on a machine that cannot hold the budget.
+        let s = crate::settings::load();
+        // An explicit --width/--height wins for this launch: the scripted
+        // venue start must not be overridden by whatever was clicked on a
+        // laptop last week. Without the flags, the remembered size wins.
+        let [ow, oh] = if self.opts.size_from_cli {
+            crate::settings::fit([self.opts.width, self.opts.height])
+        } else {
+            s.output_or([self.opts.width, self.opts.height])
+        };
+        let [rw, rh] = s.render_size([ow, oh]);
+        log::info!(
+            "output {ow}x{oh} ({}), rendering at {rw}x{rh} ({:.2}x)",
+            if s.wide_output { "16-bit float" } else { "8-bit" },
+            s.scale_for([ow, oh])
+        );
+        // What the panel shows, and what a later output change starts
+        // from: the scale actually in use, which for a settings file that
+        // never chose one depends on the output size.
+        self.render_scale = s.scale_for([ow, oh]);
+        let master = Master { size: [ow, oh], render: [rw, rh], wide: s.wide_output };
+
+        // A stream that will not start is a warning, never a startup
+        // failure — the same trade as a cloud file that will not parse.
+        if let Some(spec) = self.opts.video_source.clone() {
+            match crate::videoin::open(&spec, Some(&ctx.device)) {
+                Ok(v) => {
+                    log::info!("video input: {}", v.label());
+                    self.video = Some(v);
+                    self.video_spec = Some(spec);
+                }
+                // Degraded, not fatal, for the same reason a malformed
+                // cloud is: arriving at a venue to find the app will not
+                // open because a camera is unplugged is the wrong trade.
+                Err(e) => log::warn!("could not open the video input: {e:#}"),
+            }
+        }
+        // A remembered simulation comes back unless the command line
+        // named a stream: the stream is the explicit ask.
+        let live_source = self.opts.live_cloud.clone().or_else(|| {
+            crate::settings::load()
+                .simulation
+                .map(vizz_render::plystream::Source::Simulate)
+        });
+        if let Some(source) = live_source {
+            match vizz_render::plystream::LiveCloud::start(source) {
+                Ok(live) => {
+                    log::info!("live cloud: {}", live.label());
+                    self.live = Some(live);
+                }
+                Err(e) => log::warn!("could not start the live cloud: {e:#}"),
+            }
+        }
+
+        let gui = self.fresh_gui(&window, &ctx.device, config.format);
+        let state = self.build_render_state(window, ctx, surface, config, gui, master);
+        // Show what was asked for. `load_clouds` fills slots and nothing
+        // more, so without this `vizz --cloud scan.ply` opened on the
+        // default sphere with the scan sitting unseen in a slot.
+        if self.opts.clouds_from_cli
+            && let Some(last) = self
+                .opts
+                .clouds
+                .iter()
+                .rposition(|p| !p.as_os_str().is_empty())
+            && let Some(slot) = ParticleScene::loadable_slot(last)
+        {
+            Self::show_cloud_slot(&self.params, slot);
+        }
+        // An output asked for that did not come up is said on screen,
+        // once, with its reason. The slot keeps retrying; until now the
+        // only record was a log line, and the first sign in the room was
+        // a receiver with nothing in it.
+        for (name, why) in state.outputs.failures() {
+            self.startup_notes.push((
+                true,
+                format!("output '{name}' did not start — {why}; retrying in the background"),
+            ));
+        }
+        Ok(state)
+    }
+
+    /// An instance, an adapter that can present to `window`, a device and
+    /// a configured surface: the part of bringing the renderer up that can
+    /// fail. At launch and again after a lost device.
+    fn open_gpu(
+        &self,
+        window: &Arc<Window>,
+    ) -> Result<(GpuContext, wgpu::Surface<'static>, wgpu::SurfaceConfiguration)> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = instance.create_surface(window.clone())?;
+        let surface = instance.create_surface(Arc::clone(window))?;
         let ctx = pollster::block_on(async {
             // Reuse the instance the surface came from.
             let adapter = instance
@@ -524,13 +646,21 @@ impl App {
             // default handler — and a lost device dies silently.
             // A lost device is also a crash worth knowing about, by the
             // same consent rules as a panic — but not the ordinary
-            // `Destroyed` every device reports on its way out.
+            // `Destroyed` every device reports on its way out, which
+            // includes each one a rebuild replaces.
+            //
+            // And it is rebuilt from: the flag is what `redraw` checks.
+            // See `crate::devicelost`.
             let lost_reporter = self.help.reporter.clone();
+            let lost_flag = self.device_lost.flag();
             device.set_device_lost_callback(move |reason, msg| {
-                log::error!("GPU device lost ({reason:?}): {msg}");
-                if reason != wgpu::DeviceLostReason::Destroyed
-                    && let Some(reporter) = &lost_reporter
-                {
+                if !crate::devicelost::needs_rebuild(reason) {
+                    log::debug!("GPU device released ({reason:?}): {msg}");
+                    return;
+                }
+                log::error!("GPU device lost ({reason:?}): {msg} — rebuilding");
+                lost_flag.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(reporter) = &lost_reporter {
                     reporter.record(
                         vizz_report::CrashKind::Gpu,
                         vizz_report::payload::Raw {
@@ -560,39 +690,44 @@ impl App {
         // Fifo = vsync: never tear on the output projector.
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&ctx.device, &config);
+        Ok((ctx, surface, config))
+    }
 
-        // Render size and output size are separate things.
-        //
-        // The output is what receivers get and what the aspect is judged
-        // against. The render size is how large the scene and the post
-        // chain actually work, and above 1× the downscale into the master
-        // is free anti-aliasing — which is the only thing that reliably
-        // cleans up a field of one-pixel sprites. Below 1× it buys frame
-        // rate on a machine that cannot hold the budget.
-        let s = crate::settings::load();
-        // An explicit --width/--height wins for this launch: the scripted
-        // venue start must not be overridden by whatever was clicked on a
-        // laptop last week. Without the flags, the remembered size wins.
-        let [ow, oh] = if self.opts.size_from_cli {
-            crate::settings::fit([self.opts.width, self.opts.height])
-        } else {
-            s.output_or([self.opts.width, self.opts.height])
-        };
-        let [rw, rh] = s.render_size([ow, oh]);
-        let master_format = if s.wide_output {
+    /// A panel as a launch opens it.
+    fn fresh_gui(&self, window: &Window, device: &wgpu::Device, format: wgpu::TextureFormat) -> Gui {
+        let mut gui = Gui::new(window, device, format);
+        gui.visible = self.opts.show_gui;
+        // The canvas comes back where it was left — pan, zoom, patch
+        // name — instead of at the origin with the name field blank.
+        if let Some(canvas) = crate::settings::load().graph_view {
+            gui.restore_graph_view(canvas.into());
+        }
+        gui
+    }
+
+    /// Everything that draws, built on a device `open_gpu` brought up:
+    /// the master and the passes into it, the scene with its cloud slots
+    /// and palettes as the app lists them, and the senders.
+    ///
+    /// Nothing here fails — a cloud or a palette that will not load, or
+    /// an output that will not start, is a warning — which is what lets a
+    /// lost device be rebuilt without a half-built state to unwind.
+    fn build_render_state(
+        &mut self,
+        window: Arc<Window>,
+        ctx: GpuContext,
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+        mut gui: Gui,
+        master: Master,
+    ) -> RenderState {
+        let [ow, oh] = master.size;
+        let [rw, rh] = master.render;
+        let master_format = if master.wide {
             vizz_render::output::WIDE_FORMAT
         } else {
             vizz_render::output::OUTPUT_FORMAT
         };
-        log::info!(
-            "output {ow}x{oh} ({}), rendering at {rw}x{rh} ({:.2}x)",
-            if s.wide_output { "16-bit float" } else { "8-bit" },
-            s.scale_for([ow, oh])
-        );
-        // What the panel shows, and what a later output change starts
-        // from: the scale actually in use, which for a settings file that
-        // never chose one depends on the output size.
-        self.render_scale = s.scale_for([ow, oh]);
         let output = OutputTarget::with_format(&ctx.device, ow, oh, master_format);
         let post = PostChain::new(&ctx, rw, rh, master_format);
         // The scene draws into the post chain's HDR buffer, not straight
@@ -600,20 +735,20 @@ impl App {
         let vector = vizz_render::vector::VectorScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let vector_print = vizz_render::vector::VectorScene::new(&ctx, master_format);
         let mut scene = ParticleScene::new(&ctx, vizz_render::post::SCENE_FORMAT);
-        scene.load_clouds(&ctx, &self.opts.clouds);
-        // Show what was asked for. `load_clouds` fills slots and nothing
-        // more, so without this `vizz --cloud scan.ply` opened on the
-        // default sphere with the scan sitting unseen in a slot.
-        if self.opts.clouds_from_cli
-            && let Some(last) = self
-                .opts
-                .clouds
-                .iter()
-                .rposition(|p| !p.as_os_str().is_empty())
-            && let Some(slot) = ParticleScene::loadable_slot(last)
-        {
-            Self::show_cloud_slot(&self.params, slot);
-        }
+        // The slots as listed. Text and generated entries hold their
+        // place as holes for the file loader and are re-made below.
+        let files: Vec<std::path::PathBuf> = self
+            .clouds
+            .iter()
+            .map(|p| {
+                if p.starts_with("text:") || p.starts_with("gen:") {
+                    std::path::PathBuf::new()
+                } else {
+                    std::path::PathBuf::from(p)
+                }
+            })
+            .collect();
+        scene.load_clouds(&ctx, &files);
         // Typed clouds restore by re-rasterizing — deterministic, so the
         // slot shows exactly what was on screen when it was saved. Their
         // saved entries are `text:WORD` pseudo-paths; the file loader
@@ -658,36 +793,6 @@ impl App {
                 scene.skip_palette_row();
             }
         }
-        // A stream that will not start is a warning, never a startup
-        // failure — the same trade as a cloud file that will not parse.
-        if let Some(spec) = self.opts.video_source.clone() {
-            match crate::videoin::open(&spec, Some(&ctx.device)) {
-                Ok(v) => {
-                    log::info!("video input: {}", v.label());
-                    self.video = Some(v);
-                }
-                // Degraded, not fatal, for the same reason a malformed
-                // cloud is: arriving at a venue to find the app will not
-                // open because a camera is unplugged is the wrong trade.
-                Err(e) => log::warn!("could not open the video input: {e:#}"),
-            }
-        }
-        // A remembered simulation comes back unless the command line
-        // named a stream: the stream is the explicit ask.
-        let live_source = self.opts.live_cloud.clone().or_else(|| {
-            crate::settings::load()
-                .simulation
-                .map(vizz_render::plystream::Source::Simulate)
-        });
-        if let Some(source) = live_source {
-            match vizz_render::plystream::LiveCloud::start(source) {
-                Ok(live) => {
-                    log::info!("live cloud: {}", live.label());
-                    self.live = Some(live);
-                }
-                Err(e) => log::warn!("could not start the live cloud: {e:#}"),
-            }
-        }
         let room = vizz_render::room::Room::new(&ctx, vizz_render::post::SCENE_FORMAT);
         let blit = BlitPass::new(&ctx.device, config.format);
         let blit_bind = blit.bind(&ctx.device, &output.view);
@@ -711,29 +816,12 @@ impl App {
         self.opts.outputs.width = ow;
         self.opts.outputs.height = oh;
         let senders = outputs::Outputs::new(&ctx.device, &self.opts.outputs);
-        // An output asked for that did not come up is said on screen,
-        // once, with its reason. The slot keeps retrying; until now the
-        // only record was a log line, and the first sign in the room was
-        // a receiver with nothing in it.
-        for (name, why) in senders.failures() {
-            self.startup_notes.push((
-                true,
-                format!("output '{name}' did not start — {why}; retrying in the background"),
-            ));
-        }
         // The title is the one place a performer checks what is going out.
         window.set_title(&format!("{} — {ow}x{oh}", self.opts.title));
-        let mut gui = Gui::new(&window, &ctx.device, config.format);
         // The performance layout draws the master output rather than
         // leaving a hole in its scrim to see it through, so hand it the
         // texture up front. Re-pointed on every resize.
         gui.set_output_texture(&ctx.device, &output.view, ow, oh);
-        gui.visible = self.opts.show_gui;
-        // The canvas comes back where it was left — pan, zoom, patch
-        // name — instead of at the origin with the name field blank.
-        if let Some(canvas) = crate::settings::load().graph_view {
-            gui.restore_graph_view(canvas.into());
-        }
 
         let watermark = self.session.marked().then(|| {
             vizz_render::watermark::Watermark::new(
@@ -746,7 +834,7 @@ impl App {
             )
         });
 
-        Ok(RenderState {
+        RenderState {
             window,
             surface,
             vector,
@@ -764,7 +852,114 @@ impl App {
             publish,
             publish_blit,
             watermark,
-        })
+        }
+    }
+
+    /// Bring the renderer back on a new device after the old one was lost.
+    ///
+    /// [`crate::devicelost`] decides when, and how far apart the attempts
+    /// are. The window and the panel are kept. Everything else belonged
+    /// to the dead device and is dropped before anything new is built —
+    /// the senders among it, so the new Syphon server and NDI source can
+    /// take the same names. It is then built again from what the app
+    /// already holds: the output size, scale and format as they were, the
+    /// cloud slots and palettes as listed. The look needs nothing: it
+    /// lives in the parameters, which never touched the GPU.
+    fn recover_gpu(&mut self, attempt: u32) {
+        if let Some(old) = self.state.take() {
+            let master = Master {
+                size: [old.output.width, old.output.height],
+                render: crate::settings::fit([
+                    (old.output.width as f32 * self.render_scale) as u32,
+                    (old.output.height as f32 * self.render_scale) as u32,
+                ]),
+                wide: old.output.format == vizz_render::output::WIDE_FORMAT,
+            };
+            let RenderState { window, mut gui, .. } = old;
+            // Both hold readbacks on the dead device, which will never
+            // complete.
+            if self.recorder.take().is_some() {
+                self.params.registry.set(self.params.record_active, 0.0);
+                gui.notify_error("recording stopped — the GPU was lost");
+            }
+            self.thumbs = Default::default();
+            self.parked = Some(Parked { window, gui: Some(gui), master });
+        }
+        let Some(parked) = &self.parked else { return };
+        let window = Arc::clone(&parked.window);
+        let master = parked.master;
+        log::warn!("rebuilding the renderer on a new GPU device (attempt {attempt})");
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<RenderState> {
+            let (ctx, surface, config) = self.open_gpu(&window)?;
+            let gui = match self.parked.as_mut().and_then(|p| p.gui.take()) {
+                Some(mut gui) => {
+                    gui.replace_renderer(&ctx.device, &ctx.queue, config.format);
+                    gui
+                }
+                // Only after an attempt that panicked part-way: the
+                // panel's state went with it.
+                None => self.fresh_gui(&window, &ctx.device, config.format),
+            };
+            Ok(self.build_render_state(Arc::clone(&window), ctx, surface, config, gui, master))
+        }));
+        let why = match built {
+            Ok(Ok(mut state)) => {
+                self.parked = None;
+                self.device_lost.succeeded(Instant::now());
+                // A Syphon input is a client of the dead device's Metal
+                // device, so it is opened again on the new one. Every
+                // other kind is CPU-side and only needs its latest frame
+                // uploaded again, which a reset revision does.
+                if let Some(spec) = self.video_spec.clone().filter(|s| s.starts_with("syphon:"))
+                    && self.video.is_some()
+                {
+                    // The old client lets go of the server first.
+                    self.video = None;
+                    match crate::videoin::open(&spec, Some(&state.ctx.device)) {
+                        Ok(v) => self.video = Some(v),
+                        Err(e) => {
+                            log::warn!("could not reopen {spec} after the GPU came back: {e:#}");
+                            state.gui.notify_error(format!("{spec}: {e}"));
+                            self.video_spec = None;
+                        }
+                    }
+                }
+                self.video_revision = 0;
+                // The stream's last frame, so the slot is not empty until
+                // the next one arrives.
+                if self.live.is_some() && !self.live_points.is_empty() {
+                    state.scene.set_cloud_streaming(
+                        &state.ctx,
+                        ParticleScene::LIVE_SLOT,
+                        &self.live_points,
+                        "live",
+                    );
+                }
+                for (name, why) in state.outputs.failures() {
+                    state.gui.notify_error(format!(
+                        "output '{name}' did not come back — {why}; retrying in the background"
+                    ));
+                }
+                let [ow, oh] = master.size;
+                log::info!("renderer rebuilt after a lost GPU device: output {ow}x{oh}");
+                state.gui.notify_error(format!(
+                    "the GPU was lost and the renderer rebuilt — output {ow}x{oh} is live again"
+                ));
+                self.presentable = true;
+                state.window.request_redraw();
+                self.state = Some(state);
+                return;
+            }
+            Ok(Err(e)) => format!("{e:#}"),
+            Err(_) => "the rebuild panicked".to_string(),
+        };
+        self.device_lost.failed();
+        let wait = self
+            .device_lost
+            .next_attempt()
+            .map(|t| t.saturating_duration_since(Instant::now()).as_secs())
+            .unwrap_or_default();
+        log::error!("could not rebuild the renderer: {why} — trying again in {wait}s");
     }
 
     /// Rebuild the master, the post chain and the publish path.
@@ -1202,6 +1397,20 @@ impl App {
     /// panics every time leaves the last good picture on the outputs and
     /// the panel still working, which is strictly better than a desktop.
     fn redraw(&mut self) {
+        // A lost GPU device is rebuilt here, between frames — see
+        // `recover_gpu` and `crate::devicelost`.
+        if let Some(attempt) = self.device_lost.begin(Instant::now()) {
+            self.recover_gpu(attempt);
+        }
+        if self.device_lost.lost() {
+            // Still gone, and waiting out the back-off. Anything drawn on
+            // a dead device reaches nobody, so nothing is. `about_to_wait`
+            // keeps calling while the window cannot present; the sleep is
+            // what keeps that from being a busy loop.
+            self.presentable = false;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            return;
+        }
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.redraw_frame()));
         match caught {
             Ok(()) => self.frame_failures = 0,
@@ -2002,6 +2211,7 @@ impl App {
                         // backend's Drop tears its thread or client down.
                         None => {
                             self.video = None;
+                            self.video_spec = None;
                             self.video_live = false;
                             state.gui.notify_info("video input stopped");
                         }
@@ -2011,6 +2221,7 @@ impl App {
                                 Ok(v) => {
                                     let label = v.label();
                                     self.video = Some(v);
+                                    self.video_spec = Some(spec.clone());
                                     self.video_revision = 0;
                                     self.video_shown = false;
                                     self.video_live = false;
@@ -2484,7 +2695,9 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
+        // Parked is mid-rebuild after a lost device, not uninitialised: a
+        // second window would be the wrong answer.
+        if self.state.is_some() || self.parked.is_some() {
             return;
         }
         match self.init(event_loop) {
@@ -2518,7 +2731,7 @@ impl ApplicationHandler for App {
         // the loop drives itself here, paced by the sleep in `redraw`.
         // The moment presenting works again, `presentable` flips and the
         // ordinary request_redraw cycle takes back over.
-        if !self.presentable && self.state.is_some() {
+        if !self.presentable && (self.state.is_some() || self.parked.is_some()) {
             self.redraw();
         }
     }
@@ -4430,6 +4643,9 @@ pub fn run(params: Arc<AppParams>, mut opts: WindowedOpts) -> Result<()> {
         recovery_saved: Vec::new(),
         recovery_checked: Instant::now(),
         frame_failures: 0,
+        device_lost: Default::default(),
+        parked: None,
+        video_spec: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

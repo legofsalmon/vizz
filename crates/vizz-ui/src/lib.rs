@@ -507,6 +507,44 @@ impl Gui {
         };
     }
 
+    /// Move the panel onto a new GPU device, after the old one was lost.
+    ///
+    /// Only the renderer belongs to the device. What the panel remembers —
+    /// open sections, typed text, notices, the canvas — is in the egui
+    /// context and carries over, which is the point of not building a new
+    /// `Gui`.
+    ///
+    /// egui uploads its font atlas once and then sends only changes, so a
+    /// new renderer is handed the whole atlas here or every glyph would
+    /// draw from a texture it does not have. The preset pictures are the
+    /// only other textures egui holds; they are forgotten, and decode and
+    /// upload again as their tiles are drawn. The master output is
+    /// re-registered by the caller through [`Gui::set_output_texture`].
+    pub fn replace_renderer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) {
+        self.renderer = renderer::EguiRenderer::new(device, target_format);
+        self.output_texture = None;
+        // Before the first pass there is no atlas yet, and the first pass
+        // sends all of it anyway.
+        if self.ctx.cumulative_pass_nr() > 0 {
+            let atlas = self.ctx.fonts(|f| f.image());
+            let delta = egui::TexturesDelta {
+                // The atlas's own options — see `TextureAtlas::texture_options`.
+                set: vec![(
+                    egui::TextureId::default(),
+                    egui::epaint::ImageDelta::full(atlas, egui::TextureOptions::LINEAR),
+                )],
+                free: Vec::new(),
+            };
+            self.renderer.update_textures(device, queue, &delta);
+        }
+        thumbs::forget(&self.ctx);
+    }
+
     pub fn graph_view_memory(&self) -> graph_view::ViewMemory {
         self.graph_view.memory()
     }

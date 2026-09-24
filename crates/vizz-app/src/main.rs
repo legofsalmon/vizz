@@ -1,3 +1,4 @@
+mod devicelost;
 mod engine;
 mod headless;
 mod outputs;
