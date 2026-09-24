@@ -276,6 +276,12 @@ fn main() -> Result<()> {
     let width = args.width.unwrap_or(1280);
     let height = args.height.unwrap_or(720);
 
+    // The licence, decided offline from what is on disk: no network here,
+    // ever. Check-ins happen later, on a thread of their own.
+    let licence = vizz_licence::Licence::open(vizz_licence::Config::for_this_machine(
+        vizz_mod::project::root(),
+    ));
+
     let output_opts = outputs::OutputOpts {
         syphon: !args.no_syphon,
         syphon_name: args.syphon_name.clone(),
@@ -301,6 +307,7 @@ fn main() -> Result<()> {
                 video_source: args.video_source.clone(),
                 report: args.report,
                 outputs: output_opts,
+                licence,
             },
         )
     } else {
@@ -339,6 +346,7 @@ fn main() -> Result<()> {
                 video_source: args.video_source.clone(),
                 outputs: output_opts,
                 columns,
+                licence,
             },
         )
     }

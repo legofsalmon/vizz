@@ -24,6 +24,13 @@ struct BenchReport {
     backend: String,
     wall_time_s: f64,
     health: HealthSnapshot,
+    /// The licence status the run was decided under.
+    licence: &'static str,
+    /// Where the licence mark sits in every frame of this run, as
+    /// `[x, y, width, height]`, or `None` when there is none. A check that
+    /// a dump is not blank has to leave this rectangle out, or the mark
+    /// alone would pass it.
+    watermark: Option<[u32; 4]>,
 }
 
 pub struct HeadlessOpts {
@@ -42,6 +49,7 @@ pub struct HeadlessOpts {
     /// Live video input spec — the same one the windowed app takes, so a
     /// video look can be dumped to a PNG and checked without a display.
     pub video_source: Option<String>,
+    pub licence: vizz_licence::Licence,
 }
 
 pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
@@ -89,6 +97,31 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     engine.cut();
     let output = OutputTarget::new(&ctx.device, opts.width, opts.height);
     let mut senders = outputs::Outputs::new(&ctx.device, &opts.outputs);
+    // The licence, decided once for the run. Headless has no panel to wait
+    // on, so a policy that would lock marks instead — a benchmark still
+    // benchmarks, and a windowless Syphon or NDI source is still output.
+    let status = opts.licence.verdict().status;
+    let session = vizz_licence::Session::begin(vizz_licence::policy::headless(
+        opts.licence.restriction(vizz_licence::POLICY),
+    ));
+    let watermark = session.marked().then(|| {
+        vizz_render::watermark::Watermark::new(
+            &ctx.device,
+            &ctx.queue,
+            vizz_render::output::OUTPUT_FORMAT,
+            vizz_licence::policy::mark_text(status),
+            opts.width,
+            opts.height,
+        )
+    });
+    match &watermark {
+        Some(mark) => log::warn!(
+            "licence: {} — the output carries the mark at {:?}",
+            status.as_str(),
+            mark.rect()
+        ),
+        None => log::info!("licence: {}", status.as_str()),
+    }
     let fixed_dt = Duration::from_nanos(16_666_667);
 
     log::info!(
@@ -204,6 +237,9 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         if inputs.vector_active && inputs.vector_print {
             vector_print.render(&ctx, &mut encoder, &output.view, &inputs.vector);
         }
+        if let Some(mark) = &watermark {
+            mark.draw(&mut encoder, &output.view);
+        }
         ctx.queue.submit([encoder.finish()]);
         senders.publish(&ctx.device, &ctx.queue, &output.texture);
         // Headless has no vsync backpressure: wait for the GPU so frame
@@ -230,6 +266,8 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
             backend: format!("{:?}", info.backend),
             wall_time_s: wall.as_secs_f64(),
             health,
+            licence: status.as_str(),
+            watermark: watermark.as_ref().map(|m| m.rect()),
         };
         std::fs::write(path, serde_json::to_vec_pretty(&report)?)
             .with_context(|| format!("writing report to {}", path.display()))?;
