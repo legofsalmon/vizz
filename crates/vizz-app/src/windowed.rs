@@ -424,9 +424,12 @@ impl App {
         })?;
 
         let size = window.inner_size();
+        // An error rather than a panic: this is start-up, and "the GPU
+        // cannot draw to this window" deserves a sentence in the log and
+        // a clean exit, not a panic message and a crash report.
         let mut config = surface
             .get_default_config(&ctx.adapter, size.width.max(1), size.height.max(1))
-            .expect("surface not supported by adapter");
+            .ok_or_else(|| anyhow::anyhow!("the GPU adapter cannot present to this window"))?;
         // Fifo = vsync: never tear on the output projector.
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&ctx.device, &config);
