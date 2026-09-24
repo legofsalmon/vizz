@@ -41,6 +41,11 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Verify NDI ABI against stub
         run: ./scripts/test-ndi-abi.sh
+      # The bundle carries THIRD_PARTY_NOTICES.md (make-app.sh copies it
+      # in). A dependency added or bumped without regenerating it would
+      # ship code whose licence text is missing, so a stale file fails.
+      - name: Third-party notices are current
+        run: python3 scripts/third-party-notices.py --check
 
   # Nothing in this codebase had ever been compiled on Windows. Spout is
   # the remaining output gap and it cannot be written responsibly without
