@@ -218,6 +218,15 @@ impl Licence {
         Some(policy::restriction(status, policy, self.key_configured()))
     }
 
+    /// The stored key, whole — only for the feedback form, and only when
+    /// the person ticked "include my licence so you know who I am". The
+    /// panel shows the masked form; this never reaches a screen. `None`
+    /// when there is no key, or a licence thread holds the lock this
+    /// instant.
+    pub fn key(&self) -> Option<String> {
+        self.inner.state.try_lock().ok()?.stored.key.clone()
+    }
+
     /// Changes whenever the verdict may have. One atomic load.
     pub fn revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Acquire)
