@@ -98,6 +98,9 @@ pub struct PanelActions {
     pub grid: crate::grid_view::GridActions,
     /// Output size, render scale and master precision, when changed.
     pub output_setup: Option<OutputSetup>,
+    /// Turn NDI output on or off. It was reachable only as `--ndi`, which
+    /// nobody double-clicking the app can pass.
+    pub ndi_output: Option<bool>,
     /// What the gravity grid asks for this frame.
     pub gravity: crate::grid_view::GridActions,
     /// What the deck row asks for. Kept off [`crate::grid_view::GridActions`]
@@ -532,7 +535,7 @@ pub fn draw(
                 .id_salt("outputs")
                 .default_open(state.expand_sections)
                 .show(ui, |ui| {
-                    outputs_section(ui, state);
+                    outputs_section(ui, state, &mut actions);
                     ui.separator();
                     output_setup_section(ui, state, &mut actions);
                 });
@@ -1504,13 +1507,24 @@ fn palettes_section(ui: &mut egui::Ui, state: &PanelState, registry: &ParamRegis
     let current = registry
         .id("/color/palette")
         .map(|id| registry.target(id).round().max(0.0) as usize);
+    ui.small("click a palette to use it");
     for (i, name) in state.palettes.iter().enumerate() {
         if name.is_empty() {
             continue;
         }
         ui.horizontal(|ui| {
             ui.small(format!("{i}"));
-            ui.label(name);
+            // Click the name to use it, as the cloud list does. The list
+            // looked like a picker and was only a legend, so the one way
+            // to choose was the number in the parameter list.
+            if ui
+                .add(egui::Label::new(name).sense(egui::Sense::click()))
+                .on_hover_text("use this palette")
+                .clicked()
+                && let Some(id) = registry.id("/color/palette")
+            {
+                registry.set(id, i as f32);
+            }
             if current == Some(i) {
                 ui.label(egui::RichText::new("live").small().color(LIVE_MARK))
                     .on_hover_text("the ramp /color/palette is set to");
@@ -2735,16 +2749,24 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     }
 }
 
-fn outputs_section(ui: &mut egui::Ui, state: &PanelState) {
+fn outputs_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) {
     if state.outputs.is_empty() {
         ui.small("none active — preview only");
-        return;
     }
     for out in &state.outputs {
         ui.horizontal(|ui| {
             dot(ui, out.live, if out.live { GOOD } else { egui::Color32::from_gray(120) });
             ui.label(&out.name);
         });
+    }
+    // Read off the roster rather than carried separately, so the box can
+    // never disagree with the dot above it.
+    let was = state.outputs.iter().any(|o| o.name.starts_with("ndi:"));
+    let mut on = was;
+    ui.checkbox(&mut on, "send over NDI")
+        .on_hover_text("publish the output as an NDI source on the network; needs the NDI runtime from ndi.video");
+    if on != was {
+        actions.ndi_output = Some(on);
     }
 }
 

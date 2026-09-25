@@ -191,6 +191,16 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
 
+    // Before anything reads the config: a Windows build without HOME used
+    // to keep it beside wherever it was started. See the function.
+    if let Some(from) = vizz_mod::project::adopt_stray_root() {
+        log::info!(
+            "moved the config folder from {} to {}",
+            from.display(),
+            vizz_mod::project::root().display()
+        );
+    }
+
     if args.list_audio {
         for name in vizz_audio::input_devices() {
             println!("{name}");
@@ -288,7 +298,8 @@ fn main() -> Result<()> {
         syphon: !args.no_syphon,
         syphon_name: args.syphon_name.clone(),
         syphon_flip: args.syphon_flip,
-        ndi: args.ndi,
+        // The flag, or the panel's switch as last left.
+        ndi: args.ndi || settings::load().ndi_output,
         ndi_name: args.ndi_name.clone(),
         width,
         height,

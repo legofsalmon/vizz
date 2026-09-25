@@ -118,6 +118,10 @@ pub struct Settings {
     /// name — so it says nothing about who or where. See
     /// `vizz_report::new_install_id`.
     pub install_id: Option<String>,
+    /// NDI output, as last switched in the outputs section. `--ndi`
+    /// still turns it on for a launch whatever this says; it cannot turn
+    /// it off, so a scripted venue that passes the flag keeps its feed.
+    pub ndi_output: bool,
 }
 
 /// How a take is written. A mirror of the recorder's settings that can be
@@ -419,6 +423,13 @@ pub fn save_record(prefs: RecordPrefs) -> Result<()> {
 }
 
 /// Remember which screen was up.
+/// The panel's NDI switch.
+pub fn save_ndi_output(on: bool) -> Result<()> {
+    let mut s = load();
+    s.ndi_output = on;
+    save(&s)
+}
+
 pub fn save_start_on_stage(on_stage: bool) -> Result<()> {
     let mut s = load();
     s.start_on_stage = on_stage;
