@@ -2213,3 +2213,12 @@ empty commit).
 5. GUI: control surface + health HUD (egui), preset save/recall
 6. e2e performance suite: scripted OSC playback against headless runs,
    report diffing across commits
+
+## Licence
+
+vizz is source available under the [Elastic License 2.0](LICENSE), with
+LeTissier Creative Studios Ltd as the licensor. You can read, build and
+modify it, but you may not offer it to others as a hosted service or
+work around its licence key. Earlier releases were published under MIT
+and stay under MIT. Third-party components keep their own licences; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
