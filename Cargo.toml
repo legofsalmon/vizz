@@ -20,7 +20,7 @@ members = [
 [workspace.package]
 version = "1.0.0"
 edition = "2024"
-license = "MIT"
+license = "Elastic-2.0"
 repository = "https://github.com/legofsalmon/vizz"
 
 [workspace.dependencies]
