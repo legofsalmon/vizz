@@ -1186,9 +1186,19 @@ mod tests {
         // One frame first, so the streaming fit has settled and this
         // measures the steady state rather than the first arrival.
         scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
-        let t = std::time::Instant::now();
-        scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
-        let took = t.elapsed();
+        // The fastest of several. One sample on a shared CI runner is at
+        // the scheduler's mercy: a debug build on windows-latest once took
+        // 32 ms for a frame that takes a few everywhere else, and failed
+        // main with nothing changed. The estimator pays its cost on every
+        // frame, so if it were back the fastest would be slow too.
+        let took = (0..5)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                scene.set_cloud_streaming(&ctx, 2, &frame, "stream");
+                t.elapsed()
+            })
+            .min()
+            .expect("five samples");
         assert!(
             took.as_millis() < 25,
             "a stream frame took {took:?} — normal estimation is back on the \
