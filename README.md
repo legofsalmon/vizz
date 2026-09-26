@@ -2217,7 +2217,7 @@ empty commit).
 ## Licence
 
 vizz is source available under the [Elastic License 2.0](LICENSE), with
-LeTissier Creative Studios Ltd as the licensor. You can read, build and
+Colm Hewson as the licensor. You can read, build and
 modify it, but you may not offer it to others as a hosted service or
 work around its licence key. Earlier releases were published under MIT
 and stay under MIT. Third-party components keep their own licences; see
