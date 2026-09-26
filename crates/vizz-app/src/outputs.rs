@@ -79,28 +79,46 @@ impl Outputs {
         }
 
         if opts.ndi {
-            slots.push(Slot::start(
-                device,
-                opts,
-                format!("ndi:{}", opts.ndi_name),
-                Box::new(|device, opts| {
-                    vizz_io::ndi::NdiSender::new(
-                        device,
-                        &opts.ndi_name,
-                        opts.width,
-                        opts.height,
-                        opts.fps,
-                        1,
-                    )
-                    .map(|s| Box::new(s) as Box<dyn FrameSender>)
-                }),
-            ));
+            slots.push(Slot::start(device, opts, ndi_name(opts), Box::new(ndi_sender)));
         }
 
         if slots.is_empty() {
             log::info!("no video outputs requested (preview/headless only)");
         }
         Self { slots, opts: opts.clone(), retry: RETRY }
+    }
+
+    /// Turn NDI output on or off while running: the panel's switch.
+    ///
+    /// Only the NDI slot is touched. Rebuilding the whole roster would
+    /// also drop and re-announce Syphon, and a receiver on the other
+    /// output has no reason to see its source blink. Turning it on when
+    /// the runtime is missing leaves a dead slot that says why and keeps
+    /// retrying, exactly as `--ndi` at launch does.
+    pub fn set_ndi(&mut self, device: &wgpu::Device, on: bool) {
+        self.set_ndi_with(device, on, Box::new(ndi_sender));
+    }
+
+    fn set_ndi_with(&mut self, device: &wgpu::Device, on: bool, build: Builder) {
+        let name = ndi_name(&self.opts);
+        let present = self.slots.iter().any(|s| s.name == name);
+        self.opts.ndi = on;
+        if on && !present {
+            self.slots.push(Slot::start(device, &self.opts, name, build));
+        } else if !on && present {
+            // Dropping the sender is what tells receivers the source left.
+            self.slots.retain(|s| s.name != name);
+            log::info!("output '{name}' stopped");
+        }
+    }
+
+    /// Why NDI is down, if it was asked for and is not carrying frames.
+    pub fn ndi_failure(&self) -> Option<String> {
+        let name = ndi_name(&self.opts);
+        self.slots
+            .iter()
+            .find(|s| s.name == name && s.sender.is_none())
+            .map(|s| s.error.clone().unwrap_or_else(|| "no reason given".into()))
     }
 
     /// Publish the master to every live output, and give one dead output
@@ -183,6 +201,17 @@ impl Outputs {
             })
             .collect()
     }
+}
+
+/// The roster name of the NDI slot. The panel reads it back to know
+/// whether NDI is on, so there is one spelling.
+fn ndi_name(opts: &OutputOpts) -> String {
+    format!("ndi:{}", opts.ndi_name)
+}
+
+fn ndi_sender(device: &wgpu::Device, opts: &OutputOpts) -> anyhow::Result<Box<dyn FrameSender>> {
+    vizz_io::ndi::NdiSender::new(device, &opts.ndi_name, opts.width, opts.height, opts.fps, 1)
+        .map(|s| Box::new(s) as Box<dyn FrameSender>)
 }
 
 impl Slot {
@@ -291,6 +320,48 @@ mod tests {
         // for the flip itself.
         let off = crate::Args::parse_from(["vizz", "--syphon-flip", "false"]);
         assert!(!off.syphon_flip, "the flip cannot be turned off");
+    }
+
+    /// The panel's NDI switch adds and removes only the NDI slot, and
+    /// switching it twice does not stack two senders on one name.
+    #[test]
+    fn the_ndi_switch_adds_and_removes_only_ndi() {
+        let (device, _queue, _texture) = gpu();
+        let built = Arc::new(AtomicUsize::new(0));
+        let builder = |built: &Arc<AtomicUsize>| -> Builder {
+            let b = built.clone();
+            Box::new(move |_, _| {
+                b.fetch_add(1, Ordering::Relaxed);
+                Ok(Box::new(Flaky { ok_for: usize::MAX, published: Arc::new(AtomicUsize::new(0)) })
+                    as Box<dyn FrameSender>)
+            })
+        };
+        let mut outputs = Outputs::new(&device, &opts());
+        outputs.slots.push(Slot::start(&device, &opts(), "syphon:t".into(), builder(&built)));
+
+        outputs.set_ndi_with(&device, true, builder(&built));
+        outputs.set_ndi_with(&device, true, builder(&built));
+        let names: Vec<_> = outputs.status().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["syphon:t", "ndi:t"]);
+        assert!(outputs.opts.ndi, "a later size change would rebuild without NDI");
+        assert_eq!(outputs.ndi_failure(), None);
+
+        outputs.set_ndi_with(&device, false, builder(&built));
+        let names: Vec<_> = outputs.status().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["syphon:t"], "the other output went with it");
+        assert!(!outputs.opts.ndi);
+        assert_eq!(built.load(Ordering::Relaxed), 2, "one Syphon and one NDI build, no more");
+    }
+
+    /// With no runtime, switching on leaves a dead slot with the reason,
+    /// which is what the panel says back.
+    #[test]
+    fn switching_ndi_on_without_the_runtime_says_why() {
+        let (device, _queue, _texture) = gpu();
+        let mut outputs = Outputs::new(&device, &opts());
+        outputs.set_ndi_with(&device, true, Box::new(|_, _| anyhow::bail!("NDI runtime not found")));
+        assert_eq!(outputs.ndi_failure().as_deref(), Some("NDI runtime not found"));
+        assert!(!outputs.status()[0].live);
     }
 
     fn opts() -> OutputOpts {

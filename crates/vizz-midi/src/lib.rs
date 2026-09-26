@@ -530,9 +530,13 @@ pub fn default_map_path() -> PathBuf {
     // one hold-out hardcoding ~/.config, so a user with XDG set had
     // every file in one directory except the most laborious one to
     // recreate — and "back up the vizz folder" silently omitted it.
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    // Empty counts as unset, and Windows sets no HOME at all: then the
+    // profile, as `vizz_mod::project::root` does, rather than a folder
+    // beside wherever the app was started.
+    let set = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = set("XDG_CONFIG_HOME")
+        .or_else(|| set("HOME").map(|h| h.join(".config")))
+        .or_else(|| std::env::home_dir().filter(|h| !h.as_os_str().is_empty()).map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
     let path = base.join("vizz").join("midi.json");
     // Bring an existing map along. Before this, setting XDG_CONFIG_HOME

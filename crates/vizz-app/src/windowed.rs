@@ -974,6 +974,29 @@ impl App {
     /// Rebuilding rather than requiring a restart because output
     /// resolution is a thing you get wrong once at a venue, and finding
     /// out means relaunching into whatever the app opens with.
+    /// The panel's NDI switch: start or stop the sender, keep the launch
+    /// options in step so a later size change rebuilds the same roster,
+    /// and remember it for next time.
+    fn switch_ndi(&mut self, on: bool) {
+        let Some(state) = &mut self.state else { return };
+        state.outputs.set_ndi(&state.ctx.device, on);
+        self.opts.outputs.ndi = on;
+        let name = &self.opts.outputs.ndi_name;
+        match (on, state.outputs.ndi_failure()) {
+            (true, Some(why)) => state
+                .gui
+                .notify_error(format!("NDI '{name}' could not start: {why} — retrying in the background")),
+            (true, None) => state.gui.notify_info(format!("sending over NDI as '{name}'")),
+            (false, _) => state.gui.notify_info("NDI output off"),
+        }
+        // Seed the transition watcher, so the slot appearing or going is
+        // not also announced as an output coming back or dying.
+        self.output_status = state.outputs.status();
+        if let Err(e) = crate::settings::save_ndi_output(on) {
+            log::warn!("could not remember the NDI switch: {e:#}");
+        }
+    }
+
     fn apply_output_setup(&mut self, setup: vizz_ui::OutputSetup) {
         let Some(state) = &mut self.state else { return };
         // Through the same fitter the settings loader uses — per-axis
@@ -2111,6 +2134,7 @@ impl App {
         // that is exactly what makes this number worth reading.
         let ui_time = ui_start.elapsed();
         let mut pending_output = None;
+        let mut pending_ndi = None;
         let mut pending_device = None;
         let mut pending_text_cloud = None;
         let mut pending_generate = None;
@@ -2387,6 +2411,7 @@ impl App {
                 // mid-encoder would swap a texture the encoder already
                 // references.
                 pending_output = actions.output_setup;
+                pending_ndi = actions.ndi_output;
                 pending_text_cloud = actions.text_cloud.clone();
                 pending_generate = actions.generate_cloud.clone();
                 // Same deferral, for the same reason: see the bottom of
@@ -2668,6 +2693,9 @@ impl App {
         // it is safe to swap the textures out from under the next one.
         if let Some(setup) = pending_output {
             self.apply_output_setup(setup);
+        }
+        if let Some(on) = pending_ndi {
+            self.switch_ndi(on);
         }
         if let Some(text) = pending_text_cloud {
             self.make_text_cloud(&text);

@@ -66,11 +66,100 @@ pub const CONTENTS: [&str; 9] = [
 /// at the open show live here directly; everything else is under
 /// [`projects_dir`].
 pub fn root() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("vizz")
+    config_base(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+        std::env::home_dir(),
+    )
+    .join("vizz")
+}
+
+/// The directory `vizz` sits in, from the three places that can name it.
+///
+/// `HOME` before the platform's own answer, because that is what every
+/// build before this one read, and a Windows user who has it set (Git
+/// Bash, MSYS, a scripted venue) already has a show under it. The
+/// platform's answer after it, because Windows does not set `HOME` by
+/// default: without it the fall-through was `.`, and every setting,
+/// show and licence landed in a `vizz` folder beside wherever the app
+/// happened to be started from, so launching it from a different
+/// shortcut looked like losing everything. `home_dir` is the user
+/// profile there. `.` survives only for a machine with no home at all.
+///
+/// Empty values count as unset, which is what a shell's `HOME=` means.
+fn config_base(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    home_dir: Option<PathBuf>,
+) -> PathBuf {
+    let set = |v: Option<std::ffi::OsString>| v.filter(|v| !v.is_empty()).map(PathBuf::from);
+    set(xdg)
+        .or_else(|| set(home).map(|h| h.join(".config")))
+        .or_else(|| home_dir.filter(|h| !h.as_os_str().is_empty()).map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Bring back a config folder an older build wrote beside the app.
+///
+/// Before [`config_base`] learned the user profile, a Windows machine
+/// with no `HOME` kept everything in `.\vizz`, relative to wherever the
+/// app was started. That folder is the only copy of those shows and that
+/// licence, so it is moved into the real root the first time this build
+/// runs rather than left to look like a wiped machine. Checked in the
+/// working directory and beside the executable, the two places a
+/// shortcut or a double-click would have put it.
+///
+/// Only when the real root does not exist yet: once it does, it is the
+/// truth, and merging a stray folder into it could overwrite a newer
+/// show with an older one. Only a folder that looks like ours (it holds
+/// `settings.json`, `open.json`, `licence.json` or `projects`), so a
+/// `vizz` source checkout is never mistaken for a config folder.
+///
+/// Returns where it came from, for the log.
+pub fn adopt_stray_root() -> Option<PathBuf> {
+    let root = root();
+    let mut candidates = vec![PathBuf::from("vizz")];
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("vizz"))) {
+        candidates.push(dir);
+    }
+    adopt_from(&root, &candidates)
+}
+
+fn adopt_from(root: &Path, candidates: &[PathBuf]) -> Option<PathBuf> {
+    if root.exists() {
+        return None;
+    }
+    let ours = |dir: &Path| {
+        ["settings.json", "open.json", "licence.json", "projects"]
+            .iter()
+            .any(|name| dir.join(name).exists())
+    };
+    for stray in candidates {
+        // The same folder by another spelling is not a stray.
+        let (Ok(abs), Some(parent)) = (std::path::absolute(stray), root.parent()) else {
+            continue;
+        };
+        if abs == root || !ours(&abs) {
+            continue;
+        }
+        if std::fs::create_dir_all(parent).is_err() {
+            return None;
+        }
+        match std::fs::rename(&abs, root) {
+            Ok(()) => return Some(abs),
+            Err(e) => {
+                // Across drives a rename cannot work. Leaving the folder
+                // where it was loses nothing, and says so.
+                log::warn!(
+                    "found an older config folder at {} but could not move it to {}: {e}",
+                    abs.display(),
+                    root.display()
+                );
+                return None;
+            }
+        }
+    }
+    None
 }
 
 /// Where the shows live, one directory each.
@@ -378,6 +467,59 @@ mod tests {
         if let Ok(mut g) = cell().write() {
             *g = None;
         }
+    }
+
+    /// Windows sets no `HOME`. The config used to land in `.\\vizz`,
+    /// wherever the app was started from; it belongs in the profile.
+    #[test]
+    fn with_no_home_the_config_goes_in_the_profile_not_the_working_directory() {
+        let profile = PathBuf::from("C:/Users/colm");
+        assert_eq!(config_base(None, None, Some(profile.clone())), profile.join(".config"));
+        // An empty HOME is an unset one.
+        assert_eq!(
+            config_base(None, Some("".into()), Some(profile.clone())),
+            profile.join(".config")
+        );
+        // The order every earlier build used still wins, so nobody who
+        // had HOME or XDG_CONFIG_HOME set is moved anywhere.
+        assert_eq!(
+            config_base(None, Some("/home/c".into()), Some(profile.clone())),
+            PathBuf::from("/home/c/.config")
+        );
+        assert_eq!(
+            config_base(Some("/x".into()), Some("/home/c".into()), Some(profile)),
+            PathBuf::from("/x")
+        );
+        assert_eq!(config_base(None, None, None), PathBuf::from("."));
+    }
+
+    /// The settings an older build left in `.\\vizz` come along, once.
+    #[test]
+    fn a_stray_config_folder_moves_into_an_empty_root() {
+        let dir = std::env::temp_dir().join(format!("vizz-stray-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let stray = dir.join("cwd/vizz");
+        let source = dir.join("checkout/vizz");
+        let root = dir.join("profile/.config/vizz");
+        std::fs::create_dir_all(stray.join("projects/Show 1")).unwrap();
+        std::fs::write(stray.join("settings.json"), b"{}").unwrap();
+        // A source checkout called vizz is not a config folder.
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("Cargo.toml"), b"").unwrap();
+
+        assert_eq!(adopt_from(&root, &[source.clone(), stray.clone()]), Some(stray.clone()));
+        assert!(root.join("settings.json").exists());
+        assert!(root.join("projects/Show 1").is_dir());
+        assert!(!stray.exists());
+        assert!(source.join("Cargo.toml").exists(), "the checkout was touched");
+
+        // Once the root exists it is the truth: a second stray is left
+        // alone rather than merged over it.
+        std::fs::create_dir_all(&stray).unwrap();
+        std::fs::write(stray.join("settings.json"), b"{\"old\":1}").unwrap();
+        assert_eq!(adopt_from(&root, std::slice::from_ref(&stray)), None);
+        assert_eq!(std::fs::read(root.join("settings.json")).unwrap(), b"{}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

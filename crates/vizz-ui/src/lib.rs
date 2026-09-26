@@ -432,10 +432,29 @@ pub struct Gui {
     history: Vec<f32>,
 }
 
+/// egui's fonts, with its monospace face as the last resort for text.
+///
+/// The proportional family is Ubuntu Light and two emoji fonts, and none
+/// of the three has an arrow: `→` and `▸` drew as a missing-glyph box in
+/// "taller window → …", "kick → size" and "panel ▸ audio ▸ …". Hack,
+/// already loaded for monospace, has both, so it goes on the end of the
+/// proportional list: a character Ubuntu has is still drawn in Ubuntu,
+/// and one it lacks is drawn at all.
+pub fn font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional)
+        && !list.iter().any(|name| name == "Hack")
+    {
+        list.push("Hack".to_owned());
+    }
+    fonts
+}
+
 impl Gui {
     pub fn new(window: &Window, device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
+        ctx.set_fonts(font_definitions());
         let state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
@@ -1210,6 +1229,22 @@ mod drop_hint_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Every character the UI's own strings use must have a glyph in the
+    /// face they are drawn in. Checked against egui's defaults too, so
+    /// this fails the day the fallback is dropped rather than passing
+    /// because the arrow happened to be somewhere else.
+    #[test]
+    fn arrows_in_ui_text_have_a_glyph() {
+        let has = |fonts: egui::FontDefinitions| {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(fonts);
+            let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+            ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(11.0), "→▸—…“”"))
+        };
+        assert!(!has(egui::FontDefinitions::default()), "egui grew an arrow; the fallback may be unneeded");
+        assert!(has(super::font_definitions()), "an arrow in the UI would draw as a box");
+    }
+
     /// Every punch answers to one key, and the letters are the row's
     /// initials whatever the case — Caps Lock must not disarm a blackout.
     /// Nothing else on the keyboard is a punch, so G and P keep their
@@ -2455,6 +2490,64 @@ mod tests {
         for name in ["Warehouse", "Warehouse 2"] {
             assert!(text.contains(name), "{name} went missing: {text}");
         }
+    }
+
+    /// The palette list is a picker, not a legend: clicking a name sets
+    /// `/color/palette` to its row.
+    #[test]
+    fn clicking_a_palette_uses_it() {
+        let mut b = ParamRegistry::builder();
+        let palette = b.add(ParamDef::new("/color/palette", 0.0, 15.0, 0.0));
+        let reg = b.build();
+        let state = PanelState {
+            palettes: ["hsv", "warm", "ember", "ice", "neon"].map(String::from).to_vec(),
+            ..base_state()
+        };
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(900.0, 1400.0));
+        // Where a word was painted, from the shapes of the last pass.
+        fn find(shapes: &[egui::epaint::ClippedShape], word: &str) -> Option<egui::Pos2> {
+            fn walk(shape: &egui::Shape, word: &str) -> Option<egui::Pos2> {
+                match shape {
+                    egui::Shape::Text(t) if t.galley.text() == word => {
+                        Some(t.pos + t.galley.rect.center().to_vec2())
+                    }
+                    egui::Shape::Vec(v) => v.iter().find_map(|s| walk(s, word)),
+                    _ => None,
+                }
+            }
+            shapes.iter().find_map(|s| walk(&s.shape, word))
+        }
+        let mut at = None;
+        for i in 0..8 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(i as f64 * 0.05),
+                ..Default::default()
+            };
+            // Settle the layout first, then press and release on the name.
+            if i == 6
+                && let Some(pos) = at
+            {
+                input.events.push(egui::Event::PointerMoved(pos));
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            ctx.begin_pass(input);
+            let _ = panel::draw(&ctx, &reg, &state, &mut vizz_mod::ModEngine::with_defaults(), &mut Default::default());
+            let out = ctx.end_pass();
+            if at.is_none() {
+                at = find(&out.shapes, "ember");
+            }
+        }
+        assert!(at.is_some(), "the palette list was not drawn");
+        assert_eq!(reg.target(palette), 2.0, "clicking ember did not pick it");
     }
 
     /// A believable panel, for tests that only vary one thing.

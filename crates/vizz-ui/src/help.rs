@@ -101,6 +101,9 @@ pub fn sendable(draft: &FeedbackDraft) -> bool {
         && (email.is_empty() || (email.contains('@') && email.contains('.') && !email.contains(' ')))
 }
 
+/// Where the documentation link goes.
+pub const DOCS_URL: &str = "https://letissier.ie/docs/vizz/latest";
+
 const DRAFT: &str = "help-feedback-draft";
 const SEEN: &str = "help-feedback-seen";
 
@@ -108,7 +111,10 @@ const SEEN: &str = "help-feedback-seen";
 pub(crate) fn section(ui: &mut egui::Ui, view: &HelpView, actions: &mut HelpActions) {
     ui.label(egui::RichText::new(format!("vizz {}", view.version)).strong());
     ui.horizontal_wrapped(|ui| {
-        ui.hyperlink_to("documentation", "https://vizz.letissier.ie/docs");
+        // The manual lives with the studio's other docs. `latest` is the
+        // site's alias for the newest version, so this link never needs
+        // bumping when the docs do.
+        ui.hyperlink_to("documentation", DOCS_URL);
         ui.hyperlink_to("changelog", "https://vizz.letissier.ie/#changelog");
         ui.hyperlink_to(
             "open-source notices",

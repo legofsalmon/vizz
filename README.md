@@ -174,6 +174,10 @@ Syphon it is loaded at runtime, so the binary builds and runs without it
 and the output simply reports itself unavailable. Set `VIZZ_NDI_RUNTIME`
 to point at the library explicitly if it lives somewhere unusual.
 
+Or tick **send over NDI** in the panel's outputs section, which is
+remembered for the next launch. `--ndi` turns it on for a launch whatever
+the panel last said.
+
 Unlike Syphon, NDI cannot be zero-copy: it needs pixels in main memory.
 The render thread still never waits for them —
 `crates/vizz-io/src/readback.rs` keeps a ring of staging buffers, encodes
@@ -1350,7 +1354,9 @@ show and carry on in the copy* — which is the useful half of the idea and
 the half a live tool can honour. The menu says so in as many words, on the
 line under the name.
 
-Shows live in `~/.config/vizz/projects/<name>/`, one directory each, and
+Shows live in `~/.config/vizz/projects/<name>/` (`$XDG_CONFIG_HOME/vizz`
+if that is set; on Windows without `HOME`, `.config\vizz` in the user
+profile), one directory each, and
 `open.json` beside them records which is open. The name you type is the
 directory name, sanitised the way patch and preset names are. A name
 already taken counts up rather than overwriting — `Warehouse` typed twice
