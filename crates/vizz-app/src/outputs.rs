@@ -16,6 +16,8 @@ pub struct OutputOpts {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    /// The ST 2110 stream, when one was asked for.
+    pub st2110: Option<vizz_io::st2110::St2110Options>,
 }
 
 /// How a slot rebuilds its sender, both at startup and every time it dies.
@@ -80,6 +82,10 @@ impl Outputs {
 
         if opts.ndi {
             slots.push(Slot::start(device, opts, ndi_name(opts), Box::new(ndi_sender)));
+        }
+
+        if let Some(st2110) = &opts.st2110 {
+            slots.push(Slot::start(device, opts, st2110_name(st2110), Box::new(st2110_sender)));
         }
 
         if slots.is_empty() {
@@ -211,6 +217,20 @@ fn ndi_name(opts: &OutputOpts) -> String {
 
 fn ndi_sender(device: &wgpu::Device, opts: &OutputOpts) -> anyhow::Result<Box<dyn FrameSender>> {
     vizz_io::ndi::NdiSender::new(device, &opts.ndi_name, opts.width, opts.height, opts.fps, 1)
+        .map(|s| Box::new(s) as Box<dyn FrameSender>)
+}
+
+/// The roster name of the ST 2110 slot: where it sends.
+fn st2110_name(options: &vizz_io::st2110::St2110Options) -> String {
+    let to: Vec<String> = options.destinations.iter().map(|d| d.to_string()).collect();
+    format!("st2110:{}", to.join("+"))
+}
+
+fn st2110_sender(device: &wgpu::Device, opts: &OutputOpts) -> anyhow::Result<Box<dyn FrameSender>> {
+    let Some(options) = &opts.st2110 else {
+        anyhow::bail!("no ST 2110 output was asked for");
+    };
+    vizz_io::st2110::St2110Sender::new(device, opts.width, opts.height, options)
         .map(|s| Box::new(s) as Box<dyn FrameSender>)
 }
 
@@ -374,7 +394,78 @@ mod tests {
             width: 4,
             height: 4,
             fps: 60,
+            st2110: None,
         }
+    }
+
+    /// Asked for, ST 2110 gets a slot named for where it sends, and one
+    /// that cannot start says why, like any other output.
+    #[test]
+    fn an_st2110_output_is_on_the_roster_and_says_why_it_is_down() {
+        let (device, _queue, _texture) = gpu();
+        let st2110 = vizz_io::st2110::St2110Options {
+            destinations: vec!["239.1.1.1:5004".parse().unwrap(), "239.1.2.1:5004".parse().unwrap()],
+            interfaces: Vec::new(),
+            rate: "fast".into(),
+            clock: Some("traceable".into()),
+            name: "t".into(),
+            sdp: None,
+        };
+        let outputs = Outputs::new(&device, &OutputOpts { st2110: Some(st2110), ..opts() });
+        let failures = outputs.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].0, "st2110:239.1.1.1:5004+239.1.2.1:5004");
+        assert!(failures[0].1.contains("fast is not a frame rate"), "{}", failures[0].1);
+    }
+
+    /// `--st2110` asks for the output; its rate follows `--fps` unless
+    /// given, and its SDP file goes in the config folder unless put
+    /// elsewhere.
+    #[test]
+    fn st2110_flags_become_the_outputs_options() {
+        use clap::Parser;
+        let (_guard, dir) = crate::test_env::scoped("st2110");
+        let parse = |args: &[&str]| {
+            crate::st2110_options(&crate::Args::parse_from([&["vizz"], args].concat()))
+        };
+        assert_eq!(parse(&[]), None);
+
+        let o = parse(&[
+            "--fps",
+            "50",
+            "--st2110",
+            "239.1.1.1:5004",
+            "--st2110",
+            "239.1.2.1:5004",
+            "--st2110-interface",
+            "10.0.0.2",
+        ])
+        .unwrap();
+        let to: Vec<std::net::SocketAddrV4> =
+            vec!["239.1.1.1:5004".parse().unwrap(), "239.1.2.1:5004".parse().unwrap()];
+        assert_eq!(o.destinations, to);
+        assert_eq!(o.interfaces, [std::net::Ipv4Addr::new(10, 0, 0, 2)]);
+        assert_eq!(o.rate, "50");
+        assert_eq!((o.clock, o.name), (None, "vizz".to_string()));
+        assert_eq!(o.sdp, Some(dir.join("vizz").join("st2110.sdp")));
+
+        let o = parse(&[
+            "--st2110",
+            "10.0.0.9:5004",
+            "--st2110-rate",
+            "59.94",
+            "--st2110-clock",
+            "traceable",
+            "--st2110-sdp",
+            "show.sdp",
+            "--st2110-name",
+            "stage left",
+        ])
+        .unwrap();
+        assert_eq!(o.rate, "59.94");
+        assert_eq!(o.clock.as_deref(), Some("traceable"));
+        assert_eq!(o.sdp, Some(std::path::PathBuf::from("show.sdp")));
+        assert_eq!(o.name, "stage left");
     }
 
     /// A dying output must stay on the roster as dead — that is what makes

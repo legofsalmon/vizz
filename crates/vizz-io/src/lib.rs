@@ -8,6 +8,7 @@
 //! | Syphon  | macOS    | IOSurface-backed `MTLTexture` share | zero-copy |
 //! | Spout   | Windows  | DXGI shared handle (keyed mutex)    | zero-copy |
 //! | NDI     | all      | network, SpeedHQ codec              | CPU encode + readback |
+//! | ST 2110 | all      | network, uncompressed ST 2110-20    | CPU convert + readback |
 //!
 //! Design rules the backends must obey:
 //!
@@ -59,6 +60,7 @@ pub mod net;
 pub mod ndi_recv;
 pub mod readback;
 pub mod recorder;
+pub mod st2110;
 #[cfg(target_os = "macos")]
 pub mod syphon;
 #[cfg(target_os = "macos")]

@@ -29,6 +29,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "THIRD_PARTY_NOTICES.md")
 TARGETS = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 LICENCE_NAMES = ("license", "licence", "copying", "notice", "ofl", "ufl", "unlicense", "copyright")
+# vizz's sibling repository, from the same owner: its crates are treated as
+# vizz's own code, like the workspace's, and left out of the table. The
+# crates they depend on are not.
+FIRST_PARTY = ("git+https://github.com/legofsalmon/st2110",)
 
 # Code vizz loads or embeds that cargo does not know about.
 EXTRA = """
@@ -65,6 +69,13 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+### st2110
+
+The ST 2110 output is built on the `st2110-*` crates from
+<https://github.com/legofsalmon/st2110>, a sibling project from the same
+owner. Like vizz's own crates they are not listed above; the crates they
+depend on are.
 
 ### NDI®
 
@@ -126,7 +137,8 @@ def main():
         ids = shipped(meta)
         members = set(meta["workspace_members"])
         for p in meta["packages"]:
-            if p["id"] in ids and p["id"] not in members:
+            first_party = p["id"] in members or (p.get("source") or "").startswith(FIRST_PARTY)
+            if p["id"] in ids and not first_party:
                 packages[(p["name"], p["version"])] = p
 
     rows = []

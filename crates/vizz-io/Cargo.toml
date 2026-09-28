@@ -15,6 +15,11 @@ log.workspace = true
 libloading = "0.8"
 # PNG encoding for the recorder.
 image.workspace = true
+# ST 2110 output: SMPTE ST 2110-20 video on ordinary UDP sockets, paced on
+# the SMPTE Epoch. From vizz's sibling repository, which publishes no
+# releases, so pinned to a commit.
+st2110-media = { git = "https://github.com/legofsalmon/st2110", rev = "1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f", features = ["net"] }
+st2110-ptp = { git = "https://github.com/legofsalmon/st2110", rev = "1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f" }
 
 [dev-dependencies]
 pollster.workspace = true

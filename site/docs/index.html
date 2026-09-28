@@ -6,7 +6,7 @@
 <title>vizz documentation</title>
 <link rel="icon" type="image/png" href="/img/icon.png">
 <link rel="apple-touch-icon" href="/img/icon.png">
-<meta name="description" content="Full documentation for vizz: making a look, presets and scenes, point clouds, audio reactivity, modulation, MIDI and OSC control, Syphon and NDI output, recording, and playing a set.">
+<meta name="description" content="Full documentation for vizz: making a look, presets and scenes, point clouds, audio reactivity, modulation, MIDI and OSC control, Syphon, NDI and ST 2110 output, recording, and playing a set.">
 <meta property="og:title" content="vizz documentation">
 <meta property="og:description" content="How to build a look, play a set, and wire vizz into a rig.">
 <meta property="og:type" content="article">
@@ -220,7 +220,7 @@
   <a href="#keyboard">Keyboard</a>
 
   <h4>Output</h4>
-  <a href="#outputs">Syphon, NDI, sizes</a>
+  <a href="#outputs">Syphon, NDI, ST 2110, sizes</a>
   <a href="#recording">Recording</a>
   <a href="#venue">Fullscreen and venue setup</a>
 
@@ -1261,7 +1261,7 @@ while <a href="#decks">following</a> is on.</p>
 a machine whose whole job is not going black. A second press within a few
 seconds confirms.</p>
 
-<h2 id="outputs">Syphon, NDI and output sizes</h2>
+<h2 id="outputs">Syphon, NDI, ST 2110 and output sizes</h2>
 
 <h3>Syphon (macOS)</h3>
 <p>On by default. vizz publishes a source named <code>vizz</code> that appears in
@@ -1277,6 +1277,27 @@ vizz --ndi --ndi-name Deck1 # or under your own name</code></pre>
 says so clearly if it is missing. Frames are read back asynchronously through
 a ring, so a slow network drops frames on the NDI output and never stalls the
 renderer.</p>
+
+<h3>ST 2110 (all platforms)</h3>
+<pre><code>vizz --st2110 239.1.1.1:5004 --st2110-rate 50 --width 1280 --height 720</code></pre>
+<p>For broadcast gear that does not take NDI: vision mixers, multiviewers,
+IP-to-SDI gateways. vizz sends the master as uncompressed SMPTE ST 2110-20
+video, YCbCr 4:2:2 at 10 bits in BT.709, which those receivers take without
+being asked. Uncompressed is heavy: 720p50 is 0.92&nbsp;Gb/s and 1080p50
+2.07&nbsp;Gb/s, so anything above 720p50 needs a 10&nbsp;Gb/s link. Send it
+on a wired media network, never over Wi-Fi, where multicast at that rate takes
+the network down for everyone on it.</p>
+<p>A receiver joins from the SDP file vizz writes when the output starts,
+<code>~/.config/vizz/st2110.sdp</code> unless <code>--st2110-sdp</code> says
+otherwise. Give <code>--st2110</code> twice for an ST 2022-7 pair,
+<code>--st2110-interface</code> to pick the network port, and
+<code>--st2110-name</code> for the name receivers list.</p>
+<p>The stream keeps its own rate, <code>--st2110-rate</code> or else
+<code>--fps</code>, whatever vizz renders at. When vizz renders slower, the
+last picture repeats, so the stream freezes rather than breaks up. Without PTP
+the stream is steady but lines up with nothing else in the plant. On a machine
+whose clock follows the plant's PTP grandmaster, name it with
+<code>--st2110-clock &lt;grandmaster&gt;:&lt;domain&gt;</code> and it does.</p>
 
 <h3>Render size and output size</h3>
 <p>In the panel's <strong>outputs</strong> section: set the output size
@@ -1510,6 +1531,7 @@ running app by a test, so it cannot drift out of date.</p>
 <tr><td><code>~/.config/vizz/open.json</code></td><td>Which show is open</td></tr>
 <tr><td><code>~/.config/vizz/midi.json</code></td><td>Your controller map — the rig, so it stays put when the show changes</td></tr>
 <tr><td><code>~/.config/vizz/settings.json</code></td><td>Output size, audio device, loaded clouds, fullscreen — the rig too</td></tr>
+<tr><td><code>~/.config/vizz/st2110.sdp</code></td><td>What the ST 2110 output sends, written when it starts; receivers join from it</td></tr>
 <tr><td><code>~/Movies/vizz/</code></td><td>Recordings (macOS; <code>~/Videos/vizz/</code> elsewhere)</td></tr>
 </table>
 </div>
@@ -1528,6 +1550,7 @@ Nothing is copied and nothing is left behind.</p>
 vizz --width 1920 --height 1080   # output size for this run
 vizz --fullscreen --monitor 1     # start on a projector
 vizz --ndi --no-syphon            # NDI only
+vizz --st2110 239.1.1.1:5004      # ST 2110 video to a multicast group
 vizz --audio-device "Scarlett"    # match an input by substring
 vizz --list-audio                 # print input names and exit
 vizz --cloud scan.ply             # load a cloud at startup
@@ -1565,7 +1588,8 @@ and watch the echo line — it names whatever arrives.</p>
 <h3>The receiving app cannot see vizz</h3>
 <p>Check the status line: each output has a dot, green when live. Syphon is
 macOS-only. NDI needs its runtime installed, and the panel says so if it is
-missing.</p>
+missing. An ST 2110 receiver needs the SDP file vizz writes when the output
+starts, and a wired network that carries the multicast group to it.</p>
 
 <h3>I set layer parameters and nothing changed</h3>
 <p>Check the layer's <em>kind</em> is not <em>off</em> — kind 0 removes the

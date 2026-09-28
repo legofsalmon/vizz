@@ -33,6 +33,10 @@ const INFLIGHT: u8 = 3;
 struct Slot {
     buffer: Arc<wgpu::Buffer>,
     state: Arc<AtomicU8>,
+    /// Which capture filled it, counting from 0: slots are reused in
+    /// whatever order they come free, so their place in the ring says
+    /// nothing about which frame is older.
+    sequence: u64,
 }
 
 /// A finished CPU-side frame. Read it with [`MappedFrame::with_bytes`];
@@ -103,6 +107,7 @@ impl ReadbackRing {
                     mapped_at_creation: false,
                 })),
                 state: Arc::new(AtomicU8::new(FREE)),
+                sequence: 0,
             })
             .collect();
 
@@ -139,7 +144,7 @@ impl ReadbackRing {
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
     ) -> bool {
-        let Some(slot) = self.slots.iter().find(|s| {
+        let Some(slot) = self.slots.iter_mut().find(|s| {
             s.state
                 .compare_exchange(FREE, MAPPING, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
@@ -147,6 +152,7 @@ impl ReadbackRing {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
+        slot.sequence = self.captured;
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
@@ -180,16 +186,26 @@ impl ReadbackRing {
         true
     }
 
-    /// Take the next completed frame, if any. Non-blocking.
+    /// Take the oldest completed frame, if any. Non-blocking.
+    ///
+    /// Oldest by capture, not by place in the ring: once slots have been
+    /// freed out of order, the first ready slot can hold a newer frame
+    /// than a later one, and handing that out first sends a consumer a
+    /// frame and then the one before it.
     ///
     /// Map callbacks only fire while the device is polled; call this after
     /// the frame's submit (which polls) or pair it with `device.poll`.
     pub fn take_ready(&mut self) -> Option<MappedFrame> {
-        let slot = self.slots.iter().find(|s| {
-            s.state
-                .compare_exchange(READY, INFLIGHT, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        })?;
+        let slot = self
+            .slots
+            .iter()
+            .filter(|s| s.state.load(Ordering::Acquire) == READY)
+            .min_by_key(|s| s.sequence)?;
+        // Only this method moves a slot on from READY, and it has the ring
+        // to itself, so the slot cannot have changed since it was chosen.
+        slot.state
+            .compare_exchange(READY, INFLIGHT, Ordering::AcqRel, Ordering::Relaxed)
+            .ok()?;
         Some(MappedFrame {
             buffer: Arc::clone(&slot.buffer),
             state: Arc::clone(&slot.state),
@@ -364,6 +380,55 @@ mod tests {
         }
         assert_eq!(ring.captured(), 8);
         assert_eq!(ring.dropped(), 0);
+    }
+
+    /// The first letter of each colour's name, from the pixel the frame
+    /// starts with.
+    fn colour(frame: &MappedFrame) -> char {
+        frame
+            .with_bytes(|bytes| match bytes[..4] {
+                [0x00, 0x00, 0xFF, 0xFF] => 'r',
+                [0x00, 0xFF, 0x00, 0xFF] => 'g',
+                [0xFF, 0x00, 0x00, 0xFF] => 'b',
+                _ => '?',
+            })
+            .unwrap()
+    }
+
+    /// Frames come out in the order they were captured, even when the
+    /// slots were freed out of order.
+    ///
+    /// A slot freed early is reused first, so after one frame has been
+    /// taken the ring's first slot can hold the newest frame. Taking the
+    /// first ready slot then handed out that frame before an older one
+    /// still waiting in the next, and a consumer sent them in that order.
+    #[test]
+    fn frames_come_out_in_the_order_they_were_captured() {
+        let Some((device, queue, tex)) = gpu() else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let red = wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let green = wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
+        let blue = wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+        let mut ring = ReadbackRing::new(&device, W, H, 2).unwrap();
+
+        // Red into the first slot and green into the second; red out,
+        // which frees the first, and blue into it.
+        clear(&device, &queue, &tex, red);
+        assert!(ring.capture(&device, &queue, &tex));
+        clear(&device, &queue, &tex, green);
+        assert!(ring.capture(&device, &queue, &tex));
+        let first = wait_ready(&device, &mut ring).expect("red never became ready");
+        assert_eq!(colour(&first), 'r');
+        drop(first);
+        clear(&device, &queue, &tex, blue);
+        assert!(ring.capture(&device, &queue, &tex));
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+        let green = wait_ready(&device, &mut ring).expect("green never became ready");
+        let blue = wait_ready(&device, &mut ring).expect("blue never became ready");
+        assert_eq!([colour(&green), colour(&blue)], ['g', 'b'], "the newer frame came out first");
     }
 
     #[test]
