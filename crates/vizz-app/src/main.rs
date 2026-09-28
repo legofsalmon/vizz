@@ -36,6 +36,7 @@ pub(crate) mod test_env {
     }
 }
 
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -170,9 +171,46 @@ struct Args {
     #[arg(long, default_value = "vizz")]
     ndi_name: String,
 
-    /// Frame rate advertised to NDI receivers.
+    /// Frame rate advertised to NDI receivers, and the ST 2110 stream's
+    /// unless --st2110-rate gives another.
     #[arg(long, default_value_t = 60)]
     fps: u32,
+
+    /// Send the output as uncompressed SMPTE ST 2110-20 video to this
+    /// multicast group or unicast address and port, such as
+    /// 239.1.1.1:5004. Give it twice for the two legs of an ST 2022-7
+    /// pair. YCbCr 4:2:2 at 10 bits: 720p50 is 0.9 Gb/s and 1080p50
+    /// 2.1 Gb/s, so HD above 720p50 needs a 10 Gb/s link.
+    #[arg(long, value_name = "ADDRESS:PORT")]
+    st2110: Vec<SocketAddrV4>,
+
+    /// The address of the network interface to send ST 2110 from; the one
+    /// the routing table picks when omitted. Give it twice to send each
+    /// leg from its own.
+    #[arg(long, value_name = "ADDRESS")]
+    st2110_interface: Vec<Ipv4Addr>,
+
+    /// The ST 2110 stream's frame rate, such as 50, 59.94 or 60000/1001;
+    /// --fps when omitted.
+    #[arg(long, value_name = "RATE")]
+    st2110_rate: Option<String>,
+
+    /// The reference clock the ST 2110 SDP file names: traceable, or
+    /// <grandmaster>:<domain> such as 08-00-11-FF-FE-21-E1-B0:127, when
+    /// this machine's clock follows PTP; this machine's MAC address
+    /// (localmac) when omitted, which says it does not.
+    #[arg(long, value_name = "CLOCK")]
+    st2110_clock: Option<String>,
+
+    /// Where to write the SDP file that describes the ST 2110 stream,
+    /// which receivers need to join it. st2110.sdp in the config folder
+    /// when omitted.
+    #[arg(long, value_name = "FILE")]
+    st2110_sdp: Option<PathBuf>,
+
+    /// The ST 2110 stream's name in its SDP file, which receivers list.
+    #[arg(long, default_value = "vizz")]
+    st2110_name: String,
 
     /// Start with the control panel hidden (Tab toggles it at runtime).
     #[arg(long)]
@@ -185,6 +223,22 @@ struct Args {
     /// Do not contact GitHub at startup to check for a newer release.
     #[arg(long)]
     no_update_check: bool,
+}
+
+/// The ST 2110 output the command line asks for, if it asks for one.
+fn st2110_options(args: &Args) -> Option<vizz_io::st2110::St2110Options> {
+    (!args.st2110.is_empty()).then(|| vizz_io::st2110::St2110Options {
+        destinations: args.st2110.clone(),
+        interfaces: args.st2110_interface.clone(),
+        rate: args.st2110_rate.clone().unwrap_or_else(|| args.fps.to_string()),
+        clock: args.st2110_clock.clone(),
+        name: args.st2110_name.clone(),
+        sdp: Some(
+            args.st2110_sdp
+                .clone()
+                .unwrap_or_else(|| vizz_mod::project::root().join("st2110.sdp")),
+        ),
+    })
 }
 
 fn main() -> Result<()> {
@@ -304,6 +358,7 @@ fn main() -> Result<()> {
         width,
         height,
         fps: args.fps,
+        st2110: st2110_options(&args),
     };
 
     if args.headless {

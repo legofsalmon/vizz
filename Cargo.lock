@@ -933,7 +933,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1740,6 +1740,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "metal"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1876,6 +1885,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if 1.0.4",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -2835,7 +2857,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3062,6 +3084,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3078,6 +3110,52 @@ checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags 2.13.1",
 ]
+
+[[package]]
+name = "st2110-connect"
+version = "0.1.0"
+source = "git+https://github.com/legofsalmon/st2110?rev=1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f#1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f"
+dependencies = [
+ "serde",
+ "serde_json",
+ "st2110-ptp",
+ "st2110-sdp",
+]
+
+[[package]]
+name = "st2110-media"
+version = "0.1.0"
+source = "git+https://github.com/legofsalmon/st2110?rev=1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f#1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f"
+dependencies = [
+ "nix",
+ "socket2",
+ "st2110-connect",
+ "st2110-pcap",
+ "st2110-ptp",
+ "st2110-sdp",
+]
+
+[[package]]
+name = "st2110-pcap"
+version = "0.1.0"
+source = "git+https://github.com/legofsalmon/st2110?rev=1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f#1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f"
+dependencies = [
+ "st2110-ptp",
+ "st2110-sdp",
+]
+
+[[package]]
+name = "st2110-ptp"
+version = "0.1.0"
+source = "git+https://github.com/legofsalmon/st2110?rev=1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f#1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f"
+dependencies = [
+ "st2110-sdp",
+]
+
+[[package]]
+name = "st2110-sdp"
+version = "0.1.0"
+source = "git+https://github.com/legofsalmon/st2110?rev=1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f#1115628a36ddbf54e1cfcd0fb5b0f9a704eaa64f"
 
 [[package]]
 name = "stable_deref_trait"
@@ -3535,6 +3613,8 @@ dependencies = [
  "log",
  "objc2 0.6.4",
  "pollster",
+ "st2110-media",
+ "st2110-ptp",
  "sysinfo",
  "wgpu",
 ]
@@ -4080,7 +4160,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

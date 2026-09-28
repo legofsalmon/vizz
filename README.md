@@ -7,7 +7,8 @@ over Syphon, Spout, and NDI, and to be played live over OSC and MIDI.
 **Status: phase 9 — inputs.** A procedural particle field
 rendered into a fixed-resolution master texture and published over
 **Syphon** on macOS (zero-copy) and **NDI** on the network (async
-readback, never stalls the renderer).
+readback, never stalls the renderer), and sent as uncompressed
+**ST 2110** video for broadcast gear.
 
 Geometry is eight morphing modes including two strange attractors and a
 point-cloud pair, with **PLY/XYZ import** and colour. Colour runs through
@@ -187,6 +188,53 @@ stride all the way to the wire (NDI accepts a line stride), so pixels are
 never repacked. If the GPU or the network falls behind, frames are
 **dropped for that output** and counted — never awaited, because losing an
 NDI frame is survivable and missing vsync is not.
+
+### ST 2110 output (all platforms)
+
+```sh
+cargo run --release -- --st2110 239.1.1.1:5004 --st2110-rate 50 --width 1280 --height 720
+```
+
+Sends the master as uncompressed SMPTE ST 2110-20 video, for broadcast
+gear that takes no NDI: vision mixers, multiviewers, IP-to-SDI
+gateways. It goes out as YCbCr 4:2:2 at 10 bits, BT.709 SDR, the form
+those receivers take without being asked, which is heavy: 720p50 is
+0.92 Gb/s and 1080p50 2.07 Gb/s, so anything above 720p50 needs a
+10 Gb/s link. Send it on a wired media network, never over Wi-Fi, where
+multicast at that rate takes the network down for everyone. The
+master's eight-bit values are sent as R'G'B' as they stand, and alpha is
+dropped.
+
+A receiver joins from the stream's SDP file, which is written when the
+output starts: `st2110.sdp` in the config folder, or wherever
+`--st2110-sdp` says. Give `--st2110` a second time for the other leg of
+an ST 2022-7 pair, `--st2110-interface` to pick the network port, and
+`--st2110-name` for the name receivers list.
+
+Frames go out on the SMPTE Epoch, stamped by the system clock. On a
+machine whose clock follows PTP (`ptp4l` and `phc2sys` on Linux), name
+the grandmaster with `--st2110-clock <grandmaster>:<domain>`, or
+`traceable`, and the stream lines up with every other source in the
+plant. Without it the SDP file names this machine's own clock
+(`localmac`): a receiver with a frame synchroniser takes the stream, but
+it lines up with nothing else.
+
+The stream keeps its own rate, `--st2110-rate` or else `--fps`, whatever
+vizz renders at: ST 2110 wants a frame every period. Pictures from a
+renderer running faster are left out, and a renderer running slower, or
+held while the licence is checked, has its last picture repeated, so the
+stream freezes rather than breaks up.
+
+Like NDI it needs pixels in main memory, and takes them through the same
+readback ring, so the render thread never waits. A packing thread turns
+the newest picture into pixel groups just before each frame is due
+(about 6.5 ms for 1080 lines on one 2.1 GHz Xeon core), and a send
+thread paces the packets across the frame, which keeps one core busy.
+That pacing, on ordinary sockets, holds an ST 2110-21 wide sender's
+limits at HD on a quiet machine and bursts on a busy one, so a receiver
+that only takes narrow senders may refuse it. The packing and pacing are
+[st2110](https://github.com/legofsalmon/st2110)'s `st2110-media` crate,
+which also has `st2110 receive` to check what arrives.
 
 ### Recording
 
