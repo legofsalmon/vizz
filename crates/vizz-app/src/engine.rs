@@ -1011,6 +1011,8 @@ impl FrameEngine {
                     let c = lamp_colour(self.snapshot.get(p.sun_hue), self.snapshot.get(p.sun_tint));
                     [c[0], c[1], c[2], 0.0]
                 },
+                stroke: vizz_render::particles::Stroke::from_index(self.snapshot.get(p.stroke))
+                    .lanes(self.snapshot.get(p.stroke_len), self.snapshot.get(p.speed)),
             },
             post: PostUniforms {
                 // At trail 1.0 the feedback lerp passes history through

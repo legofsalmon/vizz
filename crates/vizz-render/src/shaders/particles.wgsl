@@ -56,6 +56,10 @@ struct Uniforms {
     sun_dir: vec4<f32>,
     // rgb the sun's colour.
     sun_tint: vec4<f32>,
+    // How a particle is drawn in the glowing mode: x 0 dots, 1 lines,
+    // 2 streaks; y the stroke length 0..1; z segments per stroke (1 for
+    // dots). See `stroke_ends`.
+    stroke: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -120,6 +124,9 @@ struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec3<f32>,
+    // The stroke's length in half-widths, so the fragment can tell the
+    // straight run from the round caps. Zero for a dot.
+    @location(2) @interpolate(flat) run: f32,
 };
 
 const TAU: f32 = 6.28318530718;
@@ -370,6 +377,18 @@ fn sample_shape(mode: u32, h1: f32, h2: f32, h3: f32, h4: f32, t: f32) -> vec3<f
 
 const SHAPE_COUNT: u32 = 8u;
 
+/// How far along its first parameter a full-length line reaches, by mode.
+///
+/// The parameter means different things. On a parametric shape it is an
+/// angle round the whole form, so a thirtieth of it is a visible arc. On
+/// a cloud it is the position along a 65,536-point trajectory, where the
+/// Lorenz covers a world unit in about fifty texels, and anything much
+/// past thirty-two cuts chords across its turns. Lines are short there
+/// and join up because a cloud has tens of thousands of them.
+fn line_reach(mode: u32) -> f32 {
+    return select(1.0 / 30.0, 32.0 / f32(ATTRACTOR_POINTS), mode >= 5u);
+}
+
 // --- Wind -------------------------------------------------------------
 
 // The Arnold–Beltrami–Childress flow with A = B = C = 1: a steady
@@ -547,28 +566,43 @@ struct Body {
 };
 
 fn body(pi: u32) -> Body {
-    let h1 = hash01(pi, 0u);
-    let h2 = hash01(pi, 1u);
-    let h3 = hash01(pi, 2u);
-    let h4 = hash01(pi, 3u);
+    return body_at(pi, u.time, 0.0);
+}
 
+/// A particle at visual time `t`, moved `dh` along its own parameter.
+///
+/// `dh` is what makes a line: the first hash is the particle's place along
+/// a cloud's trajectory (or a curve's own parameter), so stepping it walks
+/// the particle back along the path it is on. `t` is what makes a streak:
+/// the same particle a moment ago. Everything below is a pure function of
+/// both, which is why neither needs a history buffer.
+fn body_at(pi: u32, t: f32, dh: f32) -> Body {
+    // Clamped, not wrapped: the two ends of a trajectory are not
+    // neighbours, and a stroke that wrapped from the start of the path to
+    // its end would draw a line straight across the form.
     // Blend between adjacent modes so `shape` sweeps continuously rather
     // than cutting — a swept knob is playable, a stepped one is not.
     let mode_a = u32(floor(u.shape)) % SHAPE_COUNT;
     let mode_b = (mode_a + 1u) % SHAPE_COUNT;
     let blend = clamp(fract(u.shape) + u.morph, 0.0, 1.0);
+
+    let step = dh * mix(line_reach(mode_a), line_reach(mode_b), blend);
+    let h1 = clamp(hash01(pi, 0u) + step, 0.0, 0.9999999);
+    let h2 = hash01(pi, 1u);
+    let h3 = hash01(pi, 2u);
+    let h4 = hash01(pi, 3u);
     // Only evaluate both forms when actually between them. `blend` comes
     // from uniforms, so this branch is uniform across the draw and costs
     // nothing — it just halves the shape work whenever the knob is parked,
     // which is most of the time.
     var p: vec3<f32>;
     if (blend <= 0.001) {
-        p = sample_shape(mode_a, h1, h2, h3, h4, u.time);
+        p = sample_shape(mode_a, h1, h2, h3, h4, t);
     } else if (blend >= 0.999) {
-        p = sample_shape(mode_b, h1, h2, h3, h4, u.time);
+        p = sample_shape(mode_b, h1, h2, h3, h4, t);
     } else {
-        let pa = sample_shape(mode_a, h1, h2, h3, h4, u.time);
-        let pb = sample_shape(mode_b, h1, h2, h3, h4, u.time);
+        let pa = sample_shape(mode_a, h1, h2, h3, h4, t);
+        let pb = sample_shape(mode_b, h1, h2, h3, h4, t);
         p = mix(pa, pb, smoothstep(0.0, 1.0, blend));
     }
     p *= u.spread;
@@ -578,7 +612,7 @@ fn body(pi: u32) -> Body {
     // need their shape to survive the rotation.
     let rigid = mix(rigidity(mode_a), rigidity(mode_b), blend);
     let rate = mix(0.25 + 0.75 * h4, 0.55, rigid);
-    let spin = u.time * rate * (0.4 + u.twist);
+    let spin = t * rate * (0.4 + u.twist);
     let cs = cos(spin);
     let sn = sin(spin);
     p = vec3<f32>(p.x * cs - p.z * sn, p.y, p.x * sn + p.z * cs);
@@ -591,13 +625,13 @@ fn body(pi: u32) -> Body {
 
     // Slow breathing keeps the field alive with every control parked.
     let radius = length(p);
-    p *= 1.0 + 0.08 * sin(u.time * 0.5 + radius * 3.0);
+    p *= 1.0 + 0.08 * sin(t * 0.5 + radius * 3.0);
 
     // Wind, when there is any: the field blown through by an ABC flow.
     // Read as a displacement of where the point already is, so it costs
     // no state and works on a scan as it does on a sphere.
     if (u.light.z > 0.0) {
-        p += abc_wind(p, u.time * u.light.w) * u.light.z;
+        p += abc_wind(p, t * u.light.w) * u.light.z;
     }
 
     // Gravity. Applied after the shape is final and before the room, so
@@ -642,9 +676,42 @@ fn body_normal(b: Body) -> vec3<f32> {
     return slot_normal(select(b.mode_a, b.mode_b, b.blend > 0.5), b.h1, u.time);
 }
 
+/// The two ends of one segment of a particle's stroke, as body parameters:
+/// `xy` is (time, path offset) at the head end, `zw` at the tail end.
+///
+/// A dot is a stroke of no length, so both ends are the particle as it is
+/// now. Lines walk back along the particle's own parameter at a fixed
+/// time, so they hold still when the speed is down and draw the path
+/// itself. Streaks walk back in time instead, so they show where the
+/// particle has been and vanish when nothing moves, which is what motion
+/// blur should do.
+fn stroke_ends(seg: u32, segs: u32) -> vec4<f32> {
+    let mode = u32(u.stroke.x + 0.5);
+    let f0 = f32(seg) / f32(segs);
+    let f1 = f32(seg + 1u) / f32(segs);
+    if (mode == 1u) {
+        // In units of a whole line; `body_at` turns that into a step
+        // along whichever parameter the shape has.
+        let span = u.stroke.y;
+        return vec4<f32>(u.time, -span * f0, u.time, -span * f1);
+    }
+    if (mode == 2u) {
+        // A quarter of a second of visual time at full length.
+        let span = u.stroke.y * 0.25;
+        return vec4<f32>(u.time - span * f0, 0.0, u.time - span * f1, 0.0);
+    }
+    return vec4<f32>(u.time, 0.0, u.time, 0.0);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    let pi = vi / 6u;
+    // `count` is a budget of quads, not of particles: a stroke of four
+    // segments spends four, so turning lines on does not multiply the
+    // cost of a frame. With one segment this is the old indexing exactly.
+    let segs = max(u32(u.stroke.z + 0.5), 1u);
+    let quad = vi / 6u;
+    let pi = quad / segs;
+    let seg = quad % segs;
     let corner = vi % 6u;
     var offsets = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
@@ -652,19 +719,27 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     );
     let off = offsets[corner];
 
-    let b = body(pi);
+    let ends = stroke_ends(seg, segs);
+    let b = body_at(pi, ends.x, ends.y);
     let p = b.p;
+    let stroked = segs > 1u || u.stroke.x > 0.5;
+    var tail = p;
+    if (stroked) {
+        tail = body_at(pi, ends.z, ends.w).p;
+    }
 
     // Real projection, so the camera can move and the room can line up
     // with the frame. The old fixed transform could not express either.
     let centre = u.view_proj * vec4<f32>(p, 1.0);
-    if (centre.w < 0.02) {
+    let tail_clip = u.view_proj * vec4<f32>(tail, 1.0);
+    if (centre.w < 0.02 || tail_clip.w < 0.02) {
         // Behind the camera: emit a degenerate off-screen vertex rather
         // than letting the perspective divide flip it back into view.
         var cull: VsOut;
         cull.pos = vec4<f32>(4.0, 4.0, 2.0, 1.0);
         cull.uv = vec2<f32>(0.0);
         cull.color = vec3<f32>(0.0);
+        cull.run = 0.0;
         return cull;
     }
 
@@ -690,21 +765,73 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     var energy = 1.0;
     if (u.viewport_h > 0.0) {
         let grow = footprint_grow(p, half, centre, FOOTPRINT_MIN_PX);
-        half = half * grow;
-        energy = 1.0 / (grow * grow);
+        // The light is the area, and a stroke's area is its run plus its
+        // caps: `(πh + 2L)h` for half-width `h` and length `L`. Widening
+        // `h` grows the caps by the square and the run only linearly, so
+        // a long stroke dims by about `1/grow` and a stroke of no length
+        // by `1/grow²`, which is the dot's rule — a still streak is a dot
+        // and must carry a dot's light.
+        let run_len = 2.0 * distance(p, tail);
+        let h0 = half;
+        let h1 = half * grow;
+        energy = ((3.14159265 * h0 + run_len) * h0) / ((3.14159265 * h1 + run_len) * h1);
+        half = h1;
     }
 
-    // Billboard in world space against the camera basis, so sprites face
-    // the camera from any angle instead of only from straight on.
-    // Named apart from the quad-corner index above.
-    let corner_pos = p + (u.cam_right * off.x + u.cam_up * off.y) * half;
+    var corner_pos: vec3<f32>;
+    var uv = off;
+    var run = 0.0;
+    if (stroked) {
+        // A ribbon from head to tail, turned to face the eye: its width
+        // runs across the segment and across the view at once. Only the
+        // outer ends get round caps; an interior joint is covered by its
+        // neighbour, and capping it as well would double the light there.
+        let axis = tail - p;
+        let len = length(axis);
+        let to_eye = normalize(u.cam_position - p);
+        var along = u.cam_right;
+        if (len > 1e-6) {
+            along = axis / len;
+        }
+        var across = cross(along, to_eye);
+        if (dot(across, across) < 1e-8) {
+            across = u.cam_up;
+        }
+        across = normalize(across);
+        run = len / half;
+        let head_cap = select(0.0, 1.0, seg == 0u);
+        let tail_cap = select(0.0, 1.0, seg + 1u == segs);
+        // off.x = -1 is the head, +1 the tail.
+        let at_tail = off.x > 0.0;
+        let x = select(-head_cap, run + tail_cap, at_tail);
+        corner_pos = p + along * (x * half) + across * (off.y * half);
+        uv = vec2<f32>(x, off.y);
+    } else {
+        // Billboard in world space against the camera basis, so sprites
+        // face the camera from any angle instead of only from straight on.
+        corner_pos = p + (u.cam_right * off.x + u.cam_up * off.y) * half;
+    }
     var clip4 = u.view_proj * vec4<f32>(corner_pos, 1.0);
+
+    // A stroke carries its particle's light spread along it, as an
+    // exposure does: the dot's area over the whole stroke's. Without
+    // this, light grows with length, and long lines on a dense cloud
+    // burn the frame out instead of drawing it.
+    if (stroked) {
+        let whole = 2.0 * distance(p, tail) * f32(segs);
+        energy *= (3.14159265 * half) / (3.14159265 * half + whole);
+    }
 
     // Spreading the same energy over a wider disc dims it; without this,
     // defocusing brightens the frame instead of softening it.
     let bokeh = energy / (coc * coc);
     // Distance fade so depth still reads without a depth buffer.
-    let fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
+    var fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
+    // A streak fades towards where the particle was, so it reads as
+    // motion with a direction rather than as a dash.
+    if (u32(u.stroke.x + 0.5) == 2u) {
+        fade *= 1.0 - 0.8 * (f32(seg) + 0.5) / f32(segs);
+    }
     // `w` after the view-projection is the view-space depth, which is what
     // the depth-driven palette wants.
     var normal = body_normal(b);
@@ -722,8 +849,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
     var out: VsOut;
     out.pos = clip4;
-    out.uv = off;
+    out.uv = uv;
     out.color = col;
+    out.run = run;
     return out;
 }
 
@@ -843,7 +971,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // so every sprite contributed a full 1.0 across its whole quad
     // including the parts that had faded to nothing. Anything downstream
     // reading alpha as coverage saw a solid rectangle per particle.
-    let d = length(in.uv);
+    // A stroke is the same profile pulled out along x: flat across its
+    // run, round at its caps. For a dot `run` is zero and this is
+    // `length(uv)` exactly, so a dot is the sprite it always was.
+    let x = select(max(in.uv.x - in.run, 0.0), -in.uv.x, in.uv.x < 0.0);
+    let d = length(vec2<f32>(x, in.uv.y));
     let a = smoothstep(1.0, 0.1, d);
     let cover = a * a;
     return vec4<f32>(in.color * cover, cover);

@@ -505,6 +505,7 @@ mod tests {
             light: crate::particles::Uniforms::UNLIT.light,
             sun_dir: crate::particles::Uniforms::UNLIT.sun_dir,
             sun_tint: crate::particles::Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),

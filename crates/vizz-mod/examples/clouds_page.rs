@@ -652,6 +652,12 @@ const ENGINE: &[Part] = &[
                 ours: false,
             },
             Piece {
+                name: "Lines and streaks",
+                about: r#"<p>With <code>/particles/stroke</code> a glowing particle can be drawn as more than a dot. A <em>line</em> draws each particle back along its own path at the present moment: a cloud keeps its trajectory in time order, so on a flow or a curve thousands of short strokes join up into the path itself, and the Lorenz butterfly becomes wire instead of dust. A <em>streak</em> draws each particle back through time instead, fading towards where it was, which is motion blur, and it shortens to a dot when nothing moves. Both are ribbons of four segments turned to face the eye, spending four quads of the particle budget, so the cost of a frame does not change; and each carries its particle's light spread along it, so a long stroke is fainter rather than brighter.</p>"#,
+                source: r#"lines after Malte Zöckler, Detlev Stalling and Hans-Christian Hege, <a href="https://opus4.kobv.de/opus4-zib/frontdoor/index/index/docId/268">“Interactive Visualization of 3D-Vector Fields Using Illuminated Stream Lines”</a>, IEEE Visualization 1996. Streaks after William Reeves, <a href="https://history.siggraph.org/?p=106060">“Particle Systems — a Technique for Modeling a Class of Fuzzy Objects”</a>, SIGGRAPH 1983, which drew each particle as a motion-blurred streak."#,
+                ours: false,
+            },
+            Piece {
                 name: "Gravity wells",
                 about: r#"<p>Four attractors and repulsors bending the cloud from a layer above the scenes. Deliberately <em>not</em> a simulation: every particle here is a function of its index with no state between frames, and integrating velocities would throw that away for physics nobody is checking. The falloff is <code>r²/(d²+r²)</code> — one at the centre, a half at the radius, asymptotically nothing beyond — because a hard cutoff shows up as a visible shell in the cloud.</p>"#,
                 source: "vizz. A displacement field that reads as gravity, not a gravity model.",
