@@ -56,6 +56,8 @@ fn main() {
         "/particles/saturation",
         "/particles/brightness",
         "/particles/surface",
+        "/particles/stroke",
+        "/particles/stroke_len",
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",
