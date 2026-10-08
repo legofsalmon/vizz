@@ -658,6 +658,12 @@ const ENGINE: &[Part] = &[
                 ours: false,
             },
             Piece {
+                name: "Glyphs",
+                about: r#"<p>In the surface mode, <code>/particles/glyph</code> makes each particle a small solid instead of a disc: a tetrahedron, a cube, an octahedron, a long shard or a mix. Each is turned to the way its particle travels, found by evaluating the particle a twentieth of a second of visual time earlier, rolls slowly about that axis, and is lit by its own exact face normals, so the facets catch the light as facets. The glyphs cast their own shapes into the shadow map. A disc says the cloud is a surface sampled by points; a glyph says it is a field of things.</p>"#,
+                source: r#"Rita Borgo, Johannes Kehrer, David H. S. Chung, Eamonn Maguire, Robert S. Laramee, Helwig Hauser, Matthew Ward and Min Chen, <a href="https://diglib.eg.org/handle/10.2312/conf.EG2013.stars.039-063">“Glyph-based Visualization: Foundations, Design Guidelines, Techniques and Applications”</a>, Eurographics State of the Art Reports, 2013."#,
+                ours: false,
+            },
+            Piece {
                 name: "Gravity wells",
                 about: r#"<p>Four attractors and repulsors bending the cloud from a layer above the scenes. Deliberately <em>not</em> a simulation: every particle here is a function of its index with no state between frames, and integrating velocities would throw that away for physics nobody is checking. The falloff is <code>r²/(d²+r²)</code> — one at the centre, a half at the radius, asymptotically nothing beyond — because a hard cutoff shows up as a visible shell in the cloud.</p>"#,
                 source: "vizz. A displacement field that reads as gravity, not a gravity model.",

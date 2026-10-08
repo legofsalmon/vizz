@@ -1079,6 +1079,17 @@ this mode the ambient light is a sky rather than a flat fill: full on surfaces
 facing up, dimmer on those facing down, so a form still has a top and a bottom
 with every lamp off. The additive mode is untouched.</p>
 
+<h3 id="glyphs">Glyphs</h3>
+
+<p>In the surface mode, <code>/particles/glyph</code> replaces each disc with a
+small solid: a tetrahedron, a cube, an octahedron, a long shard, or a mix of
+the four. Each one is turned so its long axis follows the way its particle is
+travelling, rolls slowly about it, and is lit by its own faces, so the facets
+catch the lamps and the sun. They cast their own shapes into the sun's
+shadow. A field of them reads as confetti, scales or debris rather than as a
+surface. A glyph draws up to six times the vertices of a disc, so lower
+<code>/particles/count</code> with it on a dense cloud.</p>
+
 <h2 id="camera">Camera and room</h2>
 
 <p>A real camera looks into the field: <code>/camera/distance</code>,
@@ -1413,6 +1424,7 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/surface</code></td><td>0 – 1</td><td>0</td><td>draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow</td></tr>
     <tr><td><code>/particles/stroke</code></td><td>0 – 2</td><td>0</td><td>what a glowing particle is: a dot, a line along its own path, or a streak of its motion</td></tr>
     <tr><td><code>/particles/stroke_len</code></td><td>0 – 1</td><td>0.3</td><td>how long a line or streak is</td></tr>
+    <tr><td><code>/particles/glyph</code></td><td>0 – 5</td><td>0</td><td>what a solid particle is in the surface mode: a disc, or a small solid turned to its heading</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>

@@ -26,7 +26,7 @@
 //      is not any one surfel's: it is the orientation of the surface they
 //      make together, and only the depth buffer knows that.
 
-/// One evaluated particle. std430: 48 bytes, must match `SPLAT_BYTES` in
+/// One evaluated particle. std430: 64 bytes, must match `SPLAT_BYTES` in
 /// surface.rs.
 struct Splat {
     pos: vec3<f32>,
@@ -38,6 +38,11 @@ struct Splat {
     // The cloud's own normal, not yet flipped towards anybody, or zero.
     normal: vec3<f32>,
     _pad1: f32,
+    // Which way the particle is travelling, unit, for orienting a glyph;
+    // a fixed direction of its own when it is not moving.
+    axis: vec3<f32>,
+    // The glyph's roll about that axis, in radians.
+    roll: f32,
 };
 
 /// Must match `SurfaceUniforms` in surface.rs.
@@ -95,7 +100,195 @@ fn cs_eval(@builtin(global_invocation_id) id: vec3<u32>) {
     out.normal = body_normal(b);
     out._pad0 = 0.0;
     out._pad1 = 0.0;
+    // Where the particle was a moment ago, for the way it is heading. Only
+    // paid for when a glyph will use it.
+    let h = vec3<f32>(hash01(pi, 1u), hash01(pi, 2u), hash01(pi, 3u)) * 2.0 - 1.0;
+    var axis = normalize(h + vec3<f32>(1e-3, 0.0, 0.0));
+    if (glyph_kind() > 0u) {
+        let was = body_at(pi, u.time - GLYPH_LOOKBACK, 0.0).p;
+        let d = b.p - was;
+        if (dot(d, d) > 1e-12) {
+            axis = normalize(d);
+        }
+    }
+    out.axis = axis;
+    // A roll of its own, turning slowly, so a still field of glyphs
+    // glints instead of sitting like a printed pattern.
+    out.roll = hash01(pi, 0u) * TAU + u.time * (0.3 + hash01(pi, 2u));
     splats_out[pi] = out;
+}
+
+// --- Glyphs -------------------------------------------------------------
+//
+// A surfel is a disc facing the eye, which is right for a surface sampled
+// by points and wrong for a cloud of *things*. A glyph replaces the disc
+// with a small solid — a tetrahedron, a cube, an octahedron or a long
+// shard — turned to the way the particle travels and lit by its own
+// faces, so a field of them reads as confetti, scales or debris. The
+// glyph-based visualisation literature is the source: Borgo et al.,
+// "Glyph-based Visualization: Foundations, Design Guidelines, Techniques
+// and Applications", Eurographics State of the Art Reports, 2013.
+
+/// Visual time to look back for a particle's heading.
+const GLYPH_LOOKBACK: f32 = 0.05;
+/// Vertices drawn per particle when glyphs are on: the largest mesh,
+/// the cube's twelve triangles. Smaller meshes leave the rest degenerate.
+const GLYPH_VERTS_MAX: u32 = 36u;
+
+/// 0 for discs; 1 tetrahedron, 2 cube, 3 octahedron, 4 shard, 5 a mix.
+fn glyph_kind() -> u32 {
+    return u32(u.stroke.w + 0.5);
+}
+
+/// The four meshes as flat triangle lists, unit circumradius, centred on
+/// the origin; the shard is a triangular bipyramid stretched along x.
+/// Generated as the convex hulls of their vertices.
+const GLYPH_VERTS = array<vec3<f32>, 90>(
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(-0.577350, 0.577350, 0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, 0.577350),
+    vec3<f32>(-0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(-0.577350, -0.577350, -0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, 0.577350, -0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, -0.577350),
+    vec3<f32>(0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, -0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, 0.577350),
+    vec3<f32>(-0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, 0.577350),
+    vec3<f32>(-0.577350, 0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(-0.577350, 0.577350, -0.577350),
+    vec3<f32>(-0.577350, 0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, -0.577350, -0.577350),
+    vec3<f32>(0.577350, 0.577350, -0.577350),
+    vec3<f32>(0.577350, -0.577350, 0.577350),
+    vec3<f32>(0.577350, 0.577350, -0.577350),
+    vec3<f32>(0.577350, 0.577350, 0.577350),
+    vec3<f32>(1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, 1.000000),
+    vec3<f32>(1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, -1.000000),
+    vec3<f32>(1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, -1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, 1.000000),
+    vec3<f32>(1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, -1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, -1.000000),
+    vec3<f32>(-1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, 1.000000),
+    vec3<f32>(-1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, -1.000000),
+    vec3<f32>(-1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, -1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, 1.000000),
+    vec3<f32>(-1.000000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, -1.000000, 0.000000),
+    vec3<f32>(0.000000, 0.000000, -1.000000),
+    vec3<f32>(1.600000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 0.450000, 0.000000),
+    vec3<f32>(0.000000, -0.225000, 0.389711),
+    vec3<f32>(1.600000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 0.450000, 0.000000),
+    vec3<f32>(0.000000, -0.225000, -0.389711),
+    vec3<f32>(1.600000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, -0.225000, 0.389711),
+    vec3<f32>(0.000000, -0.225000, -0.389711),
+    vec3<f32>(-1.600000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 0.450000, 0.000000),
+    vec3<f32>(0.000000, -0.225000, 0.389711),
+    vec3<f32>(-1.600000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, 0.450000, 0.000000),
+    vec3<f32>(0.000000, -0.225000, -0.389711),
+    vec3<f32>(-1.600000, 0.000000, 0.000000),
+    vec3<f32>(0.000000, -0.225000, 0.389711),
+    vec3<f32>(0.000000, -0.225000, -0.389711),
+);
+
+/// (first vertex, vertex count) of each mesh in `GLYPH_VERTS`.
+fn glyph_range(kind: u32) -> vec2<u32> {
+    switch kind {
+        case 1u: { return vec2<u32>(0u, 12u); }
+        case 2u: { return vec2<u32>(12u, 36u); }
+        case 3u: { return vec2<u32>(48u, 24u); }
+        default: { return vec2<u32>(72u, 18u); }
+    }
+}
+
+struct GlyphVertex {
+    pos: vec3<f32>,
+    normal: vec3<f32>,
+    // False for the spare vertices past the end of a smaller mesh.
+    valid: bool,
+};
+
+/// Vertex `vi` of particle `sp`'s glyph, in world space, and the normal
+/// of the face it belongs to. `pi` picks the mesh when the kind is a mix.
+fn glyph_vertex(sp: Splat, pi: u32, vi: u32, half: f32) -> GlyphVertex {
+    var kind = glyph_kind();
+    if (kind >= 5u) {
+        kind = 1u + hash_u32(pi * 4u + 3u) % 4u;
+    }
+    let range = glyph_range(kind);
+    var out: GlyphVertex;
+    out.valid = vi < range.y;
+    let tri = min(vi, range.y - 1u) / 3u;
+    let base = range.x + tri * 3u;
+    let a = GLYPH_VERTS[base];
+    let b = GLYPH_VERTS[base + 1u];
+    let c = GLYPH_VERTS[base + 2u];
+    let local = GLYPH_VERTS[range.x + min(vi, range.y - 1u)];
+    var n = normalize(cross(b - a, c - a));
+    // Outward: every mesh is convex and centred, so the face's centroid
+    // says which side is out whatever order the triangle was listed in.
+    n = n * select(-1.0, 1.0, dot(n, a + b + c) >= 0.0);
+
+    // A frame with x along the heading, rolled about it.
+    let x = sp.axis;
+    var helper = vec3<f32>(0.0, 1.0, 0.0);
+    if (abs(x.y) > 0.9) {
+        helper = vec3<f32>(1.0, 0.0, 0.0);
+    }
+    let y0 = normalize(cross(helper, x));
+    let z0 = cross(x, y0);
+    let cr = cos(sp.roll);
+    let sr = sin(sp.roll);
+    let y = y0 * cr + z0 * sr;
+    let z = z0 * cr - y0 * sr;
+    out.pos = sp.pos + (x * local.x + y * local.y + z * local.z) * half;
+    out.normal = x * n.x + y * n.y + z * n.z;
+    return out;
 }
 
 fn quad_corner(vi: u32) -> vec2<f32> {
@@ -115,6 +308,15 @@ struct ShadowOut {
 
 @vertex
 fn vs_shadow(@builtin(vertex_index) vi: u32) -> ShadowOut {
+    if (glyph_kind() > 0u) {
+        let pi = vi / GLYPH_VERTS_MAX;
+        let sp = splats[pi];
+        let g = glyph_vertex(sp, pi, vi % GLYPH_VERTS_MAX, max(sp.half, s.shadow_texel));
+        var out: ShadowOut;
+        out.pos = select(vec4<f32>(4.0, 4.0, 2.0, 1.0), s.sun_view_proj * vec4<f32>(g.pos, 1.0), g.valid);
+        out.uv = vec2<f32>(0.0);
+        return out;
+    }
     let sp = splats[vi / 6u];
     let off = quad_corner(vi);
     // Face the sun, and never smaller than a texel: a surfel that falls
@@ -225,10 +427,15 @@ struct SurfelOut {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec3<f32>,
     @location(2) normal: vec3<f32>,
+    // 1 on a glyph's face, whose normal is exact; 0 on a disc.
+    @location(3) @interpolate(flat) facet: f32,
 };
 
 @vertex
 fn vs_surface(@builtin(vertex_index) vi: u32) -> SurfelOut {
+    if (glyph_kind() > 0u) {
+        return glyph_surfel(vi);
+    }
     let sp = splats[vi / 6u];
     let off = quad_corner(vi);
     var out: SurfelOut;
@@ -238,6 +445,7 @@ fn vs_surface(@builtin(vertex_index) vi: u32) -> SurfelOut {
         out.uv = vec2<f32>(0.0);
         out.color = vec3<f32>(0.0);
         out.normal = vec3<f32>(0.0);
+        out.facet = 0.0;
         return out;
     }
     var half = sp.half;
@@ -251,6 +459,36 @@ fn vs_surface(@builtin(vertex_index) vi: u32) -> SurfelOut {
     // Two-sided, as in the additive pass: facing the eye.
     let to_eye = u.cam_position - sp.pos;
     out.normal = sp.normal * select(-1.0, 1.0, dot(sp.normal, to_eye) >= 0.0);
+    out.facet = 0.0;
+    return out;
+}
+
+/// A glyph's vertex for the G-buffer. Its normal is its face's and is
+/// trusted fully, so the facets light as facets rather than being smoothed
+/// into the envelope the depth buffer sees.
+fn glyph_surfel(vi: u32) -> SurfelOut {
+    let pi = vi / GLYPH_VERTS_MAX;
+    let sp = splats[pi];
+    var out: SurfelOut;
+    let centre = u.view_proj * vec4<f32>(sp.pos, 1.0);
+    if (centre.w < 0.02) {
+        out.pos = vec4<f32>(4.0, 4.0, 2.0, 1.0);
+        out.uv = vec2<f32>(0.0);
+        out.color = vec3<f32>(0.0);
+        out.normal = vec3<f32>(0.0);
+        out.facet = 0.0;
+        return out;
+    }
+    var half = sp.half;
+    if (u.viewport_h > 0.0) {
+        half = half * footprint_grow(sp.pos, half, centre, SURFEL_MIN_PX);
+    }
+    let g = glyph_vertex(sp, pi, vi % GLYPH_VERTS_MAX, half);
+    out.pos = select(vec4<f32>(4.0, 4.0, 2.0, 1.0), u.view_proj * vec4<f32>(g.pos, 1.0), g.valid);
+    out.uv = vec2<f32>(0.0);
+    out.color = sp.color;
+    out.normal = g.normal;
+    out.facet = 1.0;
     return out;
 }
 
@@ -265,7 +503,8 @@ fn fs_surface(in: SurfelOut) -> GOut {
     // mostly what it lights by, so a wall in a scan lights as a wall. A
     // fifth is left to the depth buffer, which keeps the grain.
     let known = dot(in.normal, in.normal) > 0.25;
-    out.normal = select(vec4<f32>(0.5, 0.5, 0.5, 0.0), pack_normal(normalize(in.normal), 0.8), known);
+    let trust = select(0.8, 1.0, in.facet > 0.5);
+    out.normal = select(vec4<f32>(0.5, 0.5, 0.5, 0.0), pack_normal(normalize(in.normal), trust), known);
     return out;
 }
 

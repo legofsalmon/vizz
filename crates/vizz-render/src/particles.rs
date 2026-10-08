@@ -113,10 +113,11 @@ pub struct Uniforms {
     pub sun_dir: [f32; 4],
     /// The sun's colour in `rgb`, mixed on the CPU like a lamp's.
     pub sun_tint: [f32; 4],
-    /// How the glowing mode draws a particle: `.x` is [`Stroke`] as a
-    /// number, `.y` the stroke length 0..1, `.z` segments per stroke.
-    /// All zero is a dot, which is every look saved before strokes
-    /// existed. Build it with [`Stroke::lanes`].
+    /// How a particle is drawn: `.x` is [`Stroke`] as a number, `.y` the
+    /// stroke length 0..1, `.z` segments per stroke, all for the glowing
+    /// mode; `.w` is the surface mode's [`Glyph`]. All zero is a dot and a
+    /// disc, which is every look saved before either existed. Build it
+    /// with [`Stroke::lanes`] and [`Glyph::lane`].
     pub stroke: [f32; 4],
 }
 
@@ -162,6 +163,48 @@ impl Stroke {
             Stroke::Dot => [0.0; 4],
             Stroke::Line => [1.0, length, segs, 0.0],
             Stroke::Streak => [2.0, length * speed.max(0.0), segs, 0.0],
+        }
+    }
+}
+
+/// What a particle is drawn as in the surface mode.
+///
+/// A disc is a surfel: the cloud as a sampled surface. The rest are small
+/// solids turned to the way each particle travels and lit by their own
+/// faces, so the cloud reads as a field of things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    Disc,
+    Tetrahedron,
+    Cube,
+    Octahedron,
+    Shard,
+    /// One of the four solids per particle, by its hash.
+    Mix,
+}
+
+impl Glyph {
+    /// From the stepped `/particles/glyph` value.
+    pub fn from_index(i: f32) -> Self {
+        match i.round() as i32 {
+            1 => Glyph::Tetrahedron,
+            2 => Glyph::Cube,
+            3 => Glyph::Octahedron,
+            4 => Glyph::Shard,
+            5 => Glyph::Mix,
+            _ => Glyph::Disc,
+        }
+    }
+
+    /// The value for `Uniforms::stroke[3]`, which carries it.
+    pub fn lane(self) -> f32 {
+        match self {
+            Glyph::Disc => 0.0,
+            Glyph::Tetrahedron => 1.0,
+            Glyph::Cube => 2.0,
+            Glyph::Octahedron => 3.0,
+            Glyph::Shard => 4.0,
+            Glyph::Mix => 5.0,
         }
     }
 }

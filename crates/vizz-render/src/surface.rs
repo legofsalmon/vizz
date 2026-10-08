@@ -33,7 +33,11 @@ pub const SOURCE: &str = concat!(
 );
 
 /// Bytes per evaluated particle. Must match `Splat` in surface.wgsl.
-pub const SPLAT_BYTES: u64 = 48;
+pub const SPLAT_BYTES: u64 = 64;
+
+/// Vertices per particle when the surface mode draws glyphs. Must match
+/// `GLYPH_VERTS_MAX` in surface.wgsl.
+pub const GLYPH_VERTS: u32 = 36;
 
 /// Shadow map edge, in texels. 2048 over a cloud a few units across is a
 /// texel of a few thousandths of a unit, finer than the default sprite.
@@ -536,6 +540,9 @@ impl Surface {
         let sun = sun_frame(uniforms);
         let shadow_on = uniforms.sun_dir[3] > 0.001 && count > 0;
         let walls_on = walls.is_some_and(|w| w.brightness > 0.002);
+        // A disc is a quad; a glyph is a mesh, drawn with the largest
+        // mesh's vertex count so every kind fits. See `glyph_vertex`.
+        let verts = if uniforms.stroke[3] > 0.5 { GLYPH_VERTS } else { 6 };
         let su = SurfaceUniforms {
             sun_view_proj: sun.view_proj.to_cols_array_2d(),
             inv_view_proj: Mat4::from_cols_array_2d(&uniforms.view_proj)
@@ -588,7 +595,7 @@ impl Surface {
             pass.set_pipeline(&self.shadow);
             pass.set_bind_group(0, particle_bg, &[]);
             pass.set_bind_group(1, &splats.draw_bg, &[]);
-            pass.draw(0..count * 6, 0..1);
+            pass.draw(0..count * verts, 0..1);
         }
 
         // The surfaces: albedo, known normals and depth.
@@ -623,7 +630,7 @@ impl Surface {
             pass.set_bind_group(1, &splats.draw_bg, &[]);
             if count > 0 {
                 pass.set_pipeline(&self.draw);
-                pass.draw(0..count * 6, 0..1);
+                pass.draw(0..count * verts, 0..1);
             }
             // After the cloud, so the depth test skips the plaster it hides.
             if walls_on {
@@ -666,6 +673,7 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::particles::Glyph;
 
     #[test]
     fn the_uniform_block_matches_the_shader() {
@@ -868,6 +876,33 @@ mod tests {
         // one, however many surfels are stacked behind the front one.
         assert!(glow > 2.0, "the additive sphere should pile up light: {glow}");
         assert!(solid <= 1.01 && solid > 0.5, "an opaque sphere is its albedo, lit: {solid}");
+    }
+
+    /// Glyphs are solid and lit by their own faces. With the sun off to
+    /// the side, square to the view, a sparse field of discs is nearly
+    /// dim: each disc faces the camera, and the surface the depth buffer
+    /// reads from so few of them is mostly turned the same way. Cubes in
+    /// the same place turn faces towards the sun whichever way they are
+    /// rolled, and light. Measured at 2.1 times the discs on lavapipe.
+    #[test]
+    fn glyphs_light_by_their_faces() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let mut u = sphere();
+        u.size = 0.07;
+        u.light = [0.0, 1.0, 0.0, 0.0];
+        let side = Vec3::from(u.cam_right);
+        u.sun_dir = [side.x, side.y, side.z, 3.0];
+        let mean_lit = |u: &Uniforms| {
+            let px = frame(&ctx, &scene, u, 300, true, None);
+            px.iter().sum::<f32>() / W as f32 / W as f32
+        };
+        let discs = mean_lit(&u);
+        u.stroke[3] = Glyph::Cube.lane();
+        let cubes = mean_lit(&u);
+        let max = frame(&ctx, &scene, &u, 300, true, None).into_iter().fold(0.0f32, f32::max);
+        assert!(max < 3.5, "a glyph is opaque, not summed: {max}");
+        assert!(cubes > discs * 1.6 && cubes > 1e-3, "cubes {cubes:.4} against discs {discs:.4}");
     }
 
     #[test]

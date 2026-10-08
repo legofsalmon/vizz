@@ -1532,6 +1532,26 @@ the form that faces them, and the sun casts a shadow. The room, when it
 is up, is drawn as dark plaster walls, floor and ceiling with its grid in
 them, and the lamps and the cloud's shadow land on it.
 
+#### Glyphs
+
+```
+/particles/glyph   0 disc (the default), 1 tetrahedron, 2 cube,
+                   3 octahedron, 4 shard, 5 a mix of the four
+```
+
+A disc is right for a surface sampled by points and wrong for a cloud of
+things. A glyph replaces each disc with a small solid, turned so its long
+axis follows the way the particle is travelling (where it was a twentieth
+of a second of visual time ago) and rolling slowly about it, and lit by
+its own faces: their normals are exact, so the facets catch the lamps and
+the sun as facets instead of being smoothed into the envelope of the
+cloud. They cast their own shapes into the shadow map. A field of them
+reads as confetti, scales or debris. Each glyph is drawn as up to 36
+vertices, six times a disc's six, so dense clouds cost more here than
+in any other mode. After Borgo et al., "Glyph-based Visualization:
+Foundations, Design Guidelines, Techniques and Applications",
+Eurographics State of the Art Reports, 2013.
+
 How it is drawn:
 
 - **Each particle is evaluated once**, by a compute pass, into a buffer
@@ -2047,6 +2067,7 @@ and the aliases are read on the way in only.
 | `/particles/surface` | 0 – 1 | 0 | draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow |
 | `/particles/stroke` | 0 – 2 | 0 | what a glowing particle is: a dot, a line along its own path, or a streak of its motion |
 | `/particles/stroke_len` | 0 – 1 | 0.3 | how long a line or streak is |
+| `/particles/glyph` | 0 – 5 | 0 | what a solid particle is in the surface mode: a disc, or a small solid turned to its heading |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

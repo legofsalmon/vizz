@@ -85,6 +85,7 @@ pub struct AppParams {
     pub surface: ParamId,
     pub stroke: ParamId,
     pub stroke_len: ParamId,
+    pub glyph: ParamId,
     pub dim: ParamId,
     pub shape: ParamId,
     pub morph: ParamId,
@@ -191,6 +192,7 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/surface", "draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow"),
     ("/particles/stroke", "what a glowing particle is: a dot, a line along its own path, or a streak of its motion"),
     ("/particles/stroke_len", "how long a line or streak is"),
+    ("/particles/glyph", "what a solid particle is in the surface mode: a disc, or a small solid turned to its heading"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
@@ -410,6 +412,17 @@ impl AppParams {
         );
         let stroke_len =
             b.add(ParamDef::new("/particles/stroke_len", 0.0, 1.0, 0.3).smooth(0.2));
+        // What a solid particle is. Stepped: a cube halfway to a disc is
+        // not a shape. Discs by default, which is the surface mode as it
+        // shipped.
+        let glyph = b.add(ParamDef::new("/particles/glyph", 0.0, 5.0, 0.0).labels(&[
+            "disc",
+            "tetrahedron",
+            "cube",
+            "octahedron",
+            "shard",
+            "mix",
+        ]));
         // Geometry: sphere, torus, knot, grid, shell, Lorenz, Aizawa,
         // cloud pair.
         // Fractional values sit between two forms, so this is a sweep, not
@@ -915,6 +928,7 @@ impl AppParams {
             surface,
             stroke,
             stroke_len,
+            glyph,
             dim,
             shape,
             morph,
