@@ -1151,21 +1151,21 @@ mod tests {
         assert!((0.97..1.03).contains(&ratio), "a still streak should light as a dot, got {ratio:.3}");
     }
 
-    /// Lines on an attractor draw its path: with the same quad budget
-    /// they cover far more of the frame than the dots do, because each
-    /// stroke runs along the trajectory instead of sitting at one point
-    /// of it.
+    /// Lines on an attractor draw its path: the same particles drawn as
+    /// lines cover far more of the frame than as dots, because each one
+    /// runs along the trajectory instead of sitting at one point of it.
+    /// Few enough particles that neither covers the attractor outright.
     #[test]
     fn lines_draw_the_path() {
         let Some(ctx) = gpu() else { return };
         let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
         // The Lorenz, which is a trajectory stored in time order.
         let dots = Uniforms { shape: 5.0, ..small_sprites(0.004, 0.0) };
-        let lines = Uniforms { stroke: Stroke::Line.lanes(0.5, 0.0), ..dots };
-        let lit = |u: &Uniforms| {
-            frame_f16_count(&ctx, &scene, u, 8_000).iter().filter(|&&v| v > 1e-3).count()
+        let lines = Uniforms { stroke: Stroke::Line.lanes(1.0, 0.0), ..dots };
+        let lit = |u: &Uniforms, count: u32| {
+            frame_f16_count(&ctx, &scene, u, count).iter().filter(|&&v| v > 1e-5).count()
         };
-        let (d, l) = (lit(&dots), lit(&lines));
+        let (d, l) = (lit(&dots, 150), lit(&lines, 150 * Stroke::SEGMENTS));
         assert!(l > d * 2, "lines lit {l} pixels against {d} for dots");
     }
 

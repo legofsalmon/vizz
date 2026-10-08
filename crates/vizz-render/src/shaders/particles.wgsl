@@ -829,8 +829,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     var fade = clamp(1.7 - centre.w * 0.28, 0.15, 1.0) * bokeh;
     // A streak fades towards where the particle was, so it reads as
     // motion with a direction rather than as a dash.
+    // Only as far as it has moved: a streak that has not gone anywhere
+    // is a dot, and a dot does not fade along a length it does not have.
     if (u32(u.stroke.x + 0.5) == 2u) {
-        fade *= 1.0 - 0.8 * (f32(seg) + 0.5) / f32(segs);
+        let taper = 0.8 * (f32(seg) + 0.5) / f32(segs);
+        fade *= 1.0 - taper * smoothstep(0.0, 1.0, run);
     }
     // `w` after the view-projection is the view-space depth, which is what
     // the depth-driven palette wants.
