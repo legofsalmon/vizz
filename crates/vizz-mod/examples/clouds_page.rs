@@ -659,6 +659,12 @@ const ENGINE: &[Part] = &[
                 ours: false,
             },
             Piece {
+                name: "Plexus",
+                about: r#"<p><code>/particles/plexus</code> draws lines between the particles that come near each other: the network, or the constellation, over any cloud and in either draw mode. Up to 2048 of the particles, spread evenly over the whole field, are the nodes. Each frame a compute pass places them with the dots' own shader functions, and a second finds each one's four nearest within <code>/particles/plexus_reach</code> by testing every other node — a few million distance tests, which needs no grid. A thin additive line runs along each link in the colours of its two ends, fading to nothing as the pair drifts out of reach, so links come and go softly instead of snapping. A pair that lists each other is drawn once.</p>"#,
+                source: r#"the motion-graphics “plexus” look, after Rowbyte's <a href="https://rowbyte.com/plexus/">Plexus</a> plug-in for After Effects (2010), whose name it has become; the geometry is a k-nearest-neighbour graph cut at a radius."#,
+                ours: false,
+            },
+            Piece {
                 name: "Glyphs",
                 about: r#"<p>In the surface mode, <code>/particles/glyph</code> makes each particle a small solid instead of a disc: a tetrahedron, a cube, an octahedron, a long shard or a mix. Each is turned to the way its particle travels, found by evaluating the particle a twentieth of a second of visual time earlier, rolls slowly about that axis, and is lit by its own exact face normals, so the facets catch the light as facets. The glyphs cast their own shapes into the shadow map. A disc says the cloud is a surface sampled by points; a glyph says it is a field of things.</p>"#,
                 source: r#"Rita Borgo, Johannes Kehrer, David H. S. Chung, Eamonn Maguire, Robert S. Laramee, Helwig Hauser, Matthew Ward and Min Chen, <a href="https://diglib.eg.org/handle/10.2312/conf.EG2013.stars.039-063">“Glyph-based Visualization: Foundations, Design Guidelines, Techniques and Applications”</a>, Eurographics State of the Art Reports, 2013."#,

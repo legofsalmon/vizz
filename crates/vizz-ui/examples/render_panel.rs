@@ -63,6 +63,8 @@ fn main() {
         "/particles/solid_detail",
         "/particles/ink",
         "/particles/ink_weight",
+        "/particles/plexus",
+        "/particles/plexus_reach",
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",

@@ -1683,6 +1683,17 @@ impl App {
                 inputs.background,
             );
         }
+        // Over either mode: lines between the nearest particles.
+        if let Some(plexus) = inputs.plexus {
+            state.scene.render_plexus(
+                &state.ctx,
+                &mut encoder,
+                &state.post.scene_view,
+                &inputs.uniforms,
+                inputs.count,
+                plexus,
+            );
+        }
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         // Print placement: the stack replaces the finished frame, drawn
         // at the output format so no tone-map shoulder or feedback ever

@@ -1076,6 +1076,17 @@ does not change what a frame costs; the same count buys a quarter as many
 particles. Each one carries its particle's light spread along it, so a long
 stroke is fainter rather than brighter. The surface mode still draws discs.</p>
 
+<h3 id="plexus">Plexus</h3>
+
+<p><code>/particles/plexus</code> draws lines between the particles that come
+near each other, the network or constellation look, over any cloud and in
+either mode. <code>/particles/plexus_reach</code> sets how near is near, in
+world units where a cloud spans about two. Up to 2048 particles, spread over
+the whole field, are the nodes; each links to its four nearest within reach,
+in the colours of its two ends, and a link fades out as its pair drifts apart
+so the network knits and frays rather than flickering. The reach is a good
+thing to put on an envelope.</p>
+
 <h3 id="surface">Solid surfaces</h3>
 
 <p><code>/particles/surface</code> changes what a particle is. At 0, the
@@ -1466,6 +1477,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/surface</code></td><td>0 – 1</td><td>0</td><td>draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow</td></tr>
     <tr><td><code>/particles/stroke</code></td><td>0 – 2</td><td>0</td><td>what a glowing particle is: a dot, a line along its own path, or a streak of its motion</td></tr>
     <tr><td><code>/particles/stroke_len</code></td><td>0 – 1</td><td>0.3</td><td>how long a line or streak is</td></tr>
+    <tr><td><code>/particles/plexus</code></td><td>0 – 2</td><td>0</td><td>lines between particles that come near each other; 0 is off</td></tr>
+    <tr><td><code>/particles/plexus_reach</code></td><td>0.02 – 0.5</td><td>0.15</td><td>how near two particles must be to link, in world units</td></tr>
     <tr><td><code>/particles/glyph</code></td><td>0 – 5</td><td>0</td><td>what a solid particle is in the surface mode: a disc, or a small solid turned to its heading</td></tr>
     <tr><td><code>/particles/solid</code></td><td>0 – 4</td><td>0</td><td>a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge</td></tr>
     <tr><td><code>/particles/solid_detail</code></td><td>0 – 1</td><td>0.6</td><td>the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth</td></tr>
