@@ -106,6 +106,11 @@ pub const IDS: &[&str] = &[
     "spirograph",
     "figure-eight",
     "flame",
+    "seashell",
+    "buddhabrot",
+    "kleinian",
+    "hyperbolic",
+    "colonise",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
@@ -198,6 +203,20 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         }
         "figure-eight" => tube(figure_eight, 0.28, Frame::YUp),
         "sierpinski" => sierpinski(),
+        "seashell" => seashell(
+            num("W", 1.6),
+            num("D", 0.05),
+            num("T", 2.6),
+            num("whorls", 8.0),
+            num("ribs", 22.0),
+        ),
+        "buddhabrot" => buddhabrot(num("low", 20.0), num("high", 2000.0)),
+        "kleinian" => kleinian(
+            C(num("ta", 1.87), num("ta_i", 0.1)),
+            C(num("tb", 1.87), num("tb_i", -0.1)),
+        ),
+        "hyperbolic" => hyperbolic(num("p", 7.0), num("q", 3.0)),
+        "colonise" => colonise(num("seed", 1.0).abs() as u64, num("density", 1.0)),
         "flame" => flame(num("seed", 4.0).abs() as u64),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
@@ -2421,6 +2440,480 @@ fn split_spec(spec: &str) -> (&str, Vec<(&str, &str)>) {
     }
 }
 
+// --- Forms from the shape-rendering research ---------------------------
+
+/// A seashell, as David Raup described every coiled shell in 1966: one
+/// generating curve swept along a logarithmic helico-spiral, growing as
+/// it goes. Three numbers place a shell in his space —
+///
+/// - `W`, how much the curve grows in one whorl;
+/// - `D`, how far its inner edge sits from the axis, as a fraction of
+///   its outer edge (0 is a solid column, near 1 an open coil);
+/// - `T`, how fast it slides down the axis, so 0 is a flat ammonite and
+///   2 a tall turret.
+///
+/// `ribs` lays the ribbing Fowler, Meinhardt & Prusinkiewicz add in
+/// "Modeling seashells" (SIGGRAPH 1992): growth lines where the mantle
+/// paused, as ridges round the curve. The sweep is in scan order — round
+/// the curve, then on along the spiral — and the spiral is spaced so the
+/// rows are even along the shell rather than piled up at the tiny apex.
+fn seashell(w: f64, d: f64, t: f64, whorls: f64, ribs: f64) -> Vec<[f64; 3]> {
+    let w = w.clamp(1.05, 1e4);
+    let d = d.clamp(0.0, 0.95);
+    let whorls = whorls.clamp(0.5, 20.0);
+    let k = w.ln() / TAU;
+    let top = (k * TAU * whorls).exp();
+    // The curve's centre sits so its inner edge is D of its outer one.
+    let centre = (1.0 + d) / (1.0 - d);
+    sheet(move |u, v| {
+        // Even in the shell's own size, not in angle.
+        let g = 1.0 + v * (top - 1.0);
+        let theta = g.ln() / k;
+        let s = u * TAU;
+        let rib = 1.0 + 0.06 * (ribs * theta).cos().max(0.0).powi(6);
+        // The aperture is a little taller than it is wide, as most are.
+        let (cx, cz) = (rib * s.cos(), 1.25 * rib * s.sin());
+        let reach = centre + cx;
+        orient(
+            [g * reach * theta.cos(), g * reach * theta.sin(), g * (cz - t * centre)],
+            Frame::ZUp,
+        )
+    })
+}
+
+/// A complex number, for the plane the next three live in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct C(f64, f64);
+
+impl C {
+    fn add(self, o: C) -> C {
+        C(self.0 + o.0, self.1 + o.1)
+    }
+    fn sub(self, o: C) -> C {
+        C(self.0 - o.0, self.1 - o.1)
+    }
+    fn mul(self, o: C) -> C {
+        C(self.0 * o.0 - self.1 * o.1, self.0 * o.1 + self.1 * o.0)
+    }
+    fn div(self, o: C) -> C {
+        let n = o.0 * o.0 + o.1 * o.1;
+        C((self.0 * o.0 + self.1 * o.1) / n, (self.1 * o.0 - self.0 * o.1) / n)
+    }
+    fn conj(self) -> C {
+        C(self.0, -self.1)
+    }
+    fn norm2(self) -> f64 {
+        self.0 * self.0 + self.1 * self.1
+    }
+    fn scale(self, s: f64) -> C {
+        C(self.0 * s, self.1 * s)
+    }
+    fn sqrt(self) -> C {
+        let r = self.norm2().sqrt();
+        let re = ((r + self.0) * 0.5).max(0.0).sqrt();
+        let im = ((r - self.0) * 0.5).max(0.0).sqrt();
+        C(re, if self.1 < 0.0 { -im } else { im })
+    }
+}
+
+/// The Buddhabrot (Melinda Green, 1993): not where the Mandelbrot set's
+/// points stay, but where the ones that escape go on their way out. A
+/// seed `c` is drawn, its orbit `z → z² + c` run, and if it escapes the
+/// orbit is recorded; the density of all those paths is a seated
+/// figure, which is the name.
+///
+/// The figure is a density, and its detail only shows in millions of
+/// samples — sixty-five thousand would be a fog. So the orbits are
+/// counted first, a few million steps of them, onto a fine grid; the
+/// cloud is then drawn from that grid with each cell's chance going as
+/// its count to the power 1.7, which puts the points on the bright
+/// filaments the way a picture's contrast curve puts the eye there.
+/// Only orbits that take between `low` and `high` steps to escape are
+/// counted, and a cell's depth is the average escape time of what
+/// passed through it, on a log scale — the "Nebulabrot" that colours the
+/// figure by escape time, stood up into layers instead.
+fn buddhabrot(low: f64, high: f64) -> Vec<[f64; 3]> {
+    const SIDE: usize = 640;
+    const SAMPLES: usize = 6_000_000;
+    let low = low.clamp(2.0, 1e5) as usize;
+    let high = (high.clamp(low as f64 + 1.0, 2e5)) as usize;
+    let span = ((high as f64).ln() - (low as f64).ln()).max(1e-6);
+    // The figure lives in −2 ≤ re ≤ 1, |im| ≤ 1.5.
+    let at = |z: C| -> Option<usize> {
+        let (i, j) = ((z.1 + 1.5) / 3.0 * SIDE as f64, (z.0 + 2.0) / 3.0 * SIDE as f64);
+        (i >= 0.0 && j >= 0.0 && i < SIDE as f64 && j < SIDE as f64)
+            .then(|| i as usize + j as usize * SIDE)
+    };
+    let mut count = vec![0u32; SIDE * SIDE];
+    let mut depth = vec![0.0f32; SIDE * SIDE];
+    let mut rng = Rng::new(0x00B0_DD4A);
+    let mut orbit: Vec<C> = Vec::with_capacity(high);
+    let (mut recorded, mut tries) = (0usize, 0u64);
+    while recorded < SAMPLES && tries < 200_000_000 {
+        tries += 1;
+        let c = C(rng.f64() * 3.0 - 2.0, rng.f64() * 3.0 - 1.5);
+        // The main cardioid and the period-2 bulb never escape; skip
+        // them without iterating, which is most of the cost saved.
+        let q = (c.0 - 0.25).powi(2) + c.1 * c.1;
+        if q * (q + (c.0 - 0.25)) <= 0.25 * c.1 * c.1 || (c.0 + 1.0).powi(2) + c.1 * c.1 <= 0.0625 {
+            continue;
+        }
+        orbit.clear();
+        let mut z = C(0.0, 0.0);
+        let mut escaped = false;
+        for _ in 0..high {
+            z = z.mul(z).add(c);
+            if z.norm2() > 4.0 {
+                escaped = true;
+                break;
+            }
+            orbit.push(z);
+        }
+        if !escaped || orbit.len() < low {
+            continue;
+        }
+        let d = (((orbit.len() as f64).ln() - (low as f64).ln()) / span) as f32;
+        for z in &orbit {
+            if let Some(k) = at(*z) {
+                count[k] += 1;
+                depth[k] += d;
+            }
+        }
+        recorded += orbit.len();
+    }
+    let weight: Vec<f64> = count.iter().map(|&n| (n as f64).powf(1.7)).collect();
+    let total: f64 = weight.iter().sum();
+    if total <= 0.0 {
+        return sierpinski();
+    }
+    // Systematic sampling down the running total: every cell gets its
+    // share exactly, with no clumping from the draw.
+    let mut out = Vec::with_capacity(POINTS);
+    let stride = total / POINTS as f64;
+    let mut next = rng.f64() * stride;
+    let mut run = 0.0;
+    for (k, w) in weight.iter().enumerate() {
+        run += w;
+        while next < run && out.len() < POINTS {
+            next += stride;
+            let (i, j) = (k % SIDE, k / SIDE);
+            let im = (i as f64 + rng.f64()) / SIDE as f64 * 3.0 - 1.5;
+            let re = (j as f64 + rng.f64()) / SIDE as f64 * 3.0 - 2.0;
+            let d = depth[k] as f64 / count[k].max(1) as f64 - 0.5;
+            // Seated upright: the real axis is the figure's height.
+            out.push([im, -re, d * 0.9]);
+        }
+    }
+    while out.len() < POINTS {
+        out.push(out[out.len() % out.len().max(1)]);
+    }
+    out
+}
+
+/// A Kleinian limit set, after Mumford, Series & Wright, *Indra's
+/// Pearls* (2002). Two Möbius maps `a` and `b` are built by "Grandma's
+/// recipe" from their traces `ta` and `tb`, so that the commutator
+/// `abAB` is parabolic; the group they generate acts on the Riemann
+/// sphere, and the limit set is where every orbit of it piles up. With
+/// both traces 2 it is the Apollonian gasket; nudge them into the
+/// complex plane and the circles crumple into a quasi-circle, a fractal
+/// necklace of pearls.
+///
+/// Drawn by the chaos game — apply a random generator, never the
+/// inverse of the last one — and shown on the Riemann sphere the group
+/// lives on, by inverse stereographic projection, so the necklace wraps
+/// a globe rather than running off the edge of a plane.
+fn kleinian(ta: C, tb: C) -> Vec<[f64; 3]> {
+    type M = [C; 4];
+    let i = C(0.0, 1.0);
+    let two = C(2.0, 0.0);
+    let four = C(4.0, 0.0);
+    // Grandma's recipe, Indra's Pearls p. 229.
+    let disc = ta.mul(ta).mul(tb).mul(tb).sub(four.mul(ta.mul(ta).add(tb.mul(tb))));
+    let tab = ta.mul(tb).sub(disc.sqrt()).scale(0.5);
+    let z0 = tab.sub(two).mul(tb).div(tb.mul(tab).sub(two.mul(ta)).add(two.mul(i).mul(tab)));
+    let a: M = [
+        ta.scale(0.5),
+        ta.mul(tab).sub(two.mul(tb)).add(four.mul(i)).div(two.mul(tab).add(four).mul(z0)),
+        ta.mul(tab).sub(two.mul(tb)).sub(four.mul(i)).mul(z0).div(two.mul(tab).sub(four)),
+        ta.scale(0.5),
+    ];
+    let b: M = [tb.sub(two.mul(i)).scale(0.5), tb.scale(0.5), tb.scale(0.5), tb.add(two.mul(i)).scale(0.5)];
+    // Determinant 1, so the inverse is the adjugate.
+    let inv = |m: M| -> M { [m[3], C(-m[1].0, -m[1].1), C(-m[2].0, -m[2].1), m[0]] };
+    let gens = [a, b, inv(a), inv(b)];
+    let apply = |m: &M, z: C| -> C { m[0].mul(z).add(m[1]).div(m[2].mul(z).add(m[3])) };
+    let mut rng = Rng::new(0x1D4A_9EA2);
+    let mut z = C(0.1, 0.1);
+    let mut last = 0usize;
+    let mut out = Vec::with_capacity(POINTS);
+    let mut step = 0usize;
+    while out.len() < POINTS {
+        // Not the inverse of the last one, which would undo it.
+        let mut g = (rng.next() % 4) as usize;
+        while step > 0 && g == (last + 2) % 4 {
+            g = (rng.next() % 4) as usize;
+        }
+        last = g;
+        z = apply(&gens[g], z);
+        step += 1;
+        if !(z.0.is_finite() && z.1.is_finite()) {
+            z = C(rng.f64() - 0.5, rng.f64() - 0.5);
+            continue;
+        }
+        if step > 64 {
+            let r2 = z.norm2();
+            out.push([2.0 * z.0 / (1.0 + r2), (r2 - 1.0) / (1.0 + r2), 2.0 * z.1 / (1.0 + r2)]);
+        }
+    }
+    out
+}
+
+/// A regular hyperbolic tiling `{p, q}` — `p`-gons, `q` at every corner
+/// — as Escher drew them in the Circle Limit prints after Coxeter showed
+/// him how, and as Douglas Dunham later programmed them ("Hyperbolic
+/// symmetry", 1986). The central tile is reflected across its edges, and
+/// those across theirs, until the tiles are too small to see at the rim
+/// of the Poincaré disc; the cloud is the edges, each walked as the
+/// circular arc a straight line is in that model.
+///
+/// The disc is lifted onto the hemisphere above it, which is the same
+/// geometry seen another way: every edge becomes a vertical half-circle
+/// and the tiling a dome, which turns where a flat disc would only
+/// spin.
+fn hyperbolic(p: f64, q: f64) -> Vec<[f64; 3]> {
+    let (mut p, mut q) = (p.round().max(3.0) as usize, q.round().max(3.0) as usize);
+    // Hyperbolic needs (p − 2)(q − 2) > 4; anything else falls back to
+    // the {7, 3} of Circle Limit's heptagons.
+    if (p - 2) * (q - 2) <= 4 {
+        (p, q) = (7, 3);
+    }
+    let (pa, qa) = (PI / p as f64, PI / q as f64);
+    let radius = ((pa + qa).cos() / (pa - qa).cos()).sqrt();
+    let first: Vec<C> = (0..p)
+        .map(|k| {
+            let a = TAU * k as f64 / p as f64 + PI / 2.0;
+            C(radius * a.cos(), radius * a.sin())
+        })
+        .collect();
+    // Reflection in the geodesic through u and v: the circle through
+    // them orthogonal to the rim, or a diameter when they line up.
+    let reflect = |u: C, v: C, z: C| -> C {
+        let cross = u.0 * v.1 - u.1 * v.0;
+        if cross.abs() < 1e-12 {
+            let d = C(v.0 - u.0, v.1 - u.1);
+            let n = d.scale(1.0 / d.norm2().sqrt());
+            let along = z.0 * n.0 + z.1 * n.1;
+            return C(2.0 * along * n.0 - z.0, 2.0 * along * n.1 - z.1);
+        }
+        // Centre c with |c − u|² = |c|² − 1, the same for v.
+        let (bu, bv) = ((u.norm2() + 1.0) * 0.5, (v.norm2() + 1.0) * 0.5);
+        let c = C((bu * v.1 - bv * u.1) / cross, (u.0 * bv - v.0 * bu) / cross);
+        let r2 = c.norm2() - 1.0;
+        let d = z.sub(c);
+        c.add(d.scale(r2 / d.norm2()))
+    };
+    let key = |z: C| ((z.0 * 1e6).round() as i64, (z.1 * 1e6).round() as i64);
+    let centroid = |t: &[C]| t.iter().fold(C(0.0, 0.0), |s, z| s.add(*z)).scale(1.0 / t.len() as f64);
+    let mut seen = std::collections::HashSet::new();
+    let mut edges: Vec<(C, C)> = Vec::new();
+    let mut edge_seen = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    seen.insert(key(centroid(&first)));
+    queue.push_back(first);
+    while let Some(tile) = queue.pop_front() {
+        for k in 0..p {
+            let (u, v) = (tile[k], tile[(k + 1) % p]);
+            let mid = u.add(v).scale(0.5);
+            if edge_seen.insert(key(mid)) {
+                edges.push((u, v));
+            }
+            // A tile whose edge is this short at the rim is a few pixels
+            // across; its neighbours are smaller still.
+            if C(u.0 - v.0, u.1 - v.1).norm2() < 0.012f64.powi(2) || edges.len() > 40_000 {
+                continue;
+            }
+            let next: Vec<C> = tile.iter().map(|z| reflect(u, v, *z)).collect();
+            if seen.insert(key(centroid(&next))) {
+                queue.push_back(next);
+            }
+        }
+    }
+    // Spread the points over the edges by length, so the rim does not
+    // take as many as the middle.
+    let length = |(u, v): &(C, C)| C(u.0 - v.0, u.1 - v.1).norm2().sqrt();
+    let total: f64 = edges.iter().map(length).sum();
+    let mut out = Vec::with_capacity(POINTS);
+    let mut carry = 0.0;
+    for e in &edges {
+        let share = length(e) / total * POINTS as f64 + carry;
+        let n = share.floor() as usize;
+        carry = share - n as f64;
+        let (u, v) = *e;
+        // Walk the geodesic: move u to the centre, where the edge is a
+        // straight segment, and back again.
+        let to = |z: C| z.sub(u).div(C(1.0, 0.0).sub(u.conj().mul(z)));
+        let back = |w: C| w.add(u).div(C(1.0, 0.0).add(u.conj().mul(w)));
+        let tv = to(v);
+        for j in 0..n {
+            let z = back(tv.scale((j as f64 + 0.5) / n as f64));
+            let r2 = z.norm2();
+            out.push([2.0 * z.0 / (1.0 + r2), 0.7 * (1.0 - r2) / (1.0 + r2), 2.0 * z.1 / (1.0 + r2)]);
+        }
+    }
+    while out.len() < POINTS {
+        out.push(out[out.len() % out.len().max(1)]);
+    }
+    out.truncate(POINTS);
+    out
+}
+
+/// A tree grown by space colonisation (Runions, Lane & Prusinkiewicz,
+/// "Modeling Trees with a Space Colonization Algorithm", 2007). A crown
+/// is filled with attraction points; every point pulls on the nearest
+/// branch tip within reach, each tip grows one step towards the average
+/// of what pulls it, and a point is used up once a branch reaches it.
+/// The branches find their own way to fill the crown, which is why the
+/// result looks grown rather than drawn.
+///
+/// Each branch is drawn as a tube whose thickness follows a softened
+/// form of da Vinci's pipe rule — the cross-sections of the children add
+/// up to the parent's, with the 2.5 exponent measured trees fit better
+/// than his 2 — so the trunk is thick and the twigs are thin. The order
+/// is root to tips, branch by branch.
+fn colonise(seed: u64, density: f64) -> Vec<[f64; 3]> {
+    const STEP: f64 = 0.03;
+    const REACH: f64 = 0.3;
+    const KILL: f64 = 0.07;
+    let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xC010);
+    let count = (density.clamp(0.1, 4.0) * 420.0) as usize;
+    // An egg-shaped crown above a bare trunk.
+    let mut leaves: Vec<[f64; 3]> = Vec::with_capacity(count);
+    while leaves.len() < count {
+        let p = rng.in_ball(1.0);
+        let lift = p[1] * 0.55 + 0.65;
+        leaves.push([p[0] * 0.75, lift + if p[1] > 0.0 { 0.15 * p[1] } else { 0.0 }, p[2] * 0.75]);
+    }
+    let mut node: Vec<[f64; 3]> = vec![[0.0, -1.0, 0.0]];
+    let mut parent: Vec<usize> = vec![usize::MAX];
+    // The trunk grows straight up until it is within reach of the crown.
+    while leaves.iter().all(|l| dist3(*l, node[node.len() - 1]) > REACH) && node.len() < 200 {
+        let top = node[node.len() - 1];
+        node.push([top[0], top[1] + STEP, top[2]]);
+        parent.push(node.len() - 2);
+    }
+    // Nodes by cell of a grid one reach across, so a leaf looks only at
+    // the 27 cells around it rather than every node there is.
+    let cell = |p: [f64; 3]| -> (i32, i32, i32) {
+        ((p[0] / REACH).floor() as i32, (p[1] / REACH).floor() as i32, (p[2] / REACH).floor() as i32)
+    };
+    let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> = std::collections::HashMap::new();
+    for (i, n) in node.iter().enumerate() {
+        grid.entry(cell(*n)).or_default().push(i);
+    }
+    for _ in 0..400 {
+        if leaves.is_empty() || node.len() > 12_000 {
+            break;
+        }
+        let mut pull: Vec<([f64; 3], u32)> = vec![([0.0; 3], 0); node.len()];
+        for l in &leaves {
+            let mut best = (REACH, usize::MAX);
+            let (cx, cy, cz) = cell(*l);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &i in grid.get(&(cx + dx, cy + dy, cz + dz)).into_iter().flatten() {
+                            let d = dist3(*l, node[i]);
+                            if d < best.0 {
+                                best = (d, i);
+                            }
+                        }
+                    }
+                }
+            }
+            if best.1 != usize::MAX {
+                let n = node[best.1];
+                let len = best.0.max(1e-9);
+                let e = &mut pull[best.1];
+                for k in 0..3 {
+                    e.0[k] += (l[k] - n[k]) / len;
+                }
+                e.1 += 1;
+            }
+        }
+        let before = node.len();
+        for (i, (dir, n)) in pull.into_iter().enumerate() {
+            let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+            if n == 0 || len < 1e-6 {
+                continue;
+            }
+            let at = node[i];
+            let grown = [at[0] + dir[0] / len * STEP, at[1] + dir[1] / len * STEP, at[2] + dir[2] / len * STEP];
+            // A tip caught between two leaves pulls first one way and
+            // then the other, and would stack node on node in one spot;
+            // a step onto a node already there is not taken.
+            let (cx, cy, cz) = cell(grown);
+            let crowded = (-1..=1).any(|dx| {
+                (-1..=1).any(|dy| {
+                    (-1..=1).any(|dz| {
+                        grid.get(&(cx + dx, cy + dy, cz + dz))
+                            .into_iter()
+                            .flatten()
+                            .any(|&j| dist3(node[j], grown) < STEP * 0.5)
+                    })
+                })
+            });
+            if crowded {
+                continue;
+            }
+            grid.entry(cell(grown)).or_default().push(node.len());
+            node.push(grown);
+            parent.push(i);
+        }
+        if node.len() == before {
+            break;
+        }
+        // Only the new tips can have reached a leaf this step.
+        let fresh = &node[before..];
+        leaves.retain(|l| fresh.iter().all(|n| dist3(*l, *n) > KILL));
+    }
+    // Pipe rule: a node's cross-section is the sum of its children's,
+    // and a tip's is one. Children always come after their parents.
+    let mut area = vec![1.0f64; node.len()];
+    for i in (1..node.len()).rev() {
+        let p = parent[i];
+        if p != usize::MAX {
+            area[p] += area[i];
+        }
+    }
+    let thick = |i: usize| 0.0035 * area[i].powf(0.4);
+    let weight = |i: usize| STEP * thick(i);
+    let total: f64 = (1..node.len()).map(weight).sum();
+    let mut out = Vec::with_capacity(POINTS);
+    let mut carry = 0.0;
+    for i in 1..node.len() {
+        let (a, b) = (node[parent[i]], node[i]);
+        let share = weight(i) / total * POINTS as f64 + carry;
+        let n = share.floor() as usize;
+        carry = share - n as f64;
+        let r = thick(i);
+        for _ in 0..n {
+            let t = rng.f64();
+            let o = rng.on_sphere();
+            out.push(std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t + o[k] * r));
+        }
+    }
+    while out.len() < POINTS {
+        out.push(out[out.len() % out.len().max(1)]);
+    }
+    out.truncate(POINTS);
+    out
+}
+
+fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
 /// Centre the cloud and fit its widest axis to `[-1, 1]` — uniform, so
 /// the shape is not squashed — and pack it as white points that take the
 /// palette, with no normal so the loader fits one where a surface wants
@@ -2907,5 +3400,75 @@ mod tests {
         let before = (0.3f64 * 0.3 + 0.7 * 0.7 + 0.2 * 0.2).sqrt();
         let after = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         assert!((before - after).abs() < 1e-9, "the frame changed a length");
+    }
+
+    /// The tiling lies on its dome — the disc lifted to the hemisphere,
+    /// squashed to 0.7 — and has the {7, 3} tiling's corners: three
+    /// edges meet at every vertex, so there are half again as many edges
+    /// as vertices, give or take the ragged rim.
+    #[test]
+    fn the_hyperbolic_tiling_is_on_its_dome() {
+        let pts = hyperbolic(7.0, 3.0);
+        assert_eq!(pts.len(), POINTS);
+        for p in &pts {
+            let r = p[0] * p[0] + (p[1] / 0.7).powi(2) + p[2] * p[2];
+            assert!((r - 1.0).abs() < 1e-6 && p[1] >= 0.0, "{p:?} is off the dome");
+        }
+        // A Euclidean pair falls back to {7, 3} rather than tiling a
+        // plane it cannot.
+        assert_eq!(hyperbolic(4.0, 4.0), pts);
+        assert_ne!(hyperbolic(5.0, 4.0), pts);
+    }
+
+    /// The limit set lives on the Riemann sphere, and the traces move it.
+    #[test]
+    fn the_limit_set_is_on_the_sphere_and_answers_to_its_traces() {
+        let a = kleinian(C(1.87, 0.1), C(1.87, -0.1));
+        for p in &a {
+            let r = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+            assert!((r - 1.0).abs() < 1e-6, "{p:?} is off the sphere");
+        }
+        assert_ne!(kleinian(C(2.0, 0.0), C(2.0, 0.0)), a);
+    }
+
+    /// T is the slide down the axis: at zero the shell coils flat, no
+    /// taller than its aperture, and at two it stands up as a turret.
+    #[test]
+    fn the_shell_slides_by_t() {
+        let flat = seashell(3.0, 0.2, 0.0, 4.0, 0.0);
+        // Orient puts the coiling axis in y; flat means all of it in a
+        // band no taller than the last aperture, which is 1.25 against
+        // the coil's 2.5 or so.
+        let width = flat.iter().map(|p| p[0].abs().max(p[2].abs())).fold(0.0, f64::max);
+        let height = flat.iter().map(|p| p[1].abs()).fold(0.0, f64::max);
+        assert!(height < width * 0.6, "a T of 0 should be flat: {height} against {width}");
+        let tall = seashell(3.0, 0.2, 2.0, 4.0, 0.0);
+        let tall_h = tall.iter().map(|p| p[1]).fold(f64::MIN, f64::max) - tall.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
+        assert!(tall_h > width, "a T of 2 should stand up: {tall_h}");
+    }
+
+    /// The tree branches, and its trunk is thicker than its twigs.
+    #[test]
+    fn the_colonised_tree_branches_and_tapers() {
+        let pts = colonise(1, 1.0);
+        let trunk = pts.iter().filter(|p| p[1] < -0.6).map(|p| p[0].hypot(p[2])).fold(0.0, f64::max);
+        let crown = pts.iter().filter(|p| p[1] > 0.6).count();
+        assert!(trunk > 0.02, "a trunk this thin is a twig: {trunk}");
+        assert!(crown > POINTS / 10, "the crown has hardly grown: {crown}");
+        assert_ne!(colonise(2, 1.0), pts);
+    }
+
+    /// The figure is a density drawn from millions of orbits: none of it
+    /// inside the main cardioid, where nothing escapes, and its depth runs
+    /// the full range of escape times.
+    #[test]
+    fn the_buddhabrot_is_drawn_from_escaping_orbits() {
+        let pts = buddhabrot(20.0, 2000.0);
+        assert_eq!(pts.len(), POINTS);
+        let (lo, hi) = pts.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p[2]), hi.max(p[2])));
+        assert!(hi - lo > 0.6, "depth spans only {lo}..{hi}");
+        // Its brightest region is the body, around re = −0.2.
+        let body = pts.iter().filter(|p| (-p[1] + 0.2).abs() < 0.5 && p[0].abs() < 0.6).count();
+        assert!(body > POINTS / 3, "only {body} points on the body");
     }
 }

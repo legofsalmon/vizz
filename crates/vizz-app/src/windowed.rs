@@ -1109,7 +1109,7 @@ impl App {
             .unwrap_or_default()
             .to_ascii_lowercase();
         match ext.as_str() {
-            "ply" | "xyz" | "pts" => self.load_dropped_cloud(path),
+            "ply" | "xyz" | "pts" | "obj" | "stl" => self.load_dropped_cloud(path),
             "png" | "jpg" | "jpeg" => self.load_dropped_cloud(path),
             "gpl" | "hex" | "txt" => self.load_dropped_palette(path),
             // `.csv` is both a point cloud and a plausible palette export.
@@ -1121,7 +1121,7 @@ impl App {
                 log::warn!("nothing to do with a .{other} file");
                 if let Some(state) = &mut self.state {
                     state.gui.notify_error(format!(
-                        "can't load a .{other} — clouds are .ply .xyz .pts .csv .png .jpg .jpeg, palettes .gpl .hex .txt"
+                        "can't load a .{other} — clouds are .ply .xyz .pts .csv .obj .stl .png .jpg .jpeg, palettes .gpl .hex .txt"
                     ));
                 }
             }

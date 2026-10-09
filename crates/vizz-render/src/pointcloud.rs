@@ -2,7 +2,8 @@
 //!
 //! Supports PLY (ASCII and binary little-endian) and plain XYZ/CSV, which
 //! between them covers what photogrammetry tools, LiDAR exports and
-//! scanners actually emit.
+//! scanners actually emit — and OBJ and STL meshes, sampled over their
+//! surface, which is what every modelling tool emits.
 //!
 //! Parsing is separated from GPU upload so it can be tested against
 //! handwritten fixtures — malformed headers and truncated bodies are the
@@ -56,7 +57,9 @@ pub fn load(path: &Path) -> Result<Vec<Point>> {
     let points = match ext.as_str() {
         "ply" => read_ply(&mut reader),
         "xyz" | "csv" | "txt" | "pts" => read_xyz(&mut reader),
-        other => bail!("unsupported point cloud format {other:?} (want .ply, .xyz, .csv or .pts)"),
+        "obj" => read_obj(&mut reader).map(|t| sample_mesh(&t)),
+        "stl" => read_stl(&mut reader).map(|t| sample_mesh(&t)),
+        other => bail!("unsupported point cloud format {other:?} (want .ply, .xyz, .csv, .pts, .obj or .stl)"),
     }
     .with_context(|| format!("reading {}", path.display()))?;
 
@@ -64,6 +67,162 @@ pub fn load(path: &Path) -> Result<Vec<Point>> {
         bail!("{} contained no points", path.display());
     }
     Ok(points)
+}
+
+/// A triangle, by its corners.
+pub type Triangle = [[f32; 3]; 3];
+
+/// Points to scatter over a mesh: one slot's worth, the size of every
+/// generated cloud.
+pub const MESH_SAMPLES: usize = crate::attractor::POINTS;
+
+/// The faces of a Wavefront OBJ, fan-triangulated. Only `v` and `f` are
+/// read; texture and normal indices after a slash are ignored, and so is
+/// everything else — materials, groups, smoothing — none of which a
+/// cloud has a use for. Negative indices count back from the latest
+/// vertex, as the format allows.
+pub fn read_obj(reader: &mut impl BufRead) -> Result<Vec<Triangle>> {
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    let mut tris = Vec::new();
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("reading line {}", i + 1))?;
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("v") => {
+                let xyz: Vec<f32> = words.take(3).filter_map(|w| w.parse().ok()).collect();
+                if xyz.len() != 3 || xyz.iter().any(|v| !v.is_finite()) {
+                    bail!("line {}: a vertex needs three numbers", i + 1);
+                }
+                verts.push([xyz[0], xyz[1], xyz[2]]);
+            }
+            Some("f") => {
+                let corners = words
+                    .map(|w| {
+                        let n: i64 = w.split('/').next().unwrap_or("").parse().ok()?;
+                        let k = if n < 0 { verts.len() as i64 + n } else { n - 1 };
+                        (0..verts.len() as i64).contains(&k).then(|| verts[k as usize])
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .with_context(|| format!("line {}: a face names a vertex that is not there", i + 1))?;
+                for k in 1..corners.len().saturating_sub(1) {
+                    tris.push([corners[0], corners[k], corners[k + 1]]);
+                }
+            }
+            _ => {}
+        }
+        if verts.len() > MAX_POINTS || tris.len() > MAX_POINTS {
+            bail!("more than {MAX_POINTS} vertices or faces");
+        }
+    }
+    if tris.is_empty() {
+        bail!("no faces");
+    }
+    Ok(tris)
+}
+
+/// The facets of an STL, binary or ASCII. A binary file can begin with
+/// the word `solid` too — plenty of exporters write it into the header —
+/// so the length decides: a binary STL is exactly 84 bytes plus 50 per
+/// facet.
+pub fn read_stl(reader: &mut impl BufRead) -> Result<Vec<Triangle>> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).context("reading STL")?;
+    let binary = bytes.len() >= 84 && {
+        let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+        84 + n.saturating_mul(50) == bytes.len()
+    };
+    let mut tris = Vec::new();
+    if binary {
+        let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+        if n > MAX_POINTS {
+            bail!("{n} facets is more than {MAX_POINTS}");
+        }
+        for f in 0..n {
+            let at = 84 + f * 50 + 12;
+            let float = |o: usize| f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+            tris.push(std::array::from_fn(|c| std::array::from_fn(|k| float(at + c * 12 + k * 4))));
+        }
+    } else {
+        let text = std::str::from_utf8(&bytes).context("an STL that is neither binary nor text")?;
+        let mut corner: Vec<[f32; 3]> = Vec::with_capacity(3);
+        for (i, line) in text.lines().enumerate() {
+            let mut words = line.split_whitespace();
+            if words.next() != Some("vertex") {
+                continue;
+            }
+            let xyz: Vec<f32> = words.take(3).filter_map(|w| w.parse().ok()).collect();
+            if xyz.len() != 3 {
+                bail!("line {}: a vertex needs three numbers", i + 1);
+            }
+            corner.push([xyz[0], xyz[1], xyz[2]]);
+            if corner.len() == 3 {
+                tris.push([corner[0], corner[1], corner[2]]);
+                corner.clear();
+            }
+            if tris.len() > MAX_POINTS {
+                bail!("more than {MAX_POINTS} facets");
+            }
+        }
+    }
+    tris.retain(|t| t.iter().flatten().all(|v| v.is_finite()));
+    if tris.is_empty() {
+        bail!("no facets");
+    }
+    Ok(tris)
+}
+
+/// [`MESH_SAMPLES`] points scattered over a mesh's surface, each facing
+/// the way its triangle does.
+///
+/// Uniform by area — a triangle gets points in proportion to its size,
+/// and a point lands anywhere in it with equal chance (Turk, "Generating
+/// random points in triangles", Graphics Gems 1990) — so a model's
+/// tessellation, dense where the modeller fussed and sparse where they
+/// did not, does not show through. The normal is the face's, which makes
+/// the cloud lit from the start rather than waiting on a plane fit. The
+/// draw is seeded, so the same file is the same cloud every time.
+pub fn sample_mesh(tris: &[Triangle]) -> Vec<Point> {
+    let area = |t: &Triangle| -> ([f32; 3], f32) {
+        let (a, b) = (sub(t[1], t[0]), sub(t[2], t[0]));
+        let n = cross(a, b);
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        (if len > 0.0 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0; 3] }, 0.5 * len)
+    };
+    let faces: Vec<([f32; 3], f32)> = tris.iter().map(area).collect();
+    let total: f64 = faces.iter().map(|f| f.1 as f64).sum();
+    if total <= 0.0 {
+        // Every face degenerate: the corners are all there is.
+        return tris.iter().flatten().map(|v| Point::new(v[0], v[1], v[2])).collect();
+    }
+    let mut state: u64 = 0x5EED_0B1E;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let stride = total / MESH_SAMPLES as f64;
+    let mut next = uniform() as f64 * stride;
+    let mut run = 0.0f64;
+    let mut out = Vec::with_capacity(MESH_SAMPLES);
+    for (t, (normal, a)) in tris.iter().zip(&faces) {
+        run += *a as f64;
+        while next < run && out.len() < MESH_SAMPLES {
+            next += stride;
+            let (mut u, mut v) = (uniform(), uniform());
+            if u + v > 1.0 {
+                (u, v) = (1.0 - u, 1.0 - v);
+            }
+            let pos: [f32; 3] =
+                std::array::from_fn(|k| t[0][k] + (t[1][k] - t[0][k]) * u + (t[2][k] - t[0][k]) * v);
+            out.push(Point { pos, normal: *normal, color: [255, 255, 255] });
+        }
+    }
+    out
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Whitespace- or comma-separated `x y z [r g b]` per line, `#` comments.
@@ -1228,5 +1387,75 @@ mod normal_tests {
             "estimating {n} normals took {took:?}, which needs a thread rather than a comment"
         );
         eprintln!("estimate_normals: {n} points in {took:?}");
+    }
+
+    /// An OBJ quad is two triangles, negative indices count back, and
+    /// the texture and normal indices after the slashes are ignored.
+    #[test]
+    fn obj_faces_are_fanned_into_triangles() {
+        let text = "# a unit square\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nf 1/1 2/1 3/1 4/1\nf -4 -3 -2\n";
+        let tris = read_obj(&mut text.as_bytes()).unwrap();
+        assert_eq!(tris.len(), 3);
+        assert_eq!(tris[0], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]);
+        assert_eq!(tris[1], [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]);
+        assert_eq!(tris[2], tris[0]);
+        assert!(read_obj(&mut "v 0 0 0\nf 1 2 3\n".as_bytes()).is_err(), "a face past the vertices");
+        assert!(read_obj(&mut "v 0 0 0\n".as_bytes()).is_err(), "no faces");
+    }
+
+    /// The same facet reads the same from ASCII and binary STL, and a
+    /// binary file whose header starts with "solid" is still binary.
+    #[test]
+    fn stl_reads_both_ways() {
+        let ascii = "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n";
+        let a = read_stl(&mut ascii.as_bytes()).unwrap();
+        let mut bin = b"solid but binary".to_vec();
+        bin.resize(80, b' ');
+        bin.extend_from_slice(&1u32.to_le_bytes());
+        for v in [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        bin.extend_from_slice(&[0, 0]);
+        let b = read_stl(&mut bin.as_slice()).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]);
+    }
+
+    /// Sampling is by area and lands on the surface, facing the way the
+    /// face does: on a box twice as tall as it is wide, the four tall
+    /// sides take four fifths of the points, and every point is on a
+    /// side, with that side's outward normal.
+    #[test]
+    fn a_mesh_is_sampled_by_area_with_face_normals() {
+        // A 1 × 2 × 1 box, as twelve outward-wound triangles.
+        let c = |x: f32, y: f32, z: f32| [x, y * 2.0, z];
+        let quad = |a: [f32; 3], b: [f32; 3], cc: [f32; 3], d: [f32; 3]| [[a, b, cc], [a, cc, d]];
+        let mut tris = Vec::new();
+        tris.extend(quad(c(0., 0., 1.), c(1., 0., 1.), c(1., 1., 1.), c(0., 1., 1.))); // +z
+        tris.extend(quad(c(1., 0., 0.), c(0., 0., 0.), c(0., 1., 0.), c(1., 1., 0.))); // -z
+        tris.extend(quad(c(1., 0., 1.), c(1., 0., 0.), c(1., 1., 0.), c(1., 1., 1.))); // +x
+        tris.extend(quad(c(0., 0., 0.), c(0., 0., 1.), c(0., 1., 1.), c(0., 1., 0.))); // -x
+        tris.extend(quad(c(0., 1., 1.), c(1., 1., 1.), c(1., 1., 0.), c(0., 1., 0.))); // +y
+        tris.extend(quad(c(0., 0., 0.), c(1., 0., 0.), c(1., 0., 1.), c(0., 0., 1.))); // -y
+        let pts = sample_mesh(&tris);
+        assert_eq!(pts.len(), MESH_SAMPLES);
+        let mut sides = 0;
+        for p in &pts {
+            let [x, y, z] = p.pos;
+            let n = p.normal;
+            let on = |v: f32, at: f32| (v - at).abs() < 1e-4;
+            let ok = (on(z, 1.0) && n == [0.0, 0.0, 1.0])
+                || (on(z, 0.0) && n == [0.0, 0.0, -1.0])
+                || (on(x, 1.0) && n == [1.0, 0.0, 0.0])
+                || (on(x, 0.0) && n == [-1.0, 0.0, 0.0])
+                || (on(y, 2.0) && n == [0.0, 1.0, 0.0])
+                || (on(y, 0.0) && n == [0.0, -1.0, 0.0]);
+            assert!(ok, "{:?} facing {:?} is not on the face it faces", p.pos, n);
+            if n[1] == 0.0 {
+                sides += 1;
+            }
+        }
+        let share = sides as f32 / pts.len() as f32;
+        assert!((share - 0.8).abs() < 0.005, "the tall sides took {share} of the points");
     }
 }

@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/img/icon.png">
 <meta name="description" content="Every point cloud vizz can make from an equation, every simulation it can run live, and everything else a frame is made of: what each one is, what it comes from, and who found it.">
 <meta property="og:title" content="vizz — clouds from equations">
-<meta property="og:description" content="Sixty-six generators, fifteen live simulations, and the rest of the engine, with the paper each one comes from.">
+<meta property="og:description" content="Seventy-two generators, twenty live simulations, and the rest of the engine, with the paper each one comes from.">
 <meta property="og:type" content="article">
 <style>
   /* One file, no build step, no CDN — the same rule as the rest of the
@@ -138,7 +138,7 @@
 <h1>Clouds from equations</h1>
 <div class="intro">
 <p class="lede">vizz draws point clouds. Most of them come from a scanner, a
-camera or a file — and 67 of them come from mathematics, with
+camera or a file — and 72 of them come from mathematics, with
 20 more that are still running while you watch.</p>
 
 <p>Every picture on this page was drawn by the app's own code, from the same
@@ -559,6 +559,20 @@ it.</p>
     </figcaption>
   </figure>
   <figure class="plate">
+    <img src="/img/clouds/seashell.webp" width="600" height="400" loading="lazy" decoding="async" alt="seashell — a point cloud">
+    <figcaption>
+      <h3>seashell</h3>
+      <p class="spec"><code>gen:seashell</code></p>
+      <p>a coiled shell as Raup described every one: a curve swept along a growing helico-spiral, placed by three numbers — how fast it grows, how far from the axis, how fast it slides down it — with growth ridges round the lip</p>
+      <p class="knobs"><span>knobs</span> <code>W</code> how much the curve grows in one whorl <span class="dim">(1.1 to 100, default 1.6)</span><br>
+      <code>D</code> the inner edge's distance from the axis, as a share of the outer's: 0 is a solid column, near 1 an open coil <span class="dim">(0 to 0.9, default 0.05)</span><br>
+      <code>T</code> how fast it slides down the axis: 0 is a flat ammonite, 3 a tall turret <span class="dim">(0 to 6, default 2.6)</span><br>
+      <code>whorls</code> turns of the spiral <span class="dim">(1 to 16, default 8)</span><br>
+      <code>ribs</code> growth ridges per radian of turn <span class="dim">(0 to 80, default 22)</span></p>
+      <p class="cite"><a href="https://algorithmicbotany.org/papers/shells.sig92.html">David M. Raup, “Geometric analysis of shell coiling” (1966); Deborah Fowler, Hans Meinhardt &amp; Przemysław Prusinkiewicz, “Modeling seashells” (SIGGRAPH 1992)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
     <img src="/img/clouds/boy.webp" width="600" height="400" loading="lazy" decoding="async" alt="Boy's surface — a point cloud">
     <figcaption>
       <h3>Boy's surface</h3>
@@ -681,6 +695,30 @@ it.</p>
       <p>a fractal flame — the chaos game over a few curling maps, each an affine step bent by the paper's variations; which maps a point came through is its depth, so the strands open into layers as it turns</p>
       <p class="knobs"><span>knobs</span> <code>seed</code> which maps and variations; a draw that collapses or hazes over is passed for the next <span class="dim">(any whole number, default 4)</span></p>
       <p class="cite"><a href="https://flam3.com/flame_draves.pdf">Scott Draves &amp; Erik Reckase, “The Fractal Flame Algorithm” (2003)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/buddhabrot.webp" width="600" height="400" loading="lazy" decoding="async" alt="Buddhabrot — a point cloud">
+    <figcaption>
+      <h3>Buddhabrot</h3>
+      <p class="spec"><code>gen:buddhabrot</code></p>
+      <p>where the Mandelbrot set's escaping points go on their way out — millions of orbits counted, a seated figure in their density; depth is how long each took to escape</p>
+      <p class="knobs"><span>knobs</span> <code>low</code> the fewest steps an orbit may take to escape and still count; higher clears the fog <span class="dim">(2 to 2000, default 20)</span><br>
+      <code>high</code> the most steps an orbit is followed for <span class="dim">(50 to 20000, default 2000)</span></p>
+      <p class="cite"><a href="https://superliminal.com/fractals/bbrot/">Melinda Green, the Buddhabrot (1993); Lori Gardi’s Nebulabrot</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/kleinian.webp" width="600" height="400" loading="lazy" decoding="async" alt="Kleinian — a point cloud">
+    <figcaption>
+      <h3>Kleinian</h3>
+      <p class="spec"><code>gen:kleinian</code></p>
+      <p>a Kleinian limit set — where every orbit of a group of two Möbius maps piles up, a necklace of pearls on the Riemann sphere; both traces at 2 is the Apollonian gasket</p>
+      <p class="knobs"><span>knobs</span> <code>ta</code> the trace of a, real part <span class="dim">(1.5 to 3, default 1.87)</span><br>
+      <code>ta_i</code> the trace of a, imaginary part <span class="dim">(-1 to 1, default 0.1)</span><br>
+      <code>tb</code> the trace of b, real part <span class="dim">(1.5 to 3, default 1.87)</span><br>
+      <code>tb_i</code> the trace of b, imaginary part <span class="dim">(-1 to 1, default -0.1)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Kleinian_group">David Mumford, Caroline Series &amp; David Wright, “Indra’s Pearls: The Vision of Felix Klein” (2002), Grandma’s recipe</a></p>
     </figcaption>
   </figure>
   <figure class="plate">
@@ -811,6 +849,17 @@ it.</p>
     </figcaption>
   </figure>
   <figure class="plate">
+    <img src="/img/clouds/colonise.webp" width="600" height="400" loading="lazy" decoding="async" alt="colonised tree — a point cloud">
+    <figcaption>
+      <h3>colonised tree</h3>
+      <p class="spec"><code>gen:colonise</code></p>
+      <p>a tree that finds its own shape — a crown of points pulls on the nearest branch tips, each tip grows towards what pulls it, and a point is used up once a branch reaches it; the trunk thickens by the pipe rule</p>
+      <p class="knobs"><span>knobs</span> <code>seed</code> where the crown's points fall <span class="dim">(any whole number, default 1)</span><br>
+      <code>density</code> how full the crown is: more points, more and finer branches <span class="dim">(0.2 to 3, default 1)</span></p>
+      <p class="cite"><a href="https://algorithmicbotany.org/papers/colonization.egwnp2007.html">Adam Runions, Brendan Lane &amp; Przemysław Prusinkiewicz, “Modeling Trees with a Space Colonization Algorithm” (2007)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
     <img src="/img/clouds/tree.webp" width="600" height="400" loading="lazy" decoding="async" alt="tree — a point cloud">
     <figcaption>
       <h3>tree</h3>
@@ -844,6 +893,17 @@ it.</p>
       <p class="knobs"><span>knobs</span> <code>n</code> the first mode number <span class="dim">(1 to 9, default 5)</span><br>
       <code>m</code> the second; equal numbers make no pattern <span class="dim">(1 to 9, default 2)</span></p>
       <p class="cite"><a href="https://en.wikipedia.org/wiki/Ernst_Chladni">Ernst Chladni, Entdeckungen über die Theorie des Klanges (1787)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/hyperbolic.webp" width="600" height="400" loading="lazy" decoding="async" alt="hyperbolic — a point cloud">
+    <figcaption>
+      <h3>hyperbolic</h3>
+      <p class="spec"><code>gen:hyperbolic</code></p>
+      <p>a regular tiling of the hyperbolic plane, p-gons q to a corner, as in Escher's Circle Limit prints — the Poincaré disc lifted onto the dome above it, so every edge is a half-circle</p>
+      <p class="knobs"><span>knobs</span> <code>p</code> sides to a tile <span class="dim">(3 to 12, default 7)</span><br>
+      <code>q</code> tiles to a corner; (p − 2)(q − 2) must pass 4 <span class="dim">(3 to 12, default 3)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Uniform_tilings_in_hyperbolic_plane">H. S. M. Coxeter, “Crystal symmetry and its generalizations” (1957), after which Escher drew Circle Limit I; Douglas Dunham, “Hyperbolic symmetry” (1986)</a></p>
     </figcaption>
   </figure>
   <figure class="plate">
@@ -1297,12 +1357,14 @@ instead — the citation is the thing to keep.</p>
   <li><strong>Aizawa</strong> — Yoji Aizawa &amp; Tatsuo Uezu (1982), as catalogued by Chaoscope</li>
   <li><strong>Arneodo</strong> — Alain Arnéodo, Pierre Coullet &amp; Charles Tresser (1981)</li>
   <li><strong>Boy's surface</strong> — <a href="https://en.wikipedia.org/wiki/Boy%27s_surface">Werner Boy (1901); this parametrisation is François Apéry’s (1986)</a></li>
+  <li><strong>Buddhabrot</strong> — <a href="https://superliminal.com/fractals/bbrot/">Melinda Green, the Buddhabrot (1993); Lori Gardi’s Nebulabrot</a></li>
   <li><strong>Burke–Shaw</strong> — Bill Burke &amp; Robert Shaw (1981)</li>
   <li><strong>Chen</strong> — <a href="https://en.wikipedia.org/wiki/Multiscroll_attractor">Guanrong Chen &amp; Tetsushi Ueta, “Yet another chaotic attractor”, Int. J. Bifurcation and Chaos 9 (1999)</a></li>
   <li><strong>Chladni</strong> — <a href="https://en.wikipedia.org/wiki/Ernst_Chladni">Ernst Chladni, Entdeckungen über die Theorie des Klanges (1787)</a></li>
   <li><strong>Chua</strong> — <a href="https://en.wikipedia.org/wiki/Chua%27s_circuit">Leon Chua (1983); Matsumoto, Chua &amp; Komuro, IEEE Trans. Circuits and Systems 32 (1985)</a></li>
   <li><strong>Clifford</strong> — <a href="https://paulbourke.net/fractals/clifford/">Clifford Pickover, Computers, Pattern, Chaos and Beauty (1990)</a></li>
   <li><strong>cloth</strong> — Xavier Provot, “Deformation constraints in a mass-spring model”, Graphics Interface 1995; Thomas Jakobsen, “Advanced Character Physics”, GDC 2001</li>
+  <li><strong>colonised tree</strong> — <a href="https://algorithmicbotany.org/papers/colonization.egwnp2007.html">Adam Runions, Brendan Lane &amp; Przemysław Prusinkiewicz, “Modeling Trees with a Space Colonization Algorithm” (2007)</a></li>
   <li><strong>coral</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, branching three ways a third of a turn apart</a></li>
   <li><strong>Coullet</strong> — <a href="https://en.wikipedia.org/wiki/Jerk_(physics)">Pierre Coullet, Charles Tresser &amp; Alain Arnéodo (1979) — a jerk system</a></li>
   <li><strong>crystal</strong> — <a href="https://en.wikipedia.org/wiki/Snowflake">Clifford A. Reiter, “A local cellular model for snow crystal growth”, Chaos, Solitons &amp; Fractals 23 (2005); the morphologies are Ukichiro Nakaya’s (1954)</a></li>
@@ -1328,10 +1390,12 @@ instead — the citation is the thing to keep.</p>
   <li><strong>harmonic</strong> — <a href="https://en.wikipedia.org/wiki/Spherical_harmonics">A sphere modulated by a spherical harmonic; the classical functions of Laplace (1782)</a></li>
   <li><strong>Hilbert curve</strong> — <a href="https://en.wikipedia.org/wiki/Hilbert_curve">David Hilbert, “Über die stetige Abbildung einer Linie auf ein Flächenstück”, Math. Annalen 38 (1891)</a></li>
   <li><strong>Hopf</strong> — <a href="https://en.wikipedia.org/wiki/Hopf_fibration">Heinz Hopf, “Über die Abbildungen der dreidimensionalen Sphäre auf die Kugelfläche”, Math. Annalen 104 (1931)</a></li>
+  <li><strong>hyperbolic</strong> — <a href="https://en.wikipedia.org/wiki/Uniform_tilings_in_hyperbolic_plane">H. S. M. Coxeter, “Crystal symmetry and its generalizations” (1957), after which Escher drew Circle Limit I; Douglas Dunham, “Hyperbolic symmetry” (1986)</a></li>
   <li><strong>Hénon</strong> — <a href="https://en.wikipedia.org/wiki/H%C3%A9non_map">Michel Hénon, “A two-dimensional mapping with a strange attractor”, Comm. Math. Phys. 50 (1976)</a></li>
   <li><strong>Ikeda</strong> — <a href="https://en.wikipedia.org/wiki/Ikeda_map">Kensuke Ikeda, Optics Communications 30 (1979)</a></li>
   <li><strong>Julia</strong> — <a href="https://en.wikipedia.org/wiki/Julia_set">Gaston Julia (1918) and Pierre Fatou</a></li>
   <li><strong>Klein bottle</strong> — <a href="https://en.wikipedia.org/wiki/Klein_bottle">Felix Klein (1882); the figure-eight immersion is the standard one</a></li>
+  <li><strong>Kleinian</strong> — <a href="https://en.wikipedia.org/wiki/Kleinian_group">David Mumford, Caroline Series &amp; David Wright, “Indra’s Pearls: The Vision of Felix Klein” (2002), Grandma’s recipe</a></li>
   <li><strong>kuramoto</strong> — <a href="https://en.wikipedia.org/wiki/Kuramoto_model">Yoshiki Kuramoto (1975); Steven Strogatz, “From Kuramoto to Crawford”, Physica D 143 (2000)</a></li>
   <li><strong>life</strong> — <a href="https://softologyblog.wordpress.com/2019/12/28/3d-cellular-automata-3/">Carter Bays, “Candidates for the Game of Life in Three Dimensions”, Complex Systems 1 (1987); the multi-state rules as catalogued by Softology</a></li>
   <li><strong>liquid</strong> — <a href="https://en.wikipedia.org/wiki/Smoothed-particle_hydrodynamics">Miles Macklin &amp; Matthias Müller, “Position Based Fluids”, SIGGRAPH 2013; kernels from Müller, Charypar &amp; Gross, SCA 2003</a></li>
@@ -1362,6 +1426,7 @@ instead — the citation is the thing to keep.</p>
   <li><strong>Rössler</strong> — <a href="https://en.wikipedia.org/wiki/R%C3%B6ssler_attractor">Otto Rössler, “An equation for continuous chaos”, Physics Letters A 57 (1976)</a></li>
   <li><strong>Sakarya</strong> — The Sakarya system (2010)</li>
   <li><strong>sandpile</strong> — <a href="https://en.wikipedia.org/wiki/Abelian_sandpile_model">Per Bak, Chao Tang &amp; Kurt Wiesenfeld, “Self-organized criticality”, Phys. Rev. Lett. 59 (1987); Deepak Dhar on the Abelian property (1990)</a></li>
+  <li><strong>seashell</strong> — <a href="https://algorithmicbotany.org/papers/shells.sig92.html">David M. Raup, “Geometric analysis of shell coiling” (1966); Deborah Fowler, Hans Meinhardt &amp; Przemysław Prusinkiewicz, “Modeling seashells” (SIGGRAPH 1992)</a></li>
   <li><strong>Shimizu–Morioka</strong> — Tsutomu Shimizu &amp; Nobuo Morioka, Physics Letters A 76 (1980)</li>
   <li><strong>Sierpinski</strong> — <a href="https://en.wikipedia.org/wiki/Sierpi%C5%84ski_triangle">Wacław Sierpiński (1915), by Michael Barnsley’s chaos game</a></li>
   <li><strong>slime</strong> — <a href="https://en.wikipedia.org/wiki/Physarum_polycephalum">Jeff Jones, “Characteristics of pattern formation and evolution in approximations of Physarum transport networks”, Artificial Life 16 (2010); Tero et al., Science 327 (2010)</a></li>
