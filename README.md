@@ -1683,6 +1683,28 @@ stipple are fixed to the screen, so the marks stay where they are as the
 form turns under them; the outlines move with it. `/particles/ink_weight`
 scales the line width, the hatching's spacing and the dots together.
 
+#### Liquid
+
+```
+/particles/liquid   0..1, how far the discs melt into one surface; 0 is off (the default)
+```
+
+The surfels smoothed into one glossy surface: screen-space fluid
+rendering, after van der Laan, Green & Sainz, "Screen Space Fluid
+Rendering with Curvature Flow", I3D 2009. After the G-buffer pass, one
+pass blurs the depth the surfels left, as a distance along each pixel's
+ray, over a few surfels' width on screen (more as the knob goes up). The
+blur is bilateral: a tap that is much nearer or farther than the centre
+counts for little, so the surface does not melt across a gap into
+whatever is behind it. The lighting then reads its normals from the
+smoothed depth, so the bumps of the separate discs are gone, and shades
+it as a liquid: the light that gets in, tinted by its colour, and on top
+what the surface reflects, the sky and sharp highlights of the lamps and
+the sun, more of it at a glancing angle (Schlick's Fresnel term with
+water's 2% head on). Surfaces with exact normals, glyphs, a solid and
+the walls, are left as they are. Choosing it turns the surface mode on.
+A slow envelope on it is a cloud that condenses and evaporates.
+
 How it is drawn:
 
 - **Each particle is evaluated once**, by a compute pass, into a buffer
@@ -2208,6 +2230,7 @@ and the aliases are read on the way in only.
 | `/particles/solid_detail` | 0 – 1 | 0.6 | the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth |
 | `/particles/ink` | 0 – 3 | 0 | the surface mode as a pen drawing: off · outlines · hatching · stipple |
 | `/particles/ink_weight` | 0 – 1 | 0.5 | how heavy the pen is: line width, hatching spacing, stipple dot size |
+| `/particles/liquid` | 0 – 1 | 0 | the surface mode's discs smoothed into one glossy liquid surface; 0 is off |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

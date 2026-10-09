@@ -71,6 +71,11 @@ struct Surface {
     // 0 off, 1 outlines, 2 hatching, 3 stipple; and the pen's weight.
     ink: u32,
     ink_weight: f32,
+    // 0..1: the surfels smoothed into one liquid surface.
+    liquid: f32,
+    _pad3: f32,
+    _pad4: f32,
+    _pad5: f32,
 };
 
 @group(1) @binding(0) var<uniform> s: Surface;
@@ -81,6 +86,11 @@ struct Surface {
 @group(3) @binding(0) var g_albedo: texture_2d<f32>;
 @group(3) @binding(1) var g_normal: texture_2d<f32>;
 @group(3) @binding(2) var g_depth: texture_depth_2d;
+// The liquid's smoothed depth, read in place of `g_depth` when it is on.
+@group(3) @binding(3) var g_smooth: texture_2d<f32>;
+// The liquid pass's own inputs, at bindings the G-buffer does not use.
+@group(3) @binding(5) var l_depth: texture_depth_2d;
+@group(3) @binding(7) var l_normal: texture_2d<f32>;
 
 /// Smallest surfel half-size in target pixels. Smaller than the additive
 /// floor, because an opaque surfel cannot be dimmed by the area it gains —
@@ -872,6 +882,121 @@ fn fs_solid(@builtin(position) frag: vec4<f32>) -> SolidOut {
     return out;
 }
 
+// --- Liquid ----------------------------------------------------------------
+//
+// The surfels smoothed into one surface: screen-space fluid rendering,
+// after van der Laan, Green and Sainz, "Screen Space Fluid Rendering with
+// Curvature Flow", I3D 2009. The depth the surfels left is blurred as a
+// distance along each pixel's ray, with a bilateral weight so the blur
+// follows the surface and does not bleed across a gap in depth to
+// whatever is behind it; the shading then reads its normals from the
+// smoothed depth, and the bumps of the separate discs are gone. One pass
+// on a sparse grid of taps rather than a separable pair: a bilateral
+// weight does not separate, and a pair of them leaves streaks along the
+// axes.
+// Surfaces with exact normals — glyphs, a solid, the walls — are left as
+// they are, and are not blurred into.
+
+/// Which way pixel `px` of a `size` target looks.
+fn liquid_ray(px: vec2<i32>, size: vec2<f32>) -> vec3<f32> {
+    let uv = (vec2<f32>(px) + 0.5) / size;
+    let w = s.inv_view_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.5, 1.0);
+    return normalize(w.xyz / w.w - u.cam_position);
+}
+
+/// The distance along the ray to the surface at `px`, or -1 for none or
+/// for an exact surface, which the liquid leaves alone.
+fn liquid_distance(px: vec2<i32>, size: vec2<f32>) -> f32 {
+    let d = textureLoad(l_depth, px, 0);
+    if (d >= 1.0 || textureLoad(l_normal, px, 0).w > 0.99) {
+        return -1.0;
+    }
+    let uv = (vec2<f32>(px) + 0.5) / size;
+    let w = s.inv_view_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+    return length(w.xyz / w.w - u.cam_position);
+}
+
+/// Taps from the centre to the edge of the blur, each way.
+const LIQUID_TAPS: i32 = 5;
+
+@fragment
+fn fs_liquid(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(l_depth));
+    let isize = vec2<i32>(size);
+    let px = vec2<i32>(frag.xy);
+    let raw = textureLoad(l_depth, px, 0);
+    let centre = liquid_distance(px, size);
+    if (centre < 0.0) {
+        return vec4<f32>(raw);
+    }
+    // A few surfels' width, so the bumps between them go but the form
+    // does not; reached in a fixed number of taps, spaced to fit.
+    let surfel_px = u.size / max(centre, 1e-3) * abs(u.view_proj[1][1]) * size.y * 0.5;
+    let reach = clamp(s.liquid * 3.0 * surfel_px, 1.0, 40.0);
+    let spacing = max(reach / f32(LIQUID_TAPS), 1.0);
+    let sigma = reach * 0.5 + 0.5;
+    // The depth range: a little more than a surfel, so neighbouring
+    // discs merge and a surface behind does not.
+    let range = 3.0 * u.size;
+    var sum = 0.0;
+    var weight = 0.0;
+    for (var j = -LIQUID_TAPS; j <= LIQUID_TAPS; j = j + 1) {
+        for (var i = -LIQUID_TAPS; i <= LIQUID_TAPS; i = i + 1) {
+            let off = vec2<f32>(f32(i), f32(j)) * spacing;
+            let q = clamp(px + vec2<i32>(round(off)), vec2<i32>(0), isize - 1);
+            let d = liquid_distance(q, size);
+            if (d < 0.0) {
+                continue;
+            }
+            let x = length(off) / sigma;
+            let r = (d - centre) / range;
+            let w = exp(-0.5 * (x * x + r * r));
+            sum += d * w;
+            weight += w;
+        }
+    }
+    // Back to a depth, so everything downstream reads the liquid as it
+    // reads the surfels' own.
+    let p = u.cam_position + liquid_ray(px, size) * (sum / max(weight, 1e-6));
+    let clip = u.view_proj * vec4<f32>(p, 1.0);
+    return vec4<f32>(clamp(clip.z / clip.w, 0.0, 0.9999999));
+}
+
+/// The depth the shading reads: the surfels' own, or the liquid's.
+fn scene_depth(p: vec2<i32>) -> f32 {
+    if (s.liquid > 0.001) {
+        return textureLoad(g_smooth, p, 0).r;
+    }
+    return textureLoad(g_depth, p, 0);
+}
+
+/// A liquid's look: what light gets in tinted by its colour, and on top
+/// what its surface reflects — the sky and the highlights of the lamps
+/// and the sun — more of it at a glancing angle (Schlick's Fresnel term,
+/// with water's 2% head on).
+fn liquid_shade(pos: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>, light: vec3<f32>) -> vec3<f32> {
+    let v = normalize(u.cam_position - pos);
+    // Clamped: two unit vectors can dot to a hair over 1, and pow of a
+    // negative is NaN, which the bloom then spreads over half the frame.
+    let k = clamp(1.0 - dot(n, v), 0.0, 1.0);
+    let fresnel = 0.02 + 0.98 * k * k * k * k * k;
+    let r = reflect(-v, n);
+    let sky = mix(vec3<f32>(0.02, 0.02, 0.03), vec3<f32>(0.5, 0.56, 0.66), smoothstep(-0.3, 0.9, r.y)) * u.light.x;
+    var spec = vec3<f32>(0.0);
+    for (var i = 0u; i < 2u; i = i + 1u) {
+        let level = u.lamp[i].w;
+        if (level <= 0.001) {
+            continue;
+        }
+        let toward = normalize(u.lamp[i].xyz - pos);
+        spec += u.lamp_tint[i].rgb * level * pow(max(dot(r, toward), 0.0), 160.0);
+    }
+    if (u.sun_dir.w > 0.001) {
+        spec += u.sun_tint.rgb * u.sun_dir.w * pow(max(dot(r, u.sun_dir.xyz), 0.0), 160.0) * sun_light(pos, n);
+    }
+    return albedo * light * (1.0 - fresnel) + (sky + spec * 4.0) * fresnel + spec;
+}
+
 // --- Lighting --------------------------------------------------------------
 
 @vertex
@@ -899,8 +1024,8 @@ fn tangent(px: vec2<i32>, c: vec3<f32>, dir: vec2<i32>) -> vec3<f32> {
     let size = vec2<i32>(textureDimensions(g_depth));
     let a = clamp(px + dir, vec2<i32>(0), size - 1);
     let b = clamp(px - dir, vec2<i32>(0), size - 1);
-    let da = textureLoad(g_depth, a, 0);
-    let db = textureLoad(g_depth, b, 0);
+    let da = scene_depth(a);
+    let db = scene_depth(b);
     let va = da < 1.0;
     let vb = db < 1.0;
     let fa = world_at(a, da) - c;
@@ -928,7 +1053,7 @@ fn depth_normal(px: vec2<i32>, c: vec3<f32>, a: vec2<i32>, b: vec2<i32>, to_eye:
 @fragment
 fn fs_shade(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let px = vec2<i32>(frag.xy);
-    let d = textureLoad(g_depth, px, 0);
+    let d = scene_depth(px);
     if (d >= 1.0) {
         discard;
     }
@@ -955,13 +1080,23 @@ fn fs_shade(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         + depth_normal(px, pos, vec2<i32>(k3, 0), vec2<i32>(0, k3), to_eye)
         + depth_normal(px, pos, vec2<i32>(k3, k3), vec2<i32>(k3, -k3), to_eye);
     var n = select(to_eye, normalize(sum), dot(sum, sum) > 1e-8);
-    if (known.w > 0.0) {
-        n = normalize(mix(n, known.xyz * 2.0 - 1.0, known.w));
+    // A surfel's own facing is the bump the liquid smooths away, so the
+    // liquid lets go of it; exact normals are kept.
+    let trust = select(known.w * (1.0 - s.liquid), known.w, known.w > 0.99);
+    if (trust > 0.0) {
+        n = normalize(mix(n, known.xyz * 2.0 - 1.0, trust));
     }
     // The room's lines, in the wireframe's colour: given off, not lit.
     let lines = vec3<f32>(0.28, 0.38, 0.58) * g.a;
-    let light = surface_light(pos, n);
-    let lit = albedo * light;
+    // The smoothed surface runs through the middle of the surfels, so in
+    // the shadow map they stand proud of it and shade it in crescents:
+    // the liquid is lit from where the surfels' fronts are.
+    let lift = select(u.size * 2.0 * s.liquid, 0.0, known.w > 0.99);
+    let light = surface_light(pos + n * lift, n);
+    var lit = albedo * light;
+    if (s.liquid > 0.001 && known.w < 0.99) {
+        lit = mix(lit, liquid_shade(pos, n, albedo, light), s.liquid);
+    }
     if (s.ink > 0u) {
         return vec4<f32>(ink(px, pos, lit, light, albedo) + lines, 1.0);
     }
@@ -1000,7 +1135,7 @@ fn ink_distance(p: vec2<i32>) -> f32 {
     if (any(p < vec2<i32>(0)) || any(p >= size)) {
         return -1.0;
     }
-    let d = textureLoad(g_depth, p, 0);
+    let d = scene_depth(p);
     if (d >= 1.0) {
         return -1.0;
     }

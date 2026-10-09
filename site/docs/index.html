@@ -1143,6 +1143,16 @@ fixed to the screen while the outlines move with the form.
 anything the surface mode draws: a cloud, glyphs, a fractal solid or the
 room.</p>
 
+<h3 id="liquid">Liquid</h3>
+
+<p><code>/particles/liquid</code> melts the surface mode's discs into one
+glossy surface. The depth they leave is blurred over a few discs' width, but
+only between discs at about the same depth, so the surface does not run
+across a gap into what is behind it; the lighting reads the smoothed surface,
+and shades it like water, with the sky and sharp highlights of the lamps and
+sun reflected on top, more at a glancing angle. Glyphs, solids and the walls
+are left alone. A slow envelope on it condenses and evaporates the cloud.</p>
+
 <h2 id="camera">Camera and room</h2>
 
 <p>A real camera looks into the field: <code>/camera/distance</code>,
@@ -1484,6 +1494,7 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/solid_detail</code></td><td>0 – 1</td><td>0.6</td><td>the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth</td></tr>
     <tr><td><code>/particles/ink</code></td><td>0 – 3</td><td>0</td><td>the surface mode as a pen drawing: off · outlines · hatching · stipple</td></tr>
     <tr><td><code>/particles/ink_weight</code></td><td>0 – 1</td><td>0.5</td><td>how heavy the pen is: line width, hatching spacing, stipple dot size</td></tr>
+    <tr><td><code>/particles/liquid</code></td><td>0 – 1</td><td>0</td><td>the surface mode's discs smoothed into one glossy liquid surface; 0 is off</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>

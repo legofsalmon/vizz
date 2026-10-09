@@ -785,6 +785,7 @@ impl ParticleScene {
         walls: Option<crate::surface::Walls>,
         solid: Option<crate::surface::Solid>,
         ink: Option<crate::surface::Ink>,
+        liquid: f32,
     ) {
         let uniforms = self.prepare(ctx, target, uniforms);
         // A poisoned lock means an earlier frame panicked mid-encode; the
@@ -795,7 +796,7 @@ impl ParticleScene {
             crate::surface::Surface::new(ctx, &self.bgl, self.target_format)
         });
         surface.render(
-            ctx, encoder, &self.bind_group, target, &uniforms, count, clear, background, walls, solid, ink,
+            ctx, encoder, &self.bind_group, target, &uniforms, count, clear, background, walls, solid, ink, liquid,
         );
     }
 }
