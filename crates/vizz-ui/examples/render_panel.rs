@@ -64,6 +64,7 @@ fn main() {
         "/particles/ink",
         "/particles/ink_weight",
         "/particles/liquid",
+        "/particles/splat",
         "/particles/plexus",
         "/particles/plexus_reach",
         "/shape/mode",

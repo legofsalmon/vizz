@@ -77,6 +77,20 @@ pub struct Attractors {
     pub view: wgpu::TextureView,
     /// A label per slot for the UI, so a loaded cloud is identifiable.
     pub names: [String; SLOTS],
+    /// Each point's Gaussian splat, where the slot holds a splat capture,
+    /// in the same texel layout again: the axes' sizes and the opacity in
+    /// `splat_shape`, the axes' turn as a quaternion in `splat_turn`. A
+    /// zero opacity is "not a splat", and the splat pass draws that point
+    /// as a round one of the particle size; a negative one is a repeat,
+    /// filling a slot bigger than the capture, and is not drawn. Half-float: sizes after the
+    /// cloud is fitted to the view are thousandths to tenths.
+    pub splat_shape: wgpu::Texture,
+    pub splat_turn: wgpu::Texture,
+    pub splat_shape_view: wgpu::TextureView,
+    pub splat_turn_view: wgpu::TextureView,
+    /// How many of each slot's texels hold a splat, from the first: 0
+    /// for a slot that is not a capture.
+    splat_count: [u32; SLOTS],
 }
 
 /// Classic Lorenz, sigma 10 / rho 28 / beta 8/3.
@@ -241,7 +255,37 @@ impl Attractors {
 
         let view = texture.create_view(&Default::default());
         let normals_view = normals.create_view(&Default::default());
+        let half_bank = |label| {
+            let t = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: texture.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            ctx.queue.write_texture(
+                t.as_image_copy(),
+                &vec![0u8; (POINTS * SLOTS) * 8],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(WIDTH * 8),
+                    rows_per_image: None,
+                },
+                t.size(),
+            );
+            t
+        };
+        let splat_shape = half_bank("attractor splat shapes");
+        let splat_turn = half_bank("attractor splat turns");
         Self {
+            splat_shape_view: splat_shape.create_view(&Default::default()),
+            splat_turn_view: splat_turn.create_view(&Default::default()),
+            splat_shape,
+            splat_turn,
+            splat_count: [0; SLOTS],
             texture,
             normals,
             normals_view,
@@ -338,6 +382,8 @@ impl Attractors {
         // that already has none — which is every frame of a live stream,
         // and was a megabyte built and half a megabyte uploaded each time
         // to replace zeros with zeros.
+        // Whatever comes next, it is not the last cloud's splats.
+        self.set_slot_splats(ctx, slot, None);
         if !write_normals {
             self.names[slot] = name.to_string();
             return;
@@ -371,8 +417,88 @@ impl Attractors {
         );
         self.names[slot] = name.to_string();
     }
+
+    /// Give a slot its points' splats, one per point of the cloud
+    /// [`Self::load_slot`] was handed, in the same order; or take them
+    /// away. Picked into texels exactly as the points were.
+    pub fn set_slot_splats(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        splats: Option<&[crate::pointcloud::Splat]>,
+    ) {
+        if slot >= SLOTS {
+            return;
+        }
+        let splats = splats.filter(|s| !s.is_empty());
+        if splats.is_none() && self.splat_count[slot] == 0 {
+            return;
+        }
+        let (shape, turn): (Vec<u16>, Vec<u16>) = match splats {
+            Some(s) => {
+                let mut shape = Vec::with_capacity(POINTS * 4);
+                let mut turn = Vec::with_capacity(POINTS * 4);
+                for i in 0..POINTS {
+                    let sp = s[slot_pick(s.len(), i)];
+                    // A capture smaller than the slot repeats its points
+                    // to fill it. A repeated dot is invisible; a repeated
+                    // splat doubles its opacity, so the repeats are marked
+                    // to be drawn as nothing.
+                    let opacity = if i < s.len() { sp.opacity } else { -1.0 };
+                    shape.extend([sp.scale[0], sp.scale[1], sp.scale[2], opacity].map(f32_to_f16));
+                    turn.extend(sp.rot.map(f32_to_f16));
+                }
+                (shape, turn)
+            }
+            None => (vec![0; POINTS * 4], vec![0; POINTS * 4]),
+        };
+        for (texture, data) in [(&self.splat_shape, &shape), (&self.splat_turn, &turn)] {
+            ctx.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: (slot * POINTS) as u32 / WIDTH, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(data),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(WIDTH * 8),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d { width: WIDTH, height: POINTS as u32 / WIDTH, depth_or_array_layers: 1 },
+            );
+        }
+        self.splat_count[slot] = splats.map_or(0, |s| s.len().min(POINTS) as u32);
+    }
+
+    /// How many splats a slot holds, in its first texels: 0 for a slot
+    /// that is not a capture.
+    pub fn splat_count(&self, slot: usize) -> u32 {
+        self.splat_count.get(slot).copied().unwrap_or(0)
+    }
 }
 
+/// Which of a cloud's `n` points lands in slot texel `i`.
+///
+/// A stride across the whole cloud, not the first `POINTS` of it.
+/// The original took `points[i % len]`, which for any cloud bigger
+/// than the slot is exactly `points[i]` — the first sixty-five
+/// thousand points and nothing else. Scanners write in scan order,
+/// so on a five-million-point room that is one corner of it, and
+/// the rest of the scan had simply never been on screen.
+///
+/// Below the slot size the expression is the old one: `i % len`
+/// wraps and each point repeats with a jitter.
+pub(crate) fn slot_pick(n: usize, i: usize) -> usize {
+    if n >= POINTS {
+        // Rounded rather than truncated so the last texel reaches
+        // the end of the cloud instead of stopping short of it.
+        ((i as u64 * n as u64 + POINTS as u64 / 2) / POINTS as u64).min(n as u64 - 1) as usize
+    } else {
+        i % n
+    }
+}
 
 /// The `POINTS` points a slot draws, with normals worked out.
 ///
@@ -383,28 +509,8 @@ pub(crate) fn slot_points(
     points: &[crate::pointcloud::Point],
     normals: Normals,
 ) -> Vec<crate::pointcloud::Point> {
-    // Which point of the cloud lands in slot texel `i`.
-    //
-    // A stride across the whole cloud, not the first `POINTS` of it.
-    // The original took `points[i % len]`, which for any cloud bigger
-    // than the slot is exactly `points[i]` — the first sixty-five
-    // thousand points and nothing else. Scanners write in scan order,
-    // so on a five-million-point room that is one corner of it, and
-    // the rest of the scan had simply never been on screen.
-    //
-    // Below the slot size the expression is the old one: `i % len`
-    // wraps and each point repeats with a jitter.
     let n = points.len();
-    let pick = |i: usize| -> usize {
-        if n >= POINTS {
-            // Rounded rather than truncated so the last texel reaches
-            // the end of the cloud instead of stopping short of it.
-            ((i as u64 * n as u64 + POINTS as u64 / 2) / POINTS as u64).min(n as u64 - 1)
-                as usize
-        } else {
-            i % n
-        }
-    };
+    let pick = |i: usize| slot_pick(n, i);
     // Which points are actually going to be drawn — so a normal is
     // estimated for the ones on screen rather than for millions that
     // are not.

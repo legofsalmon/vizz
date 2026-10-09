@@ -119,6 +119,14 @@ pub struct Uniforms {
     /// disc, which is every look saved before either existed. Build it
     /// with [`Stroke::lanes`] and [`Glyph::lane`].
     pub stroke: [f32; 4],
+    /// Gaussian splats: `.x` is the opacity they are drawn at, 0 for not
+    /// at all. While it is up, every particle takes its own texel of a
+    /// cloud slot rather than a random one, and a cloud holds still
+    /// instead of flowing through its points, so a capture's splats are
+    /// each drawn once and stay put. `.y`, `.z` and `.w` (the count, and
+    /// how many splats the `cloud_a` and `cloud_b` slots hold) are filled
+    /// in by [`ParticleScene::render_splats`]. See `splat.rs`.
+    pub splat: [f32; 4],
 }
 
 /// What a particle is drawn as in the glowing mode.
@@ -273,6 +281,8 @@ pub struct ParticleScene {
     /// The plexus lines, built the first time they are asked for, for
     /// the same reason.
     plexus: std::sync::Mutex<Option<crate::plexus::PlexusPass>>,
+    /// The Gaussian splats, likewise.
+    splats: std::sync::Mutex<Option<crate::splat::SplatPass>>,
     target_format: wgpu::TextureFormat,
 }
 
@@ -430,6 +440,7 @@ impl ParticleScene {
             loaded_palettes: 0,
             surface: std::sync::Mutex::new(None),
             plexus: std::sync::Mutex::new(None),
+            splats: std::sync::Mutex::new(None),
             target_format,
         }
     }
@@ -601,8 +612,8 @@ impl ParticleScene {
         slot: usize,
         path: &std::path::Path,
     ) -> anyhow::Result<String> {
-        let mut points = crate::pointcloud::load(path)?;
-        crate::pointcloud::normalize(&mut points);
+        let (mut points, mut splats) = crate::pointcloud::load_with_splats(path)?;
+        crate::pointcloud::normalize_with_splats(&mut points, splats.as_deref_mut());
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -611,7 +622,20 @@ impl ParticleScene {
         log::info!("cloud slot {slot}: {} ({} points)", name, points.len());
         self.attractors
             .load_slot(ctx, slot, &points, &name, crate::attractor::Normals::Estimate);
+        self.attractors.set_slot_splats(ctx, slot, splats.as_deref());
         Ok(name)
+    }
+
+    /// Give a cloud slot the splats of the capture just put in it with
+    /// [`Self::set_cloud`], already scaled with it (see
+    /// [`crate::pointcloud::normalize_with_splats`]).
+    pub fn set_splats(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        splats: Option<&[crate::pointcloud::Splat]>,
+    ) {
+        self.attractors.set_slot_splats(ctx, slot, splats);
     }
 
     /// Replace one cloud slot's contents, for a live stream.
@@ -822,6 +846,32 @@ impl ParticleScene {
         });
         pass.render(ctx, encoder, &self.bind_group, target, &uniforms, count, plexus);
     }
+
+    /// Encode one frame as Gaussian splats, sorted and blended far to
+    /// near, in place of [`Self::render`]. `uniforms.splat[0]` is their
+    /// opacity and must be above zero. See [`crate::splat`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_splats(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        uniforms: &Uniforms,
+        count: u32,
+        clear: bool,
+        background: wgpu::Color,
+    ) {
+        let mut uniforms = *uniforms;
+        uniforms.splat[1] = count as f32;
+        uniforms.splat[2] = self.attractors.splat_count(uniforms.cloud_a as usize) as f32;
+        uniforms.splat[3] = self.attractors.splat_count(uniforms.cloud_b as usize) as f32;
+        self.prepare(ctx, target, &uniforms);
+        let mut pass = self.splats.lock().unwrap_or_else(|e| e.into_inner());
+        let pass = pass.get_or_insert_with(|| {
+            crate::splat::SplatPass::new(ctx, &self.bgl, &self.attractors, self.target_format)
+        });
+        pass.render(ctx, encoder, &self.bind_group, target, count, clear, background);
+    }
 }
 
 #[cfg(test)]
@@ -900,6 +950,7 @@ mod tests {
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
             stroke: [0.0; 4],
+            splat: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -1061,6 +1112,7 @@ mod tests {
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
             stroke: [0.0; 4],
+            splat: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -1125,6 +1177,7 @@ mod tests {
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
             stroke: [0.0; 4],
+            splat: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -1224,6 +1277,159 @@ mod tests {
             .collect()
     }
 
+    /// A frame drawn as Gaussian splats, as linear RGB per pixel.
+    fn frame_splats(ctx: &GpuContext, scene: &ParticleScene, u: &Uniforms, count: u32) -> Vec<[f32; 3]> {
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("splat-test-target"),
+            size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::SCENE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat-test-readback"),
+            size: (W * W * 8) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        scene.render_splats(ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK);
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 8),
+                    rows_per_image: Some(W),
+                },
+            },
+            texture.size(),
+        );
+        ctx.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = slice.get_mapped_range().unwrap().to_vec();
+        let half = |o: usize| {
+            let h = u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+            let exp = ((h >> 10) & 0x1f) as i32;
+            let frac = (h & 0x3ff) as f32;
+            match exp {
+                0 => frac * 2f32.powi(-24),
+                _ => (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+            }
+        };
+        (0..(W * W) as usize).map(|i| [half(i * 8), half(i * 8 + 2), half(i * 8 + 4)]).collect()
+    }
+
+    /// A capture in slot 2, shown alone and still, square to the camera.
+    fn splat_scene(ctx: &GpuContext, points: &[([f32; 3], [u8; 3], crate::pointcloud::Splat)]) -> (ParticleScene, Uniforms) {
+        let mut scene = ParticleScene::new(ctx, crate::post::SCENE_FORMAT);
+        let pts: Vec<_> = points
+            .iter()
+            .map(|(p, c, _)| crate::pointcloud::Point { color: *c, ..crate::pointcloud::Point::new(p[0], p[1], p[2]) })
+            .collect();
+        let splats: Vec<_> = points.iter().map(|(_, _, s)| *s).collect();
+        scene.set_cloud(ctx, 2, &pts, "capture");
+        scene.set_splats(ctx, 2, Some(&splats));
+        let cam = crate::camera::Camera { aspect: 1.0, elevation: 0.0, orbit: 0.0, ..Default::default() };
+        let cu = cam.uniforms();
+        let u = Uniforms {
+            view_proj: cu.view_proj,
+            cam_right: cu.right,
+            focus: 3.5,
+            cam_up: cu.up,
+            defocus: 0.0,
+            cam_position: cu.position,
+            viewport_h: 0.0,
+            time: 0.0,
+            aspect: 1.0,
+            size: 0.02,
+            spread: 1.0,
+            hue: 0.0,
+            saturation: 0.0,
+            brightness: 1.0,
+            shape: 7.0,
+            morph: 0.0,
+            twist: 0.0,
+            palette: 0.0,
+            color_spread: 0.0,
+            color_drive: 0.0,
+            cloud_a: 2.0,
+            cloud_b: 2.0,
+            cloud_morph: 0.0,
+            room: Default::default(),
+            lamp: Uniforms::UNLIT.lamp,
+            lamp_tint: Uniforms::UNLIT.lamp_tint,
+            light: Uniforms::UNLIT.light,
+            sun_dir: Uniforms::UNLIT.sun_dir,
+            sun_tint: Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
+            splat: [1.0, 0.0, 0.0, 0.0],
+            gravity: Default::default(),
+            gravity_radius: Default::default(),
+            gravity_amount: Default::default(),
+            palette_rows: [4.0, 0.0, 0.0, 0.0],
+            video: [0.0, 1.0, 0.0, 0.0],
+        };
+        (scene, u)
+    }
+
+    /// A flat splat facing the camera, `sx` by `sy`, turned `turn` about
+    /// the view axis.
+    fn flat_splat(sx: f32, sy: f32, turn: f32) -> crate::pointcloud::Splat {
+        let h = turn * 0.5;
+        crate::pointcloud::Splat { scale: [sx, sy, 0.005], rot: [h.cos(), 0.0, 0.0, h.sin()], opacity: 0.99 }
+    }
+
+    /// Splats are drawn far to near, so the nearer covers the farther
+    /// whichever order the file has them in. Drawn unsorted, the second
+    /// in the file would always win.
+    #[test]
+    fn splats_cover_from_the_front_whatever_the_file_order() {
+        let Some(ctx) = gpu() else { return };
+        let red = ([0.0, 0.0, 0.5], [255, 0, 0], flat_splat(0.3, 0.3, 0.0));
+        let blue = ([0.0, 0.0, -0.5], [0, 0, 255], flat_splat(0.3, 0.3, 0.0));
+        // The camera is on +z, so red is the nearer.
+        for (name, order) in [("red first", [red, blue]), ("blue first", [blue, red])] {
+            let (scene, u) = splat_scene(&ctx, &order);
+            let px = frame_splats(&ctx, &scene, &u, 2);
+            let c = px[(W as usize / 2) * W as usize + W as usize / 2];
+            assert!(c[0] > 0.8 && c[2] < 0.1, "{name}: the middle is the near red splat: {c:?}");
+        }
+    }
+
+    /// A capture's splats keep their shape and turn: one long across the
+    /// view covers a wide, short patch, and the same turned a quarter
+    /// about the view axis covers a tall, narrow one.
+    #[test]
+    fn splats_keep_their_shape_and_turn() {
+        let Some(ctx) = gpu() else { return };
+        let extent = |turn: f32| {
+            let (scene, u) =
+                splat_scene(&ctx, &[([0.0; 3], [255, 255, 255], flat_splat(0.25, 0.04, turn))]);
+            let px = frame_splats(&ctx, &scene, &u, 1);
+            let lit: Vec<(usize, usize)> = (0..px.len())
+                .filter(|&i| px[i][0] > 0.2)
+                .map(|i| (i % W as usize, i / W as usize))
+                .collect();
+            assert!(!lit.is_empty(), "the splat is drawn");
+            let span = |f: fn(&(usize, usize)) -> usize| {
+                lit.iter().map(f).max().unwrap() - lit.iter().map(f).min().unwrap()
+            };
+            (span(|p| p.0), span(|p| p.1))
+        };
+        let (wide, short) = extent(0.0);
+        let (narrow, tall) = extent(std::f32::consts::FRAC_PI_2);
+        assert!(wide > short * 3, "long across: {wide} by {short}");
+        assert!(tall > narrow * 3, "turned upright: {narrow} by {tall}");
+    }
+
     /// Plexus lines join near particles: a sparse field with them on
     /// lights many more pixels than its dots alone, and with a reach too
     /// short for any two to meet it is the dots exactly.
@@ -1313,6 +1519,7 @@ mod tests {
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
             stroke: [0.0; 4],
+            splat: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -1833,6 +2040,7 @@ mod tests {
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
             stroke: [0.0; 4],
+            splat: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
