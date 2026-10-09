@@ -2467,11 +2467,12 @@ crates/
   vizz-midi     MIDI input: wire-format parsing, bindings with 14-bit CC
                 pairing, MIDI-learn, and JSON persistence. Hot-plugs
                 devices; writes into the param store exactly like OSC.
-  vizz-design   the design language: colour roles, ink ramp, surfaces,
-                type/space/radius scales, motion timings and shared
-                widgets (the armed button, the status dot). One place,
-                consumable by sister apps — see docs/design.md and the
-                rendered specimen sheet.
+  vizz-design   the design language: the studio's shared design system
+                (vendored tokens.rs) as vizz's colour roles, ink ramp,
+                surfaces, type/space/radius scales, motion timings,
+                egui visuals and shared widgets (the armed button, the
+                status dot) — see docs/design.md and the rendered
+                specimen sheet.
   vizz-ui       egui control panel + a wgpu 30 paint backend for egui
                 (the published egui-wgpu still targets wgpu 29, and two
                 wgpu versions cannot share a device).

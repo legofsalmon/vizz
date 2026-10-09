@@ -470,7 +470,7 @@ fn main() {
         r.span = Some([0.2, 0.75]);
     }
     let ctx = egui::Context::default();
-    ctx.set_visuals(egui::Visuals::dark());
+    vizz_design::look::apply(&ctx);
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),

@@ -170,8 +170,9 @@ fn quit_prompt(ctx: &egui::Context) {
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(vizz_design::feedback::DANGER_BED)
+                .stroke(egui::Stroke::new(1.0, vizz_design::feedback::DANGER_EDGE))
                 .inner_margin(egui::Margin::symmetric(22, 16))
-                .corner_radius(6.0)
+                .corner_radius(vizz_design::radius::SHEET)
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new("press Esc again to quit")
@@ -453,7 +454,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
 impl Gui {
     pub fn new(window: &Window, device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
+        vizz_design::look::apply(&ctx);
         ctx.set_fonts(font_definitions());
         let state = egui_winit::State::new(
             ctx.clone(),

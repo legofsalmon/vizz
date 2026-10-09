@@ -1,11 +1,14 @@
 # The vizz design language
 
-One crate — `crates/vizz-design` — holds the entire visual and
-interaction vocabulary: colour roles, the text ramp, surfaces, accents,
-feedback chrome, the type scale, spacing, radii, motion timings, and
-the shared widgets that make the interaction idioms code rather than
-convention. vizz consumes it everywhere; a sister app starts from the
-identical language by adding one dependency.
+vizz speaks the studio's shared design system
+([legofsalmon/design-system](https://github.com/legofsalmon/design-system)),
+the same one LIGHT, crewbox, pixelmapmaker and st2110 use. One crate —
+`crates/vizz-design` — is where it arrives: the system's tokens,
+vendored as `tokens.rs`, and vizz's own vocabulary on top of them —
+colour roles, the text ramp, surfaces, accents, feedback chrome, the
+type scale, spacing, radii, motion timings, egui's own widgets drawn in
+the shared states, and the shared widgets that make the interaction
+idioms code rather than convention.
 
 ![The specimen sheet: every token, rendered](img/design-specimen.webp)
 
@@ -16,23 +19,36 @@ the same way the vector renderer was accepted from its contact sheet.
 
 ## Where it comes from
 
-The structure borrows from the two systems that got this right at
-scale, and diverges where a dark-room instrument is not a phone:
+vizz-design began as vizz's own system, borrowing from Material (tokens
+are *roles*, not swatches) and Apple's HIG (the ink ramp is semantic
+emphasis, filled states carry their "on" inks). Its rules — one
+meaning one colour, every control hovers, destructive clicks arm
+first, state said in words, changing numbers in monospace — went into
+the shared system, which now gives them back with its values, its
+state model and its motion:
 
-- **From Material:** tokens are *roles*, not swatches. Nothing is
-  named "orange"; things are named `WARN`. A screen that needs a
-  colour not in the vocabulary is probably saying something new — the
-  fix is to add the meaning, never a lookalike.
-- **From Apple's HIG:** the ink ramp is semantic emphasis (primary /
-  secondary / tertiary / faint — the shape of `label`,
-  `secondaryLabel`, …), and filled states carry their "on" inks with
-  them (`state::LEARN` + `state::ON_LEARN`), so text on a state chip
-  is part of the token rather than a guess at the call site.
-- **Not borrowed:** light mode, elevation shadows, adaptive type.
-  This is an instrument read at a glance from across a stage, dark
-  surfaces only, and its one typography rule that matters is that
-  numbers which change every frame wear a monospace face and pad to
-  fixed width, so the line never reflows under the eye.
+- **The grammar.** Neutral at rest; cyan is you (the current item, the
+  selection, a toggle that is on); amber is attention (a warning, a
+  learn waiting); red is stop (armed, failed, recording); green only
+  where working has to be told from off (an output, a clock source).
+  **Healthy is quiet:** a frame rate that is fine, a meter, "saved" —
+  none of them is green.
+- **The neutrals.** The surfaces and edges are the shared untinted
+  greys. vizz's used to lean blue, and a tinted chrome shifts what the
+  eye reads as white in the picture next to it.
+- **The states.** egui's buttons, ticks, fields and menus draw rest,
+  hover, pressed, focus, selected and disabled the shared way
+  (`look::apply`), so the hand-painted deck and egui's widgets are one
+  language rather than two.
+- **Motion.** The shared durations and curves, and its reduced mode
+  (`VIZZ_MOTION=reduced`, or macOS's Reduce motion), which keeps fades
+  and drops travel.
+
+**Not taken yet:** IBM Plex (the system does not ship the font files
+yet, and egui's font stack would be its own change), the density sizes
+for egui's controls (the deck is laid out by hand at desk sizes), and a
+light theme. This is an instrument read in a dark room, so it is dark
+only.
 
 ## The vocabulary
 
@@ -40,42 +56,56 @@ scale, and diverges where a dark-room instrument is not a phone:
   meaning: `LEARN` (a MIDI learn is waiting), `LIVE` (an output,
   input or clock is alive), `WARN` (attention, nothing armed),
   `ARMED` (the next press is destructive), `CURRENT` (the recalled
-  preset, the playing pad). These began as `vizz-ui`'s theme module
-  after the UX review found every screen carrying near-miss copies;
-  `vizz_ui::theme` now re-exports this module unchanged.
+  preset, the playing pad, a toggle that is on). `LEARN` and `WARN`
+  share the attention amber; a waiting learn is told from a broken
+  pad by its words and its breathing rim. `vizz_ui::theme`
+  re-exports this module unchanged.
 - **`ink`** — the four-stop text ramp. Anything that matters is
-  `PRIMARY` or `SECONDARY`; `FAINT` means "off" — including the
-  hollow status dot of a source that is not sending.
-- **`surface`** — levels of the dark ground (`BASE`, `WELL`,
-  `RAISED`, the slot fills, the near-white `ENGAGED` of a lit punch
-  button) and the structural greys (`HAIRLINE`, `EDGE`, `TICK`,
-  `FOCUS`).
+  `PRIMARY` or `SECONDARY`; `TERTIARY` is for hints and units on the
+  surfaces content sits on, never on a raised control; `FAINT` means
+  "off" — including the hollow status dot of a source that is not
+  sending.
+- **`surface`** — levels of the dark ground (`BASE`, `WELL`, `GROOVE`,
+  `RAISED`, `OVERLAY`, the slot fills, the near-white `ENGAGED` of a
+  lit punch button) and the structural greys (`HAIRLINE`, `EDGE`,
+  `CONTROL_EDGE`, `TICK`, the `HOVER_EDGE` that firms under a pointer,
+  and the keyboard `FOCUS` ring).
 - **`accent`** — recurring non-state colours with fixed jobs:
-  modulation amber, fader-value blues, meter blue, the master red,
-  the autopilot green, the binding-chip blue, the recording family,
-  the node-editor category hues.
-- **`feedback`** — what verdicts sit on. Inline text (`OK_TEXT`,
-  `ERR_TEXT` — errors must never share the success colour; that is
-  how load failures once went unnoticed) and sheets (`OK_BED`,
-  `DANGER_BED`, `LEARN_BED` with their `ON_*` inks) for notices, the
-  quit prompt and the learn banner.
+  `DRIVEN` (violet: something other than your hand is driving this —
+  a modulator, the autopilot), the fader fills (the accent's deep step,
+  capped in the accent), the neutral meters and master, the recording
+  family, the node-editor category hues.
+- **`feedback`** — what verdicts sit on. Inline text (`OK_TEXT` is
+  neutral, `ERR_TEXT` is the stop ink — errors never share the success
+  colour; that is how load failures once went unnoticed) and sheets
+  (`OK_BED`, `DANGER_BED`, `LEARN_BED` with their `ON_*` inks) for
+  notices, the quit prompt and the learn banner. The beds are the
+  shared washes flattened onto the floating surface, because a
+  translucent sheet over a strobing picture strobes with it.
 - **`text`, `space`, `radius`** — the scales, by role rather than by
   value: `text::BODY` not "13", `space::GAP` not "4",
-  `radius::CONTROL` not "3".
+  `radius::CONTROL` not "3". Space is the shared 4-point grid, radii
+  the shared compact (desk) density; `MICRO` and `INDEX` stay vizz's
+  own, under the shared floor, for chips riding on a 40-point pad.
 - **`motion`** — feedback has a clock and the clock is part of the
-  language: the 3-second armed window, the status fades (errors hold
-  longer), the notice TTLs.
+  language: the 3-second armed window, the 4-second success, failures
+  that stay until dismissed or replaced, and the transition durations
+  for the mode this machine asked for.
+- **`look`** — egui's `Visuals` from the shared roles. Call
+  `look::apply` once on the context.
 - **`widgets`** — idioms as code. `armed_button` is the app's one way
   to destroy something (first press relabels red in place and asks;
-  the window lapsing disarms; arming one key in a group disarms the
-  others). It replaced three hand-rolled copies of itself the day it
-  was extracted. `status_dot` is the painted live/dead dot — painted
-  because egui's default font has no ●, which was discovered the way
-  everything here was discovered.
+  the window lapsing or the pointer leaving disarms; arming one key in
+  a group disarms the others). It replaced three hand-rolled copies of
+  itself the day it was extracted. `status_dot` is the painted
+  live/dead dot — painted because egui's default font has no ●, which
+  was discovered the way everything here was discovered.
 
 ## The contracts
 
-Rules that travel with the tokens, for any app speaking the language:
+The shared system's behaviour rules apply in full
+([principles](https://github.com/legofsalmon/design-system/blob/main/docs/principles.md#behaviour));
+these are the ones a change here meets most:
 
 1. **One meaning, one colour** — and the converse: do not reuse a
    state colour for a non-state (a broken pad is `WARN`, never
@@ -89,30 +119,34 @@ Rules that travel with the tokens, for any app speaking the language:
    colour-blind eyes.
 5. **Changing numbers are monospace and padded**; layout must not
    move under the reader's eye.
-6. **Decorative values stay local.** A colour becomes a token when
+6. **Failures stay; successes go.** A notice that says something
+   failed stays until it is clicked away.
+7. **Decorative values stay local.** A colour becomes a token when
    one meaning appears in more than one place; computed glows and a
-   specialised editor's chrome do not get hoisted into the system.
+   specialised editor's category hues do not get hoisted into the
+   system.
 
 ## Enforcement
 
 The habit this repo trusts is tests that read source, and the design
-system gets the same treatment: a test in `vizz-design` fails if any
-file in `vizz-ui` restates a state colour (or the armed-red fill, or
-the primary ink) as an rgb literal instead of using the token. That is
-the specific drift that motivated the crate — three ambers, two
-greens, two oranges, all "the same" colour — and it is now a compile
-of `cargo test` away from impossible.
+system gets the same treatment. A test in `vizz-design` fails if any
+file in `vizz-ui` restates a state colour (or the armed-red fill, the
+primary ink, the driven violet or the ground) as an rgb literal instead
+of using the token, in decimal or hex. That is the specific drift that
+motivated the crate — three ambers, two greens, two oranges, all "the
+same" colour. Another fails if a colour in `vizz-design` is a literal
+rather than a shared token, unless it is one of vizz's own meanings
+with its reason written down.
 
-## Adopting it in a sister app
+CI checks the vendored `tokens.rs` against its stamp
+(`python3 scripts/design-system.py --check`), so a hand edit fails; the
+fix belongs in the design-system repository. To take a new version of
+the system, check it out beside this repository and run
+`python3 scripts/design-system.py --sync`.
 
-```toml
-[dependencies]
-vizz-design = { path = "../vizz/crates/vizz-design" }  # or workspace
-```
+## Changing it
 
-Build screens from the tokens and widgets, follow the contracts, and
-render your own specimen early — the sheet is the cheapest way to see
-whether a new surface still reads as the same family. When the sister
-app grows a meaning vizz does not have, the meaning goes into
-`vizz-design` with a doc comment saying what it is for, and both apps
-get it in the same release.
+A change to what a person sees starts from the design system's
+`docs/designing.md` (see `CLAUDE.md`). A new meaning vizz needs goes
+into `vizz-design` with a doc comment saying what it is for; when a
+second app needs the same meaning, it moves into the shared system.

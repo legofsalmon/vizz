@@ -28,6 +28,11 @@ jobs:
       # Windows use CoreMIDI/WinMM and need nothing).
       - name: Install Linux build dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libasound2-dev
+      # vizz-design reads every colour, size and timing from the shared
+      # design system's tokens.rs. The repository it comes from is private,
+      # so CI checks the copy against its own stamp: a hand edit fails here.
+      - name: The design system's copy is as it was vendored
+        run: python3 scripts/design-system.py --check
       - name: Build
         run: cargo build --workspace
       - name: Test

@@ -26,7 +26,11 @@ and where, the colour grammar, type, space and the behaviour rules),
 - **What stays this app's own:** storage and wire names, layout and flow,
   content, and meanings only this app has.
 
-This app has not moved onto the tokens yet; the adoption plan
-(`docs/adoption.md` in the design system) has its turn. The reasoning applies
-now: new UI follows the grammar and the behaviour rules, so the move is
-smaller when it comes.
+vizz takes the colours, the state model and motion: `crates/vizz-design`
+reads every value from the vendored `tokens.rs`
+(`python3 scripts/design-system.py --sync` to update it, `--check` runs in
+CI), `look::apply` draws egui's widgets in the shared states, and
+`docs/design.md` says which names are vizz's own. Dark only. Fonts and the
+density sizes for egui's controls come later. Its own meanings (violet
+`DRIVEN` for modulation and the autopilot, the recording red, the slot and
+engaged fills) stay in `vizz-design`.
