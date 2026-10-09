@@ -152,6 +152,9 @@ pub struct AppParams {
     pub light_ambient: ParamId,
     pub light_shape: ParamId,
     pub light_torch: ParamId,
+    pub haze: ParamId,
+    pub haze_smoke: ParamId,
+    pub haze_scatter: ParamId,
     pub lamps: Vec<Lamp>,
     pub sun_level: ParamId,
     pub sun_az: ParamId,
@@ -290,6 +293,9 @@ const HELP: &[(&str, &str)] = &[
     ("/light/ambient", "how much light there is everywhere; 1 is the unlit picture"),
     ("/light/shape", "how much a surface's own orientation counts (needs normals)"),
     ("/light/torch", "lamp 1 rides the camera"),
+    ("/light/haze", "a lit haze the lamps and the sun cut beams through; 0 is off"),
+    ("/light/smoke", "how much the particles thicken the haze into smoke"),
+    ("/light/scatter", "how much the haze scatters forwards, so a lamp seen through it glows"),
     ("/light/N/x", "lamp N position, X"),
     ("/light/N/y", "lamp N position, Y"),
     ("/light/N/z", "lamp N position, Z"),
@@ -834,6 +840,12 @@ impl AppParams {
         // that arrives from where you are is what makes moving through a
         // scan read as moving rather than as the scan fading up.
         let light_torch = b.add(ParamDef::new("/light/torch", 0.0, 1.0, 0.0).smooth(0.3));
+        // Haze: off by default, so nothing saved before it changes. Smoke
+        // at 1 is the particles reading as smoke once there is haze at
+        // all; scatter at 0.6 is the forward glow of stage haze.
+        let haze = b.add(ParamDef::new("/light/haze", 0.0, 1.0, 0.0).smooth(0.3));
+        let haze_smoke = b.add(ParamDef::new("/light/smoke", 0.0, 2.0, 1.0).smooth(0.3));
+        let haze_scatter = b.add(ParamDef::new("/light/scatter", 0.0, 0.95, 0.6).smooth(0.3));
         let mut lamps = Vec::with_capacity(vizz_render::particles::LAMPS);
         for i in 1..=vizz_render::particles::LAMPS {
             let x = b.add(ParamDef::new(format!("/light/{i}/x"), -6.0, 6.0, 0.0).smooth(0.4));
@@ -1045,6 +1057,9 @@ impl AppParams {
             light_ambient,
             light_shape,
             light_torch,
+            haze,
+            haze_smoke,
+            haze_scatter,
             lamps,
             sun_level,
             sun_az,

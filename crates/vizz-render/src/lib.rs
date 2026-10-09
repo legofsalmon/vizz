@@ -13,6 +13,7 @@ pub mod camera;
 pub mod cameramove;
 pub mod generate;
 pub mod grade;
+pub mod haze;
 
 /// Re-exported so callers can build the vector types this crate's public
 /// API takes without depending on `glam` themselves — and, more to the

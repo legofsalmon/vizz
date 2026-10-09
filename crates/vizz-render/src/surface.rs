@@ -686,6 +686,11 @@ impl Surface {
         });
     }
 
+    /// The depth the last frame left, if it was drawn at `size`.
+    pub(crate) fn depth_view(&self, size: (u32, u32)) -> Option<&wgpu::TextureView> {
+        self.gbuffer.as_ref().filter(|g| g.size == size).map(|g| &g.depth)
+    }
+
     /// Encode the surface passes. `uniforms` must already be the ones
     /// written to the particle buffer bound in `particle_bg`.
     #[allow(clippy::too_many_arguments)]

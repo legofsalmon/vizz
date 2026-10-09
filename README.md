@@ -1495,6 +1495,49 @@ both.
 walkthrough: light arriving from where you are is what makes moving
 through a scan read as moving, rather than as the scan fading up.
 
+### Haze and light beams
+
+```
+/light/haze      0..1, how thick the haze is; 0 is off (the default)
+/light/smoke     0..2, how much the particles thicken it into smoke (1)
+/light/scatter   0..0.95, how much it scatters forwards (0.6)
+```
+
+A lit medium between the camera and the scene, like stage haze. The
+lamps and the sun light it, so a lamp shows as a glow in the air rather
+than only in what it lands on, and the particles thicken it: a cloud
+becomes smoke, lit on the side facing a lamp and casting a shadow into
+the haze behind it. Put a lamp behind a lattice, a tree or an open
+attractor and its light comes through the gaps as beams.
+
+The space in front of the camera is cut into a grid of 160 × 90 cells
+across and 64 slices deep, spaced by distance so the near slices are thin
+and the far ones thick. Each frame every particle is counted into the
+cells round it, each cell is lit by both lamps and the sun with the
+light dimmed by the smoke between it and each light (sixteen steps
+through the grid), and the light is gathered front to back along each
+column. The frame is then dimmed by what the haze hides and brightened by
+what it scatters. In the surface mode the haze stops at each surface; in
+the glowing mode, which has no depth, the frame is taken to lie at the
+focus distance. Smoke is measured by how the particles crowd, not by how
+many there are, so the same cloud reads as the same smoke at any
+`/particles/count`.
+
+`/light/scatter` is the Henyey-Greenstein anisotropy: at 0 the haze is as
+bright from any side, and towards 0.95 it glows mostly when you look
+towards a lamp through it. With every lamp and the sun at 0 the haze is
+only a dim grey veil, from a trace of `/light/ambient`; it is the lights
+that make it.
+
+The volume follows Wroński, "Volumetric Fog and Lighting", SIGGRAPH 2014
+Advances in Real-Time Rendering, with the per-slice integration of
+Hillaire, "Physically Based and Unified Volumetric Rendering in
+Frostbite", SIGGRAPH 2015. The light is single scattering through an
+absorbing medium as Max sets it out in "Optical Models for Direct Volume
+Rendering", IEEE TVCG 1(2), 1995, with the phase function of Henyey &
+Greenstein, "Diffuse radiation in the galaxy", Astrophysical Journal 93,
+1941.
+
 ### Normals, and where they come from
 
 A point cloud is points. Whether it also knows which way its surface
@@ -2348,6 +2391,9 @@ and the aliases are read on the way in only.
 | `/light/ambient` | 0 – 1 | 1 | how much light there is everywhere; 1 is the unlit picture |
 | `/light/shape` | 0 – 1 | 1 | how much a surface's own orientation counts (needs normals) |
 | `/light/torch` | 0 – 1 | 0 | lamp 1 rides the camera |
+| `/light/haze` | 0 – 1 | 0 | a lit haze the lamps and the sun cut beams through; 0 is off |
+| `/light/smoke` | 0 – 2 | 1 | how much the particles thicken the haze into smoke |
+| `/light/scatter` | 0 – 0.95 | 0.6 | how much the haze scatters forwards, so a lamp seen through it glows |
 | `/light/N/x` (N = 1–2) | -6 – 6 | 0 | lamp N position, X |
 | `/light/N/y` (N = 1–2) | -6 – 6 | 0 | lamp N position, Y |
 | `/light/N/z` (N = 1–2) | -6 – 6 | 0 | lamp N position, Z |
