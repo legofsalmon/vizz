@@ -90,6 +90,7 @@ pub struct AppParams {
     pub solid_detail: ParamId,
     pub ink: ParamId,
     pub ink_weight: ParamId,
+    pub liquid: ParamId,
     pub plexus: ParamId,
     pub plexus_reach: ParamId,
     pub dim: ParamId,
@@ -203,6 +204,7 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/solid_detail", "the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth"),
     ("/particles/ink", "the surface mode as a pen drawing: off · outlines · hatching · stipple"),
     ("/particles/ink_weight", "how heavy the pen is: line width, hatching spacing, stipple dot size"),
+    ("/particles/liquid", "the surface mode's discs smoothed into one glossy liquid surface; 0 is off"),
     ("/particles/plexus", "lines between particles that come near each other; 0 is off"),
     ("/particles/plexus_reach", "how near two particles must be to link, in world units"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
@@ -456,6 +458,10 @@ impl AppParams {
             "stipple",
         ]));
         let ink_weight = b.add(ParamDef::new("/particles/ink_weight", 0.0, 1.0, 0.5).smooth(0.2));
+        // Liquid: the surfels smoothed into one surface and shaded as a
+        // gloss. Continuous, since a little smoothing is its own look; off
+        // by default, and turning it up turns the surface mode on.
+        let liquid = b.add(ParamDef::new("/particles/liquid", 0.0, 1.0, 0.0).smooth(0.2));
         // Plexus: lines between near particles, over either mode. Off by
         // default; the reach is in world units, where the cloud spans
         // about two.
@@ -972,6 +978,7 @@ impl AppParams {
             solid_detail,
             ink,
             ink_weight,
+            liquid,
             plexus,
             plexus_reach,
             dim,

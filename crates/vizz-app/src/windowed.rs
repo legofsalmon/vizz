@@ -1671,6 +1671,7 @@ impl App {
                 inputs.walls(),
                 inputs.solid,
                 inputs.ink,
+                inputs.liquid,
             );
         } else {
             state.scene.render(

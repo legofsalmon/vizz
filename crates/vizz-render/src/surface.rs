@@ -48,6 +48,8 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// floats. The normal is a direction and a trust, so bytes are plenty.
 const ALBEDO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The liquid's smoothed depth.
+const SMOOTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 /// Per-frame inputs for the surface passes. Layout must match `Surface`
 /// in surface.wgsl.
@@ -69,6 +71,10 @@ pub struct SurfaceUniforms {
     /// 0 off, 1 outlines, 2 hatching, 3 stipple — see [`InkKind`].
     pub ink: u32,
     pub ink_weight: f32,
+    /// 0..1: how far the surfels' depth is smoothed into one liquid
+    /// surface, and how much it is shaded as one. See `fs_liquid`.
+    pub liquid: f32,
+    pub _pad: [f32; 3],
 }
 
 /// The room, when it is drawn as surfaces: how bright its plaster is and
@@ -220,7 +226,10 @@ struct GBuffer {
     depth: wgpu::TextureView,
     albedo: wgpu::TextureView,
     normal: wgpu::TextureView,
+    /// The liquid's smoothed depth, and what its pass reads.
+    smooth: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    liquid_bg: wgpu::BindGroup,
 }
 
 pub struct Surface {
@@ -230,10 +239,12 @@ pub struct Surface {
     walls: wgpu::RenderPipeline,
     solid: wgpu::RenderPipeline,
     shade: wgpu::RenderPipeline,
+    liquid: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     draw_bgl: wgpu::BindGroupLayout,
     eval_bgl: wgpu::BindGroupLayout,
     gbuffer_bgl: wgpu::BindGroupLayout,
+    liquid_bgl: wgpu::BindGroupLayout,
     shadow_view: wgpu::TextureView,
     shadow_bg: wgpu::BindGroup,
     splats: Option<Splats>,
@@ -327,6 +338,7 @@ impl Surface {
             entries: &[
                 unfiltered(0),
                 unfiltered(1),
+                unfiltered(3),
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -338,6 +350,23 @@ impl Surface {
                     count: None,
                 },
             ],
+        });
+
+        // The liquid's smoothing pass reads the depth, and the normals to
+        // leave exact surfaces alone.
+        let depth_in = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let liquid_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("surface-liquid-bgl"),
+            entries: &[depth_in(5), unfiltered(7)],
         });
 
         let shadow_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -402,6 +431,39 @@ impl Surface {
             ],
             immediate_size: 0,
         });
+
+        let liquid_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("surface-liquid-pl"),
+            bind_group_layouts: &[Some(particle_bgl), Some(&draw_bgl), None, Some(&liquid_bgl)],
+            immediate_size: 0,
+        });
+        let liquid = {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("surface-liquid"),
+                layout: Some(&liquid_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_shade"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_liquid"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: SMOOTH_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
 
         let eval = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("surface-eval"),
@@ -510,10 +572,12 @@ impl Surface {
             walls,
             solid,
             shade,
+            liquid,
             uniforms,
             draw_bgl,
             eval_bgl,
             gbuffer_bgl,
+            liquid_bgl,
             shadow_view,
             shadow_bg,
             splats: None,
@@ -582,10 +646,21 @@ impl Surface {
         let depth = target("surface-depth", DEPTH_FORMAT);
         let albedo = target("surface-albedo", ALBEDO_FORMAT);
         let normal = target("surface-normal", NORMAL_FORMAT);
+        let smooth = target("surface-liquid-smooth", SMOOTH_FORMAT);
+        let view = |binding, v| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(v),
+        };
+        let liquid_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("surface-liquid-bg"),
+            layout: &self.liquid_bgl,
+            entries: &[view(5, &depth), view(7, &normal)],
+        });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("surface-gbuffer-bg"),
             layout: &self.gbuffer_bgl,
             entries: &[
+                view(3, &smooth),
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&albedo),
@@ -600,7 +675,15 @@ impl Surface {
                 },
             ],
         });
-        self.gbuffer = Some(GBuffer { size, depth, albedo, normal, bind_group });
+        self.gbuffer = Some(GBuffer {
+            size,
+            depth,
+            albedo,
+            normal,
+            smooth,
+            bind_group,
+            liquid_bg,
+        });
     }
 
     /// Encode the surface passes. `uniforms` must already be the ones
@@ -619,6 +702,7 @@ impl Surface {
         walls: Option<Walls>,
         solid: Option<Solid>,
         ink: Option<Ink>,
+        liquid: f32,
     ) {
         let device = &ctx.device;
         let size = target.texture().size();
@@ -647,6 +731,8 @@ impl Surface {
             solid_kind: solid.map_or(0, |s| s.kind as u32),
             ink: ink.map_or(0, |i| i.kind as u32),
             ink_weight: ink.map_or(0.5, |i| i.weight),
+            liquid: liquid.clamp(0.0, 1.0),
+            _pad: [0.0; 3],
         };
         ctx.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&su));
         let splats = self.splats.as_ref().expect("allocated above");
@@ -727,6 +813,34 @@ impl Surface {
             if walls_on {
                 pass.set_pipeline(&self.walls);
                 pass.draw(0..5 * 6, 0..1);
+            }
+        }
+
+        // The liquid: the surfels' depth smoothed into one surface before
+        // anything reads it.
+        if liquid > 0.001 {
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("surface-liquid"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &gbuffer.smooth,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.liquid);
+                pass.set_bind_group(0, particle_bg, &[]);
+                pass.set_bind_group(1, &splats.draw_bg, &[]);
+                pass.set_bind_group(3, &gbuffer.liquid_bg, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
 
@@ -877,7 +991,7 @@ mod tests {
         surface: bool,
         walls: Option<Walls>,
     ) -> Vec<f32> {
-        frame_with(ctx, scene, u, count, surface, walls, None, None)
+        frame_with(ctx, scene, u, count, surface, walls, None, None, 0.0)
     }
 
     /// [`frame`], with a sphere-traced solid or ink in the surface pass.
@@ -891,6 +1005,7 @@ mod tests {
         walls: Option<Walls>,
         solid: Option<Solid>,
         ink: Option<Ink>,
+        liquid: f32,
     ) -> Vec<f32> {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface-test-target"),
@@ -913,6 +1028,7 @@ mod tests {
         if surface {
             scene.render_surface(
                 ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK, walls, solid, ink,
+                liquid,
             );
         } else {
             scene.render(ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK);
@@ -995,7 +1111,7 @@ mod tests {
         let u = sphere();
         for kind in [SolidKind::Mandelbulb, SolidKind::Mandelbox, SolidKind::Julia, SolidKind::Menger] {
             let solid = Solid { kind, param: kind.param(0.6) };
-            let px = frame_with(&ctx, &scene, &u, 0, true, None, Some(solid), None);
+            let px = frame_with(&ctx, &scene, &u, 0, true, None, Some(solid), None, 0.0);
             let w = W as usize;
             let lit = |x0: usize, x1: usize| {
                 let mut n = 0;
@@ -1025,7 +1141,7 @@ mod tests {
         let (top, bottom) = (pixel(&u, [0.0, 0.75, 0.0]), pixel(&u, [0.0, -0.7, 0.0]));
         for kind in [InkKind::Hatch, InkKind::Stipple] {
             let ink = Some(Ink { kind, weight: 0.5 });
-            let px = frame_with(&ctx, &scene, &u, 60_000, true, None, None, ink);
+            let px = frame_with(&ctx, &scene, &u, 60_000, true, None, None, ink, 0.0);
             let (t, b) = (around(&px, top, 4), around(&px, bottom, 4));
             assert!(t > 0.7, "{kind:?}: the lit top should be mostly paper: {t}");
             // Measured at 0.62 against 0.79 for hatching on lavapipe.
@@ -1035,6 +1151,7 @@ mod tests {
         let inked = frame_with(
             &ctx, &scene, &u, 60_000, true, None, None,
             Some(Ink { kind: InkKind::Outline, weight: 0.5 }),
+            0.0,
         );
         // Along the middle row, the first covered pixel from the left is
         // the rim.
@@ -1042,6 +1159,40 @@ mod tests {
         let rim = (0..W as usize).find(|&x| plain[row + x] > 0.0).expect("the sphere is in frame");
         assert!(plain[row + rim] > 0.2, "the plain rim is lit: {}", plain[row + rim]);
         assert!(inked[row + rim] < 0.1, "the inked rim is pen: {}", inked[row + rim]);
+    }
+
+    /// The liquid smooths the grain of the surfels out of the shading:
+    /// across the middle of the sphere, the step in brightness from one
+    /// pixel to the next is smaller than the surfels' own. And every
+    /// pixel stays a number — the Fresnel term once went NaN on a facing
+    /// that dotted a hair over 1, and the bloom spread it over half the
+    /// frame.
+    #[test]
+    fn the_liquid_smooths_the_grain() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let u = Uniforms { size: 0.05, ..sphere() };
+        let grain = |px: &[f32]| {
+            let (cx, cy) = pixel(&u, [0.0, 0.0, 0.0]);
+            let (mut sum, mut n) = (0.0, 0.0);
+            for y in cy - 20..cy + 20 {
+                for x in cx - 20..cx + 20 {
+                    let (a, b) = (px[y * W as usize + x], px[y * W as usize + x + 1]);
+                    if a > 0.0 && b > 0.0 {
+                        sum += (a - b).abs();
+                        n += 1.0;
+                    }
+                }
+            }
+            assert!(n > 1000.0, "the middle of the sphere is covered: {n}");
+            sum / n
+        };
+        let dry = frame_with(&ctx, &scene, &u, 60_000, true, None, None, None, 0.0);
+        let wet = frame_with(&ctx, &scene, &u, 60_000, true, None, None, None, 1.0);
+        assert!(wet.iter().all(|v| v.is_finite()), "the liquid is all numbers");
+        let (d, w) = (grain(&dry), grain(&wet));
+        // Measured at 0.0042 against 0.0103 on lavapipe.
+        assert!(w < d * 0.8, "the liquid is smoother than the surfels: {w} against {d}");
     }
 
     #[test]

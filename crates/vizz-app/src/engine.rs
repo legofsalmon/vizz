@@ -139,6 +139,8 @@ pub struct FrameInputs {
     pub solid: Option<vizz_render::surface::Solid>,
     /// The surface pass drawn in ink, when it is.
     pub ink: Option<vizz_render::surface::Ink>,
+    /// 0..1: the surface mode's surfels smoothed into one liquid.
+    pub liquid: f32,
     /// Lines between nearby particles, drawn over either mode, when on.
     pub plexus: Option<vizz_render::plexus::Plexus>,
     pub count: u32,
@@ -833,6 +835,7 @@ impl FrameEngine {
         });
         let ink = vizz_render::surface::InkKind::from_index(self.snapshot.get(p.ink))
             .map(|kind| vizz_render::surface::Ink { kind, weight: self.snapshot.get(p.ink_weight) });
+        let liquid = self.snapshot.get(p.liquid);
         let plexus_strength = self.snapshot.get(p.plexus) * dim;
         let plexus = (plexus_strength > 0.001).then(|| vizz_render::plexus::Plexus {
             strength: plexus_strength,
@@ -1079,9 +1082,13 @@ impl FrameEngine {
             // is choosing that pass: asking for a Mandelbulb and seeing
             // nothing until a second switch is thrown would be a trap.
             // Ink too: it is a way of drawing the surface.
-            surface: self.snapshot.get(p.surface).round() >= 0.5 || solid.is_some() || ink.is_some(),
+            surface: self.snapshot.get(p.surface).round() >= 0.5
+                || solid.is_some()
+                || ink.is_some()
+                || liquid > 0.001,
             solid,
             ink,
+            liquid,
             plexus,
             vector,
             vector_active,
