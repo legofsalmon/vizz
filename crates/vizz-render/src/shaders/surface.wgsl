@@ -68,8 +68,9 @@ struct Surface {
     count: u32,
     // 0 none, 1 Mandelbulb, 2 Mandelbox, 3 quaternion Julia, 4 Menger.
     solid_kind: u32,
-    _pad2: u32,
-    _pad3: u32,
+    // 0 off, 1 outlines, 2 hatching, 3 stipple; and the pen's weight.
+    ink: u32,
+    ink_weight: f32,
 };
 
 @group(1) @binding(0) var<uniform> s: Surface;
@@ -959,5 +960,171 @@ fn fs_shade(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
     // The room's lines, in the wireframe's colour: given off, not lit.
     let lines = vec3<f32>(0.28, 0.38, 0.58) * g.a;
-    return vec4<f32>(albedo * surface_light(pos, n) + lines, 1.0);
+    let light = surface_light(pos, n);
+    let lit = albedo * light;
+    if (s.ink > 0u) {
+        return vec4<f32>(ink(px, pos, lit, light, albedo) + lines, 1.0);
+    }
+    return vec4<f32>(lit + lines, 1.0);
+}
+
+// --- Ink -------------------------------------------------------------------
+//
+// The lit surface as a pen drawing, done on the finished G-buffer so it
+// costs a few reads a pixel and draws whatever the surface pass drew:
+// surfels, glyphs, a solid, the walls.
+//
+// Outlines are where the depth breaks: at a silhouette, where a
+// neighbour is open background, and wherever the depth's second
+// difference across a pixel is large against its distance — a fold or
+// an overlap, not the steady slope of a plane seen at an angle. That is
+// Saito and Takahashi's G-buffer edges, "Comprehensible Rendering of 3-D
+// Shapes", SIGGRAPH 1990.
+//
+// Hatching lays the tone down as up to three layers of parallel lines,
+// each adding where the surface is darker than the last — the tonal art
+// map of Praun, Hoppe, Webb and Finkelstein, "Real-Time Hatching",
+// SIGGRAPH 2001, reduced to three fixed screen-space layers. Stipple lays
+// it down as dots on a jittered grid, larger where it is darker, after
+// Secord's weighted Voronoi stippling (NPAR 2002) without the relaxation
+// step. Both are fixed to the screen, so the marks stay put as the form
+// turns under them; the outlines move with it.
+
+const PAPER = vec3<f32>(0.93, 0.91, 0.86);
+const PEN = vec3<f32>(0.04, 0.04, 0.06);
+
+/// How far from the camera the surface at `p` is, or -1 where the pixel
+/// is open background.
+fn ink_distance(p: vec2<i32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(g_depth));
+    if (any(p < vec2<i32>(0)) || any(p >= size)) {
+        return -1.0;
+    }
+    let d = textureLoad(g_depth, p, 0);
+    if (d >= 1.0) {
+        return -1.0;
+    }
+    return length(world_at(p, d) - u.cam_position);
+}
+
+/// 1 on an edge, 0 off one, `k` pixels out on each side.
+fn ink_edge(px: vec2<i32>, centre: f32, k: i32) -> f32 {
+    var edge = 0.0;
+    var axes = array<vec2<i32>, 4>(vec2<i32>(1, 0), vec2<i32>(0, 1), vec2<i32>(1, 1), vec2<i32>(1, -1));
+    // A glyph's face, a solid or a wall has its exact normal and a
+    // smooth depth; a surfel cloud's depth is bumpy at the scale of one
+    // disc. The bar for a fold sits above the bumps where there are
+    // bumps, and above what a coarse frame's few-pixel steps show.
+    let known = textureLoad(g_normal, px, 0);
+    let exact = known.w > 0.99;
+    let footprint = 2.0 * centre / (f32(textureDimensions(g_depth).y) * abs(u.view_proj[1][1]));
+    var bar = max(0.004 * centre, 3.0 * footprint * f32(k));
+    if (!exact) {
+        bar = max(max(bar, 0.012 * centre), 3.0 * u.size);
+    }
+    let n = known.xyz * 2.0 - 1.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        let pa = px + axes[i] * k;
+        let pb = px - axes[i] * k;
+        let a = ink_distance(pa);
+        let b = ink_distance(pb);
+        if (a < 0.0 || b < 0.0) {
+            // Open background on a side: a silhouette, unless it is only
+            // a pinhole between surfels, which closes again a step on.
+            let a2 = ink_distance(px + axes[i] * 2 * k);
+            let b2 = ink_distance(px - axes[i] * 2 * k);
+            if ((a < 0.0 && a2 < 0.0) || (b < 0.0 && b2 < 0.0)) {
+                return 1.0;
+            }
+            continue;
+        }
+        edge = max(edge, smoothstep(bar, 2.0 * bar, abs(a + b - 2.0 * centre)));
+        // Where the normals are exact, a crease is where they turn: the
+        // edge of a cube's face, the lip of a sponge's hole.
+        if (exact) {
+            let na = textureLoad(g_normal, pa, 0);
+            if (na.w > 0.99) {
+                edge = max(edge, 1.0 - smoothstep(0.6, 0.8, dot(n, na.xyz * 2.0 - 1.0)));
+            }
+        }
+    }
+    return edge;
+}
+
+fn ink_hash(c: vec2<i32>, stream: u32) -> f32 {
+    let h = hash_u32(bitcast<u32>(c.x) * 0x9E3779B1u ^ hash_u32(bitcast<u32>(c.y) + stream * 0x85EBCA77u));
+    return f32(h >> 8u) / 16777216.0;
+}
+
+/// How much of a line `across` pixels from a line's centre covers the
+/// pixel, for a line `width` pixels wide.
+fn ink_line(across: f32, width: f32) -> f32 {
+    return 1.0 - smoothstep(width * 0.5 - 0.5, width * 0.5 + 0.5, across);
+}
+
+fn ink(px: vec2<i32>, pos: vec3<f32>, lit: vec3<f32>, light: vec3<f32>, albedo: vec3<f32>) -> vec3<f32> {
+    // Marks are sized for a 1200-pixel-high frame, which is a 600-line
+    // output at the 2× the scene renders at, and scale with it.
+    let scale = f32(textureDimensions(g_depth).y) / 1200.0;
+    // Never finer than a pixel can draw, however small the frame.
+    let weight = mix(0.5, 2.0, clamp(s.ink_weight, 0.0, 1.0)) * max(scale, 0.5);
+    let centre = length(pos - u.cam_position);
+    let edge = ink_edge(px, centre, max(i32(round(weight)), 1));
+    if (s.ink == 1u) {
+        return mix(lit, PEN, edge);
+    }
+    // Tone: how much light fell on the surface, not how bright its
+    // colour is, so a dark palette is not drawn as a dark form; and as a
+    // share of all the light there is, so a brighter rig does not wash
+    // the drawing out to paper. Unlit, that is the sky's shading alone:
+    // a top is paper and an underside takes all three layers.
+    let l = dot(light, vec3<f32>(0.2126, 0.7152, 0.0722));
+    var all = u.light.x + u.sun_dir.w;
+    for (var i = 0u; i < 2u; i = i + 1u) {
+        all += u.lamp[i].w;
+    }
+    let tone = clamp(l / max(all, 1e-3), 0.0, 1.0);
+    // The paper takes a little of the surface's own colour.
+    let tint = albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-3);
+    let paper = PAPER * mix(vec3<f32>(1.0), tint, 0.18);
+    let f = vec2<f32>(px) + 0.5;
+    var cover = 0.0;
+    if (s.ink == 2u) {
+        let spacing = 9.0 * weight;
+        let width = 2.0 * weight;
+        var dirs = array<vec2<f32>, 3>(
+            vec2<f32>(0.7071, 0.7071),
+            vec2<f32>(0.7071, -0.7071),
+            vec2<f32>(1.0, 0.0),
+        );
+        var below = array<f32, 3>(0.8, 0.55, 0.3);
+        for (var i = 0; i < 3; i = i + 1) {
+            // Each layer fades in over a band of tone, so a gradient
+            // gains its lines gradually rather than at a contour.
+            let on = 1.0 - smoothstep(below[i] - 0.08, below[i] + 0.08, tone);
+            let a = dot(f, dirs[i]) / spacing + f32(i) * 0.37;
+            let across = abs(fract(a) - 0.5) * spacing;
+            cover = max(cover, on * ink_line(across, width));
+        }
+    } else {
+        let cell = 5.0 * weight;
+        let here = vec2<i32>(floor(f / cell));
+        let dark = clamp(1.0 - tone, 0.0, 1.0);
+        for (var dy = -1; dy <= 1; dy = dy + 1) {
+            for (var dx = -1; dx <= 1; dx = dx + 1) {
+                let c = here + vec2<i32>(dx, dy);
+                // A dot per cell, somewhere in it, and only some of
+                // them in the light: area and count both follow the
+                // tone.
+                if (ink_hash(c, 2u) > dark * 1.4) {
+                    continue;
+                }
+                let at = (vec2<f32>(c) + vec2<f32>(ink_hash(c, 0u), ink_hash(c, 1u))) * cell;
+                let r = cell * 0.62 * sqrt(dark) + 0.35;
+                cover = max(cover, 1.0 - smoothstep(r - 0.6, r + 0.6, length(f - at)));
+            }
+        }
+    }
+    cover = max(cover, edge);
+    return mix(paper, PEN, cover);
 }

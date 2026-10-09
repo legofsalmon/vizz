@@ -671,6 +671,12 @@ const ENGINE: &[Part] = &[
                 ours: false,
             },
             Piece {
+                name: "Ink",
+                about: r#"<p>In the surface mode, <code>/particles/ink</code> draws the lit surface as a pen drawing. Outlines go where the depth breaks: at a silhouette, at a fold or an overlap where the depth's second difference jumps, and, on surfaces whose normals are exact (glyphs, solids, walls), where the normal turns. Hatching then lays the tone down on paper as up to three layers of crossed lines, each coming in where the surface took less light than the last; stipple lays it down as dots on a jittered grid, more and larger in the dark. The tone is the light that fell on the surface as a share of all the light in the rig, not the brightness of its colour, so a dark palette is not drawn as a dark form. The marks are fixed to the screen and the outlines move with the form. <code>/particles/ink_weight</code> is how heavy the pen is.</p>"#,
+                source: r#"edges from the depth buffer are Takafumi Saito and Tokiichiro Takahashi, <a href="https://doi.org/10.1145/97880.97901">“Comprehensible Rendering of 3-D Shapes”</a>, SIGGRAPH 1990; hatching by tone after Emil Praun, Hugues Hoppe, Matthew Webb and Adam Finkelstein, <a href="https://doi.org/10.1145/383259.383328">“Real-Time Hatching”</a>, SIGGRAPH 2001, reduced to three screen-space layers; stipple after Adrian Secord, <a href="https://doi.org/10.1145/508530.508537">“Weighted Voronoi Stippling”</a>, NPAR 2002, on a jittered grid without the relaxation."#,
+                ours: false,
+            },
+            Piece {
                 name: "Gravity wells",
                 about: r#"<p>Four attractors and repulsors bending the cloud from a layer above the scenes. Deliberately <em>not</em> a simulation: every particle here is a function of its index with no state between frames, and integrating velocities would throw that away for physics nobody is checking. The falloff is <code>r²/(d²+r²)</code> — one at the centre, a half at the radius, asymptotically nothing beyond — because a hard cutoff shows up as a visible shell in the cloud.</p>"#,
                 source: "vizz. A displacement field that reads as gravity, not a gravity model.",

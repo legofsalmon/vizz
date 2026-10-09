@@ -1670,6 +1670,7 @@ impl App {
                 inputs.background,
                 inputs.walls(),
                 inputs.solid,
+                inputs.ink,
             );
         } else {
             state.scene.render(

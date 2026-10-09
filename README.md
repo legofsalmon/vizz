@@ -1623,6 +1623,44 @@ A solid costs a ray march for every pixel it might cover, up to 160
 steps of ten iterations each, so it is the heaviest thing in the surface
 mode on a large output. It does not yet cast into the sun's shadow map.
 
+#### Ink
+
+```
+/particles/ink          0 off (the default), 1 outlines, 2 hatching, 3 stipple
+/particles/ink_weight   0..1, how heavy the pen is (default 0.5)
+```
+
+The lit surface as a pen drawing, done on the finished G-buffer, so it
+draws whatever the surface pass drew — surfels, glyphs, a solid, the
+walls — for a few texture reads a pixel. Choosing one turns the surface
+mode on.
+
+- **Outlines** keep the lit colour and ink its edges: silhouettes, folds
+  and overlaps where the depth's second difference across a pixel is
+  large against its distance (not the steady slope of a plane seen at an
+  angle), and, where the normals are exact, creases where they turn.
+  Saito & Takahashi, "Comprehensible Rendering of 3-D Shapes", SIGGRAPH
+  1990. A pinhole between surfels is not a silhouette, and the bar for a
+  fold sits above a surfel's own bumps, so a smooth cloud is not all edge.
+- **Hatching** puts the form on paper and lays its tone down as up to
+  three layers of crossed lines, each fading in where the surface took
+  less light than the last: the tonal art map of Praun, Hoppe, Webb &
+  Finkelstein, "Real-Time Hatching", SIGGRAPH 2001, reduced to three
+  fixed layers.
+- **Stipple** lays the tone down as dots on a jittered grid, more of them
+  and larger where it is dark, after Secord, "Weighted Voronoi
+  Stippling", NPAR 2002, without the relaxation.
+
+The tone is the light that fell on the surface as a share of all the
+light the rig has — ambient, lamps and sun — rather than the brightness
+of its colour, so a dark palette is not drawn as a dark form and a
+brighter rig does not wash the drawing out. With every lamp off it is
+the sky's shading alone: tops are paper, undersides take all three
+layers. The paper takes a little of the surface's colour. Hatching and
+stipple are fixed to the screen, so the marks stay where they are as the
+form turns under them; the outlines move with it. `/particles/ink_weight`
+scales the line width, the hatching's spacing and the dots together.
+
 How it is drawn:
 
 - **Each particle is evaluated once**, by a compute pass, into a buffer
@@ -2144,6 +2182,8 @@ and the aliases are read on the way in only.
 | `/particles/glyph` | 0 – 5 | 0 | what a solid particle is in the surface mode: a disc, or a small solid turned to its heading |
 | `/particles/solid` | 0 – 4 | 0 | a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge |
 | `/particles/solid_detail` | 0 – 1 | 0.6 | the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth |
+| `/particles/ink` | 0 – 3 | 0 | the surface mode as a pen drawing: off · outlines · hatching · stipple |
+| `/particles/ink_weight` | 0 – 1 | 0.5 | how heavy the pen is: line width, hatching spacing, stipple dot size |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

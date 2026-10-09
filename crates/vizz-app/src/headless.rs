@@ -228,7 +228,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         }
         if inputs.surface {
             scene.render_surface(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms,
-                inputs.count, !vector_in_scene, inputs.background, inputs.walls(), inputs.solid);
+                inputs.count, !vector_in_scene, inputs.background, inputs.walls(), inputs.solid, inputs.ink);
         } else {
             scene.render(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count,
                 !inputs.room_visible && !vector_in_scene, inputs.background);
