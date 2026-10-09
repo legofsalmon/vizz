@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/img/icon.png">
 <meta name="description" content="Every point cloud vizz can make from an equation, every simulation it can run live, and everything else a frame is made of: what each one is, what it comes from, and who found it.">
 <meta property="og:title" content="vizz — clouds from equations">
-<meta property="og:description" content="Seventy-two generators, twenty live simulations, and the rest of the engine, with the paper each one comes from.">
+<meta property="og:description" content="Seventy-two generators, twenty-two live simulations, and the rest of the engine, with the paper each one comes from.">
 <meta property="og:type" content="article">
 <style>
   /* One file, no build step, no CDN — the same rule as the rest of the
@@ -139,7 +139,7 @@
 <div class="intro">
 <p class="lede">vizz draws point clouds. Most of them come from a scanner, a
 camera or a file — and 72 of them come from mathematics, with
-20 more that are still running while you watch.</p>
+22 more that are still running while you watch.</p>
 
 <p>Every picture on this page was drawn by the app's own code, from the same
 functions that fill a slot when you pick one from the menu, and through the
@@ -940,7 +940,7 @@ it.</p>
   </figure>
 </div>
 
-<h2 id="alive">20 that are alive</h2>
+<h2 id="alive">22 that are alive</h2>
 <p class="lede">These are not made once. Each runs on a thread of its own at the
 frame rate and streams into the live slot, driven by whatever the audio input
 is doing: the four bands, the loudness, and where the bar is. That is the whole
@@ -952,6 +952,15 @@ no audio playing. The ones that are about growing were given longer.</p>
 <h2 id="sim-curves">curves</h2>
 <p class="lede">Drawn as one path, in order, so the crawl runs along it and the lines stroke draws it as wire.</p>
 <div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sim-scope.webp" width="600" height="400" loading="lazy" decoding="async" alt="scope — a point cloud">
+    <figcaption>
+      <h3>scope</h3>
+      <p class="spec"><code>sim:scope</code></p>
+      <p>an oscilloscope in XY mode — left across, right up, the last second of the signal trailing back into the screen; a tone is a loop, two tones a Lissajous figure, oscilloscope music a picture; a mono input is drawn against itself a moment earlier</p>
+      <p class="cite"><a href="https://oscilloscopemusic.com/">The XY mode of the cathode-ray oscilloscope; Jerobeam Fenderson, “Oscilloscope Music” (2016)</a></p>
+    </figcaption>
+  </figure>
   <figure class="plate">
     <img src="/img/clouds/sim-polytope.webp" width="600" height="400" loading="lazy" decoding="async" alt="polytope — a point cloud">
     <figcaption>
@@ -974,6 +983,15 @@ no audio playing. The ones that are about growing were given longer.</p>
       <p class="spec"><code>sim:crystal</code></p>
       <p>Reiter's snow crystal on a hexagonal lattice — plates, sectored plates and stellar dendrites, sorted by the vapour the mids and highs set; each flake grows out and the next one starts</p>
       <p class="cite"><a href="https://en.wikipedia.org/wiki/Snowflake">Clifford A. Reiter, “A local cellular model for snow crystal growth”, Chaos, Solitons &amp; Fractals 23 (2005); the morphologies are Ukichiro Nakaya’s (1954)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
+    <img src="/img/clouds/sim-growth.webp" width="600" height="400" loading="lazy" decoding="async" alt="growth — a point cloud">
+    <figcaption>
+      <h3>growth</h3>
+      <p class="spec"><code>sim:growth</code></p>
+      <p>differential growth — one closed thread that grows faster than it has room for and buckles into a coral meander to fit, never crossing itself; the loudness is the growth rate, the kick buds a lobe, and when it is grown it starts again</p>
+      <p class="cite"><a href="https://inconvergent.net/generative/differential-line/">Anders Hoff, “Differential Line” (inconvergent, 2016); Andy Lomas, “Cellular Forms” (2014); Nervous System’s Floraform (2014)</a></p>
     </figcaption>
   </figure>
 </div>
@@ -1383,6 +1401,7 @@ instead — the citation is the thing to keep.</p>
   <li><strong>foam</strong> — <a href="https://en.wikipedia.org/wiki/Voronoi_diagram">Georgy Voronoy (1908); the walls are the set of points equidistant from the two nearest centres</a></li>
   <li><strong>Four-wing</strong> — Wang, Sun &amp; van Wyk, the four-wing system (2009)</li>
   <li><strong>Genesio–Tesi</strong> — Roberto Genesio &amp; Alberto Tesi, Automatica 28 (1992)</li>
+  <li><strong>growth</strong> — <a href="https://inconvergent.net/generative/differential-line/">Anders Hoff, “Differential Line” (inconvergent, 2016); Andy Lomas, “Cellular Forms” (2014); Nervous System’s Floraform (2014)</a></li>
   <li><strong>Gumowski–Mira</strong> — Igor Gumowski &amp; Christian Mira, CERN (1980)</li>
   <li><strong>gyroid</strong> — <a href="https://en.wikipedia.org/wiki/Gyroid">Alan Schoen, Infinite Periodic Minimal Surfaces Without Self-Intersections, NASA TN D-5541 (1970); Schwarz’ P and D are from 1865</a></li>
   <li><strong>Hadley</strong> — Edward Lorenz, “Irregularity: a fundamental property of the atmosphere”, Tellus 36A (1984)</li>
@@ -1426,6 +1445,7 @@ instead — the citation is the thing to keep.</p>
   <li><strong>Rössler</strong> — <a href="https://en.wikipedia.org/wiki/R%C3%B6ssler_attractor">Otto Rössler, “An equation for continuous chaos”, Physics Letters A 57 (1976)</a></li>
   <li><strong>Sakarya</strong> — The Sakarya system (2010)</li>
   <li><strong>sandpile</strong> — <a href="https://en.wikipedia.org/wiki/Abelian_sandpile_model">Per Bak, Chao Tang &amp; Kurt Wiesenfeld, “Self-organized criticality”, Phys. Rev. Lett. 59 (1987); Deepak Dhar on the Abelian property (1990)</a></li>
+  <li><strong>scope</strong> — <a href="https://oscilloscopemusic.com/">The XY mode of the cathode-ray oscilloscope; Jerobeam Fenderson, “Oscilloscope Music” (2016)</a></li>
   <li><strong>seashell</strong> — <a href="https://algorithmicbotany.org/papers/shells.sig92.html">David M. Raup, “Geometric analysis of shell coiling” (1966); Deborah Fowler, Hans Meinhardt &amp; Przemysław Prusinkiewicz, “Modeling seashells” (SIGGRAPH 1992)</a></li>
   <li><strong>Shimizu–Morioka</strong> — Tsutomu Shimizu &amp; Nobuo Morioka, Physics Letters A 76 (1980)</li>
   <li><strong>Sierpinski</strong> — <a href="https://en.wikipedia.org/wiki/Sierpi%C5%84ski_triangle">Wacław Sierpiński (1915), by Michael Barnsley’s chaos game</a></li>

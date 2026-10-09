@@ -63,11 +63,32 @@ pub struct Drive {
     /// simulation drives itself, so a rig with no interface still gets
     /// a picture that moves.
     pub audio: bool,
+    /// The latest [`SIGNAL`] samples themselves, left and right, oldest
+    /// first — for the one simulation that draws the waveform rather
+    /// than reacting to measurements of it.
+    pub signal: [[f32; 2]; SIGNAL],
+    /// How many samples have ever arrived, so a reader can tell how many
+    /// of `signal` it has not seen.
+    pub signal_at: u64,
+    /// Whether `signal` has two channels, or the one copied to both.
+    pub stereo: bool,
 }
+
+/// Stereo pairs a [`Drive`] carries. vizz-audio's scope is the same
+/// length; the app holds the two to each other.
+pub const SIGNAL: usize = 2048;
 
 impl Default for Drive {
     fn default() -> Self {
-        Self { bands: [0.0; 4], level: 0.0, bar: 0.0, audio: false }
+        Self {
+            bands: [0.0; 4],
+            level: 0.0,
+            bar: 0.0,
+            audio: false,
+            signal: [[0.0; 2]; SIGNAL],
+            signal_at: 0,
+            stereo: false,
+        }
     }
 }
 
@@ -84,7 +105,7 @@ pub trait Simulation: Send {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -122,6 +143,8 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "tangle" => Some(Box::new(Tangle::new())),
         "crystal" => Some(Box::new(Crystal::new())),
         "vortex" => Some(Box::new(Vortex::new())),
+        "growth" => Some(Box::new(Growth::new())),
+        "scope" => Some(Box::new(Scope::new())),
         "polytope" => Some(Box::new(Polytope::new(&text("kind", "tesseract")))),
         _ => None,
     }
@@ -4936,6 +4959,326 @@ fn circuit_points(v: &[[f64; 4]], edges: &[(usize, usize)]) -> Vec<[f32; 4]> {
         .collect()
 }
 
+// --- Growth -----------------------------------------------------------
+
+/// Differential growth: a closed thread that grows faster than the room
+/// it has, and buckles into frills to fit.
+///
+/// Every node is held at a set distance from its two neighbours along
+/// the thread, pushed off any other node that comes close, and eased
+/// towards the line between its neighbours so the thread stays smooth;
+/// new nodes are put in where the thread has stretched, and at random
+/// along it at a rate the loudness sets. Nothing says what shape to
+/// make: the frills, the lettuce-leaf ruffles and the brain-coral folds
+/// are all the one rule — grow, but do not cross yourself — which is the
+/// whole of Anders Hoff's and Nervous System's differential growth, and
+/// the curve version of Andy Lomas' *Cellular Forms* (2014). A weak pull
+/// towards one plane keeps it a leaf rather than a ball of string, and
+/// it is free to ripple out of that plane, which is where the ruffle
+/// comes from.
+///
+/// When it has grown to its full length it holds a moment and starts
+/// again from a small ring. The kick throws a burst of new nodes in at
+/// one place, which buds a lobe there.
+pub struct Growth {
+    pos: Vec<[f32; 3]>,
+    rng: Rng,
+    full_for: f32,
+    since_kick: f32,
+}
+
+/// Rest length of one link, the reach of the repulsion, and the most
+/// nodes the thread grows to.
+const LINK: f32 = 0.012;
+const SHOVE: f32 = 0.05;
+const GROWN: usize = 2400;
+
+impl Growth {
+    pub fn new() -> Self {
+        let mut g = Self { pos: Vec::new(), rng: Rng::new(0x0D1F_F6A0), full_for: 0.0, since_kick: 10.0 };
+        g.seed();
+        g
+    }
+
+    /// A small ring, slightly crumpled so it has somewhere to begin.
+    fn seed(&mut self) {
+        let n = 64;
+        self.pos = (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                let r = n as f32 * LINK / std::f32::consts::TAU;
+                [r * a.cos(), r * a.sin(), 0.004 * (self.rng.f32() - 0.5)]
+            })
+            .collect();
+        self.full_for = 0.0;
+    }
+
+    /// Put a node in the middle of link `i`.
+    fn split(&mut self, i: usize) {
+        let n = self.pos.len();
+        let (a, b) = (self.pos[i], self.pos[(i + 1) % n]);
+        let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5];
+        self.pos.insert(i + 1, mid);
+    }
+
+    fn relax(&mut self, dt: f32) {
+        let n = self.pos.len();
+        let inv = 1.0 / SHOVE;
+        let key = |p: [f32; 3]| -> (i32, i32, i32) {
+            ((p[0] * inv).floor() as i32, (p[1] * inv).floor() as i32, (p[2] * inv).floor() as i32)
+        };
+        let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>> = std::collections::HashMap::with_capacity(n);
+        for (i, p) in self.pos.iter().enumerate() {
+            grid.entry(key(*p)).or_default().push(i as u32);
+        }
+        let old = self.pos.clone();
+        for i in 0..n {
+            let p = old[i];
+            let (prev, next) = (old[(i + n - 1) % n], old[(i + 1) % n]);
+            let mut f = [0.0f32; 3];
+            // Held at the rest length from each neighbour.
+            for q in [prev, next] {
+                let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                let pull = (len - LINK) / len * 0.5;
+                for k in 0..3 {
+                    f[k] += d[k] * pull;
+                }
+            }
+            // Eased towards the line between them: smooth, not straight.
+            for k in 0..3 {
+                f[k] += ((prev[k] + next[k]) * 0.5 - p[k]) * 0.2;
+            }
+            // Pushed off everything else nearby.
+            let (cx, cy, cz) = key(p);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &j in grid.get(&(cx + dx, cy + dy, cz + dz)).into_iter().flatten() {
+                            let j = j as usize;
+                            if j == i || j == (i + 1) % n || j == (i + n - 1) % n {
+                                continue;
+                            }
+                            let q = old[j];
+                            let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                            if r2 < SHOVE * SHOVE && r2 > 1e-12 {
+                                let r = r2.sqrt();
+                                let push = (SHOVE - r) / r * 0.25;
+                                for k in 0..3 {
+                                    f[k] += d[k] * push;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // A leaf, not a ball: a weak pull to the plane facing the
+            // camera, and the walls of the box.
+            f[2] -= p[2] * 0.02;
+            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            if r > 0.92 {
+                for k in 0..3 {
+                    f[k] -= p[k] / r * (r - 0.92);
+                }
+            }
+            // No node moves more than half a link a pass: in a tight fold
+            // a node can have dozens of neighbours pushing at once, and
+            // the sum unbounded overshoots, then overshoots back, and the
+            // thread blows apart.
+            let step = (dt * 60.0).min(1.5);
+            let len = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt() * step;
+            let cap = if len > 0.5 * LINK { 0.5 * LINK / len } else { 1.0 };
+            for k in 0..3 {
+                self.pos[i][k] = p[k] + f[k] * step * cap;
+            }
+        }
+    }
+}
+
+impl Default for Growth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Growth {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.since_kick += dt;
+        if self.pos.len() >= GROWN {
+            self.full_for += dt;
+            if self.full_for > 3.0 {
+                self.seed();
+            }
+            self.relax(dt);
+            return;
+        }
+        // New nodes a second, wherever they land along the thread.
+        let rate = if drive.audio { 20.0 + 160.0 * drive.level } else { 70.0 };
+        let mut due = rate * dt;
+        while due > 0.0 && self.pos.len() < GROWN {
+            if due < 1.0 && self.rng.f32() > due {
+                break;
+            }
+            due -= 1.0;
+            let i = (self.rng.next() as usize) % self.pos.len();
+            self.split(i);
+        }
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.4 {
+            self.since_kick = 0.0;
+            let at = (self.rng.next() as usize) % self.pos.len();
+            for k in 0..24 {
+                if self.pos.len() >= GROWN {
+                    break;
+                }
+                self.split((at + k) % self.pos.len());
+            }
+        }
+        // Where the thread has stretched, a node goes in.
+        let mut i = 0;
+        while i < self.pos.len() && self.pos.len() < GROWN {
+            let n = self.pos.len();
+            let (a, b) = (self.pos[i], self.pos[(i + 1) % n]);
+            let d2 = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+            if d2 > (1.6 * LINK).powi(2) {
+                self.split(i);
+            }
+            i += 1;
+        }
+        // Two passes of the forces a frame: one lets a fast-growing
+        // thread outrun its own repulsion and cross itself.
+        self.relax(dt * 0.5);
+        self.relax(dt * 0.5);
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let n = self.pos.len();
+        // Spread along the whole thread by index, so the cloud is the
+        // thread in order and crawls along it, however long it is.
+        for k in 0..POINTS {
+            let t = k as f32 / POINTS as f32 * n as f32;
+            let i = (t as usize).min(n - 1);
+            let f = t - i as f32;
+            let (a, b) = (self.pos[i], self.pos[(i + 1) % n]);
+            let p: [f32; 3] = std::array::from_fn(|c| a[c] + (b[c] - a[c]) * f);
+            out.push(Point { pos: p, normal: [0.0; 3], color: [255, 255, 255] });
+        }
+    }
+}
+
+// --- Scope ------------------------------------------------------------
+
+/// An oscilloscope in XY mode: the left channel across, the right
+/// channel up, and the last second and a bit of the signal as a trail
+/// running back into the screen.
+///
+/// This is the one simulation that draws the sound itself rather than
+/// reacting to measurements of it. A pure tone in both ears is a circle
+/// or an ellipse; two tones a Lissajous figure; a stereo mix a knot of
+/// noise that tightens on the bass and spreads with the width of the
+/// mix. Music written for the instrument — Jerobeam Fenderson's
+/// *Oscilloscope Music* (2016), after the vector-display art of the
+/// sixties — draws pictures on it. The newest sample is at the front and
+/// brightest, and age fades and recedes, which is what phosphor does.
+///
+/// A mono input has no second channel to draw against, so it is drawn
+/// against itself a little earlier — delay embedding, Takens' trick —
+/// which still turns a tone into a loop. With no input at all it plays
+/// two slowly detuning tones of its own, so there is a figure to see.
+/// The trace is scaled to its own loudness, held over a couple of
+/// seconds, so a quiet signal still fills the screen and a loud one
+/// does not leave it.
+pub struct Scope {
+    /// The trail, a ring of `POINTS` pairs, oldest at `head`.
+    trail: Vec<[f32; 2]>,
+    head: usize,
+    seen: u64,
+    /// Held peak, for the scale.
+    peak: f32,
+    /// The built-in tones' phases and the clock that detunes them.
+    phase: [f64; 2],
+    time: f64,
+}
+
+/// Samples back for the mono embedding: a quarter period of 500 Hz at
+/// 48 kHz, so mid-range tones open into loops rather than lines.
+const SCOPE_DELAY: usize = 24;
+/// The built-in signal's sample rate.
+const SCOPE_RATE: f64 = 48_000.0;
+
+impl Scope {
+    pub fn new() -> Self {
+        Self { trail: vec![[0.0; 2]; POINTS], head: 0, seen: 0, peak: 0.0, phase: [0.0; 2], time: 0.0 }
+    }
+
+    fn record(&mut self, p: [f32; 2]) {
+        self.trail[self.head] = p;
+        self.head = (self.head + 1) % POINTS;
+        self.peak = self.peak.max(p[0].abs()).max(p[1].abs());
+    }
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Scope {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.peak *= (-dt / 2.0).exp();
+        if drive.audio && drive.signal_at > 0 {
+            // Only what has arrived since the last frame, and never more
+            // than the drive holds — a stalled frame loses the middle of
+            // the trail rather than drawing the same samples twice.
+            let fresh = (drive.signal_at.saturating_sub(self.seen) as usize).min(SIGNAL - SCOPE_DELAY);
+            self.seen = drive.signal_at;
+            for i in SIGNAL - fresh..SIGNAL {
+                let p = if drive.stereo {
+                    drive.signal[i]
+                } else {
+                    [drive.signal[i][0], drive.signal[i - SCOPE_DELAY][0]]
+                };
+                self.record(p);
+            }
+            return;
+        }
+        // Two tones a fifth apart, one drifting against the other, so
+        // the figure turns slowly through its Lissajous family.
+        self.time += dt as f64;
+        let f = [220.0, 330.0 * (1.0 + 0.0015 * (self.time * 0.2).sin())];
+        let n = (dt as f64 * SCOPE_RATE) as usize;
+        for _ in 0..n {
+            for (ph, hz) in self.phase.iter_mut().zip(f) {
+                *ph = (*ph + hz / SCOPE_RATE).fract();
+            }
+            let p = [(self.phase[0] * std::f64::consts::TAU).sin() as f32 * 0.7, (self.phase[1] * std::f64::consts::TAU).sin() as f32 * 0.7];
+            self.record(p);
+        }
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let scale = 0.9 / self.peak.max(1e-3);
+        for k in 0..POINTS {
+            let [x, y] = self.trail[(self.head + k) % POINTS];
+            // 0 at the oldest, 1 at the newest.
+            let age = k as f32 / POINTS as f32;
+            let glow = (255.0 * (0.12 + 0.88 * age * age)) as u8;
+            out.push(Point {
+                // The scale follows the held peak down, so a sample from a
+                // louder moment a second ago can lie past it: clamped.
+                pos: [(x * scale).clamp(-1.0, 1.0), (y * scale).clamp(-1.0, 1.0), (age - 1.0) * 0.8 + 0.4],
+                normal: [0.0; 3],
+                color: [glow, glow, glow],
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4955,7 +5298,7 @@ mod tests {
     #[test]
     fn the_fluid_stays_bounded_and_incompressible() {
         let mut f = Fluid::new();
-        let loud = Drive { bands: [1.0, 0.8, 1.0, 0.9], level: 1.0, bar: 0.0, audio: true };
+        let loud = Drive { bands: [1.0, 0.8, 1.0, 0.9], level: 1.0, bar: 0.0, audio: true, ..Drive::default() };
         for i in 0..120 {
             let drive = if i % 2 == 0 { loud } else { Drive::default() };
             f.step(1.0 / 60.0, &drive);
@@ -5015,7 +5358,7 @@ mod tests {
         let grown = r.total_v();
         assert!(grown > start, "the pattern did not grow: {start} -> {grown}");
         assert!(r.u.iter().chain(&r.v).all(|x| (0.0..=1.0).contains(x)));
-        let kick = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true };
+        let kick = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true, ..Drive::default() };
         r.step(1.0 / 60.0, &kick);
         assert!(r.total_v() > grown, "a kick did not seed the reaction");
         let mut pts = Vec::new();
@@ -5029,7 +5372,7 @@ mod tests {
     fn the_flock_stays_in_the_cube_and_moves() {
         let mut f = Flock::new();
         let before = f.pos.clone();
-        let loud = Drive { bands: [1.0, 0.0, 1.0, 0.0], level: 1.0, bar: 0.0, audio: true };
+        let loud = Drive { bands: [1.0, 0.0, 1.0, 0.0], level: 1.0, bar: 0.0, audio: true, ..Drive::default() };
         let quiet = Drive::default();
         for i in 0..120 {
             f.step(1.0 / 60.0, if i % 30 == 0 { &loud } else { &quiet });
@@ -5071,13 +5414,13 @@ mod tests {
     #[test]
     fn the_crowd_locks_under_coupling_and_not_without() {
         let mut k = Kuramoto::new();
-        let loud = Drive { bands: [0.0; 4], level: 1.0, bar: 0.0, audio: true };
+        let loud = Drive { bands: [0.0; 4], level: 1.0, bar: 0.0, audio: true, ..Drive::default() };
         for _ in 0..900 {
             k.step(1.0 / 60.0, &loud);
         }
         assert!(k.order > 0.8, "a loud room did not lock the crowd: r = {}", k.order);
         let mut k = Kuramoto::new();
-        let quiet = Drive { bands: [0.0; 4], level: 0.0, bar: 0.0, audio: true };
+        let quiet = Drive { bands: [0.0; 4], level: 0.0, bar: 0.0, audio: true, ..Drive::default() };
         for _ in 0..900 {
             k.step(1.0 / 60.0, &quiet);
         }
@@ -5234,7 +5577,7 @@ mod tests {
                 / BODIES as f32
         };
         let before = outward(&o);
-        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true };
+        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true, ..Drive::default() };
         o.step(1.0 / 60.0, &loud);
         let after = outward(&o);
         assert!(after - before > 0.04, "the kick did not push: {before} to {after}");
@@ -5275,7 +5618,7 @@ mod tests {
         p.points(&mut pts);
         box_ok(&pts);
         // A kick, once the sheet has had time to tear, hangs it again.
-        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true };
+        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true, ..Drive::default() };
         p.step(1.0 / 60.0, &loud);
         assert!(neighbours(&p.state) < 0.02, "the kick did not re-hang the sheet");
     }
@@ -5366,7 +5709,7 @@ mod tests {
         box_ok(&pts);
         // A kick throws it at the ceiling.
         let before = l.pos.iter().map(|p| p[1]).sum::<f32>() / DROPS as f32;
-        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.6, bar: 0.0, audio: true };
+        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.6, bar: 0.0, audio: true, ..Drive::default() };
         l.step(1.0 / 60.0, &loud);
         for _ in 0..30 {
             l.step(1.0 / 60.0, &Drive { audio: true, ..Drive::default() });
@@ -5456,9 +5799,9 @@ mod tests {
         };
         // Band three at full sets the phase coupling positive.
         let together =
-            run(Drive { bands: [0.0, 0.0, 1.0, 0.0], level: 0.8, bar: 0.0, audio: true });
+            run(Drive { bands: [0.0, 0.0, 1.0, 0.0], level: 0.8, bar: 0.0, audio: true, ..Drive::default() });
         // Band three at zero sets it negative.
-        let apart = run(Drive { bands: [0.0, 0.0, 0.0, 0.0], level: 0.8, bar: 0.0, audio: true });
+        let apart = run(Drive { bands: [0.0, 0.0, 0.0, 0.0], level: 0.8, bar: 0.0, audio: true, ..Drive::default() });
         assert!(together > 0.8, "a positive coupling did not sync them: {together:.2}");
         assert!(apart < together - 0.2, "a negative one synced them anyway: {apart:.2}");
     }
@@ -5506,7 +5849,7 @@ mod tests {
         box_ok(&pts);
         // A kick is a gust, and a gust moves it more than no gust does.
         let quiet: f32 = sim.pos.iter().zip(&sim.was).map(|(p, w)| (p[2] - w[2]).abs()).sum();
-        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true };
+        let loud = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.5, bar: 0.0, audio: true, ..Drive::default() };
         sim.step(1.0 / 60.0, &loud);
         for _ in 0..20 {
             sim.step(1.0 / 60.0, &Drive { audio: true, ..Drive::default() });
@@ -5659,7 +6002,7 @@ mod tests {
     #[test]
     fn the_rope_keeps_its_length_and_its_distance() {
         let mut sim = Tangle::new();
-        let drive = Drive { bands: [0.0, 0.0, 0.5, 0.0], level: 0.9, bar: 0.0, audio: true };
+        let drive = Drive { bands: [0.0, 0.0, 0.5, 0.0], level: 0.9, bar: 0.0, audio: true, ..Drive::default() };
         for _ in 0..240 {
             sim.step(1.0 / 60.0, &drive);
         }
@@ -5703,7 +6046,7 @@ mod tests {
     fn a_stiffer_rod_bends_less() {
         let straightness = |mids: f32| -> f32 {
             let mut sim = Tangle::new();
-            let drive = Drive { bands: [0.0, 0.0, mids, 0.0], level: 0.9, bar: 0.0, audio: true };
+            let drive = Drive { bands: [0.0, 0.0, mids, 0.0], level: 0.9, bar: 0.0, audio: true, ..Drive::default() };
             for _ in 0..300 {
                 sim.step(1.0 / 60.0, &drive);
             }
@@ -5725,7 +6068,7 @@ mod tests {
     #[test]
     fn the_crystal_grows_and_starts_again() {
         let mut sim = Crystal::new();
-        let drive = Drive { bands: [0.0, 0.0, 0.5, 0.4], level: 1.0, bar: 0.0, audio: true };
+        let drive = Drive { bands: [0.0, 0.0, 0.5, 0.4], level: 1.0, bar: 0.0, audio: true, ..Drive::default() };
         let ice = |s: &Crystal| s.s.iter().filter(|&&v| v >= 1.0).count();
         assert_eq!(ice(&sim), 1, "a crystal starts from one seed");
         for _ in 0..60 {
@@ -5810,7 +6153,7 @@ mod tests {
             // simulation is: a full slot of finite points inside the
             // box, on the first frame and on the hundredth, whether or
             // not anything is plugged in.
-            let loud = Drive { bands: [1.0, 0.7, 0.9, 0.6], level: 0.8, bar: 0.5, audio: true };
+            let loud = Drive { bands: [1.0, 0.7, 0.9, 0.6], level: 0.8, bar: 0.5, audio: true, ..Drive::default() };
             let quiet = Drive::default();
             let mut out = Vec::new();
             sim.points(&mut out);
@@ -5873,7 +6216,7 @@ mod tests {
             assert_ne!(before, pts[0].pos, "{kind} did not turn");
         }
         let (mut calm, mut kicked) = (Polytope::default(), Polytope::default());
-        let kick = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.0, bar: 0.0, audio: true };
+        let kick = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.0, bar: 0.0, audio: true, ..Drive::default() };
         let hush = Drive { audio: true, ..Drive::default() };
         calm.step(1.0 / 60.0, &hush);
         kicked.step(1.0 / 60.0, &kick);
@@ -5882,5 +6225,93 @@ mod tests {
             kicked.step(1.0 / 60.0, &hush);
         }
         assert!(kicked.xw > calm.xw + 0.2, "the kick did not throw it: {} vs {}", kicked.xw, calm.xw);
+    }
+
+    /// The thread grows, never leaves the box, buckles out of a circle,
+    /// and a kick buds it.
+    #[test]
+    fn the_thread_grows_and_buckles() {
+        let mut g = Growth::new();
+        let start = g.pos.len();
+        for _ in 0..30 {
+            g.step(1.0 / 60.0, &Drive::default());
+        }
+        let before = g.pos.len();
+        let kick = Drive { bands: [1.0, 0.0, 0.0, 0.0], audio: true, ..Drive::default() };
+        g.step(1.0 / 60.0, &kick);
+        assert!(g.pos.len() >= before + 24, "the kick did not bud it: {before} to {}", g.pos.len());
+        let mut pts = Vec::new();
+        for _ in 0..210 {
+            g.step(1.0 / 60.0, &Drive::default());
+        }
+        g.points(&mut pts);
+        box_ok(&pts);
+        assert!(g.pos.len() > start * 4, "it has hardly grown: {} nodes", g.pos.len());
+        // A circle of that length would have this radius; buckled, the
+        // thread stays far inside it.
+        let circle = g.pos.len() as f32 * LINK / std::f32::consts::TAU;
+        let reach = g.pos.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).fold(0.0, f32::max);
+        assert!(reach < circle * 0.7, "it did not buckle: reach {reach} against a circle of {circle}");
+        let grown = g.pos.len();
+        // Grown out, it holds and starts again.
+        for _ in 0..60 * 120 {
+            g.step(1.0 / 60.0, &Drive::default());
+            if g.pos.len() < grown.min(GROWN) / 2 {
+                return;
+            }
+        }
+        panic!("it never started again");
+    }
+
+    /// Left across and right up: a sine against a cosine is a circle at
+    /// the front of the trail, and a mono sine drawn against itself a
+    /// little earlier is a loop rather than a line.
+    #[test]
+    fn the_scope_draws_left_against_right() {
+        let tone = |i: u64, cos: bool| {
+            let a = i as f32 * std::f32::consts::TAU / 96.0;
+            if cos { a.cos() } else { a.sin() }
+        };
+        let mut s = Scope::new();
+        let mut pts = Vec::new();
+        let mut written = SIGNAL as u64;
+        for _ in 0..90 {
+            written += 800;
+            let signal = std::array::from_fn(|k| {
+                let i = written - SIGNAL as u64 + k as u64;
+                [0.3 * tone(i, false), 0.3 * tone(i, true)]
+            });
+            s.step(1.0 / 60.0, &Drive { audio: true, signal, signal_at: written, stereo: true, ..Drive::default() });
+        }
+        s.points(&mut pts);
+        box_ok(&pts);
+        for p in &pts[POINTS - 4000..] {
+            let r = (p.pos[0] * p.pos[0] + p.pos[1] * p.pos[1]).sqrt();
+            assert!((r - 0.9).abs() < 0.02, "{:?} is off the circle", p.pos);
+        }
+        // Mono: the same sine on both sides would be a diagonal line,
+        // x = y; the delayed copy opens it.
+        let mut m = Scope::new();
+        written = SIGNAL as u64;
+        for _ in 0..90 {
+            written += 800;
+            let signal = std::array::from_fn(|k| {
+                let v = 0.3 * tone(written - SIGNAL as u64 + k as u64, false);
+                [v, v]
+            });
+            m.step(1.0 / 60.0, &Drive { audio: true, signal, signal_at: written, ..Drive::default() });
+        }
+        m.points(&mut pts);
+        let off = pts[POINTS - 4000..].iter().map(|p| (p.pos[0] - p.pos[1]).abs()).fold(0.0, f32::max);
+        assert!(off > 0.5, "a mono tone drew a line: {off}");
+        // With no input it plays itself and fills the trail.
+        let mut own = Scope::new();
+        for _ in 0..120 {
+            own.step(1.0 / 60.0, &Drive::default());
+        }
+        own.points(&mut pts);
+        box_ok(&pts);
+        let lit = pts.iter().filter(|p| p.pos[0].abs() > 0.1).count();
+        assert!(lit > POINTS / 2, "it did not play itself: {lit}");
     }
 }

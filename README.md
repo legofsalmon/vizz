@@ -370,6 +370,8 @@ vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
 vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
 vizz --live-cloud sim:vortex      # smoke rings, as the filaments they are made of
 vizz --live-cloud sim:polytope    # a tesseract turning through the fourth dimension
+vizz --live-cloud sim:growth      # differential growth: a thread buckling into coral
+vizz --live-cloud sim:scope       # an oscilloscope in XY mode, left against right
 ```
 
 A simulation is a live cloud that needs no sender: it runs on its own
@@ -597,6 +599,24 @@ run along the edges as one unbroken walk, an Eulerian circuit, so the
 *lines* stroke draws the wireframe and the cloud crawls along it. The
 loudness turns it faster and the kick throws a quarter turn. After
 Coxeter's *Regular Polytopes* (1948).
+
+**growth** is differential growth: one closed thread whose nodes hold
+their neighbours at a set distance, push off any other node that comes
+near, and ease towards the line between their neighbours, while new
+nodes go in wherever it stretches and at random along it. It grows
+faster than it has room for and buckles into a coral meander to fit,
+never crossing itself — the one rule behind Anders Hoff's *Differential
+Line* and Andy Lomas' *Cellular Forms*. The loudness is the growth rate,
+the kick buds a lobe, and when it has grown out it starts again.
+
+**scope** is an oscilloscope in XY mode: the left channel across, the
+right channel up, and the last second and a bit of the signal trailing
+back into the screen, the newest brightest. A tone in both ears is a
+loop, two tones a Lissajous figure, and oscilloscope music — written to
+be watched this way — draws its pictures. It takes the first two
+channels of the input; a mono input is drawn against itself a moment
+earlier, which still opens a tone into a loop, and with no input at all
+it plays two slowly detuning tones of its own.
 
 What a simulation gets from the app is deliberately narrow — the four
 bands, the loudness, where the bar is — because it is meant to be a
