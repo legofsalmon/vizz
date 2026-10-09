@@ -882,8 +882,8 @@ mod tests {
 
     #[test]
     fn the_uniform_block_matches_the_shader() {
-        // 64 for each matrix, then four 16-byte rows.
-        assert_eq!(std::mem::size_of::<SurfaceUniforms>(), 192);
+        // 64 for each matrix, then five 16-byte rows.
+        assert_eq!(std::mem::size_of::<SurfaceUniforms>(), 208);
     }
 
     #[test]
