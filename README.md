@@ -1573,6 +1573,37 @@ envelope: the network knits together on the loud parts. After the
 motion-graphics look Rowbyte's *Plexus* plug-in for After Effects (2010)
 gave its name to.
 
+### Gaussian splats
+
+```
+/particles/splat   0..1, the splats' opacity; 0 is off (the default)
+```
+
+A third way to draw, in place of the glow: every particle a soft,
+oriented ellipse of colour, blended over the frame from the farthest to
+the nearest, so the near ones cover the far ones instead of adding up to
+light. A cloud loaded from a 3D Gaussian Splatting capture (Kerbl,
+Kopanas, Leimkühler & Drettakis, "3D Gaussian Splatting for Real-Time
+Radiance Field Rendering", SIGGRAPH 2023) keeps each splat's own size,
+turn, opacity and colour, so a capture of a place or a person renders as
+the photographs it was trained from, and still turns, twists and morphs
+with everything else. Anything else is drawn as round splats of the
+particle size, which reads as soft, overlapping paint.
+
+Each frame a compute pass evaluates every particle with the dots' own
+shader functions and carries its ellipsoid to the screen as a 2D
+Gaussian through the projection's Jacobian (EWA splatting: Zwicker,
+Pfister, van Baar & Gross, "EWA Volume Splatting", IEEE Visualization
+2001). A bitonic sort (Batcher, AFIPS 1968) orders them by depth, one
+dispatch a step, and a draw lays a quad over each with premultiplied
+"over" blending. While splats are up, each particle takes its own point
+of a cloud, evenly over it, and a cloud holds still rather than flowing
+through its points, so each splat is drawn once. Only the colour's first
+spherical-harmonic band is read, so a capture's colours do not shift as
+the view turns, and the palette does not tint them; it tints round
+splats as it tints dots. A solid, ink or the liquid need the surface
+mode and win over splats; the plain surface switch gives way to them.
+
 ### Solid surfaces
 
 ```
@@ -1793,7 +1824,11 @@ points that face the way their triangles do, so a model is lit as soon as
 it lands; and **PNG/JPEG** images,
 sampled to a coloured relief (position from the pixel grid, colour from
 the pixel, a shallow depth from luminance; transparent pixels are not
-part of the picture, so a logo keeps its silhouette). Six loadable slots
+part of the picture, so a logo keeps its silhouette). A **3D Gaussian
+Splatting** capture is a binary PLY too, and is read with its splats'
+sizes, turns, opacities and colours, which `/particles/splat` draws (see
+[Gaussian splats](#gaussian-splats)); up to sixty-five thousand of them,
+spread over the capture, fit a slot. Six loadable slots
 sit alongside the two built-in attractors, giving eight in total.
 
 **Type a word and the particles form it.** The clouds section of the
@@ -2231,6 +2266,7 @@ and the aliases are read on the way in only.
 | `/particles/ink` | 0 – 3 | 0 | the surface mode as a pen drawing: off · outlines · hatching · stipple |
 | `/particles/ink_weight` | 0 – 1 | 0.5 | how heavy the pen is: line width, hatching spacing, stipple dot size |
 | `/particles/liquid` | 0 – 1 | 0 | the surface mode's discs smoothed into one glossy liquid surface; 0 is off |
+| `/particles/splat` | 0 – 1 | 0 | particles as soft, sorted Gaussian splats at this opacity; a splat capture keeps its own; 0 is off |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

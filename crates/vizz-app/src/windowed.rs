@@ -396,9 +396,13 @@ impl Help {
 }
 
 /// A cloud being parsed off-thread, and where its result will arrive.
+/// A cloud off the loader thread, and its splats if it is a Gaussian
+/// Splatting capture, both already fitted to the view.
+type LoadedCloud = (Vec<vizz_render::pointcloud::Point>, Option<Vec<vizz_render::pointcloud::Splat>>);
+
 struct PendingCloud {
     path: std::path::PathBuf,
-    rx: std::sync::mpsc::Receiver<anyhow::Result<Vec<vizz_render::pointcloud::Point>>>,
+    rx: std::sync::mpsc::Receiver<anyhow::Result<LoadedCloud>>,
     /// What the slot will be called.
     name: String,
     /// What the saved cloud list records: a path for a file, `gen:<id>`
@@ -1213,14 +1217,14 @@ impl App {
                     .to_ascii_lowercase();
                 let result = if matches!(ext.as_str(), "png" | "jpg" | "jpeg") {
                     image::open(&parse_path)
-                        .map(|img| crate::textcloud::image_points(&img.to_rgba8()))
+                        .map(|img| (crate::textcloud::image_points(&img.to_rgba8()), None))
                         .map_err(|e| anyhow::anyhow!("decoding {}: {e}", parse_path.display()))
                 } else {
-                    vizz_render::pointcloud::load(&parse_path)
+                    vizz_render::pointcloud::load_with_splats(&parse_path)
                 }
-                .map(|mut points| {
-                    vizz_render::pointcloud::normalize(&mut points);
-                    points
+                .map(|(mut points, mut splats)| {
+                    vizz_render::pointcloud::normalize_with_splats(&mut points, splats.as_deref_mut());
+                    (points, splats)
                 });
                 // The receiver may be gone if the app quit; nothing to do.
                 let _ = tx.send(result);
@@ -1344,16 +1348,23 @@ impl App {
         }
         for (pending, result) in done {
             match result {
-                Ok(points) => match pending.restore {
+                Ok((points, splats)) => match pending.restore {
                     // A saved entry coming back: into its own slot,
                     // quietly, the way a file's restore is.
                     Some(slot) => {
                         if let Some(state) = &mut self.state {
                             state.scene.set_cloud(&state.ctx, slot, &points, &pending.name);
+                            state.scene.set_splats(&state.ctx, slot, splats.as_deref());
                         }
                         log::info!("restored {} into cloud slot {slot}", pending.name);
                     }
-                    None => self.adopt_cloud(&points, &pending.name, pending.stored),
+                    None => {
+                        let slot = ParticleScene::loadable_slot(self.next_cloud);
+                        self.adopt_cloud(&points, &pending.name, pending.stored);
+                        if let (Some(slot), Some(state)) = (slot, &mut self.state) {
+                            state.scene.set_splats(&state.ctx, slot, splats.as_deref());
+                        }
+                    }
                 },
                 Err(e) => {
                     log::warn!("could not load {}: {e:#}", pending.path.display());
@@ -1391,6 +1402,7 @@ impl App {
             .name("vizz-cloud-generate".into())
             .spawn(move || {
                 let result = vizz_render::generate::generate(&spec_owned)
+                    .map(|points| (points, None))
                     .ok_or_else(|| anyhow::anyhow!("no generator called {spec_owned}"));
                 let _ = tx.send(result);
             });
@@ -1672,6 +1684,16 @@ impl App {
                 inputs.solid,
                 inputs.ink,
                 inputs.liquid,
+            );
+        } else if inputs.splat {
+            state.scene.render_splats(
+                &state.ctx,
+                &mut encoder,
+                &state.post.scene_view,
+                &inputs.uniforms,
+                inputs.count,
+                !inputs.room_visible && !vector_in_scene,
+                inputs.background,
             );
         } else {
             state.scene.render(

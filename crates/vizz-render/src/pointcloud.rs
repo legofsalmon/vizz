@@ -42,11 +42,70 @@ impl Point {
     }
 }
 
+/// The shape of one 3D Gaussian Splatting point: an ellipsoid of soft
+/// density, and how opaque it is at its centre.
+///
+/// The format of Kerbl, Kopanas, Leimkühler & Drettakis, "3D Gaussian
+/// Splatting for Real-Time Radiance Field Rendering", SIGGRAPH 2023,
+/// which every splat trainer and editor since writes: per vertex,
+/// `scale_0..2` as logs of the axes' standard deviations, `rot_0..3` as a
+/// quaternion (w first, not necessarily unit), `opacity` as a logit, and
+/// the colour's zeroth spherical-harmonic band as `f_dc_0..2`. The higher
+/// bands (`f_rest_*`), which make the colour change with the view, are
+/// read past and not used.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Splat {
+    /// Standard deviation along each of the ellipsoid's own axes, in the
+    /// cloud's units: scaled with the positions by [`normalize`].
+    pub scale: [f32; 3],
+    /// The axes' turn, as a unit quaternion `[w, x, y, z]`.
+    pub rot: [f32; 4],
+    /// 0..1 at the centre.
+    pub opacity: f32,
+}
+
+/// Where a splat's properties sit in a PLY row.
+#[derive(Debug, Clone, Copy)]
+struct SplatProps {
+    dc: [usize; 3],
+    opacity: usize,
+    scale: [usize; 3],
+    rot: [usize; 4],
+}
+
+/// The zeroth spherical-harmonic basis function, `1 / (2√π)`: what turns
+/// a splat file's `f_dc` into a colour.
+const SH_C0: f32 = 0.282_094_8;
+
+impl Splat {
+    /// From the values as a splat file stores them.
+    fn from_file(log_scale: [f32; 3], rot: [f32; 4], logit: f32) -> Self {
+        let len = rot.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let rot = if len.is_finite() && len > 1e-12 { rot.map(|v| v / len) } else { [1.0, 0.0, 0.0, 0.0] };
+        Self {
+            scale: log_scale.map(|v| if v.is_finite() { v.clamp(-30.0, 10.0).exp() } else { 0.0 }),
+            rot,
+            opacity: 1.0 / (1.0 + (-logit.clamp(-30.0, 30.0)).exp()),
+        }
+    }
+}
+
+/// A splat file's colour: the zeroth band, around mid-grey.
+fn splat_color(dc: [f32; 3]) -> [u8; 3] {
+    dc.map(|v| ((0.5 + SH_C0 * v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+}
+
 /// Refuse rather than exhaust memory on a file that claims a billion
 /// points. Ten million is far past anything renderable at 60 fps.
 const MAX_POINTS: usize = 10_000_000;
 
 pub fn load(path: &Path) -> Result<Vec<Point>> {
+    load_with_splats(path).map(|(points, _)| points)
+}
+
+/// A cloud, and its splats when the file is a Gaussian Splatting capture:
+/// one per point, in the same order.
+pub fn load_with_splats(path: &Path) -> Result<(Vec<Point>, Option<Vec<Splat>>)> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -54,11 +113,11 @@ pub fn load(path: &Path) -> Result<Vec<Point>> {
         .to_ascii_lowercase();
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut reader = BufReader::new(file);
-    let points = match ext.as_str() {
-        "ply" => read_ply(&mut reader),
-        "xyz" | "csv" | "txt" | "pts" => read_xyz(&mut reader),
-        "obj" => read_obj(&mut reader).map(|t| sample_mesh(&t)),
-        "stl" => read_stl(&mut reader).map(|t| sample_mesh(&t)),
+    let (points, splats) = match ext.as_str() {
+        "ply" => read_ply_with_splats(&mut reader),
+        "xyz" | "csv" | "txt" | "pts" => read_xyz(&mut reader).map(|p| (p, None)),
+        "obj" => read_obj(&mut reader).map(|t| (sample_mesh(&t), None)),
+        "stl" => read_stl(&mut reader).map(|t| (sample_mesh(&t), None)),
         other => bail!("unsupported point cloud format {other:?} (want .ply, .xyz, .csv, .pts, .obj or .stl)"),
     }
     .with_context(|| format!("reading {}", path.display()))?;
@@ -66,7 +125,7 @@ pub fn load(path: &Path) -> Result<Vec<Point>> {
     if points.is_empty() {
         bail!("{} contained no points", path.display());
     }
-    Ok(points)
+    Ok((points, splats))
 }
 
 /// A triangle, by its corners.
@@ -319,6 +378,14 @@ fn ply_type(name: &str) -> Option<PlyProp> {
 }
 
 pub fn read_ply(reader: &mut impl BufRead) -> Result<Vec<Point>> {
+    read_ply_with_splats(reader).map(|(points, _)| points)
+}
+
+/// A PLY's points, and its splats if it is a Gaussian Splatting capture
+/// (binary, with every one of the splat properties).
+pub fn read_ply_with_splats(
+    reader: &mut impl BufRead,
+) -> Result<(Vec<Point>, Option<Vec<Splat>>)> {
     let mut magic = String::new();
     reader.read_line(&mut magic)?;
     if magic.trim() != "ply" {
@@ -386,11 +453,23 @@ pub fn read_ply(reader: &mut impl BufRead) -> Result<Vec<Point>> {
     // name because the binary offsets depend on all of them — so this is
     // only a matter of asking.
     let normal_idx = ["nx", "ny", "nz"].map(index);
+    // A splat capture, if every property of one is there. Some trainers
+    // also write `nx ny nz` as zeros, which `unit` already reads as
+    // unknown.
+    let splat = (|| {
+        Some(SplatProps {
+            dc: [index("f_dc_0")?, index("f_dc_1")?, index("f_dc_2")?],
+            opacity: index("opacity")?,
+            scale: [index("scale_0")?, index("scale_1")?, index("scale_2")?],
+            rot: [index("rot_0")?, index("rot_1")?, index("rot_2")?, index("rot_3")?],
+        })
+    })();
 
     match format {
-        PlyFormat::Ascii => read_ply_ascii(reader, count, xi, yi, zi, color_idx, normal_idx),
+        PlyFormat::Ascii => read_ply_ascii(reader, count, xi, yi, zi, color_idx, normal_idx)
+            .map(|p| (p, None)),
         PlyFormat::BinaryLe => {
-            read_ply_binary(reader, count, &props, xi, yi, zi, color_idx, normal_idx)
+            read_ply_binary(reader, count, &props, xi, yi, zi, color_idx, normal_idx, splat)
         }
     }
 }
@@ -482,7 +561,8 @@ fn read_ply_binary(
     zi: usize,
     color_idx: [Option<usize>; 3],
     normal_idx: [Option<usize>; 3],
-) -> Result<Vec<Point>> {
+    splat: Option<SplatProps>,
+) -> Result<(Vec<Point>, Option<Vec<Splat>>)> {
     let stride: usize = props.iter().map(|(_, p)| p.size).sum();
     if stride == 0 {
         bail!("PLY vertex element has zero-width rows");
@@ -497,6 +577,7 @@ fn read_ply_binary(
 
     let mut row = vec![0u8; stride];
     let mut out = Vec::with_capacity(count.min(1 << 20));
+    let mut splats = splat.map(|_| Vec::with_capacity(count.min(1 << 20)));
     for i in 0..count {
         // A truncated file is common — an interrupted export, a partial
         // download — so stop cleanly with what was read rather than
@@ -542,9 +623,14 @@ fn read_ply_binary(
         if let [Some(nx), Some(ny), Some(nz)] = normal_idx {
             p.normal = unit([get(nx), get(ny), get(nz)]);
         }
+        if let (Some(sp), Some(splats)) = (splat, splats.as_mut()) {
+            // A splat's colour is its own, whatever red/green/blue say.
+            p.color = splat_color(sp.dc.map(get));
+            splats.push(Splat::from_file(sp.scale.map(get), sp.rot.map(get), get(sp.opacity)));
+        }
         out.push(p);
     }
-    Ok(out)
+    Ok((out, splats))
 }
 
 /// Centre on the bounding box and scale the widest axis to fit [-1, 1],
@@ -553,9 +639,11 @@ fn read_ply_binary(
 ///
 /// Uniform scale, not per-axis: fitting each axis independently would
 /// stretch a scan into something that is no longer the thing scanned.
-pub fn normalize(points: &mut [Point]) {
+/// Returns the scale, for anything else measured in the cloud's units —
+/// a splat's size.
+pub fn normalize(points: &mut [Point]) -> f32 {
     if points.is_empty() {
-        return;
+        return 1.0;
     }
     let mut lo = [f32::MAX; 3];
     let mut hi = [f32::MIN; 3];
@@ -577,8 +665,17 @@ pub fn normalize(points: &mut [Point]) {
             *v = (*v - c) * scale;
         }
     }
+    scale
 }
 
+
+/// [`normalize`], with a splat capture's sizes scaled to match.
+pub fn normalize_with_splats(points: &mut [Point], splats: Option<&mut [Splat]>) {
+    let k = normalize(points);
+    for s in splats.into_iter().flatten() {
+        s.scale = s.scale.map(|v| v * k);
+    }
+}
 
 /// Normalisation that holds still while the subject moves.
 ///
@@ -853,6 +950,42 @@ mod tests {
         assert_eq!(pts[0].pos, [1.0, 2.0, 3.0]);
         assert_eq!(pts[0].color, [10, 20, 30]);
         assert_eq!(pts[1].pos, [-4.0, -5.0, -6.0]);
+    }
+
+    /// A Gaussian Splatting capture: the splat's sizes, turn and opacity
+    /// come back decoded from the logs, the quaternion and the logit the
+    /// file stores, and the colour from the zeroth harmonic band, among
+    /// higher bands and normals that are read past.
+    #[test]
+    fn reads_a_gaussian_splatting_capture() {
+        let names = [
+            "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "f_rest_0", "opacity",
+            "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3",
+        ];
+        let mut buf = b"ply\nformat binary_little_endian 1.0\nelement vertex 1\n".to_vec();
+        for n in names {
+            buf.extend_from_slice(format!("property float {n}\n").as_bytes());
+        }
+        buf.extend_from_slice(b"end_header\n");
+        let values = [
+            1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 7.0, 0.0,
+            0.0, (0.5f32).ln(), (0.1f32).ln(), 2.0, 0.0, 0.0, 0.0,
+        ];
+        for v in values {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        let (pts, splats) = read_ply_with_splats(&mut std::io::Cursor::new(buf)).unwrap();
+        let s = splats.expect("a splat capture")[0];
+        assert_eq!(pts[0].pos, [1.0, 2.0, 3.0]);
+        assert!(!pts[0].oriented(), "zero normals are unknown ones");
+        assert_eq!(pts[0].color, [128, 199, 56]);
+        assert!((s.scale[0] - 1.0).abs() < 1e-5 && (s.scale[1] - 0.5).abs() < 1e-5);
+        assert!((s.scale[2] - 0.1).abs() < 1e-5);
+        assert_eq!(s.rot, [1.0, 0.0, 0.0, 0.0]);
+        assert!((s.opacity - 0.5).abs() < 1e-6);
+        // An ordinary PLY has none.
+        let plain = read_ply_with_splats(&mut std::io::Cursor::new(ply_ascii())).unwrap();
+        assert!(plain.1.is_none());
     }
 
     /// A partial export is a normal thing to be handed. Take what is there

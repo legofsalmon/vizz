@@ -169,6 +169,7 @@ impl Rig {
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
             stroke: [0.0; 4],
+            splat: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),

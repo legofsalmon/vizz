@@ -91,6 +91,7 @@ pub struct AppParams {
     pub ink: ParamId,
     pub ink_weight: ParamId,
     pub liquid: ParamId,
+    pub splat: ParamId,
     pub plexus: ParamId,
     pub plexus_reach: ParamId,
     pub dim: ParamId,
@@ -205,6 +206,7 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/ink", "the surface mode as a pen drawing: off · outlines · hatching · stipple"),
     ("/particles/ink_weight", "how heavy the pen is: line width, hatching spacing, stipple dot size"),
     ("/particles/liquid", "the surface mode's discs smoothed into one glossy liquid surface; 0 is off"),
+    ("/particles/splat", "particles as soft, sorted Gaussian splats at this opacity; a splat capture keeps its own; 0 is off"),
     ("/particles/plexus", "lines between particles that come near each other; 0 is off"),
     ("/particles/plexus_reach", "how near two particles must be to link, in world units"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
@@ -462,6 +464,9 @@ impl AppParams {
         // gloss. Continuous, since a little smoothing is its own look; off
         // by default, and turning it up turns the surface mode on.
         let liquid = b.add(ParamDef::new("/particles/liquid", 0.0, 1.0, 0.0).smooth(0.2));
+        // Gaussian splats: a third way to draw, in place of the glow.
+        // The value is their opacity, so it fades them in; off by default.
+        let splat = b.add(ParamDef::new("/particles/splat", 0.0, 1.0, 0.0).smooth(0.2));
         // Plexus: lines between near particles, over either mode. Off by
         // default; the reach is in world units, where the cloud spans
         // about two.
@@ -979,6 +984,7 @@ impl AppParams {
             ink,
             ink_weight,
             liquid,
+            splat,
             plexus,
             plexus_reach,
             dim,

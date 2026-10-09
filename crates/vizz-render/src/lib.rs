@@ -23,6 +23,7 @@ pub mod palette;
 pub mod output;
 pub mod particles;
 pub mod plexus;
+pub mod splat;
 pub mod plystream;
 pub mod pointcloud;
 pub mod post;

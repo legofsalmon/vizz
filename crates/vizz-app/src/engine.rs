@@ -141,6 +141,9 @@ pub struct FrameInputs {
     pub ink: Option<vizz_render::surface::Ink>,
     /// 0..1: the surface mode's surfels smoothed into one liquid.
     pub liquid: f32,
+    /// The particles drawn as Gaussian splats, in place of the glow and
+    /// of the plain surface mode; their opacity is in the uniforms.
+    pub splat: bool,
     /// Lines between nearby particles, drawn over either mode, when on.
     pub plexus: Option<vizz_render::plexus::Plexus>,
     pub count: u32,
@@ -836,6 +839,12 @@ impl FrameEngine {
         let ink = vizz_render::surface::InkKind::from_index(self.snapshot.get(p.ink))
             .map(|kind| vizz_render::surface::Ink { kind, weight: self.snapshot.get(p.ink_weight) });
         let liquid = self.snapshot.get(p.liquid);
+        // Splats are a way of drawing, so they take the place of the glow
+        // and of the plain surface switch; a solid, ink or the liquid are
+        // only drawn in the surface pass, so choosing one wins.
+        let surface_only = solid.is_some() || ink.is_some() || liquid > 0.001;
+        let splat = self.snapshot.get(p.splat);
+        let splat = if splat > 0.001 && !surface_only { splat } else { 0.0 };
         let plexus_strength = self.snapshot.get(p.plexus) * dim;
         let plexus = (plexus_strength > 0.001).then(|| vizz_render::plexus::Plexus {
             strength: plexus_strength,
@@ -1039,6 +1048,7 @@ impl FrameEngine {
                         vizz_render::particles::Glyph::from_index(self.snapshot.get(p.glyph)).lane();
                     lanes
                 },
+                splat: [splat, 0.0, 0.0, 0.0],
             },
             post: PostUniforms {
                 // At trail 1.0 the feedback lerp passes history through
@@ -1082,13 +1092,11 @@ impl FrameEngine {
             // is choosing that pass: asking for a Mandelbulb and seeing
             // nothing until a second switch is thrown would be a trap.
             // Ink too: it is a way of drawing the surface.
-            surface: self.snapshot.get(p.surface).round() >= 0.5
-                || solid.is_some()
-                || ink.is_some()
-                || liquid > 0.001,
+            surface: (self.snapshot.get(p.surface).round() >= 0.5 && splat == 0.0) || surface_only,
             solid,
             ink,
             liquid,
+            splat: splat > 0.0,
             plexus,
             vector,
             vector_active,

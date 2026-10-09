@@ -642,7 +642,9 @@ Files, typed words, images and a live stream all compete for the six.</p>
 start with <code>--cloud scan.ply</code>. PLY reads both ASCII and binary
 little-endian, with per-point colour where the file has it. An OBJ or STL mesh
 is scattered over by area with sixty-five thousand points, each facing the way
-its triangle does, so a model is lit as soon as it lands. A file that will not parse is a warning, never a startup failure.</p>
+its triangle does, so a model is lit as soon as it lands. A 3D Gaussian
+Splatting capture, which is a binary PLY too, keeps its splats for
+<a href="#splats"><code>/particles/splat</code></a> to draw. A file that will not parse is a warning, never a startup failure.</p>
 
 <h3>From a word</h3>
 <p>Open the panel's <strong>clouds</strong> section, type into the
@@ -1087,6 +1089,19 @@ in the colours of its two ends, and a link fades out as its pair drifts apart
 so the network knits and frays rather than flickering. The reach is a good
 thing to put on an envelope.</p>
 
+<h3 id="splats">Gaussian splats</h3>
+
+<p><code>/particles/splat</code> draws every particle as a soft ellipse of
+colour, sorted and blended from the farthest to the nearest, so near ones cover
+far ones instead of adding up to light. The value is their opacity. Load a 3D
+Gaussian Splatting capture (the <code>.ply</code> that splat trainers and phone
+capture apps export) and each splat keeps its own size, turn, opacity and
+colour, so the capture looks like the place or person it was made from, and
+still turns and morphs with everything else. Any other cloud is drawn as round
+splats the size of the particles. A capture's colours are its own; the palette
+tints only round splats. A solid, ink or the liquid need the surface mode and
+take over from splats.</p>
+
 <h3 id="surface">Solid surfaces</h3>
 
 <p><code>/particles/surface</code> changes what a particle is. At 0, the
@@ -1495,6 +1510,7 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/ink</code></td><td>0 – 3</td><td>0</td><td>the surface mode as a pen drawing: off · outlines · hatching · stipple</td></tr>
     <tr><td><code>/particles/ink_weight</code></td><td>0 – 1</td><td>0.5</td><td>how heavy the pen is: line width, hatching spacing, stipple dot size</td></tr>
     <tr><td><code>/particles/liquid</code></td><td>0 – 1</td><td>0</td><td>the surface mode's discs smoothed into one glossy liquid surface; 0 is off</td></tr>
+    <tr><td><code>/particles/splat</code></td><td>0 – 1</td><td>0</td><td>particles as soft, sorted Gaussian splats at this opacity; a splat capture keeps its own; 0 is off</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>

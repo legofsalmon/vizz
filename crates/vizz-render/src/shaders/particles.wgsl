@@ -60,6 +60,12 @@ struct Uniforms {
     // 2 streaks; y the stroke length 0..1; z segments per stroke (1 for
     // dots). See `stroke_ends`.
     stroke: vec4<f32>,
+    // x the Gaussian splats' opacity, 0 for off; while it is up each
+    // particle takes its own cloud texel and clouds hold still. y the
+    // particle count, z and w how many splats the cloud_a and cloud_b
+    // slots hold (0 for none), all filled in by the splat pass. See
+    // splat.wgsl.
+    splat: vec4<f32>,
 };
 
 // The room's volume, so the cloud can be placed inside it. Layout must
@@ -262,7 +268,7 @@ fn cloud_normal(which: u32, h: f32, t: f32) -> vec3<f32> {
     if (which == VIDEO_SLOT && u.video.x > 0.5) {
         return vec3<f32>(0.0);
     }
-    let flow = u32(max(t, 0.0) * 260.0);
+    let flow = select(u32(max(t, 0.0) * 260.0), 0u, u.splat.x > 0.0);
     let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
     let row = (which % CLOUD_SLOTS) * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
     return textureLoad(t_normal, vec2<u32>(idx % ATTRACTOR_W, row), 0).xyz;
@@ -275,7 +281,7 @@ fn cloud_texel(which: u32, h: f32, t: f32) -> vec4<f32> {
     if (which == VIDEO_SLOT && u.video.x > 0.5) {
         return video_texel(h);
     }
-    let flow = u32(max(t, 0.0) * 260.0);
+    let flow = select(u32(max(t, 0.0) * 260.0), 0u, u.splat.x > 0.0);
     let idx = (u32(h * f32(ATTRACTOR_POINTS)) + flow) % ATTRACTOR_POINTS;
     let row = (which % CLOUD_SLOTS) * (ATTRACTOR_POINTS / ATTRACTOR_W) + idx / ATTRACTOR_W;
     return textureLoad(t_attractor, vec2<u32>(idx % ATTRACTOR_W, row), 0);
@@ -563,7 +569,31 @@ struct Body {
     mode_a: u32,
     mode_b: u32,
     blend: f32,
+    // How the shape's own space was turned (about y) and scaled on the
+    // way to here, for anything with a size and a direction of its own:
+    // a splat. The wind and the wells move points without turning them.
+    turn: f32,
+    grow: f32,
 };
+
+/// How many of a slot's texels the splats spread over: a capture's own
+/// count, which may be fewer than a slot's, or the whole slot. Follows
+/// `slot_normal`: of a morph pair, the one contributing more.
+fn splat_texels(mode_a: u32, mode_b: u32, blend: f32) -> f32 {
+    if (select(mode_a, mode_b, blend > 0.5) == 7u) {
+        let n = select(u.splat.z, u.splat.w, u.cloud_morph > 0.5);
+        if (n > 0.0) {
+            return n;
+        }
+    }
+    return f32(ATTRACTOR_POINTS);
+}
+
+/// How many particles take a texel each: the count, up to `texels`.
+/// Particles past that land on a texel again.
+fn splat_spaced(texels: f32) -> f32 {
+    return max(min(u.splat.y, texels), 1.0);
+}
 
 fn body(pi: u32) -> Body {
     return body_at(pi, u.time, 0.0);
@@ -587,7 +617,14 @@ fn body_at(pi: u32, t: f32, dh: f32) -> Body {
     let blend = clamp(fract(u.shape) + u.morph, 0.0, 1.0);
 
     let step = dh * mix(line_reach(mode_a), line_reach(mode_b), blend);
-    let h1 = clamp(hash01(pi, 0u) + step, 0.0, 0.9999999);
+    // Splats take one texel each, spread evenly over the texels the
+    // shape fills, so a capture's splats are drawn none twice and as many
+    // as the count allows; a random pick misses a third of them and
+    // doubles others, which a dot hides and a splat does not.
+    let texels = splat_texels(mode_a, mode_b, blend);
+    let spaced = splat_spaced(texels);
+    let own = (f32(pi % u32(spaced)) + 0.5) / spaced * texels / f32(ATTRACTOR_POINTS);
+    let h1 = clamp(select(hash01(pi, 0u), own, u.splat.x > 0.0) + step, 0.0, 0.9999999);
     let h2 = hash01(pi, 1u);
     let h3 = hash01(pi, 2u);
     let h4 = hash01(pi, 3u);
@@ -654,6 +691,8 @@ fn body_at(pi: u32, t: f32, dh: f32) -> Body {
     b.mode_a = mode_a;
     b.mode_b = mode_b;
     b.blend = blend;
+    b.turn = spin + tw;
+    b.grow = u.spread * (1.0 + 0.08 * sin(t * 0.5 + radius * 3.0)) * placed.w;
     return b;
 }
 
