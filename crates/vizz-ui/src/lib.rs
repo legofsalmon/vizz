@@ -1151,10 +1151,10 @@ fn drop_hint(ctx: &egui::Context) {
         .map(|e| e.to_ascii_lowercase())
         .next();
     let caption = match ext.as_deref() {
-        Some("ply" | "xyz" | "pts" | "csv" | "png" | "jpg" | "jpeg") => "drop to load it as a cloud",
+        Some("ply" | "xyz" | "pts" | "csv" | "obj" | "stl" | "png" | "jpg" | "jpeg") => "drop to load it as a cloud",
         Some("gpl" | "hex" | "txt") => "drop to add the palette",
         Some(_) => {
-            "not a file vizz can load — clouds are .ply .xyz .pts .csv .png .jpg, palettes .gpl .hex .txt"
+            "not a file vizz can load — clouds are .ply .xyz .pts .csv .obj .stl .png .jpg, palettes .gpl .hex .txt"
         }
         None => "drop to load — clouds and palettes",
     };

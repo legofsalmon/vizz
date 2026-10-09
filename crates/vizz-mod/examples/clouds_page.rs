@@ -163,7 +163,7 @@ fn head(page: &mut String) {
 <link rel="apple-touch-icon" href="/img/icon.png">
 <meta name="description" content="Every point cloud vizz can make from an equation, every simulation it can run live, and everything else a frame is made of: what each one is, what it comes from, and who found it.">
 <meta property="og:title" content="vizz — clouds from equations">
-<meta property="og:description" content="Sixty-six generators, fifteen live simulations, and the rest of the engine, with the paper each one comes from.">
+<meta property="og:description" content="Seventy-two generators, twenty live simulations, and the rest of the engine, with the paper each one comes from.">
 <meta property="og:type" content="article">
 <style>
   /* One file, no build step, no CDN — the same rule as the rest of the

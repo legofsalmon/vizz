@@ -1647,7 +1647,10 @@ vizz --cloud scan.ply --cloud other.xyz
 ```
 
 Reads **PLY** (ASCII and binary little-endian) and plain **XYZ/CSV/PTS**,
-with per-point colour where the file has it — and **PNG/JPEG** images,
+with per-point colour where the file has it; **OBJ** and **STL** meshes
+(STL binary or ASCII), scattered over by area with sixty-five thousand
+points that face the way their triangles do, so a model is lit as soon as
+it lands; and **PNG/JPEG** images,
 sampled to a coloured relief (position from the pixel grid, colour from
 the pixel, a shallow depth from luminance; transparent pixels are not
 part of the picture, so a logo keeps its silhouette). Six loadable slots
@@ -1661,7 +1664,7 @@ in the settings and re-rasterize deterministically on launch.
 
 **Or make one from an equation.** The clouds section's *generate…* menu,
 or `--cloud gen:<name>`, fills the next slot from a formula rather than a
-file. The menu groups them by what they are, because sixty-six names
+file. The menu groups them by what they are, because seventy-two names
 under two headings is a wall. **[The whole catalogue is a page on the
 site](https://vizz.letissier.ie/clouds)**, with a picture of each one,
 its knobs, and the paper it comes from — and below it, where the rest of
@@ -1673,11 +1676,11 @@ detection:
 | flows | twenty-five strange attractors: Thomas, Halvorsen, Dadras, Rössler, four-wing, Chen, Sprott B, Nosé–Hoover, Arneodo, Burke–Shaw, Chua's circuit, the Hadley circulation, Rucklidge, the three-scroll system, Rabinovich–Fabrikant, Aizawa, Newton–Leipnik, Sakarya, the Rikitake dynamo, Shimizu–Morioka, the finance system, Coullet, Genesio–Tesi, Lorenz-96 and the forced Duffing oscillator |
 | maps | Clifford, de Jong, Hénon, Ikeda and Gumowski–Mira, lifted into depth by delay embedding, and Chirikov's standard map drawn on its torus |
 | searched | the two quadratic searches, one over maps and one over flows |
-| surfaces | a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the gyroid with Schwarz' P and D |
+| surfaces | a Raup seashell, a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the gyroid with Schwarz' P and D |
 | curves | a 3:4:7 Lissajous knot, a (3,7) torus knot, the figure-eight knot, a spirograph and the three-dimensional Hilbert curve |
-| fractals | the Sierpinski tetrahedron, Draves' fractal flames, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's basins and the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as reliefs |
-| grown | four L-system plants — a generic one, a fern, a coral and a tree — and a diffusion-limited aggregate |
-| patterns | Chladni sand, a Voronoi foam, an icosahedral quasicrystal and phyllotaxis |
+| fractals | the Sierpinski tetrahedron, Draves' fractal flames, the Buddhabrot, a Kleinian limit set from Indra's Pearls, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's basins and the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as reliefs |
+| grown | four L-system plants — a generic one, a fern, a coral and a tree — a tree grown by space colonisation, and a diffusion-limited aggregate |
+| patterns | Chladni sand, a hyperbolic tiling on its dome, a Voronoi foam, an icosahedral quasicrystal and phyllotaxis |
 
 Each is made once on the CPU — flows in time order, so the cloud crawls
 along itself; surfaces in scan order; fractals by the chaos game or by

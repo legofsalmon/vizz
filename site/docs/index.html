@@ -637,10 +637,12 @@ shape.</p>
 Files, typed words, images and a live stream all compete for the six.</p>
 
 <h3>From a file</h3>
-<p>Drag a <code>.ply</code>, <code>.xyz</code>, <code>.csv</code> or
-<code>.pts</code> onto the window, or start with <code>--cloud scan.ply</code>.
-PLY reads both ASCII and binary little-endian, with per-point colour where the
-file has it. A file that will not parse is a warning, never a startup failure.</p>
+<p>Drag a <code>.ply</code>, <code>.xyz</code>, <code>.csv</code>,
+<code>.pts</code>, <code>.obj</code> or <code>.stl</code> onto the window, or
+start with <code>--cloud scan.ply</code>. PLY reads both ASCII and binary
+little-endian, with per-point colour where the file has it. An OBJ or STL mesh
+is scattered over by area with sixty-five thousand points, each facing the way
+its triangle does, so a model is lit as soon as it lands. A file that will not parse is a warning, never a startup failure.</p>
 
 <h3>From a word</h3>
 <p>Open the panel's <strong>clouds</strong> section, type into the
@@ -650,7 +652,7 @@ Typed clouds persist as <code>text:WORD</code> and come back after a restart.</p
 
 <h3>From an equation</h3>
 <p>The clouds section's <em>generate…</em> menu, or <code>--cloud gen:thomas</code>,
-fills the next slot from a formula. Sixty-six of them, grouped in the menu by
+fills the next slot from a formula. Seventy-two of them, grouped in the menu by
 what they are — and <a href="/clouds">the whole catalogue is a page of its
 own</a>, with a picture of each and the paper it comes from:</p>
 <ul>
@@ -665,19 +667,19 @@ lifted into depth by delay embedding, and Chirikov's standard map drawn on its
 torus.</li>
 <li><strong>searched</strong> — the two quadratic searches, over maps and over
 flows.</li>
-<li><strong>surfaces</strong> — a Gielis supershape, a harmonic-rippled sphere, a
+<li><strong>surfaces</strong> — a Raup seashell, a Gielis supershape, a harmonic-rippled sphere, a
 real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle,
 Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the
 gyroid with Schwarz' P and D.</li>
 <li><strong>curves</strong> — a Lissajous knot, a torus knot, the figure-eight
 knot, a spirograph and the three-dimensional Hilbert curve.</li>
-<li><strong>fractals</strong> — the Sierpinski tetrahedron, Draves' fractal flames, the Menger sponge, the
+<li><strong>fractals</strong> — the Sierpinski tetrahedron, Draves' fractal flames, the Buddhabrot, a Kleinian limit set, the Menger sponge, the
 Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's
 basins, the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as
 reliefs.</li>
-<li><strong>grown</strong> — four L-system plants and a diffusion-limited
-aggregate.</li>
-<li><strong>patterns</strong> — Chladni sand, a Voronoi foam, an icosahedral
+<li><strong>grown</strong> — four L-system plants, a tree grown by space
+colonisation and a diffusion-limited aggregate.</li>
+<li><strong>patterns</strong> — Chladni sand, a hyperbolic tiling, a Voronoi foam, an icosahedral
 quasicrystal, and phyllotaxis.</li>
 </ul>
 <p><a href="/clouds">The whole catalogue is on its own page</a>, with a picture
