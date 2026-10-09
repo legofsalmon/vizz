@@ -7,14 +7,18 @@
 //! something went wrong and had nowhere to say it.
 //!
 //! Deliberately not a toast framework. A short stack of rows in the top
-//! right corner, colour-coded, self-expiring, click to dismiss. Errors
-//! outlive infos because the whole point is being seen on the *next*
-//! glance at the screen, not the current one.
+//! right corner, click to dismiss. Confirmations leave on their own;
+//! errors stay until they are clicked away, because the whole point is
+//! being seen on the *next* glance at the screen, not the current one —
+//! a failure that left before anyone looked did not happen, as far as
+//! the room is concerned. That is the shared toast's rule, and so is
+//! the arrival: a row rises into place and fades in, and with reduced
+//! motion it only fades.
 
 use std::time::{Duration, Instant};
 
 /// How long a row stays. Info is confirmation — it can go quickly.
-/// An error has to survive until the performer next looks over.
+/// An error stays until it is dismissed.
 const INFO_TTL: Duration = vizz_design::motion::NOTICE_TTL;
 const ERROR_TTL: Duration = vizz_design::motion::NOTICE_ERROR_TTL;
 
@@ -93,6 +97,8 @@ impl Notices {
         if self.items.is_empty() {
             return;
         }
+        let mode = vizz_design::motion::mode();
+        let mut arriving = false;
         let mut dismissed: Option<usize> = None;
         egui::Area::new(egui::Id::new("notices"))
             .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
@@ -100,22 +106,40 @@ impl Notices {
             .show(ctx, |ui| {
                 ui.set_max_width(360.0);
                 for (i, n) in self.items.iter().enumerate() {
-                    let (fill, ink) = match n.level {
+                    // A large thing from an edge: most of the way at once,
+                    // then a settle, on the slow duration.
+                    let age = n.shown.map_or(0.0, |s| now.duration_since(s).as_secs_f32());
+                    let t = vizz_design::motion::ease(
+                        vizz_design::motion::EMPHASIZED_ENTER,
+                        age / mode.slow,
+                    );
+                    arriving |= t < 1.0;
+                    let (fill, edge, ink) = match n.level {
                         Level::Info => (
                             vizz_design::feedback::OK_BED,
+                            vizz_design::surface::EDGE,
                             vizz_design::feedback::ON_OK,
                         ),
                         // The quit prompt's family: red enough to be found
                         // at a glance, dark enough not to strobe the room.
                         Level::Error => (
                             vizz_design::feedback::DANGER_BED,
+                            vizz_design::feedback::DANGER_EDGE,
                             vizz_design::feedback::ON_DANGER,
                         ),
                     };
-                    let r = egui::Frame::NONE
+                    ui.add_space((1.0 - t) * mode.offset_medium);
+                    let r = ui
+                        .scope(|ui| {
+                            // From a quarter, not from nothing: the words
+                            // are legible in the very first frame, so even
+                            // a glance that lands mid-arrival reads them.
+                            ui.multiply_opacity(0.25 + 0.75 * t);
+                            egui::Frame::NONE
                         .fill(fill)
+                        .stroke(egui::Stroke::new(1.0, edge))
                         .inner_margin(egui::Margin::symmetric(12, 8))
-                        .corner_radius(5.0)
+                        .corner_radius(vizz_design::radius::SHEET)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(&n.text).size(13.0).color(ink));
@@ -131,6 +155,8 @@ impl Notices {
                             });
                         })
                         .response
+                        })
+                        .inner
                         .interact(egui::Sense::click())
                         .on_hover_text("click to dismiss");
                     if r.clicked() {
@@ -141,6 +167,9 @@ impl Notices {
             });
         if let Some(i) = dismissed {
             self.items.remove(i);
+        }
+        if arriving {
+            ctx.request_repaint();
         }
     }
 }

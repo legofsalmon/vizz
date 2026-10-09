@@ -234,7 +234,7 @@ pub struct DeckActions {
 
 /// The pane's hairline. Dim on purpose: it marks where the picture is,
 /// and a bright rule would be a bright rectangle in a dark room.
-const PANE_EDGE: egui::Color32 = egui::Color32::from_rgb(0x2C, 0x33, 0x42);
+const PANE_EDGE: egui::Color32 = vizz_design::surface::HAIRLINE;
 
 /// Below this window width the desk closes and the layout is one column.
 /// A picture too small to judge beside a grid too tight to hit is worse
@@ -911,7 +911,7 @@ fn gravity_ghost(ui: &mut egui::Ui, actions: &mut PerformanceActions) {
                         .color(INK),
                 )
                 .min_size(vec2(0.0, 28.0))
-                .fill(Color32::from_rgb(36, 40, 48))
+                .fill(vizz_design::surface::RAISED)
                 .stroke(egui::Stroke::new(1.0, vizz_design::surface::EDGE)),
             )
             .on_hover_text(
@@ -2216,7 +2216,7 @@ fn status_strip(
             let peek = ui.add(egui::Button::new(
                 egui::RichText::new("view")
                     .size(13.0)
-                    .color(if peeking { LIVE } else { INK_2 }),
+                    .color(if peeking { crate::theme::CURRENT } else { INK_2 }),
             ));
             if peek
                 .on_hover_text(
@@ -2242,7 +2242,7 @@ fn status_strip(
                 egui::Align2::RIGHT_CENTER,
                 format!("{:.0} fps", state.fps),
                 egui::FontId::proportional(15.0),
-                if state.over_budget { WARN } else { LIVE },
+                if state.over_budget { WARN } else { INK },
             );
             ui.add_space(16.0);
 
@@ -2329,7 +2329,7 @@ fn status_strip(
                             }
                         ),
                         vizz_design::accent::REC,
-                        Color32::WHITE,
+                        vizz_design::accent::ON_REC,
                         "recording the master — click to stop",
                     ),
                     // A countdown is the parameter already on and no
@@ -2339,7 +2339,7 @@ fn status_strip(
                     (None, Some(left)) => (
                         format!("REC in {left}…"),
                         vizz_design::accent::REC_BED,
-                        Color32::WHITE,
+                        INK,
                         "counting down to the take — click to cancel",
                     ),
                     // Idle sits dark with the word in a dimmed red, so it
@@ -2410,7 +2410,7 @@ fn audio_strip(
             .add(egui::Button::new(
                 egui::RichText::new(if reacting { "reacting" } else { "react" })
                     .size(12.0)
-                    .color(if reacting { LIVE } else { INK_2 }),
+                    .color(if reacting { crate::theme::CURRENT } else { INK_2 }),
             ))
             .on_hover_text(if reacting {
                 "the kick, the loudness and the snare are moving the picture — click to stop"
@@ -2486,7 +2486,7 @@ fn audio_strip(
                 2.0,
                 // Warm at the top of the range: a band pinned at 1.0 is
                 // clipping its modulation and should not look healthy.
-                if v > 0.97 { WARN } else { LIVE },
+                if v > 0.97 { WARN } else { vizz_design::accent::METER },
             );
             // The gate line: where Kick and Snare open. A band that never
             // reaches it leaves its shape inert with the fader still
@@ -2502,7 +2502,7 @@ fn audio_strip(
                 label,
                 egui::FontId::proportional(10.0),
                 if v > 0.35 {
-                    Color32::from_rgb(18, 26, 20)
+                    vizz_design::ink::INVERSE
                 } else {
                     INK_3
                 },
@@ -3415,13 +3415,13 @@ fn vertical_fader(
     // nine points apart.
     let (rim_w, rim) = if midi.learning(&def.addr) {
         // Breathing rather than blinking: insistent, never a strobe.
-        let phase = ((now / 1.6).fract() * std::f64::consts::TAU).sin() as f32;
+        let phase = ((now / vizz_design::motion::BREATH).fract() * std::f64::consts::TAU).sin() as f32;
         let a = (198.0 + 57.0 * phase).clamp(140.0, 255.0) as u8;
         (2.0, crate::theme::LEARN.gamma_multiply(a as f32 / 255.0))
     } else if held {
         (2.0, HANDLE)
     } else if response.hovered() {
-        (1.5, vizz_design::surface::FOCUS)
+        (1.5, vizz_design::surface::HOVER_EDGE)
     } else {
         (1.5, vizz_design::surface::EDGE)
     };

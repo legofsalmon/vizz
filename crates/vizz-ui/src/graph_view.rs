@@ -667,9 +667,9 @@ impl GraphView {
             // nodes, and silently dead wiring is the worst outcome.
             let live = !graph.cycle_nodes().contains(&e.to.0);
             let color = if live {
-                Color32::from_rgb(96, 122, 150)
+                vizz_design::surface::CONTROL_EDGE
             } else {
-                Color32::from_rgb(190, 80, 70)
+                vizz_design::feedback::ERR_TEXT
             };
             bezier(p, a, b, color, 1.6 * lay.zoom.max(0.5));
         }
@@ -688,7 +688,7 @@ impl GraphView {
                 _ => None,
             };
             if let Some(a) = anchor {
-                bezier(p, a, cursor, Color32::from_rgb(190, 200, 215), 1.6);
+                bezier(p, a, cursor, vizz_design::ink::SECONDARY, 1.6);
             }
         }
     }
@@ -710,11 +710,11 @@ impl GraphView {
 
             p.rect_filled(rect, 5.0, vizz_design::surface::RAISED);
             let border = if in_cycle {
-                Stroke::new(2.0, Color32::from_rgb(190, 80, 70))
+                Stroke::new(2.0, vizz_design::feedback::ERR_TEXT)
             } else if self.selected == Some(NodeId(i)) {
-                Stroke::new(2.0, Color32::from_rgb(225, 230, 238))
+                Stroke::new(2.0, crate::theme::CURRENT)
             } else if dead_param {
-                Stroke::new(2.0, Color32::from_rgb(205, 150, 70))
+                Stroke::new(2.0, crate::theme::WARN)
             } else {
                 Stroke::new(1.0, accent)
             };
@@ -749,7 +749,7 @@ impl GraphView {
                         Align2::LEFT_CENTER,
                         n.kind.input_label(port),
                         FontId::proportional(fs * 0.82),
-                        Color32::from_rgb(150, 158, 168),
+                        vizz_design::ink::SECONDARY,
                     );
                 }
                 // Live value, right-aligned on the first row. A node in
@@ -766,11 +766,11 @@ impl GraphView {
                     } else {
                         "missing".to_string()
                     };
-                    (text, Color32::from_rgb(225, 170, 90))
+                    (text, crate::theme::WARN)
                 } else {
                     (
                         format!("{:+.2}", graph.value(NodeId(i))),
-                        Color32::from_rgb(190, 200, 212),
+                        vizz_design::ink::SECONDARY,
                     )
                 };
                 p.text(
@@ -787,7 +787,7 @@ impl GraphView {
             p.circle_filled(
                 lay.output_pos(n.pos, inputs),
                 r,
-                Color32::from_rgb(205, 212, 220),
+                vizz_design::ink::PRIMARY,
             );
             for port in 0..inputs {
                 let connected = graph.edges.iter().any(|e| e.to.0 == i && e.port == port);
@@ -795,9 +795,9 @@ impl GraphView {
                     lay.input_pos(n.pos, inputs, port),
                     r,
                     if connected {
-                        Color32::from_rgb(205, 212, 220)
+                        vizz_design::ink::PRIMARY
                     } else {
-                        Color32::from_rgb(105, 112, 122)
+                        vizz_design::ink::FAINT
                     },
                 );
             }

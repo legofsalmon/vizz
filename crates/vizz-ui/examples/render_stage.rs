@@ -234,7 +234,7 @@ fn main() {
     queue.submit([enc.finish()]);
 
     let ctx = egui::Context::default();
-    ctx.set_visuals(egui::Visuals::dark());
+    vizz_design::look::apply(&ctx);
     let mut renderer = vizz_ui::EguiRendererForPreview::new(&device, FORMAT);
     let mut last = None;
     for i in 0..12 {

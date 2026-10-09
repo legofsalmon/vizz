@@ -35,6 +35,7 @@ fn main() {
 
     // The page is the BASE surface itself: tokens are judged on the
     // ground they ship on, not on a neutral grey.
+    let ground = egui::Rgba::from(surface::BASE);
     let mut enc = device.create_command_encoder(&Default::default());
     enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("bg"),
@@ -42,7 +43,12 @@ fn main() {
             view: &view,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.008, g: 0.009, b: 0.013, a: 1.0 }),
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: ground.r() as f64,
+                    g: ground.g() as f64,
+                    b: ground.b() as f64,
+                    a: 1.0,
+                }),
                 store: wgpu::StoreOp::Store,
             },
             depth_slice: None,
@@ -55,7 +61,7 @@ fn main() {
     queue.submit([enc.finish()]);
 
     let ctx = egui::Context::default();
-    ctx.set_visuals(egui::Visuals::dark());
+    vizz_design::look::apply(&ctx);
     let mut renderer = vizz_ui::EguiRendererForPreview::new(&device, FORMAT);
     let mut last = None;
     for i in 0..12 {
@@ -101,7 +107,7 @@ fn page(ctx: &egui::Context) {
                 .inner_margin(egui::Margin::same(18))
                 .show(ui, |ui| {
                     ui.label(
-                        egui::RichText::new("vizz design language — specimen")
+                        egui::RichText::new("vizz design language — specimen · design-system 0.2.0")
                             .size(text::CONTROL)
                             .strong()
                             .color(ink::PRIMARY),
@@ -147,13 +153,17 @@ fn left(ui: &mut egui::Ui) {
         ("surface::BASE", surface::BASE),
         ("surface::WELL", surface::WELL),
         ("surface::RAISED", surface::RAISED),
+        ("surface::RAISED_HOVER", surface::RAISED_HOVER),
+        ("surface::OVERLAY", surface::OVERLAY),
         ("surface::SLOT_EMPTY", surface::SLOT_EMPTY),
         ("surface::SLOT", surface::SLOT),
         ("surface::ENGAGED", surface::ENGAGED),
         ("surface::HANDLE", surface::HANDLE),
         ("surface::HAIRLINE", surface::HAIRLINE),
         ("surface::EDGE", surface::EDGE),
+        ("surface::CONTROL_EDGE", surface::CONTROL_EDGE),
         ("surface::TICK", surface::TICK),
+        ("surface::HOVER_EDGE", surface::HOVER_EDGE),
         ("surface::FOCUS", surface::FOCUS),
     ] {
         swatch(ui, name, c);
@@ -181,15 +191,17 @@ fn left(ui: &mut egui::Ui) {
     section(ui, "MOTION — feedback has a clock");
     for line in [
         format!("armed window      {}s", motion::ARM_WINDOW),
+        format!("status fade       {}s, errors until replaced", motion::STATUS_TTL),
         format!(
-            "status fade       {}s, errors {}s",
-            motion::STATUS_TTL,
-            motion::STATUS_ERROR_TTL
+            "notices           {}s, errors until dismissed",
+            motion::NOTICE_TTL.as_secs()
         ),
         format!(
-            "notices           {}s, errors {}s",
-            motion::NOTICE_TTL.as_secs(),
-            motion::NOTICE_ERROR_TTL.as_secs()
+            "transitions       {}/{}/{}/{} ms",
+            (motion::FULL.instant * 1000.0).round(),
+            (motion::FULL.fast * 1000.0).round(),
+            (motion::FULL.base * 1000.0).round(),
+            (motion::FULL.slow * 1000.0).round()
         ),
     ] {
         ui.label(egui::RichText::new(line).size(text::LABEL).monospace().color(ink::SECONDARY));
@@ -199,7 +211,7 @@ fn left(ui: &mut egui::Ui) {
 fn right(ui: &mut egui::Ui) {
     section(ui, "ACCENT — fixed jobs");
     for (name, c) in [
-        ("accent::MOD", accent::MOD),
+        ("accent::DRIVEN (MOD, AUTO)", accent::DRIVEN),
         ("accent::GLOBAL", accent::GLOBAL),
         ("accent::FILL", accent::FILL),
         ("accent::FILL_BRIGHT", accent::FILL_BRIGHT),
@@ -208,9 +220,9 @@ fn right(ui: &mut egui::Ui) {
         ("accent::MASTER", accent::MASTER),
         ("accent::MASTER_INK", accent::MASTER_INK),
         ("accent::ARRIVING", accent::ARRIVING),
-        ("accent::AUTO", accent::AUTO),
         ("accent::BINDING", accent::BINDING),
         ("accent::REC", accent::REC),
+        ("accent::REC_INK", accent::REC_INK),
         ("accent::NODE_SOURCE", accent::NODE_SOURCE),
         ("accent::NODE_OPERATOR", accent::NODE_OPERATOR),
         ("accent::NODE_SINK", accent::NODE_SINK),
