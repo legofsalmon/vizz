@@ -1717,6 +1717,18 @@ impl App {
                 plexus,
             );
         }
+        // Last over the scene, so it hazes everything drawn before it.
+        if let Some(haze) = inputs.haze {
+            state.scene.render_haze(
+                &state.ctx,
+                &mut encoder,
+                &state.post.scene_view,
+                &inputs.uniforms,
+                inputs.count,
+                haze,
+                inputs.surface,
+            );
+        }
         state.post.render(&state.ctx, &mut encoder, &state.output.view, &inputs.post);
         // Print placement: the stack replaces the finished frame, drawn
         // at the output format so no tone-map shoulder or feedback ever

@@ -281,6 +281,8 @@ pub struct ParticleScene {
     /// The plexus lines, built the first time they are asked for, for
     /// the same reason.
     plexus: std::sync::Mutex<Option<crate::plexus::PlexusPass>>,
+    /// The haze volume, built the first time it is asked for.
+    haze: std::sync::Mutex<Option<crate::haze::HazePass>>,
     /// The Gaussian splats, likewise.
     splats: std::sync::Mutex<Option<crate::splat::SplatPass>>,
     target_format: wgpu::TextureFormat,
@@ -440,6 +442,7 @@ impl ParticleScene {
             loaded_palettes: 0,
             surface: std::sync::Mutex::new(None),
             plexus: std::sync::Mutex::new(None),
+            haze: std::sync::Mutex::new(None),
             splats: std::sync::Mutex::new(None),
             target_format,
         }
@@ -845,6 +848,32 @@ impl ParticleScene {
             crate::plexus::PlexusPass::new(ctx, &self.bgl, self.target_format)
         });
         pass.render(ctx, encoder, &self.bind_group, target, &uniforms, count, plexus);
+    }
+
+    /// Lay haze over what is already in `target`, lit by the lamps and the
+    /// sun and thickened where the particles are. `surface` says the frame
+    /// was drawn by [`Self::render_surface`], whose depth the haze then
+    /// stops at. See [`crate::haze`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_haze(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        uniforms: &Uniforms,
+        count: u32,
+        haze: crate::haze::Haze,
+        surface: bool,
+    ) {
+        let uniforms = self.prepare(ctx, target, uniforms);
+        let mut pass = self.haze.lock().unwrap_or_else(|e| e.into_inner());
+        let pass = pass.get_or_insert_with(|| {
+            crate::haze::HazePass::new(ctx, &self.bgl, self.target_format)
+        });
+        let size = (target.texture().width(), target.texture().height());
+        let gbuffer = self.surface.lock().unwrap_or_else(|e| e.into_inner());
+        let depth = gbuffer.as_ref().filter(|_| surface).and_then(|s| s.depth_view(size));
+        pass.render(ctx, encoder, &self.bind_group, target, &uniforms, count, haze, depth);
     }
 
     /// Encode one frame as Gaussian splats, sorted and blended far to
@@ -2153,5 +2182,141 @@ mod tests {
             "accumulation did not reproduce ({accumulated} vs {cleared}); \
              this test would not catch the regression it exists for"
         );
+    }
+
+    /// The haze alone over a cleared frame: the particles of `points`
+    /// thicken it but are not drawn. Linear RGB per pixel, row by row.
+    fn frame_haze(
+        ctx: &GpuContext,
+        points: &[[f32; 3]],
+        lamp: [f32; 4],
+        haze: crate::haze::Haze,
+    ) -> (Vec<[f32; 3]>, Uniforms) {
+        let (mut scene, mut u) = splat_scene(ctx, &[]);
+        let pts: Vec<_> = points.iter().map(|p| crate::pointcloud::Point::new(p[0], p[1], p[2])).collect();
+        if !pts.is_empty() {
+            scene.set_cloud(ctx, 2, &pts, "smoke");
+        }
+        u.splat = [0.0; 4];
+        u.lamp[0] = lamp;
+        u.lamp_tint[0] = [1.0, 1.0, 1.0, 1.0];
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("haze-test-target"),
+            size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::SCENE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("haze-test-readback"),
+            size: (W * W * 8) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        // No particles drawn: just the clear.
+        scene.render(ctx, &mut encoder, &view, &u, 0, true, wgpu::Color::BLACK);
+        let count = if pts.is_empty() { 0 } else { 40_000 };
+        scene.render_haze(ctx, &mut encoder, &view, &u, count, haze, false);
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 8),
+                    rows_per_image: Some(W),
+                },
+            },
+            texture.size(),
+        );
+        ctx.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = slice.get_mapped_range().unwrap().to_vec();
+        let half = |o: usize| {
+            let h = u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+            let exp = ((h >> 10) & 0x1f) as i32;
+            let frac = (h & 0x3ff) as f32;
+            match exp {
+                0 => frac * 2f32.powi(-24),
+                _ => (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+            }
+        };
+        let px = (0..(W * W) as usize).map(|i| [half(i * 8), half(i * 8 + 2), half(i * 8 + 4)]).collect();
+        (px, u)
+    }
+
+    /// The mean brightness of the pixels within `r` of where `p` lands.
+    fn haze_near(px: &[[f32; 3]], u: &Uniforms, p: [f32; 3], r: f32) -> f32 {
+        let c = glam::Mat4::from_cols_array_2d(&u.view_proj) * glam::Vec4::new(p[0], p[1], p[2], 1.0);
+        let sx = (c.x / c.w * 0.5 + 0.5) * W as f32;
+        let sy = (0.5 - c.y / c.w * 0.5) * W as f32;
+        let (mut sum, mut n) = (0.0, 0);
+        for y in 0..W {
+            for x in 0..W {
+                if (x as f32 + 0.5 - sx).hypot(y as f32 + 0.5 - sy) <= r {
+                    let v = px[(y * W + x) as usize];
+                    sum += (v[0] + v[1] + v[2]) / 3.0;
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 0, "{p:?} is off the frame");
+        sum / n as f32
+    }
+
+    #[test]
+    fn haze_glows_around_a_lamp_and_is_off_at_zero() {
+        let Some(ctx) = gpu() else { return };
+        let lamp = [0.0, 0.0, 0.0, 2.0];
+        let on = crate::haze::Haze { density: 0.6, smoke: 0.0, scatter: 0.3 };
+        let (px, u) = frame_haze(&ctx, &[], lamp, on);
+        assert!(px.iter().all(|p| p.iter().all(|c| c.is_finite())), "a pixel went NaN");
+        let near = haze_near(&px, &u, [0.0, 0.0, 0.0], 6.0);
+        let far = haze_near(&px, &u, [1.4, 1.4, 0.0], 6.0);
+        assert!(near > 0.05, "the haze round the lamp is dark: {near}");
+        assert!(near > far * 2.0, "the lamp does not stand out: {near} against {far}");
+        let (off, _) = frame_haze(&ctx, &[], lamp, crate::haze::Haze { density: 0.0, ..on });
+        assert!(off.iter().all(|p| p.iter().all(|c| *c == 0.0)), "haze at zero density still drew");
+    }
+
+    /// Smoke between a lamp and the air past it shades that air: a shaft.
+    #[test]
+    fn smoke_casts_a_shadow_through_the_haze() {
+        let Some(ctx) = gpu() else { return };
+        // A wall of smoke facing the lamp, with the lamp off to its left.
+        // The cloud is normalised when it is set, so the wall is placed
+        // where normalising puts it.
+        let mut wall = Vec::new();
+        for i in 0..8 {
+            for j in 0..40 {
+                for k in 0..40 {
+                    wall.push([0.4 * i as f32 / 7.0, 1.2 * j as f32 / 39.0, 1.2 * k as f32 / 39.0]);
+                }
+            }
+        }
+        let mut placed: Vec<_> = wall.iter().map(|p| crate::pointcloud::Point::new(p[0], p[1], p[2])).collect();
+        crate::pointcloud::normalize(&mut placed);
+        let left = placed.iter().map(|p| p.pos[0]).fold(f32::MAX, f32::min);
+        let right = placed.iter().map(|p| p.pos[0]).fold(f32::MIN, f32::max);
+        let lamp = [left - 0.8, 0.0, 0.0, 3.0];
+        let thin = crate::haze::Haze { density: 0.5, smoke: 0.0, scatter: 0.0 };
+        let smoky = crate::haze::Haze { smoke: 2.0, ..thin };
+        let (clear, u) = frame_haze(&ctx, &wall, lamp, thin);
+        let (shaded, _) = frame_haze(&ctx, &wall, lamp, smoky);
+        assert!(shaded.iter().all(|p| p.iter().all(|c| c.is_finite())), "a pixel went NaN");
+        let past = [right + 0.35, 0.0, 0.0];
+        let (lit, dark) = (haze_near(&clear, &u, past, 4.0), haze_near(&shaded, &u, past, 4.0));
+        assert!(dark < lit * 0.75, "the air past the smoke is not in its shadow: {dark} against {lit}");
+        // And the smoke itself, facing the lamp, is brighter than thin air.
+        let wall_at = [left, 0.0, 0.0];
+        let (air, smoke) = (haze_near(&clear, &u, wall_at, 3.0), haze_near(&shaded, &u, wall_at, 3.0));
+        assert!(smoke > air * 1.5, "the smoke does not catch the light: {smoke} against {air}");
     }
 }

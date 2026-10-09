@@ -1006,6 +1006,23 @@ you raised it to see what it did.</p>
 walkthrough: light arriving from where you are is what makes moving through a
 scan read as moving, rather than as the scan fading up.</p>
 
+<h3 id="haze">Haze and light beams</h3>
+
+<p><code>/light/haze</code> fills the space in front of the camera with a lit
+haze, like stage haze. The lamps and the sun light it, so a lamp shows as a glow
+in the air, and the particles thicken it: <code>/light/smoke</code> turns a cloud
+into smoke that is lit on the side facing a lamp and casts a shadow into the
+haze behind it. Put a lamp behind a lattice, a tree or an open attractor and its
+light comes through the gaps as beams. <code>/light/scatter</code> sets how much
+the haze glows when you look towards a lamp through it, against looking from the
+side. With no lamps and no sun it is only a faint grey veil: the lights make it.
+In the surface mode the haze stops at each surface; in the glowing mode the frame
+is taken to lie at the focus distance.</p>
+
+<p>After Wroński's froxel volume (SIGGRAPH 2014) and Hillaire's integration
+(SIGGRAPH 2015), with single scattering as Max sets it out (IEEE TVCG 1995) and
+the Henyey-Greenstein phase function (1941).</p>
+
 <h3>Normals</h3>
 
 <p>A point cloud is points. Whether it also knows which way its surface faces
@@ -1592,6 +1609,9 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/light/ambient</code></td><td>0 – 1</td><td>1</td><td>how much light there is everywhere; 1 is the unlit picture</td></tr>
     <tr><td><code>/light/shape</code></td><td>0 – 1</td><td>1</td><td>how much a surface's own orientation counts (needs normals)</td></tr>
     <tr><td><code>/light/torch</code></td><td>0 – 1</td><td>0</td><td>lamp 1 rides the camera</td></tr>
+    <tr><td><code>/light/haze</code></td><td>0 – 1</td><td>0</td><td>a lit haze the lamps and the sun cut beams through; 0 is off</td></tr>
+    <tr><td><code>/light/smoke</code></td><td>0 – 2</td><td>1</td><td>how much the particles thicken the haze into smoke</td></tr>
+    <tr><td><code>/light/scatter</code></td><td>0 – 0.95</td><td>0.6</td><td>how much the haze scatters forwards, so a lamp seen through it glows</td></tr>
     <tr><td><code>/light/N/x</code> (N = 1–2)</td><td>-6 – 6</td><td>0</td><td>lamp N position, X</td></tr>
     <tr><td><code>/light/N/y</code> (N = 1–2)</td><td>-6 – 6</td><td>0</td><td>lamp N position, Y</td></tr>
     <tr><td><code>/light/N/z</code> (N = 1–2)</td><td>-6 – 6</td><td>0</td><td>lamp N position, Z</td></tr>

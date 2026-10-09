@@ -146,6 +146,8 @@ pub struct FrameInputs {
     pub splat: bool,
     /// Lines between nearby particles, drawn over either mode, when on.
     pub plexus: Option<vizz_render::plexus::Plexus>,
+    /// A lit haze over the frame, when on.
+    pub haze: Option<vizz_render::haze::Haze>,
     pub count: u32,
     /// What an empty frame looks like, alpha included. At alpha 0 the
     /// field is delivered on a transparent background so vizz can be a
@@ -850,6 +852,12 @@ impl FrameEngine {
             strength: plexus_strength,
             reach: self.snapshot.get(p.plexus_reach),
         });
+        let haze_density = self.snapshot.get(p.haze);
+        let haze = (haze_density > 0.001).then(|| vizz_render::haze::Haze {
+            density: haze_density,
+            smoke: self.snapshot.get(p.haze_smoke),
+            scatter: self.snapshot.get(p.haze_scatter),
+        });
         // The opening sits a little in front of the origin so the cloud is
         // inside the room rather than pressed against its face.
         let room = RoomUniforms::for_camera(
@@ -1098,6 +1106,7 @@ impl FrameEngine {
             liquid,
             splat: splat > 0.0,
             plexus,
+            haze,
             vector,
             vector_active,
             vector_print: self.snapshot.get(p.vec_place).round() >= 0.5,

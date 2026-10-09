@@ -239,6 +239,10 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         if let Some(plexus) = inputs.plexus {
             scene.render_plexus(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count, plexus);
         }
+        if let Some(haze) = inputs.haze {
+            scene.render_haze(&ctx, &mut encoder, &post.scene_view, &inputs.uniforms, inputs.count, haze,
+                inputs.surface);
+        }
         post.render(&ctx, &mut encoder, &output.view, &inputs.post);
         if inputs.vector_active && inputs.vector_print {
             vector_print.render(&ctx, &mut encoder, &output.view, &inputs.vector);
