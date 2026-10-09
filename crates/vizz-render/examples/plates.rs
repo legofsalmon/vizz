@@ -49,6 +49,7 @@ fn settle(id: &str) -> f32 {
         // shape, so a portrait taken early is a portrait of nothing.
         "crystal" => 20.0,
         "tangle" => 25.0,
+        "growth" => 20.0,
         "slime" => 12.0,
         "life" => 8.0,
         "smoke" => 7.0,

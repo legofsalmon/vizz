@@ -1538,12 +1538,20 @@ impl App {
             // What the room sounds like, for a simulation; a stream
             // ignores it.
             let st = &self.engine.audio.state;
-            live.drive(vizz_render::simulate::Drive {
+            // The signal goes only to the simulation that draws it: it
+            // is a few kilobytes copied a frame, and nothing else reads it.
+            let mut drive = vizz_render::simulate::Drive {
                 bands: std::array::from_fn(|i| st.band(i)),
                 level: st.level(),
                 bar: self.engine.modulation.clock.bar_phase(4.0),
                 audio: st.connected(),
-            });
+                ..Default::default()
+            };
+            if live.simulation().is_some_and(|s| s.starts_with("scope")) {
+                drive.signal_at = st.scope.latest(&mut drive.signal);
+                drive.stereo = st.scope.stereo();
+            }
+            live.drive(drive);
             let revision = live.revision();
             if revision != self.live_revision {
                 // Taken out of the slot rather than borrowed in place.

@@ -737,7 +737,9 @@ vizz --live-cloud sim:cyclic      # states chasing each other round a ring
 vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
 vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
 vizz --live-cloud sim:vortex      # smoke rings, as the filaments they are made of
-vizz --live-cloud sim:polytope    # a tesseract turning through the fourth dimension</code></pre>
+vizz --live-cloud sim:polytope    # a tesseract turning through the fourth dimension
+vizz --live-cloud sim:growth      # differential growth: a thread buckling into coral
+vizz --live-cloud sim:scope       # an oscilloscope in XY mode, left against right</code></pre>
 
 <p>A simulation is a live cloud that needs no sender: it runs on its own thread
 at the frame rate and publishes through the stream's path. The panel's
@@ -790,7 +792,13 @@ through it. <strong>polytope</strong> is a regular solid of four dimensions (the
 5-cell, tesseract, 16-cell, 24-cell, 600-cell or 120-cell, set with
 <code>?kind=</code>) turning through the fourth axis, so it turns itself inside
 out; its points walk every edge once, so the <em>lines</em> stroke draws the
-wireframe. After Coxeter, <em>Regular Polytopes</em> (1948).</p>
+wireframe. After Coxeter, <em>Regular Polytopes</em> (1948).
+<strong>growth</strong> is differential growth, after Anders Hoff and Andy Lomas:
+one closed thread that grows faster than it has room for and buckles into a
+coral meander, never crossing itself. <strong>scope</strong> is an oscilloscope
+in XY mode — left channel across, right channel up, the last second trailing
+back into the screen — so a tone is a loop and oscilloscope music draws its
+pictures; a mono input is drawn against itself a moment earlier.</p>
 
 <p>The automaton's rule is a knob, written <em>survive/born/states</em>. Past
 two states a cell that fails to survive counts down instead of dying, and only

@@ -47,6 +47,85 @@ pub struct AudioState {
     /// Analysis frames completed — a liveness signal for the UI.
     pub frames: AtomicU64,
     connected: AtomicBool,
+    /// The signal itself, both channels, for drawing as a trace.
+    pub scope: Scope,
+}
+
+/// Stereo pairs [`Scope`] keeps: the latest few frames' worth at any
+/// common rate.
+pub const SCOPE_LEN: usize = 2048;
+
+/// The latest [`SCOPE_LEN`] samples of the input, left and right, for a
+/// picture of the waveform rather than a measurement of it.
+///
+/// The analysis ring holds a mono downmix, which is right for the FFT
+/// and loses exactly what an oscilloscope in XY mode draws: the
+/// difference between the two channels. So the callback also writes each
+/// frame's first two channels here, as bits in atomics so it never
+/// blocks. A reader can tear — catch a few samples mid-overwrite — and
+/// for a trace redrawn sixty times a second that is invisible, where a
+/// lock in the audio callback would not be.
+pub struct Scope {
+    pairs: Box<[[AtomicU32; 2]]>,
+    written: AtomicU64,
+    stereo: AtomicBool,
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            pairs: (0..SCOPE_LEN).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
+            written: AtomicU64::new(0),
+            stereo: AtomicBool::new(false),
+        }
+    }
+}
+
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scope").field("written", &self.written.load(Ordering::Relaxed)).finish()
+    }
+}
+
+impl Scope {
+    /// Append interleaved frames of `channels` channels. A mono input
+    /// writes the same sample to both sides, and says it is mono.
+    pub fn push(&self, data: &[f32], channels: usize) {
+        let channels = channels.max(1);
+        self.stereo.store(channels >= 2, Ordering::Relaxed);
+        let at = self.written.load(Ordering::Relaxed);
+        let mut n = 0u64;
+        for frame in data.chunks_exact(channels) {
+            let (l, r) = (frame[0], *frame.get(1).unwrap_or(&frame[0]));
+            let slot = &self.pairs[((at + n) % SCOPE_LEN as u64) as usize];
+            slot[0].store(l.to_bits(), Ordering::Relaxed);
+            slot[1].store(r.to_bits(), Ordering::Relaxed);
+            n += 1;
+        }
+        self.written.store(at + n, Ordering::Release);
+    }
+
+    /// Copy the latest pairs out, oldest first, and return how many have
+    /// ever been written, so a reader can tell which of them are new.
+    /// Before the first [`SCOPE_LEN`] have arrived the start is silence.
+    pub fn latest(&self, out: &mut [[f32; 2]; SCOPE_LEN]) -> u64 {
+        let w = self.written.load(Ordering::Acquire);
+        for (i, o) in out.iter_mut().enumerate() {
+            let age = (SCOPE_LEN - i) as u64;
+            *o = if age > w {
+                [0.0; 2]
+            } else {
+                let slot = &self.pairs[((w - age) % SCOPE_LEN as u64) as usize];
+                [f32::from_bits(slot[0].load(Ordering::Relaxed)), f32::from_bits(slot[1].load(Ordering::Relaxed))]
+            };
+        }
+        w
+    }
+
+    /// Whether the input has two channels to draw against each other.
+    pub fn stereo(&self) -> bool {
+        self.stereo.load(Ordering::Relaxed)
+    }
 }
 
 /// How long the peak hold takes to fall by 1/e. Long enough that a bar of
@@ -355,6 +434,7 @@ impl AudioEngine {
 
         let producer = ring.clone();
         let dropped = state.clone();
+        let producer_state = state.clone();
         let mut mono = Vec::new();
         // The error callback is the one unambiguous "this device is gone"
         // signal cpal offers, and it used to only write a line to a log
@@ -367,6 +447,7 @@ impl AudioEngine {
         let stream = device.build_input_stream(
             config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                producer_state.scope.push(data, channels);
                 // Downmix in the callback so the ring holds mono and the
                 // analysis thread never has to know the channel count.
                 mono.clear();
@@ -607,5 +688,25 @@ mod tests {
         assert!(!engine.state.connected());
         assert_eq!(engine.state.band(0), 0.0);
         assert_eq!(engine.state.bpm(), 0.0);
+    }
+
+    /// The scope keeps the latest pairs, oldest first, with both
+    /// channels apart; a mono input fills both sides and says so.
+    #[test]
+    fn the_scope_keeps_the_latest_pairs_in_order() {
+        let scope = Scope::default();
+        let mut out = [[9.0f32; 2]; SCOPE_LEN];
+        assert_eq!(scope.latest(&mut out), 0);
+        assert!(out.iter().all(|p| *p == [0.0, 0.0]), "before anything arrives it is silence");
+        let stereo: Vec<f32> = (0..3000).flat_map(|i| [i as f32, -(i as f32), 99.0]).collect();
+        scope.push(&stereo, 3);
+        assert!(scope.stereo());
+        assert_eq!(scope.latest(&mut out), 3000);
+        assert_eq!(out[SCOPE_LEN - 1], [2999.0, -2999.0]);
+        assert_eq!(out[0], [(3000 - SCOPE_LEN) as f32, -((3000 - SCOPE_LEN) as f32)]);
+        scope.push(&[0.5, 0.25], 1);
+        assert!(!scope.stereo());
+        assert_eq!(scope.latest(&mut out), 3002);
+        assert_eq!(out[SCOPE_LEN - 2..], [[0.5, 0.5], [0.25, 0.25]]);
     }
 }
