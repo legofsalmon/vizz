@@ -296,6 +296,18 @@ pub const CATALOGUE: &[Generator] = &[
         link: "https://en.wikipedia.org/wiki/Sierpi%C5%84ski_triangle",
     },
     Generator {
+        id: "flame",
+        name: "flame",
+        about: "a fractal flame — the chaos game over a few curling maps, each an affine step bent by the paper's variations; which maps a point came through is its depth, so the strands open into layers as it turns",
+        family: Family::Shape,
+        group: Group::Fractal,
+        params: &[
+            Param { key: "seed", label: "seed", about: "which maps and variations; a draw that collapses or hazes over is passed for the next", default: "4", kind: Kind::Seed },
+        ],
+        cite: "Scott Draves & Erik Reckase, “The Fractal Flame Algorithm” (2003)",
+        link: "https://flam3.com/flame_draves.pdf",
+    },
+    Generator {
         id: "menger",
         name: "Menger",
         about: "the Menger sponge, by the chaos game",
@@ -1043,6 +1055,18 @@ pub const SIMULATIONS: &[Generator] = &[
         params: &[],
         cite: "Hermann von Helmholtz on vortex motion (1858); Louis Rosenhead’s desingularised kernel (1930); Anthony Leonard, “Vortex methods for flow simulation” (1980)",
         link: "https://en.wikipedia.org/wiki/Vortex_ring",
+    },
+    Generator {
+        id: "polytope",
+        name: "polytope",
+        about: "a regular solid of four dimensions, turning through the fourth and seen in ours — its cells swell towards you, pass through each other and shrink away, so it turns itself inside out; drawn as one unbroken walk along every edge, so lines draw the wireframe; the loudness turns it and the kick throws it",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[
+            Param { key: "kind", label: "kind", about: "5-cell, tesseract, 16-cell, 24-cell, 600-cell or 120-cell", default: "tesseract", kind: Kind::Text },
+        ],
+        cite: "H. S. M. Coxeter, “Regular Polytopes” (1948); Thomas Banchoff’s turning hypercube films (1978); the walk is Hierholzer’s Eulerian circuit (1873)",
+        link: "https://en.wikipedia.org/wiki/Regular_4-polytope",
     },
     Generator {
         id: "life",

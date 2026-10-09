@@ -105,6 +105,7 @@ pub const IDS: &[&str] = &[
     "enneper",
     "spirograph",
     "figure-eight",
+    "flame",
 ];
 
 /// Make the cloud `id` names, or `None` for an id this crate does not
@@ -197,6 +198,7 @@ pub fn generate(spec: &str) -> Option<Vec<Point>> {
         }
         "figure-eight" => tube(figure_eight, 0.28, Frame::YUp),
         "sierpinski" => sierpinski(),
+        "flame" => flame(num("seed", 4.0).abs() as u64),
         "menger" => menger(),
         "mandelbulb" => mandelbulb(),
         _ => return None,
@@ -1161,6 +1163,176 @@ fn sierpinski() -> Vec<[f64; 3]> {
             p
         })
         .collect()
+}
+
+/// A fractal flame: Scott Draves' generalisation of the iterated
+/// function system, after Draves & Reckase, "The Fractal Flame
+/// Algorithm" (2003).
+///
+/// Three to five maps, each an affine transform of the plane followed
+/// by a blend of the paper's nonlinear *variations* — sinusoidal,
+/// spherical, swirl, horseshoe and the rest — so the chaos game draws
+/// soft, curling filaments where a plain IFS draws hard copies. Each
+/// map also carries a colour, and the point's colour coordinate moves
+/// halfway to it at every step; that coordinate is the flame's own
+/// record of which maps a point came through, and here it is the depth,
+/// so the strands of one map lie in a sheet of their own and the flame
+/// opens into layers when it turns.
+///
+/// The maps come from `seed`. A random flame is as likely to collapse
+/// to a point or a smear as to be worth looking at, so a draw is kept
+/// only if its points cover enough of the plane, and the next seed down
+/// the line is tried otherwise — the same seed is always the same flame.
+fn flame(seed: u64) -> Vec<[f64; 3]> {
+    struct Map {
+        affine: [f64; 6],
+        weights: [f64; VARIATIONS],
+        colour: f64,
+        chance: f64,
+    }
+    const VARIATIONS: usize = 9;
+    fn vary(v: usize, x: f64, y: f64, rng: &mut Rng) -> [f64; 2] {
+        let r2 = x * x + y * y + 1e-12;
+        let r = r2.sqrt();
+        let theta = x.atan2(y);
+        match v {
+            0 => [x, y],
+            1 => [x.sin(), y.sin()],
+            2 => [x / r2, y / r2],
+            3 => [x * r2.sin() - y * r2.cos(), x * r2.cos() + y * r2.sin()],
+            4 => [(x - y) * (x + y) / r, 2.0 * x * y / r],
+            5 => [theta / PI, r - 1.0],
+            6 => [r * (theta + r).sin(), r * (theta - r).cos()],
+            7 => [r * (theta * r).sin(), -r * (theta * r).cos()],
+            // Julia: the square root, either branch.
+            _ => {
+                let a = theta * 0.5 + if rng.next() & 1 == 0 { 0.0 } else { PI };
+                let s = r.sqrt();
+                [s * a.cos(), s * a.sin()]
+            }
+        }
+    }
+    let draw = |seed: u64| -> Vec<Map> {
+        let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xF1A3E);
+        let count = 3 + (rng.next() % 3) as usize;
+        let mut maps: Vec<Map> = (0..count)
+            .map(|i| {
+                let mut affine = [0.0; 6];
+                for a in &mut affine {
+                    *a = rng.f64() * 2.0 - 1.0;
+                }
+                // Contractive on the whole, so the game settles onto
+                // fine filaments rather than a haze: the linear part is
+                // shrunk until its larger stretch is under 0.9.
+                let [a, b, _, d, e, _] = affine;
+                let (p, q) = (a * a + b * b + d * d + e * e, a * e - b * d);
+                let stretch = (0.5 * (p + (p * p - 4.0 * q * q).max(0.0).sqrt())).sqrt();
+                if stretch > 0.9 {
+                    for k in [0, 1, 3, 4] {
+                        affine[k] *= 0.9 / stretch;
+                    }
+                }
+                // One or two variations to a map: more than that and
+                // every flame looks like every other.
+                let mut weights = [0.0; VARIATIONS];
+                weights[(rng.next() % VARIATIONS as u64) as usize] += 0.5 + rng.f64();
+                if rng.next() & 1 == 0 {
+                    weights[(rng.next() % VARIATIONS as u64) as usize] += 0.3 + 0.7 * rng.f64();
+                }
+                let sum: f64 = weights.iter().sum();
+                weights.iter_mut().for_each(|w| *w /= sum);
+                Map { affine, weights, colour: i as f64 / (count - 1) as f64, chance: 0.3 + rng.f64() }
+            })
+            .collect();
+        let total: f64 = maps.iter().map(|m| m.chance).sum();
+        let mut run = 0.0;
+        for m in &mut maps {
+            run += m.chance / total;
+            m.chance = run;
+        }
+        maps
+    };
+    let run = |maps: &[Map], seed: u64, n: usize, bound: f64, out: &mut Vec<[f64; 3]>| {
+        let mut rng = Rng::new(seed ^ 0x000F_1A3E_0001);
+        let (mut x, mut y, mut c) = (rng.f64() - 0.5, rng.f64() - 0.5, 0.5);
+        let mut skipped = 0usize;
+        let mut step = 0usize;
+        while out.len() < n {
+            let pick = rng.f64();
+            let m = maps.iter().find(|m| pick <= m.chance).unwrap_or(&maps[maps.len() - 1]);
+            let [a, b, cc, d, e, f] = m.affine;
+            let (ax, ay) = (a * x + b * y + cc, d * x + e * y + f);
+            let (mut nx, mut ny) = (0.0, 0.0);
+            for (v, w) in m.weights.iter().enumerate().filter(|(_, w)| **w > 0.0) {
+                let [vx, vy] = vary(v, ax, ay, &mut rng);
+                nx += w * vx;
+                ny += w * vy;
+            }
+            c = (c + m.colour) * 0.5;
+            step += 1;
+            if !(nx.is_finite() && ny.is_finite()) || nx.abs() > 1e6 || ny.abs() > 1e6 {
+                // Thrown off to infinity: start again from somewhere
+                // near the middle, which the chaos game forgives.
+                x = rng.f64() - 0.5;
+                y = rng.f64() - 0.5;
+                skipped += 1;
+                if skipped > n {
+                    return;
+                }
+                continue;
+            }
+            x = nx;
+            y = ny;
+            // The first few steps are the transient, not the flame; and
+            // the odd point flung far off by a spherical map would set
+            // the frame for the whole cloud, so it is not recorded.
+            if step > 20 && x.abs() < bound && y.abs() < bound {
+                out.push([x, y, c]);
+            }
+        }
+    };
+    let mut seed = seed;
+    for _ in 0..64 {
+        let maps = draw(seed);
+        let mut probe = Vec::with_capacity(4096);
+        run(&maps, seed, 4096, 1e6, &mut probe);
+        if probe.len() == 4096 {
+            // Frame on the bulk, not the outliers.
+            let mut r: Vec<f64> = probe.iter().map(|p| p[0].abs().max(p[1].abs())).collect();
+            r.sort_by(f64::total_cmp);
+            let bound = r[r.len() * 99 / 100].max(1e-9);
+            // Keep it if the points fill a fair part of a 32×32 grid
+            // over that frame: a point, a line or a smudge does not.
+            // And the points have to gather into strands: in a haze
+            // they spread evenly, so the busiest sixth of the cells
+            // holds little more than a sixth of them.
+            let mut cells = vec![0u32; 32 * 32];
+            for p in &probe {
+                let i = ((p[0] / bound * 0.5 + 0.5) * 32.0).clamp(0.0, 31.0) as usize;
+                let j = ((p[1] / bound * 0.5 + 0.5) * 32.0).clamp(0.0, 31.0) as usize;
+                cells[i + j * 32] += 1;
+            }
+            let filled = cells.iter().filter(|c| **c > 0).count();
+            cells.sort_unstable_by(|a, b| b.cmp(a));
+            let busy: u32 = cells[..filled / 6].iter().sum();
+            if (110..520).contains(&filled) && busy as usize * 2 > probe.len() {
+                let mut out = Vec::with_capacity(POINTS);
+                run(&maps, seed, POINTS, bound, &mut out);
+                if out.len() == POINTS {
+                    // The colour coordinate is in 0..1; as depth it is
+                    // stretched to a third of the flame's width, deep
+                    // enough to read as layers and shallow enough to
+                    // read as one flame.
+                    for p in &mut out {
+                        p[2] = (p[2] - 0.5) * bound * 0.66;
+                    }
+                    return out;
+                }
+            }
+        }
+        seed = seed.wrapping_add(1_000_003);
+    }
+    sierpinski()
 }
 
 /// The Menger sponge by the chaos game: one of the twenty sub-cubes that

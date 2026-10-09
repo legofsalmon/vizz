@@ -84,7 +84,7 @@ pub trait Simulation: Send {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -122,6 +122,7 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "tangle" => Some(Box::new(Tangle::new())),
         "crystal" => Some(Box::new(Crystal::new())),
         "vortex" => Some(Box::new(Vortex::new())),
+        "polytope" => Some(Box::new(Polytope::new(&text("kind", "tesseract")))),
         _ => None,
     }
 }
@@ -4643,6 +4644,298 @@ impl Simulation for Vortex {
     }
 }
 
+// --- Polytope ---------------------------------------------------------
+
+/// A regular four-dimensional polytope, turning through the fourth
+/// dimension and projected into ours.
+///
+/// A rotation in four dimensions has two planes, and the one this turns
+/// in pairs x with w: so a cell of the solid swells as it comes towards
+/// the eye along w, passes through the others and shrinks away out the
+/// far side. The form turns itself inside out continuously, which no
+/// rotation in three dimensions can do. A slower turn in the y–z plane
+/// keeps the projection from settling into one silhouette.
+///
+/// The points run along the edges as a single path, an Eulerian circuit
+/// (every vertex of every regular 4-polytope has an even number of
+/// edges, so one exists): consecutive points stay on one edge or turn
+/// a corner onto the next, which is what lets the line stroke draw the
+/// wireframe and the cloud crawl along it without jumping across.
+///
+/// The five drawn here are the 5-cell, the tesseract, the 16-cell, the
+/// 24-cell and the 600-cell, after Coxeter, *Regular Polytopes* (1948);
+/// the 120-cell is the 600-cell's dual, with its vertices at the
+/// 600-cell's cell centres. The loudness turns it faster, and the kick
+/// throws a quarter turn in the x–w plane.
+pub struct Polytope {
+    /// The circuit, as unit-radius 4D points, `POINTS` long.
+    path: Vec<[f32; 4]>,
+    /// Angle in the x–w plane and in the y–z plane.
+    xw: f32,
+    yz: f32,
+    /// Extra x–w rate from a kick, decaying.
+    fling: f32,
+    since_kick: f32,
+}
+
+/// How far the 4D eye sits from the centre, in circumradii. Close enough
+/// that the near cell is plainly bigger than the far one, far enough that
+/// nothing reaches the eye.
+const EYE_W: f32 = 2.6;
+
+impl Polytope {
+    pub const KINDS: &'static [&'static str] =
+        &["5-cell", "tesseract", "16-cell", "24-cell", "600-cell", "120-cell"];
+
+    pub fn new(kind: &str) -> Self {
+        let (verts, edges) = polytope(kind);
+        let path = circuit_points(&verts, &edges);
+        Self { path, xw: 0.0, yz: 0.0, fling: 0.0, since_kick: 10.0 }
+    }
+}
+
+impl Default for Polytope {
+    fn default() -> Self {
+        Self::new("tesseract")
+    }
+}
+
+impl Simulation for Polytope {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.since_kick += dt;
+        // Without audio it turns at a steady walking pace of its own.
+        let rate = if drive.audio { 0.25 + 1.2 * drive.level } else { 0.45 };
+        if drive.audio && drive.bands[0] > 0.5 && self.since_kick > 0.3 {
+            self.since_kick = 0.0;
+            self.fling += 3.0;
+        }
+        self.fling *= (-3.0 * dt).exp();
+        self.xw += (rate + self.fling) * dt;
+        self.yz += 0.31 * rate * dt;
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let (sa, ca) = self.xw.sin_cos();
+        let (sb, cb) = self.yz.sin_cos();
+        // Fitted once for the widest the projection can ever be, so the
+        // form does not pump in size as it turns: a point on the unit
+        // sphere lands furthest out, at 1/√(E²−1), when its w is 1/E.
+        let fit = 0.8 * (EYE_W * EYE_W - 1.0).sqrt();
+        for p in &self.path {
+            let [x, y, z, w] = *p;
+            let (x, w) = (x * ca - w * sa, x * sa + w * ca);
+            let (y, z) = (y * cb - z * sb, y * sb + z * cb);
+            let k = fit / (EYE_W - w);
+            // Nearer along w is brighter, so which cell is in front reads
+            // even in the glowing mode, which has no depth.
+            let near = (0.5 + 0.5 * w).clamp(0.0, 1.0);
+            let c = (255.0 * (0.35 + 0.65 * near)) as u8;
+            out.push(Point { pos: [x * k, y * k, z * k], normal: [0.0; 3], color: [c, c, c] });
+        }
+    }
+}
+
+/// The vertices (unit circumradius) and edges of the polytope `kind`
+/// names; the tesseract for anything else.
+fn polytope(kind: &str) -> (Vec<[f64; 4]>, Vec<(usize, usize)>) {
+    let phi = (1.0 + 5f64.sqrt()) / 2.0;
+    let mut v: Vec<[f64; 4]> = Vec::new();
+    match kind {
+        "5-cell" => {
+            // The simplex: four corners of a tetrahedron and a point
+            // above its centre, equidistant from all of them.
+            let s = 1.0 / 5f64.sqrt();
+            v = vec![
+                [1.0, 1.0, 1.0, -s],
+                [1.0, -1.0, -1.0, -s],
+                [-1.0, 1.0, -1.0, -s],
+                [-1.0, -1.0, 1.0, -s],
+                [0.0, 0.0, 0.0, 5f64.sqrt() - s],
+            ];
+        }
+        "16-cell" => {
+            for i in 0..4 {
+                for s in [-1.0, 1.0] {
+                    let mut p = [0.0; 4];
+                    p[i] = s;
+                    v.push(p);
+                }
+            }
+        }
+        "24-cell" => {
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    for (a, b) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                        let mut p = [0.0; 4];
+                        p[i] = a;
+                        p[j] = b;
+                        v.push(p);
+                    }
+                }
+            }
+        }
+        "600-cell" | "120-cell" => {
+            v = six_hundred_cell(phi);
+            if kind == "120-cell" {
+                v = cell_centres(&v);
+            }
+        }
+        _ => {
+            for i in 0..16 {
+                v.push(std::array::from_fn(|k| if i >> k & 1 == 1 { 1.0 } else { -1.0 }));
+            }
+        }
+    }
+    // Unit circumradius and centred, whatever the construction.
+    let n = v.len() as f64;
+    let c: [f64; 4] = std::array::from_fn(|k| v.iter().map(|p| p[k]).sum::<f64>() / n);
+    for p in &mut v {
+        for k in 0..4 {
+            p[k] -= c[k];
+        }
+    }
+    let r = v.iter().map(norm4).fold(0.0, f64::max);
+    for p in &mut v {
+        for x in p.iter_mut() {
+            *x /= r;
+        }
+    }
+    // The edges are the shortest distances between vertices: true of every
+    // regular polytope, and it saves listing them by hand.
+    let mut shortest = f64::MAX;
+    for i in 0..v.len() {
+        for j in i + 1..v.len() {
+            shortest = shortest.min(dist4(&v[i], &v[j]));
+        }
+    }
+    let mut edges = Vec::new();
+    for i in 0..v.len() {
+        for j in i + 1..v.len() {
+            if dist4(&v[i], &v[j]) < shortest * 1.001 {
+                edges.push((i, j));
+            }
+        }
+    }
+    (v, edges)
+}
+
+fn norm4(p: &[f64; 4]) -> f64 {
+    p.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+fn dist4(a: &[f64; 4], b: &[f64; 4]) -> f64 {
+    (0..4).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt()
+}
+
+/// The 600-cell's 120 vertices: the eight unit points on the axes, the
+/// sixteen `(±½, ±½, ±½, ±½)`, and the 96 even permutations of
+/// `½(±φ, ±1, ±1/φ, 0)`.
+fn six_hundred_cell(phi: f64) -> Vec<[f64; 4]> {
+    let mut v = Vec::with_capacity(120);
+    for i in 0..4 {
+        for s in [-1.0, 1.0] {
+            let mut p = [0.0; 4];
+            p[i] = s;
+            v.push(p);
+        }
+    }
+    for i in 0..16 {
+        v.push(std::array::from_fn(|k| if i >> k & 1 == 1 { 0.5 } else { -0.5 }));
+    }
+    // The twelve even permutations of four places.
+    const EVEN: [[usize; 4]; 12] = [
+        [0, 1, 2, 3], [0, 2, 3, 1], [0, 3, 1, 2], [1, 0, 3, 2], [1, 2, 0, 3], [1, 3, 2, 0],
+        [2, 0, 1, 3], [2, 1, 3, 0], [2, 3, 0, 1], [3, 0, 2, 1], [3, 1, 0, 2], [3, 2, 1, 0],
+    ];
+    let base = [phi / 2.0, 0.5, 0.5 / phi, 0.0];
+    for perm in EVEN {
+        for signs in 0..8 {
+            let vals = [
+                if signs & 1 == 1 { -base[0] } else { base[0] },
+                if signs & 2 == 2 { -base[1] } else { base[1] },
+                if signs & 4 == 4 { -base[2] } else { base[2] },
+                0.0,
+            ];
+            let mut p = [0.0; 4];
+            for k in 0..4 {
+                p[perm[k]] = vals[k];
+            }
+            v.push(p);
+        }
+    }
+    v
+}
+
+/// The centres of the 600-cell's 600 tetrahedral cells: every four
+/// vertices that are mutually adjacent. They are the 120-cell's vertices.
+fn cell_centres(v: &[[f64; 4]]) -> Vec<[f64; 4]> {
+    let edge = (0..v.len())
+        .flat_map(|j| (j + 1..v.len()).map(move |k| (j, k)))
+        .map(|(j, k)| dist4(&v[j], &v[k]))
+        .fold(f64::MAX, f64::min);
+    let n = v.len();
+    let adj: Vec<Vec<usize>> = (0..n)
+        .map(|i| (0..n).filter(|&j| j != i && dist4(&v[i], &v[j]) < edge * 1.001).collect())
+        .collect();
+    let mut centres = Vec::with_capacity(600);
+    for a in 0..n {
+        for &b in adj[a].iter().filter(|&&b| b > a) {
+            for &c in adj[b].iter().filter(|&&c| c > b && adj[a].contains(&c)) {
+                for &d in adj[c].iter().filter(|&&d| d > c && adj[a].contains(&d) && adj[b].contains(&d)) {
+                    centres.push(std::array::from_fn(|k| (v[a][k] + v[b][k] + v[c][k] + v[d][k]) / 4.0));
+                }
+            }
+        }
+    }
+    centres
+}
+
+/// `POINTS` points spaced evenly along an Eulerian circuit of the edges.
+///
+/// Hierholzer's algorithm (Hierholzer & Wiener, Mathematische Annalen 6,
+/// 1873): walk unused edges until stuck, which can only happen back at
+/// the start when every degree is even, then splice in a tour from any
+/// vertex on the way that still has edges left.
+fn circuit_points(v: &[[f64; 4]], edges: &[(usize, usize)]) -> Vec<[f32; 4]> {
+    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); v.len()];
+    for (e, &(a, b)) in edges.iter().enumerate() {
+        adj[a].push((b, e));
+        adj[b].push((a, e));
+    }
+    let mut used = vec![false; edges.len()];
+    let mut next = vec![0usize; v.len()];
+    let mut stack = vec![0usize];
+    let mut tour = Vec::with_capacity(edges.len() + 1);
+    while let Some(&at) = stack.last() {
+        let list = &adj[at];
+        while next[at] < list.len() && used[list[next[at]].1] {
+            next[at] += 1;
+        }
+        if next[at] == list.len() {
+            tour.push(at);
+            stack.pop();
+        } else {
+            let (to, e) = list[next[at]];
+            used[e] = true;
+            stack.push(to);
+        }
+    }
+    // Spread the points over the whole tour by length, not per edge, so
+    // the total is exactly POINTS however many edges there are.
+    let legs = tour.len().saturating_sub(1).max(1);
+    (0..POINTS)
+        .map(|i| {
+            let t = i as f64 / POINTS as f64 * legs as f64;
+            let leg = (t.floor() as usize).min(legs - 1);
+            let f = t - leg as f64;
+            let (a, b) = (&v[tour[leg]], &v[tour[(leg + 1).min(tour.len() - 1)]]);
+            std::array::from_fn(|k| (a[k] + (b[k] - a[k]) * f) as f32)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5531,5 +5824,63 @@ mod tests {
             box_ok(&out);
         }
         assert!(start("weather").is_none());
+    }
+
+    /// Each polytope has the vertices and edges Coxeter counts, and the
+    /// circuit uses every edge once: it closes on itself, and no step
+    /// along it jumps further than the spacing the edges were cut into.
+    #[test]
+    fn the_polytopes_are_the_regular_ones() {
+        for (kind, verts, edges) in [
+            ("5-cell", 5, 10),
+            ("tesseract", 16, 32),
+            ("16-cell", 8, 24),
+            ("24-cell", 24, 96),
+            ("600-cell", 120, 720),
+            ("120-cell", 600, 1200),
+        ] {
+            let (v, e) = polytope(kind);
+            assert_eq!((v.len(), e.len()), (verts, edges), "{kind}");
+            for p in &v {
+                assert!((norm4(p) - 1.0).abs() < 1e-9, "{kind} is not on the unit sphere");
+            }
+            let path = circuit_points(&v, &e);
+            assert_eq!(path.len(), POINTS);
+            let edge = dist4(&v[e[0].0], &v[e[0].1]) as f32;
+            let step = edge * edges as f32 / POINTS as f32;
+            let gap = |a: &[f32; 4], b: &[f32; 4]| (0..4).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt();
+            for w in path.windows(2) {
+                assert!(gap(&w[0], &w[1]) <= step * 1.01 + 1e-6, "{kind} jumps along its circuit");
+            }
+            assert!(gap(&path[POINTS - 1], &path[0]) <= step * 1.01 + 1e-6, "{kind}'s circuit does not close");
+        }
+    }
+
+    /// It turns, stays in the box, and the kick throws it.
+    #[test]
+    fn the_polytope_turns_and_a_kick_throws_it() {
+        for kind in Polytope::KINDS {
+            let mut p = Polytope::new(kind);
+            let mut pts = Vec::new();
+            p.points(&mut pts);
+            box_ok(&pts);
+            let before = pts[0].pos;
+            for _ in 0..30 {
+                p.step(1.0 / 60.0, &Drive::default());
+            }
+            p.points(&mut pts);
+            box_ok(&pts);
+            assert_ne!(before, pts[0].pos, "{kind} did not turn");
+        }
+        let (mut calm, mut kicked) = (Polytope::default(), Polytope::default());
+        let kick = Drive { bands: [1.0, 0.0, 0.0, 0.0], level: 0.0, bar: 0.0, audio: true };
+        let hush = Drive { audio: true, ..Drive::default() };
+        calm.step(1.0 / 60.0, &hush);
+        kicked.step(1.0 / 60.0, &kick);
+        for _ in 0..20 {
+            calm.step(1.0 / 60.0, &hush);
+            kicked.step(1.0 / 60.0, &hush);
+        }
+        assert!(kicked.xw > calm.xw + 0.2, "the kick did not throw it: {} vs {}", kicked.xw, calm.xw);
     }
 }
