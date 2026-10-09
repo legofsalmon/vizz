@@ -1486,6 +1486,38 @@ shadows here for that to be inconsistent with, and the alternative is
 half of every scan rendering black for a reason nobody could diagnose
 from the front of a stage.
 
+### Lines and streaks
+
+```
+/particles/stroke       0 = dots (the default), 1 = lines, 2 = streaks
+/particles/stroke_len   0..1, how long each one is
+```
+
+In the glowing mode a particle can be drawn as more than a dot.
+
+- **Lines** draw each particle back along its own path at the current
+  moment. A cloud stores its trajectory in time order, so on a flow or a
+  curve the strokes join up into the path itself: the Lorenz butterfly
+  becomes wire instead of dust. They hold still when `/particles/speed`
+  is down. On a map, a surface or a fractal the order along the path is
+  not a shape, and lines read as hatching rather than as the form.
+- **Streaks** draw each particle back through time instead, fading
+  towards where it was: motion blur. They vanish when nothing moves.
+
+Each stroke is four segments, a ribbon turned to face the eye with round
+caps at its ends, and spends four quads of `/particles/count`, so turning
+strokes on does not multiply the cost of a frame; the same count simply
+buys a quarter as many particles. Strokes are additive like the dots, so
+long lines on a dense cloud get bright quickly: bring
+`/particles/brightness` down with them. The surface mode still draws
+discs.
+
+Lines after Zöckler, Stalling & Hege, "Interactive Visualization of
+3D-Vector Fields Using Illuminated Stream Lines", IEEE Visualization
+1996; streaks after Reeves, "Particle Systems — a Technique for Modeling
+a Class of Fuzzy Objects", SIGGRAPH 1983, which drew each particle as a
+motion-blurred streak.
+
 ### Solid surfaces
 
 ```
@@ -2013,6 +2045,8 @@ and the aliases are read on the way in only.
 | `/particles/saturation` | 0 – 1 | 0.8 | color saturation |
 | `/particles/brightness` | 0 – 2 | 1 | value multiplier |
 | `/particles/surface` | 0 – 1 | 0 | draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow |
+| `/particles/stroke` | 0 – 2 | 0 | what a glowing particle is: a dot, a line along its own path, or a streak of its motion |
+| `/particles/stroke_len` | 0 – 1 | 0.3 | how long a line or streak is |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

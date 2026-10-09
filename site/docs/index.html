@@ -1043,6 +1043,24 @@ so the palette still works as a tint and an uncoloured cloud is unaffected.</p>
 </table>
 </div>
 
+<h3 id="strokes">Lines and streaks</h3>
+
+<p><code>/particles/stroke</code> changes what a glowing particle is drawn as,
+and <code>/particles/stroke_len</code> how long. At 0, the default, it is a
+dot. At 1 it is a <em>line</em>: each particle drawn back along its own path,
+so on a flow or a curve thousands of short strokes join up into the path, and
+the Lorenz butterfly becomes wire instead of dust. Lines hold still when the
+speed is down. On a map, a surface or a fractal the order along the path is
+not a shape, so lines read as hatching rather than as the form. At 2 it is a
+<em>streak</em>: each particle drawn back through time, fading towards where it
+was. That is motion blur, and a streak shortens to a dot when nothing
+moves.</p>
+
+<p>A stroke spends four of <code>/particles/count</code>, so turning strokes on
+does not change what a frame costs; the same count buys a quarter as many
+particles. Each one carries its particle's light spread along it, so a long
+stroke is fainter rather than brighter. The surface mode still draws discs.</p>
+
 <h3 id="surface">Solid surfaces</h3>
 
 <p><code>/particles/surface</code> changes what a particle is. At 0, the
@@ -1393,6 +1411,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/saturation</code></td><td>0 – 1</td><td>0.8</td><td>color saturation</td></tr>
     <tr><td><code>/particles/brightness</code></td><td>0 – 2</td><td>1</td><td>value multiplier</td></tr>
     <tr><td><code>/particles/surface</code></td><td>0 – 1</td><td>0</td><td>draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow</td></tr>
+    <tr><td><code>/particles/stroke</code></td><td>0 – 2</td><td>0</td><td>what a glowing particle is: a dot, a line along its own path, or a streak of its motion</td></tr>
+    <tr><td><code>/particles/stroke_len</code></td><td>0 – 1</td><td>0.3</td><td>how long a line or streak is</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>

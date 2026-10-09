@@ -113,6 +113,57 @@ pub struct Uniforms {
     pub sun_dir: [f32; 4],
     /// The sun's colour in `rgb`, mixed on the CPU like a lamp's.
     pub sun_tint: [f32; 4],
+    /// How the glowing mode draws a particle: `.x` is [`Stroke`] as a
+    /// number, `.y` the stroke length 0..1, `.z` segments per stroke.
+    /// All zero is a dot, which is every look saved before strokes
+    /// existed. Build it with [`Stroke::lanes`].
+    pub stroke: [f32; 4],
+}
+
+/// What a particle is drawn as in the glowing mode.
+///
+/// A dot is a soft round sprite. A line is the particle drawn back along
+/// its own path at a fixed moment, so a flow or a curve renders as the
+/// trajectory it is rather than as dust on it; a streak is the particle
+/// drawn back through time, which is motion blur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stroke {
+    Dot,
+    Line,
+    Streak,
+}
+
+impl Stroke {
+    /// Segments in a line or a streak. Four bends a stroke round an
+    /// attractor's turn without a visible corner, and costs four quads of
+    /// the particle budget.
+    pub const SEGMENTS: u32 = 4;
+
+    /// From the stepped `/particles/stroke` value.
+    pub fn from_index(i: f32) -> Self {
+        match i.round() as i32 {
+            1 => Stroke::Line,
+            2 => Stroke::Streak,
+            _ => Stroke::Dot,
+        }
+    }
+
+    /// The uniform lanes for this stroke at `length` (0..1), with the
+    /// field moving at `speed` units of visual time per second.
+    ///
+    /// A streak is an exposure, so its reach in visual time is its length
+    /// in real time multiplied by the speed: at speed zero nothing has
+    /// moved and a streak is a dot. A line is a shape, not an exposure,
+    /// and ignores the speed.
+    pub fn lanes(self, length: f32, speed: f32) -> [f32; 4] {
+        let length = length.clamp(0.0, 1.0);
+        let segs = Self::SEGMENTS as f32;
+        match self {
+            Stroke::Dot => [0.0; 4],
+            Stroke::Line => [1.0, length, segs, 0.0],
+            Stroke::Streak => [2.0, length * speed.max(0.0), segs, 0.0],
+        }
+    }
 }
 
 impl Uniforms {
@@ -772,6 +823,7 @@ mod tests {
             light: Uniforms::UNLIT.light,
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -932,6 +984,7 @@ mod tests {
             light: [0.05, 1.0, 0.0, 0.0],
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -995,6 +1048,7 @@ mod tests {
             light: Uniforms::UNLIT.light,
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -1023,6 +1077,10 @@ mod tests {
     /// Linear luminance of every pixel of one frame, drawn into the
     /// scene's float format so dim sub-pixel sprites are not rounded away.
     fn frame_f16(ctx: &GpuContext, scene: &ParticleScene, u: &Uniforms) -> Vec<f32> {
+        frame_f16_count(ctx, scene, u, 20_000)
+    }
+
+    fn frame_f16_count(ctx: &GpuContext, scene: &ParticleScene, u: &Uniforms, count: u32) -> Vec<f32> {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("footprint-test-target"),
             size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
@@ -1044,7 +1102,7 @@ mod tests {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        scene.render(ctx, &mut encoder, &view, u, 20_000, true, wgpu::Color::BLACK);
+        scene.render(ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK);
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -1074,6 +1132,41 @@ mod tests {
         (0..(W * W) as usize)
             .map(|i| (half(i * 8) + half(i * 8 + 2) + half(i * 8 + 4)) / 3.0)
             .collect()
+    }
+
+    /// A streak of no length is a dot: its four segments collapse onto
+    /// the particle, and only the two outer caps have any area, which
+    /// together make exactly one disc. So the same particles drawn as
+    /// zero-length streaks carry the same light as when drawn as dots.
+    #[test]
+    fn a_still_streak_is_a_dot() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let dots = small_sprites(0.02, 0.0);
+        let streaks = Uniforms { stroke: Stroke::Streak.lanes(1.0, 0.0), ..dots };
+        let total = |u: &Uniforms, count: u32| {
+            frame_f16_count(&ctx, &scene, u, count).iter().sum::<f32>()
+        };
+        let ratio = total(&streaks, 4_000 * Stroke::SEGMENTS) / total(&dots, 4_000);
+        assert!((0.97..1.03).contains(&ratio), "a still streak should light as a dot, got {ratio:.3}");
+    }
+
+    /// Lines on an attractor draw its path: the same particles drawn as
+    /// lines cover far more of the frame than as dots, because each one
+    /// runs along the trajectory instead of sitting at one point of it.
+    /// Few enough particles that neither covers the attractor outright.
+    #[test]
+    fn lines_draw_the_path() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        // The Lorenz, which is a trajectory stored in time order.
+        let dots = Uniforms { shape: 5.0, ..small_sprites(0.004, 0.0) };
+        let lines = Uniforms { stroke: Stroke::Line.lanes(1.0, 0.0), ..dots };
+        let lit = |u: &Uniforms, count: u32| {
+            frame_f16_count(&ctx, &scene, u, count).iter().filter(|&&v| v > 1e-5).count()
+        };
+        let (d, l) = (lit(&dots, 150), lit(&lines, 150 * Stroke::SEGMENTS));
+        assert!(l > d * 2, "lines lit {l} pixels against {d} for dots");
     }
 
     fn small_sprites(size: f32, time: f32) -> Uniforms {
@@ -1108,6 +1201,7 @@ mod tests {
             light: Uniforms::UNLIT.light,
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),
@@ -1627,6 +1721,7 @@ mod tests {
             light: Uniforms::UNLIT.light,
             sun_dir: Uniforms::UNLIT.sun_dir,
             sun_tint: Uniforms::UNLIT.sun_tint,
+            stroke: [0.0; 4],
             gravity: Default::default(),
             gravity_radius: Default::default(),
             gravity_amount: Default::default(),

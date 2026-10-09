@@ -83,6 +83,8 @@ pub struct AppParams {
     pub saturation: ParamId,
     pub brightness: ParamId,
     pub surface: ParamId,
+    pub stroke: ParamId,
+    pub stroke_len: ParamId,
     pub dim: ParamId,
     pub shape: ParamId,
     pub morph: ParamId,
@@ -187,6 +189,8 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/saturation", "color saturation"),
     ("/particles/brightness", "value multiplier"),
     ("/particles/surface", "draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow"),
+    ("/particles/stroke", "what a glowing particle is: a dot, a line along its own path, or a streak of its motion"),
+    ("/particles/stroke_len", "how long a line or streak is"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
@@ -398,6 +402,14 @@ impl AppParams {
         let surface = b.add(
             ParamDef::new("/particles/surface", 0.0, 1.0, 0.0).labels(&["glow", "surface"]),
         );
+        // What a glowing particle is drawn as. Stepped, since a dot
+        // halfway to a line is neither. Dots by default, so every look
+        // saved before strokes existed draws exactly as it did.
+        let stroke = b.add(
+            ParamDef::new("/particles/stroke", 0.0, 2.0, 0.0).labels(&["dots", "lines", "streaks"]),
+        );
+        let stroke_len =
+            b.add(ParamDef::new("/particles/stroke_len", 0.0, 1.0, 0.3).smooth(0.2));
         // Geometry: sphere, torus, knot, grid, shell, Lorenz, Aizawa,
         // cloud pair.
         // Fractional values sit between two forms, so this is a sweep, not
@@ -901,6 +913,8 @@ impl AppParams {
             saturation,
             brightness,
             surface,
+            stroke,
+            stroke_len,
             dim,
             shape,
             morph,
