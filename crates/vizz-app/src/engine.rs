@@ -139,6 +139,8 @@ pub struct FrameInputs {
     pub solid: Option<vizz_render::surface::Solid>,
     /// The surface pass drawn in ink, when it is.
     pub ink: Option<vizz_render::surface::Ink>,
+    /// Lines between nearby particles, drawn over either mode, when on.
+    pub plexus: Option<vizz_render::plexus::Plexus>,
     pub count: u32,
     /// What an empty frame looks like, alpha included. At alpha 0 the
     /// field is delivered on a transparent background so vizz can be a
@@ -831,6 +833,11 @@ impl FrameEngine {
         });
         let ink = vizz_render::surface::InkKind::from_index(self.snapshot.get(p.ink))
             .map(|kind| vizz_render::surface::Ink { kind, weight: self.snapshot.get(p.ink_weight) });
+        let plexus_strength = self.snapshot.get(p.plexus) * dim;
+        let plexus = (plexus_strength > 0.001).then(|| vizz_render::plexus::Plexus {
+            strength: plexus_strength,
+            reach: self.snapshot.get(p.plexus_reach),
+        });
         // The opening sits a little in front of the origin so the cloud is
         // inside the room rather than pressed against its face.
         let room = RoomUniforms::for_camera(
@@ -1075,6 +1082,7 @@ impl FrameEngine {
             surface: self.snapshot.get(p.surface).round() >= 0.5 || solid.is_some() || ink.is_some(),
             solid,
             ink,
+            plexus,
             vector,
             vector_active,
             vector_print: self.snapshot.get(p.vec_place).round() >= 0.5,

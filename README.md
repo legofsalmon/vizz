@@ -1551,6 +1551,28 @@ Lines after Zöckler, Stalling & Hege, "Interactive Visualization of
 a Class of Fuzzy Objects", SIGGRAPH 1983, which drew each particle as a
 motion-blurred streak.
 
+### Plexus
+
+```
+/particles/plexus         0..2, how bright the links are; 0 is off (the default)
+/particles/plexus_reach   0.02..0.5, how near two particles must be to link (0.15)
+```
+
+Lines between the particles that come near each other: the network, or
+the constellation, over any cloud and in either draw mode. Up to 2048 of
+the particles, spread evenly over the field, are the nodes. Each frame a
+compute pass places them with the dots' own shader functions, a second
+finds each node's four nearest within the reach by testing every other
+node (four million distance tests at the most, which a GPU does without
+needing a grid), and a thin additive line is drawn along each link in
+the colours of its two ends. A link fades to nothing as its pair drifts
+out of reach, so links come and go softly instead of snapping, and a
+pair that lists each other is drawn once. The reach is in world units,
+where a cloud spans about two, so it is a good thing to put on an
+envelope: the network knits together on the loud parts. After the
+motion-graphics look Rowbyte's *Plexus* plug-in for After Effects (2010)
+gave its name to.
+
 ### Solid surfaces
 
 ```
@@ -2179,6 +2201,8 @@ and the aliases are read on the way in only.
 | `/particles/surface` | 0 – 1 | 0 | draw mode: glowing light, or solid lit surfaces with depth and the sun's shadow |
 | `/particles/stroke` | 0 – 2 | 0 | what a glowing particle is: a dot, a line along its own path, or a streak of its motion |
 | `/particles/stroke_len` | 0 – 1 | 0.3 | how long a line or streak is |
+| `/particles/plexus` | 0 – 2 | 0 | lines between particles that come near each other; 0 is off |
+| `/particles/plexus_reach` | 0.02 – 0.5 | 0.15 | how near two particles must be to link, in world units |
 | `/particles/glyph` | 0 – 5 | 0 | what a solid particle is in the surface mode: a disc, or a small solid turned to its heading |
 | `/particles/solid` | 0 – 4 | 0 | a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge |
 | `/particles/solid_detail` | 0 – 1 | 0.6 | the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth |

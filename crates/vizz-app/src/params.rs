@@ -90,6 +90,8 @@ pub struct AppParams {
     pub solid_detail: ParamId,
     pub ink: ParamId,
     pub ink_weight: ParamId,
+    pub plexus: ParamId,
+    pub plexus_reach: ParamId,
     pub dim: ParamId,
     pub shape: ParamId,
     pub morph: ParamId,
@@ -201,6 +203,8 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/solid_detail", "the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth"),
     ("/particles/ink", "the surface mode as a pen drawing: off · outlines · hatching · stipple"),
     ("/particles/ink_weight", "how heavy the pen is: line width, hatching spacing, stipple dot size"),
+    ("/particles/plexus", "lines between particles that come near each other; 0 is off"),
+    ("/particles/plexus_reach", "how near two particles must be to link, in world units"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
@@ -452,6 +456,12 @@ impl AppParams {
             "stipple",
         ]));
         let ink_weight = b.add(ParamDef::new("/particles/ink_weight", 0.0, 1.0, 0.5).smooth(0.2));
+        // Plexus: lines between near particles, over either mode. Off by
+        // default; the reach is in world units, where the cloud spans
+        // about two.
+        let plexus = b.add(ParamDef::new("/particles/plexus", 0.0, 2.0, 0.0).smooth(0.15));
+        let plexus_reach =
+            b.add(ParamDef::new("/particles/plexus_reach", 0.02, 0.5, 0.15).smooth(0.2));
         // Geometry: sphere, torus, knot, grid, shell, Lorenz, Aizawa,
         // cloud pair.
         // Fractional values sit between two forms, so this is a sweep, not
@@ -962,6 +972,8 @@ impl AppParams {
             solid_detail,
             ink,
             ink_weight,
+            plexus,
+            plexus_reach,
             dim,
             shape,
             morph,

@@ -270,6 +270,9 @@ pub struct ParticleScene {
     /// because its buffers grow with the count and the target, while
     /// drawing takes `&self` like the additive pass does.
     surface: std::sync::Mutex<Option<crate::surface::Surface>>,
+    /// The plexus lines, built the first time they are asked for, for
+    /// the same reason.
+    plexus: std::sync::Mutex<Option<crate::plexus::PlexusPass>>,
     target_format: wgpu::TextureFormat,
 }
 
@@ -426,6 +429,7 @@ impl ParticleScene {
             palettes,
             loaded_palettes: 0,
             surface: std::sync::Mutex::new(None),
+            plexus: std::sync::Mutex::new(None),
             target_format,
         }
     }
@@ -796,6 +800,29 @@ impl ParticleScene {
     }
 }
 
+impl ParticleScene {
+    /// Draw lines between the particles that are near each other, over
+    /// what [`Self::render`] or [`Self::render_surface`] left in `target`.
+    /// See [`crate::plexus`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_plexus(
+        &self,
+        ctx: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        uniforms: &Uniforms,
+        count: u32,
+        plexus: crate::plexus::Plexus,
+    ) {
+        let uniforms = self.prepare(ctx, target, uniforms);
+        let mut pass = self.plexus.lock().unwrap_or_else(|e| e.into_inner());
+        let pass = pass.get_or_insert_with(|| {
+            crate::plexus::PlexusPass::new(ctx, &self.bgl, self.target_format)
+        });
+        pass.render(ctx, encoder, &self.bind_group, target, &uniforms, count, plexus);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1129,6 +1156,17 @@ mod tests {
     }
 
     fn frame_f16_count(ctx: &GpuContext, scene: &ParticleScene, u: &Uniforms, count: u32) -> Vec<f32> {
+        frame_f16_plexus(ctx, scene, u, count, None)
+    }
+
+    /// [`frame_f16_count`], with plexus lines drawn over the dots.
+    fn frame_f16_plexus(
+        ctx: &GpuContext,
+        scene: &ParticleScene,
+        u: &Uniforms,
+        count: u32,
+        plexus: Option<crate::plexus::Plexus>,
+    ) -> Vec<f32> {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("footprint-test-target"),
             size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
@@ -1151,6 +1189,9 @@ mod tests {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         scene.render(ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK);
+        if let Some(plexus) = plexus {
+            scene.render_plexus(ctx, &mut encoder, &view, u, count, plexus);
+        }
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -1180,6 +1221,27 @@ mod tests {
         (0..(W * W) as usize)
             .map(|i| (half(i * 8) + half(i * 8 + 2) + half(i * 8 + 4)) / 3.0)
             .collect()
+    }
+
+    /// Plexus lines join near particles: a sparse field with them on
+    /// lights many more pixels than its dots alone, and with a reach too
+    /// short for any two to meet it is the dots exactly.
+    #[test]
+    fn plexus_links_near_particles_and_only_near_ones() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let u = small_sprites(0.004, 0.0);
+        let lit = |px: Vec<f32>| px.iter().filter(|&&v| v > 0.01).count();
+        let dots = frame_f16_count(&ctx, &scene, &u, 600);
+        let linked = frame_f16_plexus(
+            &ctx, &scene, &u, 600, Some(crate::plexus::Plexus { strength: 1.0, reach: 0.4 }),
+        );
+        let apart = frame_f16_plexus(
+            &ctx, &scene, &u, 600, Some(crate::plexus::Plexus { strength: 1.0, reach: 1e-4 }),
+        );
+        let (d, l) = (lit(dots.clone()), lit(linked));
+        assert!(l > d * 3, "links should light far more than the dots: {l} against {d}");
+        assert_eq!(apart, dots, "no two particles are within the reach, so nothing is drawn");
     }
 
     /// A streak of no length is a dot: its four segments collapse onto
