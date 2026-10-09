@@ -1105,6 +1105,19 @@ shadow. A field of them reads as confetti, scales or debris rather than as a
 surface. A glyph draws up to six times the vertices of a disc, so lower
 <code>/particles/count</code> with it on a dense cloud.</p>
 
+<h3 id="solids">Fractal solids</h3>
+
+<p>In the surface mode, <code>/particles/solid</code> draws a fractal as a lit,
+opaque solid where the cloud sits: the Mandelbulb, the Mandelbox, a quaternion
+Julia set or the Menger sponge. Each pixel marches a ray in steps the
+fractal's distance estimate says are safe until it reaches the surface (Hart's
+sphere tracing, 1996), and writes its colour, exact normal and depth into the
+same buffers as the cloud, so the two hide each other properly under the same
+lamps. <code>/particles/solid_detail</code> is the one knob: the bulb's power,
+the box's scale, the turn of the Julia constant, or the sponge's depth. A solid
+is a ray march for every pixel it might cover, so it is the heaviest thing in
+the surface mode on a large output.</p>
+
 <h2 id="camera">Camera and room</h2>
 
 <p>A real camera looks into the field: <code>/camera/distance</code>,
@@ -1440,6 +1453,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/stroke</code></td><td>0 – 2</td><td>0</td><td>what a glowing particle is: a dot, a line along its own path, or a streak of its motion</td></tr>
     <tr><td><code>/particles/stroke_len</code></td><td>0 – 1</td><td>0.3</td><td>how long a line or streak is</td></tr>
     <tr><td><code>/particles/glyph</code></td><td>0 – 5</td><td>0</td><td>what a solid particle is in the surface mode: a disc, or a small solid turned to its heading</td></tr>
+    <tr><td><code>/particles/solid</code></td><td>0 – 4</td><td>0</td><td>a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge</td></tr>
+    <tr><td><code>/particles/solid_detail</code></td><td>0 – 1</td><td>0.6</td><td>the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>

@@ -63,9 +63,11 @@ struct Surface {
     room_fade: f32,
     // World units the shadow map's depth range spans.
     shadow_depth: f32,
-    _pad0: f32,
+    // The sphere-traced solid's one knob: power, scale or depth by kind.
+    solid_param: f32,
     count: u32,
-    _pad1: u32,
+    // 0 none, 1 Mandelbulb, 2 Mandelbox, 3 quaternion Julia, 4 Menger.
+    solid_kind: u32,
     _pad2: u32,
     _pad3: u32,
 };
@@ -600,6 +602,272 @@ fn fs_walls(in: WallOut) -> GOut {
     var out: GOut;
     out.albedo = vec4<f32>(plaster, glow);
     out.normal = pack_normal(in.normal, 1.0);
+    return out;
+}
+
+// --- Sphere-traced solids --------------------------------------------------
+//
+// A fractal drawn as the surface it is rather than as points sampled near
+// it: every pixel marches a ray in steps as long as a distance estimate
+// says is safe — sphere tracing, Hart, "Sphere tracing: a geometric method
+// for the antialiased ray tracing of implicit surfaces", The Visual
+// Computer 12 (1996) — and writes what it hits into the same G-buffer the
+// surfels do, so the solid takes the same lamps, sun, sky and shadows,
+// and the cloud and the solid hide each other where they cross.
+//
+// The estimates: the Mandelbulb's is White & Nylander's (2009) running
+// derivative; the Mandelbox's Tom Lowe's (2010) folds with the scale
+// tracked through them; the quaternion Julia set's Hart, Sandin &
+// Kauffman's "Ray tracing deterministic 3-D fractals" (SIGGRAPH 1989);
+// and the Menger sponge's Iñigo Quilez's folded box (2011).
+
+/// How many steps a ray takes before giving up, and how many iterations
+/// each estimate runs.
+const SOLID_STEPS: u32 = 160u;
+const SOLID_ITER: u32 = 10u;
+
+struct Hit {
+    d: f32,
+    // A smooth record of the orbit, for colour.
+    trap: f32,
+};
+
+fn de_bulb(p: vec3<f32>, power: f32) -> Hit {
+    var z = p;
+    var dr = 1.0;
+    var r = 0.0;
+    var trap = 1e9;
+    for (var i = 0u; i < SOLID_ITER; i = i + 1u) {
+        r = length(z);
+        if (r > 2.0) {
+            break;
+        }
+        trap = min(trap, r);
+        let theta = acos(clamp(z.z / max(r, 1e-9), -1.0, 1.0)) * power;
+        let phi = atan2(z.y, z.x) * power;
+        dr = pow(r, power - 1.0) * power * dr + 1.0;
+        let zr = pow(r, power);
+        z = zr * vec3<f32>(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta)) + p;
+    }
+    return Hit(0.5 * log(max(r, 1e-9)) * r / dr, trap);
+}
+
+fn de_box(p: vec3<f32>, scale: f32) -> Hit {
+    var z = p;
+    var dr = 1.0;
+    var trap = 1e9;
+    for (var i = 0u; i < SOLID_ITER + 2u; i = i + 1u) {
+        z = clamp(z, vec3<f32>(-1.0), vec3<f32>(1.0)) * 2.0 - z;
+        let r2 = dot(z, z);
+        if (r2 < 0.25) {
+            z = z * 4.0;
+            dr = dr * 4.0;
+        } else if (r2 < 1.0) {
+            z = z / r2;
+            dr = dr / r2;
+        }
+        z = z * scale + p;
+        dr = dr * abs(scale) + 1.0;
+        trap = min(trap, r2);
+    }
+    return Hit(length(z) / abs(dr), sqrt(trap));
+}
+
+fn qmul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(
+        a.x * b.x - dot(a.yzw, b.yzw),
+        a.x * b.yzw + b.x * a.yzw + cross(a.yzw, b.yzw),
+    );
+}
+
+fn de_julia(p: vec3<f32>, c: vec4<f32>) -> Hit {
+    var z = vec4<f32>(p, 0.0);
+    var dz = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    var trap = 1e9;
+    for (var i = 0u; i < SOLID_ITER + 2u; i = i + 1u) {
+        dz = 2.0 * qmul(z, dz);
+        z = qmul(z, z) + c;
+        let m = dot(z, z);
+        trap = min(trap, m);
+        if (m > 16.0) {
+            break;
+        }
+    }
+    let r = length(z);
+    return Hit(0.5 * r * log(max(r, 1e-9)) / max(length(dz), 1e-9), sqrt(trap));
+}
+
+fn de_menger(p: vec3<f32>, depth: f32) -> Hit {
+    let q = abs(p) - vec3<f32>(1.0);
+    var d = length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+    var s = 1.0;
+    var trap = 1.0;
+    let levels = u32(clamp(depth, 1.0, 6.0));
+    for (var i = 0u; i < levels; i = i + 1u) {
+        // Each level's cell, centred so its middle is the hole.
+        let ps = p * s;
+        let a = ps - 2.0 * floor(ps * 0.5) - 1.0;
+        s = s * 3.0;
+        let r = abs(1.0 - 3.0 * abs(a));
+        let da = max(r.x, r.y);
+        let db = max(r.y, r.z);
+        let dc = max(r.z, r.x);
+        let c = (min(da, min(db, dc)) - 1.0) / s;
+        if (c > d) {
+            d = c;
+            trap = f32(i) / f32(levels);
+        }
+    }
+    return Hit(d, trap);
+}
+
+/// How big the solid's own space is, in its units, for each kind: the
+/// world radius the cloud is spread to maps onto this.
+fn solid_extent(kind: u32, param: f32) -> f32 {
+    switch kind {
+        case 1u: { return 1.05; }
+        case 2u: {
+            // A box of positive scale k fills ±2(k+1)/(k−1) (Lowe); the
+            // negative ones stay inside ±2. Then the same margin as the
+            // sponge, so both cubes come out the same size.
+            if (param > 0.0) {
+                let k = max(param, 1.5);
+                return 1.5 * 2.0 * (k + 1.0) / (k - 1.0);
+            }
+            return 1.5 * 2.0;
+        }
+        case 3u: { return 1.1; }
+        default: { return 1.5; }
+    }
+}
+
+fn solid_de(kind: u32, param: f32, p: vec3<f32>) -> Hit {
+    switch kind {
+        case 1u: { return de_bulb(p, clamp(param, 2.0, 16.0)); }
+        case 2u: { return de_box(p, param); }
+        case 3u: {
+            // The same constant as the quaternion generator, turned by
+            // the knob so it can be played.
+            let a = param * 0.5;
+            return de_julia(p, vec4<f32>(-0.2, 0.6 * cos(a), 0.2, 0.6 * sin(a)));
+        }
+        default: { return de_menger(p, param); }
+    }
+}
+
+/// The solid's frame: where the cloud is placed, how big, and the turn
+/// the rigid shapes take, so the solid sits and spins where they do.
+struct SolidFrame {
+    centre: vec3<f32>,
+    // World units per solid unit.
+    scale: f32,
+    spin: f32,
+};
+
+fn solid_frame() -> SolidFrame {
+    let placed = room_place(vec3<f32>(0.0));
+    var f: SolidFrame;
+    f.centre = placed.xyz;
+    f.scale = u.spread * placed.w / solid_extent(s.solid_kind, s.solid_param);
+    f.spin = u.time * 0.55 * (0.4 + u.twist);
+    return f;
+}
+
+fn to_solid(f: SolidFrame, w: vec3<f32>) -> vec3<f32> {
+    let q = (w - f.centre) / f.scale;
+    let c = cos(f.spin);
+    let sn = sin(f.spin);
+    // The inverse of the cloud's turn about y.
+    return vec3<f32>(q.x * c + q.z * sn, q.y, -q.x * sn + q.z * c);
+}
+
+struct SolidOut {
+    @location(0) albedo: vec4<f32>,
+    @location(1) normal: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+@vertex
+fn vs_solid(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+    let x = f32((vi << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(vi & 2u) * 2.0 - 1.0;
+    return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn fs_solid(@builtin(position) frag: vec4<f32>) -> SolidOut {
+    let size = vec2<f32>(u.viewport_h * u.aspect, u.viewport_h);
+    let uv = frag.xy / size;
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    // Any depth short of the far plane will do for a direction, and
+    // the far plane itself may be at infinity.
+    let far = s.inv_view_proj * vec4<f32>(ndc, 0.5, 1.0);
+    let origin = u.cam_position;
+    let dir = normalize(far.xyz / far.w - origin);
+    let f = solid_frame();
+    // Only the bounding sphere is worth marching through.
+    let oc = origin - f.centre;
+    // Wide enough for a cube's corners, which the box and the sponge are.
+    let reach = f.scale * solid_extent(s.solid_kind, s.solid_param) * 1.8;
+    let b = dot(oc, dir);
+    let disc = b * b - (dot(oc, oc) - reach * reach);
+    if (disc < 0.0) {
+        discard;
+    }
+    let root = sqrt(disc);
+    var t = max(-b - root, 0.0);
+    let t_end = -b + root;
+    // A pixel's width at unit distance, so the surface is found to the
+    // precision the screen can show and no finer.
+    let pixel = 2.0 / (u.viewport_h * abs(u.view_proj[1][1]));
+    var hit = false;
+    var steps = 0u;
+    var h: Hit;
+    for (var i = 0u; i < SOLID_STEPS; i = i + 1u) {
+        let w = origin + dir * t;
+        h = solid_de(s.solid_kind, s.solid_param, to_solid(f, w));
+        let d = h.d * f.scale;
+        if (d < pixel * t * 0.75) {
+            hit = true;
+            steps = i;
+            break;
+        }
+        t = t + d * 0.9;
+        if (t > t_end) {
+            break;
+        }
+    }
+    if (!hit) {
+        discard;
+    }
+    let w = origin + dir * t;
+    let q = to_solid(f, w);
+    // The normal from the estimate's gradient, by four samples on a
+    // tetrahedron (Quilez), at the size the hit was found to.
+    let e = max(pixel * t * 0.5 / f.scale, 1e-5);
+    let k1 = vec3<f32>(1.0, -1.0, -1.0);
+    let k2 = vec3<f32>(-1.0, -1.0, 1.0);
+    let k3 = vec3<f32>(-1.0, 1.0, -1.0);
+    let k4 = vec3<f32>(1.0, 1.0, 1.0);
+    let gq = k1 * solid_de(s.solid_kind, s.solid_param, q + k1 * e).d
+        + k2 * solid_de(s.solid_kind, s.solid_param, q + k2 * e).d
+        + k3 * solid_de(s.solid_kind, s.solid_param, q + k3 * e).d
+        + k4 * solid_de(s.solid_kind, s.solid_param, q + k4 * e).d;
+    // Back out of the solid's turn into the world.
+    let c = cos(f.spin);
+    let sn = sin(f.spin);
+    let gw = vec3<f32>(gq.x * c - gq.z * sn, gq.y, gq.x * sn + gq.z * c);
+    let n = normalize(select(-dir, gw, dot(gw, gw) > 1e-20));
+    // Steps taken is a cheap occlusion: a ray that had to creep in
+    // through a crevice found it dark in there.
+    let occlusion = 1.0 - 0.7 * f32(steps) / f32(SOLID_STEPS);
+    let tone = h.trap * u.color_spread + 0.03 * sin(u.time * 0.2);
+    let colour = palette_color(u.palette, tone, u.saturation, u.hue) * u.brightness * occlusion;
+    var out: SolidOut;
+    out.albedo = vec4<f32>(colour, 0.0);
+    out.normal = pack_normal(n, 1.0);
+    let clip = u.view_proj * vec4<f32>(w, 1.0);
+    out.depth = clamp(clip.z / clip.w, 0.0, 0.9999999);
     return out;
 }
 

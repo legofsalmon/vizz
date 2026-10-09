@@ -1585,6 +1585,44 @@ in any other mode. After Borgo et al., "Glyph-based Visualization:
 Foundations, Design Guidelines, Techniques and Applications",
 Eurographics State of the Art Reports, 2013.
 
+#### Fractal solids
+
+```
+/particles/solid          0 none (the default), 1 Mandelbulb, 2 Mandelbox,
+                          3 quaternion Julia, 4 Menger sponge
+/particles/solid_detail   0..1, the solid's one knob (default 0.6)
+```
+
+Some forms are not clouds at all. A solid is a fractal drawn as a lit,
+opaque surface where the cloud sits, at the size of the spread and
+turning as the rigid shapes turn (faster with `/shape/twist`). Each pixel
+marches a ray from the camera, stepping each time by the fractal's
+distance estimate — a bound on how far away its nearest surface can be —
+until it is within a pixel of the surface: Hart, "Sphere tracing: a
+geometric method for the antialiased ray tracing of implicit surfaces",
+*The Visual Computer* 12, 1996. The hit writes its colour, its exact
+normal (from the estimate's gradient, sampled on a tetrahedron, after
+Íñigo Quílez) and its depth into the same G-buffer the cloud fills, so a
+cloud can wrap a solid and each hides the other properly, under the same
+lamps. A ray that took many steps to get in found a crevice, and is
+darkened for it. The colour is the palette, read along the orbit trap —
+the nearest the iteration came to the origin.
+
+`/particles/solid_detail` means something different for each:
+
+- **Mandelbulb** (White & Nylander, 2009): the power, 2 to 12. Eight is
+  the familiar one, at 0.6.
+- **Mandelbox** (Lowe, 2010): the scale, −2.6 to −1.5 over the lower
+  half and 2 to 3 over the upper; the stretch between is a shapeless
+  lump, so it is skipped.
+- **Quaternion Julia** (Hart, Sandin & Kauffman, SIGGRAPH 1989): the
+  turn of the constant, once round a circle, so it can be played.
+- **Menger sponge** (Menger, 1926): the depth, one to six levels.
+
+A solid costs a ray march for every pixel it might cover, up to 160
+steps of ten iterations each, so it is the heaviest thing in the surface
+mode on a large output. It does not yet cast into the sun's shadow map.
+
 How it is drawn:
 
 - **Each particle is evaluated once**, by a compute pass, into a buffer
@@ -2104,6 +2142,8 @@ and the aliases are read on the way in only.
 | `/particles/stroke` | 0 – 2 | 0 | what a glowing particle is: a dot, a line along its own path, or a streak of its motion |
 | `/particles/stroke_len` | 0 – 1 | 0.3 | how long a line or streak is |
 | `/particles/glyph` | 0 – 5 | 0 | what a solid particle is in the surface mode: a disc, or a small solid turned to its heading |
+| `/particles/solid` | 0 – 4 | 0 | a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge |
+| `/particles/solid_detail` | 0 – 1 | 0.6 | the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth |
 | `/shape/mode` | 0 – 8 | 0 | geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again |
 | `/shape/morph` | 0 – 1 | 0 | extra blend into the next form |
 | `/shape/twist` | 0 – 2 | 0 | shear and vertical twist |

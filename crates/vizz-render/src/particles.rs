@@ -347,10 +347,13 @@ impl ParticleScene {
                     count: None,
                 },
                 // The palette bank. Read with `textureLoad`, so it needs
-                // no sampler and no filterable format.
+                // no sampler and no filterable format. The fragment stage
+                // reads it too, for the sphere-traced solid's colour.
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::VERTEX
+                        | wgpu::ShaderStages::FRAGMENT
+                        | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -776,6 +779,7 @@ impl ParticleScene {
         clear: bool,
         background: wgpu::Color,
         walls: Option<crate::surface::Walls>,
+        solid: Option<crate::surface::Solid>,
     ) {
         let uniforms = self.prepare(ctx, target, uniforms);
         // A poisoned lock means an earlier frame panicked mid-encode; the
@@ -786,7 +790,7 @@ impl ParticleScene {
             crate::surface::Surface::new(ctx, &self.bgl, self.target_format)
         });
         surface.render(
-            ctx, encoder, &self.bind_group, target, &uniforms, count, clear, background, walls,
+            ctx, encoder, &self.bind_group, target, &uniforms, count, clear, background, walls, solid,
         );
     }
 }

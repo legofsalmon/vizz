@@ -86,6 +86,8 @@ pub struct AppParams {
     pub stroke: ParamId,
     pub stroke_len: ParamId,
     pub glyph: ParamId,
+    pub solid: ParamId,
+    pub solid_detail: ParamId,
     pub dim: ParamId,
     pub shape: ParamId,
     pub morph: ParamId,
@@ -193,6 +195,8 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/stroke", "what a glowing particle is: a dot, a line along its own path, or a streak of its motion"),
     ("/particles/stroke_len", "how long a line or streak is"),
     ("/particles/glyph", "what a solid particle is in the surface mode: a disc, or a small solid turned to its heading"),
+    ("/particles/solid", "a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge"),
+    ("/particles/solid_detail", "the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
@@ -423,6 +427,18 @@ impl AppParams {
             "shard",
             "mix",
         ]));
+        // A fractal as a solid, sphere-traced into the surface pass.
+        // Stepped, since there is no fractal between two kinds; none by
+        // default. Choosing one turns the surface mode on for it.
+        let solid = b.add(ParamDef::new("/particles/solid", 0.0, 4.0, 0.0).labels(&[
+            "none",
+            "Mandelbulb",
+            "Mandelbox",
+            "Julia",
+            "Menger",
+        ]));
+        let solid_detail =
+            b.add(ParamDef::new("/particles/solid_detail", 0.0, 1.0, 0.6).smooth(0.2));
         // Geometry: sphere, torus, knot, grid, shell, Lorenz, Aizawa,
         // cloud pair.
         // Fractional values sit between two forms, so this is a sweep, not
@@ -929,6 +945,8 @@ impl AppParams {
             stroke,
             stroke_len,
             glyph,
+            solid,
+            solid_detail,
             dim,
             shape,
             morph,
