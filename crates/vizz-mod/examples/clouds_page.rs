@@ -665,6 +665,12 @@ const ENGINE: &[Part] = &[
                 ours: false,
             },
             Piece {
+                name: "Fractal solids",
+                about: r#"<p>In the surface mode, <code>/particles/solid</code> draws a fractal as a lit, opaque solid where the cloud sits: the Mandelbulb, the Mandelbox, a quaternion Julia set or the Menger sponge. None of them is made of particles. Each pixel marches a ray from the camera, stepping each time by the fractal's distance estimate — a bound on how far the nearest surface can be — until it is within a pixel of the surface, and writes its colour, its exact normal and its depth into the same buffers the cloud fills, so the two hide each other properly and are lit by the same lamps. A ray that needed many steps to get in found a crevice, and is darkened for it. <code>/particles/solid_detail</code> is the one knob: the bulb's power, the box's scale, the turn of the Julia constant, the sponge's depth.</p>"#,
+                source: r#"sphere tracing is John C. Hart, <a href="https://doi.org/10.1007/s003710050084">“Sphere tracing: a geometric method for the antialiased ray tracing of implicit surfaces”</a>, <em>The Visual Computer</em> 12, 1996; the quaternion Julia estimate is Hart, Sandin and Kauffman, <a href="https://doi.org/10.1145/74334.74363">“Ray tracing deterministic 3-D fractals”</a>, SIGGRAPH 1989. The Mandelbulb is Daniel White and Paul Nylander's, 2009; the Mandelbox is Tom Lowe's, 2010; the sponge is Karl Menger's, 1926, with the distance function and the tetrahedral normal from <a href="https://iquilezles.org/articles/menger/">Íñigo Quílez</a>."#,
+                ours: false,
+            },
+            Piece {
                 name: "Gravity wells",
                 about: r#"<p>Four attractors and repulsors bending the cloud from a layer above the scenes. Deliberately <em>not</em> a simulation: every particle here is a function of its index with no state between frames, and integrating velocities would throw that away for physics nobody is checking. The falloff is <code>r²/(d²+r²)</code> — one at the centre, a half at the radius, asymptotically nothing beyond — because a hard cutoff shows up as a visible shell in the cloud.</p>"#,
                 source: "vizz. A displacement field that reads as gravity, not a gravity model.",

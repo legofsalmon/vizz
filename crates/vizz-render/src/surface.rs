@@ -63,9 +63,9 @@ pub struct SurfaceUniforms {
     pub room_brightness: f32,
     pub room_fade: f32,
     pub shadow_depth: f32,
-    pub _pad0: f32,
+    pub solid_param: f32,
     pub count: u32,
-    pub _pad1: u32,
+    pub solid_kind: u32,
     pub _pad2: u32,
     pub _pad3: u32,
 }
@@ -78,6 +78,54 @@ pub struct SurfaceUniforms {
 pub struct Walls {
     pub brightness: f32,
     pub fade: f32,
+}
+
+/// A fractal drawn as a solid by sphere tracing, into the same G-buffer
+/// as the cloud — see `fs_solid` in surface.wgsl.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Solid {
+    pub kind: SolidKind,
+    /// Power for the Mandelbulb, scale for the Mandelbox, the turn of
+    /// the constant for the Julia set, levels for the sponge.
+    pub param: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolidKind {
+    Mandelbulb = 1,
+    Mandelbox = 2,
+    Julia = 3,
+    Menger = 4,
+}
+
+impl SolidKind {
+    /// From `/particles/solid`: 0 is none.
+    pub fn from_index(v: f32) -> Option<Self> {
+        match v.round() as i32 {
+            1 => Some(Self::Mandelbulb),
+            2 => Some(Self::Mandelbox),
+            3 => Some(Self::Julia),
+            4 => Some(Self::Menger),
+            _ => None,
+        }
+    }
+
+    /// What `/particles/solid_detail`'s 0..1 means for this kind: the
+    /// bulb's power from 2 to 12, the box's scale from −2.6 to −1.5 and
+    /// then from 2 to 3, the Julia constant's turn through a full circle,
+    /// the sponge's levels from 1 to 6.
+    pub fn param(self, detail: f32) -> f32 {
+        let d = detail.clamp(0.0, 1.0);
+        match self {
+            Self::Mandelbulb => 2.0 + 10.0 * d,
+            // Skipping −1.5..2, where the box is a shapeless lump.
+            Self::Mandelbox => {
+                if d < 0.5 { -2.6 + 1.1 * (d / 0.5) } else { 2.0 + 1.0 * ((d - 0.5) / 0.5) }
+            }
+            Self::Julia => d * std::f32::consts::TAU,
+            Self::Menger => 1.0 + (5.0 * d).round(),
+        }
+    }
 }
 
 /// Where the sun looks from, for its shadow map.
@@ -146,6 +194,7 @@ pub struct Surface {
     shadow: wgpu::RenderPipeline,
     draw: wgpu::RenderPipeline,
     walls: wgpu::RenderPipeline,
+    solid: wgpu::RenderPipeline,
     shade: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     draw_bgl: wgpu::BindGroupLayout,
@@ -393,6 +442,7 @@ impl Surface {
         };
         let draw = opaque("surface-draw", "vs_surface", "fs_surface");
         let walls = opaque("surface-walls", "vs_walls", "fs_walls");
+        let solid = opaque("surface-solid", "vs_solid", "fs_solid");
         let shade = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("surface-shade"),
             layout: Some(&shade_layout),
@@ -424,6 +474,7 @@ impl Surface {
             shadow,
             draw,
             walls,
+            solid,
             shade,
             uniforms,
             draw_bgl,
@@ -532,6 +583,7 @@ impl Surface {
         clear: bool,
         background: wgpu::Color,
         walls: Option<Walls>,
+        solid: Option<Solid>,
     ) {
         let device = &ctx.device;
         let size = target.texture().size();
@@ -555,9 +607,9 @@ impl Surface {
             room_brightness: walls.map_or(0.0, |w| w.brightness),
             room_fade: walls.map_or(0.0, |w| w.fade),
             shadow_depth: sun.depth,
-            _pad0: 0.0,
+            solid_param: solid.map_or(0.0, |s| s.param),
             count,
-            _pad1: 0,
+            solid_kind: solid.map_or(0, |s| s.kind as u32),
             _pad2: 0,
             _pad3: 0,
         };
@@ -631,6 +683,10 @@ impl Surface {
             if count > 0 {
                 pass.set_pipeline(&self.draw);
                 pass.draw(0..count * verts, 0..1);
+            }
+            if solid.is_some() {
+                pass.set_pipeline(&self.solid);
+                pass.draw(0..3, 0..1);
             }
             // After the cloud, so the depth test skips the plaster it hides.
             if walls_on {
@@ -786,6 +842,19 @@ mod tests {
         surface: bool,
         walls: Option<Walls>,
     ) -> Vec<f32> {
+        frame_with(ctx, scene, u, count, surface, walls, None)
+    }
+
+    /// [`frame`], with a sphere-traced solid in the surface pass.
+    fn frame_with(
+        ctx: &GpuContext,
+        scene: &ParticleScene,
+        u: &Uniforms,
+        count: u32,
+        surface: bool,
+        walls: Option<Walls>,
+        solid: Option<Solid>,
+    ) -> Vec<f32> {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface-test-target"),
             size: wgpu::Extent3d { width: W, height: W, depth_or_array_layers: 1 },
@@ -806,7 +875,7 @@ mod tests {
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         if surface {
             scene.render_surface(
-                ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK, walls,
+                ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK, walls, solid,
             );
         } else {
             scene.render(ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK);
@@ -876,6 +945,48 @@ mod tests {
         // one, however many surfels are stacked behind the front one.
         assert!(glow > 2.0, "the additive sphere should pile up light: {glow}");
         assert!(solid <= 1.01 && solid > 0.5, "an opaque sphere is its albedo, lit: {solid}");
+    }
+
+    /// Each solid traces into the G-buffer and is lit there: something
+    /// covers the middle of the frame and nothing reaches the corners. A
+    /// pipeline the device rejects draws nothing at all, so this is also
+    /// the check that the solid's shader binds.
+    #[test]
+    fn solids_trace_where_the_cloud_would_be() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let u = sphere();
+        for kind in [SolidKind::Mandelbulb, SolidKind::Mandelbox, SolidKind::Julia, SolidKind::Menger] {
+            let solid = Solid { kind, param: kind.param(0.6) };
+            let px = frame_with(&ctx, &scene, &u, 0, true, None, Some(solid));
+            let w = W as usize;
+            let lit = |x0: usize, x1: usize| {
+                let mut n = 0;
+                for y in x0..x1 {
+                    for x in x0..x1 {
+                        n += (px[y * w + x] > 0.02) as usize;
+                    }
+                }
+                n as f32 / ((x1 - x0) * (x1 - x0)) as f32
+            };
+            let middle = lit(w * 3 / 8, w * 5 / 8);
+            assert!(middle > 0.3, "{kind:?} should cover the middle: {middle}");
+            assert!(px[0] == 0.0 && px[w * w - 1] == 0.0, "{kind:?} should leave the corners");
+        }
+    }
+
+    #[test]
+    fn the_solid_knob_stays_in_each_kinds_range() {
+        for d in [0.0, 0.25, 0.49, 0.5, 0.75, 1.0] {
+            assert!((2.0..=12.0).contains(&SolidKind::Mandelbulb.param(d)));
+            let k = SolidKind::Mandelbox.param(d);
+            assert!((-2.6..=-1.5).contains(&k) || (2.0..=3.0).contains(&k), "box scale {k}");
+            assert!((0.0..=std::f32::consts::TAU).contains(&SolidKind::Julia.param(d)));
+            let levels = SolidKind::Menger.param(d);
+            assert!((1.0..=6.0).contains(&levels) && levels.fract() == 0.0);
+        }
+        assert_eq!(SolidKind::from_index(0.0), None);
+        assert_eq!(SolidKind::from_index(4.2), Some(SolidKind::Menger));
     }
 
     /// Glyphs are solid and lit by their own faces. With the sun off to

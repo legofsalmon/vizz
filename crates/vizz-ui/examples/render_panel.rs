@@ -59,6 +59,8 @@ fn main() {
         "/particles/stroke",
         "/particles/stroke_len",
         "/particles/glyph",
+        "/particles/solid",
+        "/particles/solid_detail",
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",

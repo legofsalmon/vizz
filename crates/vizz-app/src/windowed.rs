@@ -1669,6 +1669,7 @@ impl App {
                 !vector_in_scene,
                 inputs.background,
                 inputs.walls(),
+                inputs.solid,
             );
         } else {
             state.scene.render(
