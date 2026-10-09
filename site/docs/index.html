@@ -1118,6 +1118,20 @@ the box's scale, the turn of the Julia constant, or the sponge's depth. A solid
 is a ray march for every pixel it might cover, so it is the heaviest thing in
 the surface mode on a large output.</p>
 
+<h3 id="ink">Ink</h3>
+
+<p>In the surface mode, <code>/particles/ink</code> draws the lit surface as a
+pen drawing. <em>Outlines</em> keeps the colour and inks the silhouettes, folds
+and creases. <em>Hatching</em> puts the form on paper and lays its tone down as
+up to three layers of crossed lines, and <em>stipple</em> lays it down as dots,
+more and larger in the dark. The tone is how much light fell on the surface
+against all the light the rig has, so a dark palette is not drawn as a dark
+form; with every lamp off, tops are paper and undersides are dark. The marks are
+fixed to the screen while the outlines move with the form.
+<code>/particles/ink_weight</code> sets how heavy the pen is. It works on
+anything the surface mode draws: a cloud, glyphs, a fractal solid or the
+room.</p>
+
 <h2 id="camera">Camera and room</h2>
 
 <p>A real camera looks into the field: <code>/camera/distance</code>,
@@ -1455,6 +1469,8 @@ running app by a test, so it cannot drift out of date.</p>
     <tr><td><code>/particles/glyph</code></td><td>0 – 5</td><td>0</td><td>what a solid particle is in the surface mode: a disc, or a small solid turned to its heading</td></tr>
     <tr><td><code>/particles/solid</code></td><td>0 – 4</td><td>0</td><td>a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge</td></tr>
     <tr><td><code>/particles/solid_detail</code></td><td>0 – 1</td><td>0.6</td><td>the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth</td></tr>
+    <tr><td><code>/particles/ink</code></td><td>0 – 3</td><td>0</td><td>the surface mode as a pen drawing: off · outlines · hatching · stipple</td></tr>
+    <tr><td><code>/particles/ink_weight</code></td><td>0 – 1</td><td>0.5</td><td>how heavy the pen is: line width, hatching spacing, stipple dot size</td></tr>
     <tr><td><code>/shape/mode</code></td><td>0 – 8</td><td>0</td><td>geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again</td></tr>
     <tr><td><code>/shape/morph</code></td><td>0 – 1</td><td>0</td><td>extra blend into the next form</td></tr>
     <tr><td><code>/shape/twist</code></td><td>0 – 2</td><td>0</td><td>shear and vertical twist</td></tr>

@@ -66,8 +66,9 @@ pub struct SurfaceUniforms {
     pub solid_param: f32,
     pub count: u32,
     pub solid_kind: u32,
-    pub _pad2: u32,
-    pub _pad3: u32,
+    /// 0 off, 1 outlines, 2 hatching, 3 stipple — see [`InkKind`].
+    pub ink: u32,
+    pub ink_weight: f32,
 }
 
 /// The room, when it is drawn as surfaces: how bright its plaster is and
@@ -124,6 +125,39 @@ impl SolidKind {
             }
             Self::Julia => d * std::f32::consts::TAU,
             Self::Menger => 1.0 + (5.0 * d).round(),
+        }
+    }
+}
+
+/// The surface drawn as a pen drawing: outlines where the depth breaks,
+/// and in the two drawn kinds the tone laid down in ink on paper — see
+/// `ink` in surface.wgsl.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ink {
+    pub kind: InkKind,
+    /// 0..1, from `/particles/ink_weight`: how heavy the pen is. Scales
+    /// the line width, the hatching's spacing and the stipple's dots.
+    pub weight: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InkKind {
+    /// The lit surface with its edges inked.
+    Outline = 1,
+    /// Paper, edges, and tone as up to three layers of crossed lines.
+    Hatch = 2,
+    /// Paper, edges, and tone as dots, more and larger where it is dark.
+    Stipple = 3,
+}
+
+impl InkKind {
+    /// From `/particles/ink`: 0 is off.
+    pub fn from_index(v: f32) -> Option<Self> {
+        match v.round() as i32 {
+            1 => Some(Self::Outline),
+            2 => Some(Self::Hatch),
+            3 => Some(Self::Stipple),
+            _ => None,
         }
     }
 }
@@ -584,6 +618,7 @@ impl Surface {
         background: wgpu::Color,
         walls: Option<Walls>,
         solid: Option<Solid>,
+        ink: Option<Ink>,
     ) {
         let device = &ctx.device;
         let size = target.texture().size();
@@ -610,8 +645,8 @@ impl Surface {
             solid_param: solid.map_or(0.0, |s| s.param),
             count,
             solid_kind: solid.map_or(0, |s| s.kind as u32),
-            _pad2: 0,
-            _pad3: 0,
+            ink: ink.map_or(0, |i| i.kind as u32),
+            ink_weight: ink.map_or(0.5, |i| i.weight),
         };
         ctx.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&su));
         let splats = self.splats.as_ref().expect("allocated above");
@@ -842,10 +877,11 @@ mod tests {
         surface: bool,
         walls: Option<Walls>,
     ) -> Vec<f32> {
-        frame_with(ctx, scene, u, count, surface, walls, None)
+        frame_with(ctx, scene, u, count, surface, walls, None, None)
     }
 
-    /// [`frame`], with a sphere-traced solid in the surface pass.
+    /// [`frame`], with a sphere-traced solid or ink in the surface pass.
+    #[allow(clippy::too_many_arguments)]
     fn frame_with(
         ctx: &GpuContext,
         scene: &ParticleScene,
@@ -854,6 +890,7 @@ mod tests {
         surface: bool,
         walls: Option<Walls>,
         solid: Option<Solid>,
+        ink: Option<Ink>,
     ) -> Vec<f32> {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface-test-target"),
@@ -875,7 +912,7 @@ mod tests {
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         if surface {
             scene.render_surface(
-                ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK, walls, solid,
+                ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK, walls, solid, ink,
             );
         } else {
             scene.render(ctx, &mut encoder, &view, u, count, true, wgpu::Color::BLACK);
@@ -958,7 +995,7 @@ mod tests {
         let u = sphere();
         for kind in [SolidKind::Mandelbulb, SolidKind::Mandelbox, SolidKind::Julia, SolidKind::Menger] {
             let solid = Solid { kind, param: kind.param(0.6) };
-            let px = frame_with(&ctx, &scene, &u, 0, true, None, Some(solid));
+            let px = frame_with(&ctx, &scene, &u, 0, true, None, Some(solid), None);
             let w = W as usize;
             let lit = |x0: usize, x1: usize| {
                 let mut n = 0;
@@ -973,6 +1010,38 @@ mod tests {
             assert!(middle > 0.3, "{kind:?} should cover the middle: {middle}");
             assert!(px[0] == 0.0 && px[w * w - 1] == 0.0, "{kind:?} should leave the corners");
         }
+    }
+
+    /// Hatching and stipple draw the tone: unlit, the sky leaves the top
+    /// of a sphere near paper and lays ink on its underside. Outlines
+    /// ink the rim, which the plain surface lights.
+    #[test]
+    fn ink_lays_down_the_tone_and_the_edges() {
+        let Some(ctx) = gpu() else { return };
+        let scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        // Larger surfels than the other tests, so the sphere's surface is
+        // closed at this small a frame and its only edge is its rim.
+        let u = Uniforms { size: 0.05, ..sphere() };
+        let (top, bottom) = (pixel(&u, [0.0, 0.75, 0.0]), pixel(&u, [0.0, -0.7, 0.0]));
+        for kind in [InkKind::Hatch, InkKind::Stipple] {
+            let ink = Some(Ink { kind, weight: 0.5 });
+            let px = frame_with(&ctx, &scene, &u, 60_000, true, None, None, ink);
+            let (t, b) = (around(&px, top, 4), around(&px, bottom, 4));
+            assert!(t > 0.7, "{kind:?}: the lit top should be mostly paper: {t}");
+            // Measured at 0.62 against 0.79 for hatching on lavapipe.
+            assert!(b < t - 0.1, "{kind:?}: the underside should take ink: {b} against {t}");
+        }
+        let plain = frame(&ctx, &scene, &u, 60_000, true, None);
+        let inked = frame_with(
+            &ctx, &scene, &u, 60_000, true, None, None,
+            Some(Ink { kind: InkKind::Outline, weight: 0.5 }),
+        );
+        // Along the middle row, the first covered pixel from the left is
+        // the rim.
+        let row = W as usize / 2 * W as usize;
+        let rim = (0..W as usize).find(|&x| plain[row + x] > 0.0).expect("the sphere is in frame");
+        assert!(plain[row + rim] > 0.2, "the plain rim is lit: {}", plain[row + rim]);
+        assert!(inked[row + rim] < 0.1, "the inked rim is pen: {}", inked[row + rim]);
     }
 
     #[test]

@@ -61,6 +61,8 @@ fn main() {
         "/particles/glyph",
         "/particles/solid",
         "/particles/solid_detail",
+        "/particles/ink",
+        "/particles/ink_weight",
         "/shape/mode",
         "/shape/morph",
         "/shape/twist",

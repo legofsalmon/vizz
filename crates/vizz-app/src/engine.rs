@@ -137,6 +137,8 @@ pub struct FrameInputs {
     pub surface: bool,
     /// A fractal drawn as a solid in the surface pass, when one is on.
     pub solid: Option<vizz_render::surface::Solid>,
+    /// The surface pass drawn in ink, when it is.
+    pub ink: Option<vizz_render::surface::Ink>,
     pub count: u32,
     /// What an empty frame looks like, alpha included. At alpha 0 the
     /// field is delivered on a transparent background so vizz can be a
@@ -827,6 +829,8 @@ impl FrameEngine {
         let solid = vizz_render::surface::SolidKind::from_index(self.snapshot.get(p.solid)).map(|kind| {
             vizz_render::surface::Solid { kind, param: kind.param(self.snapshot.get(p.solid_detail)) }
         });
+        let ink = vizz_render::surface::InkKind::from_index(self.snapshot.get(p.ink))
+            .map(|kind| vizz_render::surface::Ink { kind, weight: self.snapshot.get(p.ink_weight) });
         // The opening sits a little in front of the origin so the cloud is
         // inside the room rather than pressed against its face.
         let room = RoomUniforms::for_camera(
@@ -1067,8 +1071,10 @@ impl FrameEngine {
             // A solid is only drawn in the surface pass, so choosing one
             // is choosing that pass: asking for a Mandelbulb and seeing
             // nothing until a second switch is thrown would be a trap.
-            surface: self.snapshot.get(p.surface).round() >= 0.5 || solid.is_some(),
+            // Ink too: it is a way of drawing the surface.
+            surface: self.snapshot.get(p.surface).round() >= 0.5 || solid.is_some() || ink.is_some(),
             solid,
+            ink,
             vector,
             vector_active,
             vector_print: self.snapshot.get(p.vec_place).round() >= 0.5,

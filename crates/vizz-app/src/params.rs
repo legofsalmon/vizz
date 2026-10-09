@@ -88,6 +88,8 @@ pub struct AppParams {
     pub glyph: ParamId,
     pub solid: ParamId,
     pub solid_detail: ParamId,
+    pub ink: ParamId,
+    pub ink_weight: ParamId,
     pub dim: ParamId,
     pub shape: ParamId,
     pub morph: ParamId,
@@ -197,6 +199,8 @@ const HELP: &[(&str, &str)] = &[
     ("/particles/glyph", "what a solid particle is in the surface mode: a disc, or a small solid turned to its heading"),
     ("/particles/solid", "a sphere-traced fractal solid in the surface mode: none · Mandelbulb · Mandelbox · quaternion Julia · Menger sponge"),
     ("/particles/solid_detail", "the solid's one knob: the bulb's power, the box's scale, the Julia constant's turn, the sponge's depth"),
+    ("/particles/ink", "the surface mode as a pen drawing: off · outlines · hatching · stipple"),
+    ("/particles/ink_weight", "how heavy the pen is: line width, hatching spacing, stipple dot size"),
     ("/shape/mode", "geometry; fractional values morph: sphere · torus · knot · grid · shell · Lorenz · Aizawa · cloud pair · sphere again"),
     ("/shape/morph", "extra blend into the next form"),
     ("/shape/twist", "shear and vertical twist"),
@@ -439,6 +443,15 @@ impl AppParams {
         ]));
         let solid_detail =
             b.add(ParamDef::new("/particles/solid_detail", 0.0, 1.0, 0.6).smooth(0.2));
+        // The surface as a pen drawing. Stepped; off by default, and
+        // choosing one turns the surface mode on for it, as a solid does.
+        let ink = b.add(ParamDef::new("/particles/ink", 0.0, 3.0, 0.0).labels(&[
+            "off",
+            "outlines",
+            "hatching",
+            "stipple",
+        ]));
+        let ink_weight = b.add(ParamDef::new("/particles/ink_weight", 0.0, 1.0, 0.5).smooth(0.2));
         // Geometry: sphere, torus, knot, grid, shell, Lorenz, Aizawa,
         // cloud pair.
         // Fractional values sit between two forms, so this is a sweep, not
@@ -947,6 +960,8 @@ impl AppParams {
             glyph,
             solid,
             solid_detail,
+            ink,
+            ink_weight,
             dim,
             shape,
             morph,
