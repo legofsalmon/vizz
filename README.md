@@ -369,6 +369,7 @@ vizz --live-cloud sim:cyclic      # states chasing each other round a ring: scro
 vizz --live-cloud sim:tangle      # one long rod, tying itself in knots
 vizz --live-cloud sim:crystal     # a snow crystal, grown one cell at a time
 vizz --live-cloud sim:vortex      # smoke rings, as the filaments they are made of
+vizz --live-cloud sim:polytope    # a tesseract turning through the fourth dimension
 ```
 
 A simulation is a live cloud that needs no sender: it runs on its own
@@ -584,6 +585,18 @@ the one in front, thread through it and swap places. The loudness is
 their circulation, a kick throws a new ring in over the oldest, and one
 light smoothing pass a frame takes out the wiggles finer than the core,
 which are not physical and grow until a filament is noise.
+
+**polytope** is one of the six regular solids of four dimensions — the
+5-cell, the tesseract, the 16-cell, the 24-cell, the 600-cell or the
+120-cell, set with `?kind=` — turning in the plane that pairs x with the
+fourth axis and projected into ours in perspective. A rotation in four
+dimensions can carry a cell from the far side of the solid, through the
+middle of the others, to the near side, so the projection turns itself
+inside out, which nothing turning in three dimensions can do. The points
+run along the edges as one unbroken walk, an Eulerian circuit, so the
+*lines* stroke draws the wireframe and the cloud crawls along it. The
+loudness turns it faster and the kick throws a quarter turn. After
+Coxeter's *Regular Polytopes* (1948).
 
 What a simulation gets from the app is deliberately narrow — the four
 bands, the loudness, where the bar is — because it is meant to be a
@@ -1662,7 +1675,7 @@ detection:
 | searched | the two quadratic searches, one over maps and one over flows |
 | surfaces | a Gielis supershape, a harmonic-rippled sphere, a real spherical harmonic as an orbital, the Hopf fibration, a Klein bottle, Boy's surface, Dini's twisted pseudosphere, Enneper's minimal surface, and the gyroid with Schwarz' P and D |
 | curves | a 3:4:7 Lissajous knot, a (3,7) torus knot, the figure-eight knot, a spirograph and the three-dimensional Hilbert curve |
-| fractals | the Sierpinski tetrahedron, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's basins and the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as reliefs |
+| fractals | the Sierpinski tetrahedron, Draves' fractal flames, the Menger sponge, the Mandelbulb, the Mandelbox, a quaternion Julia set, the twisted gasket, Newton's basins and the Markus–Hess Lyapunov fractal, and the Mandelbrot and a Julia set as reliefs |
 | grown | four L-system plants — a generic one, a fern, a coral and a tree — and a diffusion-limited aggregate |
 | patterns | Chladni sand, a Voronoi foam, an icosahedral quasicrystal and phyllotaxis |
 

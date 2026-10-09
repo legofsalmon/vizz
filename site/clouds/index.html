@@ -138,8 +138,8 @@
 <h1>Clouds from equations</h1>
 <div class="intro">
 <p class="lede">vizz draws point clouds. Most of them come from a scanner, a
-camera or a file — and 66 of them come from mathematics, with
-19 more that are still running while you watch.</p>
+camera or a file — and 67 of them come from mathematics, with
+20 more that are still running while you watch.</p>
 
 <p>Every picture on this page was drawn by the app's own code, from the same
 functions that fill a slot when you pick one from the menu, and through the
@@ -674,6 +674,16 @@ it.</p>
     </figcaption>
   </figure>
   <figure class="plate">
+    <img src="/img/clouds/flame.webp" width="600" height="400" loading="lazy" decoding="async" alt="flame — a point cloud">
+    <figcaption>
+      <h3>flame</h3>
+      <p class="spec"><code>gen:flame</code></p>
+      <p>a fractal flame — the chaos game over a few curling maps, each an affine step bent by the paper's variations; which maps a point came through is its depth, so the strands open into layers as it turns</p>
+      <p class="knobs"><span>knobs</span> <code>seed</code> which maps and variations; a draw that collapses or hazes over is passed for the next <span class="dim">(any whole number, default 4)</span></p>
+      <p class="cite"><a href="https://flam3.com/flame_draves.pdf">Scott Draves &amp; Erik Reckase, “The Fractal Flame Algorithm” (2003)</a></p>
+    </figcaption>
+  </figure>
+  <figure class="plate">
     <img src="/img/clouds/menger.webp" width="600" height="400" loading="lazy" decoding="async" alt="Menger — a point cloud">
     <figcaption>
       <h3>Menger</h3>
@@ -870,7 +880,7 @@ it.</p>
   </figure>
 </div>
 
-<h2 id="alive">19 that are alive</h2>
+<h2 id="alive">20 that are alive</h2>
 <p class="lede">These are not made once. Each runs on a thread of its own at the
 frame rate and streams into the live slot, driven by whatever the audio input
 is doing: the four bands, the loudness, and where the bar is. That is the whole
@@ -878,6 +888,21 @@ interface they get — deliberately, because the point is a <em>cloud</em> that
 happens to be alive rather than a second engine with its own controls.</p>
 <p class="lede">The plates below are each one caught a couple of seconds in, with
 no audio playing. The ones that are about growing were given longer.</p>
+
+<h2 id="sim-curves">curves</h2>
+<p class="lede">Drawn as one path, in order, so the crawl runs along it and the lines stroke draws it as wire.</p>
+<div class="plates">
+  <figure class="plate">
+    <img src="/img/clouds/sim-polytope.webp" width="600" height="400" loading="lazy" decoding="async" alt="polytope — a point cloud">
+    <figcaption>
+      <h3>polytope</h3>
+      <p class="spec"><code>sim:polytope</code></p>
+      <p>a regular solid of four dimensions, turning through the fourth and seen in ours — its cells swell towards you, pass through each other and shrink away, so it turns itself inside out; drawn as one unbroken walk along every edge, so lines draw the wireframe; the loudness turns it and the kick throws it</p>
+      <p class="knobs"><span>knobs</span> <code>kind</code> 5-cell, tesseract, 16-cell, 24-cell, 600-cell or 120-cell <span class="dim">(text, default tesseract)</span></p>
+      <p class="cite"><a href="https://en.wikipedia.org/wiki/Regular_4-polytope">H. S. M. Coxeter, “Regular Polytopes” (1948); Thomas Banchoff’s turning hypercube films (1978); the walk is Hierholzer’s Eulerian circuit (1873)</a></p>
+    </figcaption>
+  </figure>
+</div>
 
 <h2 id="sim-grown">grown</h2>
 <p class="lede">Built step by step by a rule, rather than evaluated: rewriting an alphabet, or letting particles wander in and stick.</p>
@@ -1290,6 +1315,7 @@ instead — the citation is the thing to keep.</p>
   <li><strong>fern</strong> — <a href="https://en.wikipedia.org/wiki/L-system">The same rewriting, in the fern’s own rule</a></li>
   <li><strong>figure-eight knot</strong> — <a href="https://en.wikipedia.org/wiki/Figure-eight_knot_(mathematics)">The 4₁ knot, the simplest amphichiral one</a></li>
   <li><strong>finance</strong> — Junhai Ma &amp; Yushu Chen, Applied Mathematics and Mechanics 22 (2001)</li>
+  <li><strong>flame</strong> — <a href="https://flam3.com/flame_draves.pdf">Scott Draves &amp; Erik Reckase, “The Fractal Flame Algorithm” (2003)</a></li>
   <li><strong>flock</strong> — <a href="https://en.wikipedia.org/wiki/Boids">Craig Reynolds, “Flocks, Herds and Schools: A Distributed Behavioral Model”, SIGGRAPH 1987</a></li>
   <li><strong>fluid</strong> — <a href="https://www.wdv.com/Aerospace/Fluids/StamFluidsforGames.pdf">Jos Stam, “Stable Fluids”, SIGGRAPH 1999, and “Real-Time Fluid Dynamics for Games”, GDC 2003; vorticity confinement from Fedkiw, Stam &amp; Jensen, SIGGRAPH 2001</a></li>
   <li><strong>foam</strong> — <a href="https://en.wikipedia.org/wiki/Voronoi_diagram">Georgy Voronoy (1908); the walls are the set of points equidistant from the two nearest centres</a></li>
@@ -1324,6 +1350,7 @@ instead — the citation is the thing to keep.</p>
   <li><strong>pendulum</strong> — <a href="https://en.wikipedia.org/wiki/Double_pendulum">The double pendulum, the standard demonstration that four numbers can be unpredictable</a></li>
   <li><strong>phyllotaxis</strong> — <a href="https://en.wikipedia.org/wiki/Phyllotaxis">The golden angle; Helmut Vogel’s sunflower model (1979)</a></li>
   <li><strong>plant</strong> — <a href="https://en.wikipedia.org/wiki/L-system">Aristid Lindenmayer (1968); Przemysław Prusinkiewicz &amp; Lindenmayer, The Algorithmic Beauty of Plants (1990)</a></li>
+  <li><strong>polytope</strong> — <a href="https://en.wikipedia.org/wiki/Regular_4-polytope">H. S. M. Coxeter, “Regular Polytopes” (1948); Thomas Banchoff’s turning hypercube films (1978); the walk is Hierholzer’s Eulerian circuit (1873)</a></li>
   <li><strong>quadratic</strong> — <a href="https://sprott.physics.wisc.edu/sa.htm">Julien Clinton Sprott, Strange Attractors: Creating Patterns in Chaos (1993)</a></li>
   <li><strong>quadratic flow</strong> — <a href="https://sprott.physics.wisc.edu/chaos/comchaos.htm">The same search over quadratic flows; Sprott, “Some simple chaotic flows”, Phys. Rev. E 50 (1994)</a></li>
   <li><strong>quasicrystal</strong> — <a href="https://en.wikipedia.org/wiki/Quasicrystal">Dan Shechtman et al., Phys. Rev. Lett. 53 (1984); Nobel Prize in Chemistry, 2011</a></li>

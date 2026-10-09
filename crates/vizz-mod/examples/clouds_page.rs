@@ -58,6 +58,7 @@ fn blurb(group: Group, live: bool) -> &'static str {
         (Group::Map, _) => "Iterated rather than integrated: a rule applied over and over to a point in a plane, lifted into depth by delay embedding — Takens' theorem says a delayed coordinate unfolds the dynamics rather than merely decorating them.",
         (Group::Searched, _) => "Nobody chose these. Thirty coefficients are drawn at random and the result is kept only if it is chaotic, which about one draw in a few hundred is. The seed is the whole parameter, so the same seed is the same attractor on every machine.",
         (Group::Surface, _) => "Swept in scan order over two parameters, so the cloud reads as a surface rather than a fog.",
+        (Group::Curve, true) => "Drawn as one path, in order, so the crawl runs along it and the lines stroke draws it as wire.",
         (Group::Curve, _) => "Traced along a curve and thickened into a tube, in order, so the crawl runs along the curve.",
         (Group::Fractal, _) => "Self-similar at every scale, found by the chaos game, by escape time, or by marching rays inward until they stop escaping.",
         (Group::Grown, _) => "Built step by step by a rule, rather than evaluated: rewriting an alphabet, or letting particles wander in and stick.",
