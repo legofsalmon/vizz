@@ -62,11 +62,15 @@ const FILLED: Color32 = vizz_design::surface::SLOT;
 
 /// The gravity grid's fill.
 ///
-/// Violet rather than a second blue: it has to separate from the scene
-/// pads at a glance in a dark room, which two neighbouring blues would
-/// not. Defined here rather than at the call site so the app and the
-/// review harness cannot drift apart about what gravity looks like.
-pub const GRAVITY_ACCENT: Color32 = Color32::from_rgb(0x46, 0x3A, 0x6B);
+/// It has to separate from the scene pads at a glance in a dark room. It
+/// used to do that by being violet against the scenes' blue; the pads are
+/// neutral now, as everything at rest is, and violet says "something
+/// other than your hand is driving this" (the autopilot sits in this very
+/// row). So gravity is the next neutral step up from a scene pad, and its
+/// row's label and place say which bank it is. Defined here rather than
+/// at the call site so the app and the review harness cannot drift apart
+/// about what gravity looks like.
+pub const GRAVITY_ACCENT: Color32 = vizz_design::rgba(vizz_design::tokens::palette::neutral::TONE_32);
 const EMPTY: Color32 = vizz_design::surface::SLOT_EMPTY;
 const CURRENT: Color32 = crate::theme::CURRENT;
 const ARRIVING: Color32 = vizz_design::accent::ARRIVING;
@@ -816,7 +820,7 @@ fn controls(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
             let text = egui::RichText::new(name)
                 .size(13.0)
                 .color(if view.curve == i {
-                    Color32::from_rgb(240, 244, 250)
+                    vizz_design::ink::PRIMARY
                 } else {
                     LABEL
                 });
@@ -912,7 +916,7 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
         p.rect_filled(
             egui::Rect::from_min_size(rect.left_top(), vec2(w, rect.height())),
             4.0,
-            AUTO_ON,
+            vizz_design::accent::DRIVEN_FILL,
         );
     }
     // A border in every state. Lit, so that at phase 0 — the sweep is
@@ -923,7 +927,7 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
     let rim = if view.autopilot {
         AUTO_ON
     } else if response.hovered() {
-        vizz_design::surface::FOCUS
+        vizz_design::surface::HOVER_EDGE
     } else {
         vizz_design::surface::EDGE
     };
@@ -934,9 +938,9 @@ fn autopilot_toggle(ui: &mut egui::Ui, view: &GridView, actions: &mut GridAction
         text,
         egui::FontId::proportional(13.0),
         if view.autopilot {
-            Color32::from_rgb(238, 250, 240)
+            vizz_design::ink::PRIMARY
         } else {
-            Color32::from_rgb(150, 154, 162)
+            vizz_design::ink::SECONDARY
         },
     );
 

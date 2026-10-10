@@ -649,7 +649,7 @@ fn status_strip(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAction
         if let Some(h) = &state.health {
             let over = h.over_budget_window_pct > 1.0;
             ui.colored_label(
-                if over { WARN } else { GOOD },
+                if over { WARN } else { vizz_design::ink::PRIMARY },
                 // Monospace and padded: a proportional font makes "60"
                 // narrower than "137", so the whole status line reflowed
                 // every time the frame rate crossed 100. Padding alone
@@ -864,7 +864,7 @@ fn send_here(ui: &mut egui::Ui, state: &PanelState, addr: &str) {
         // with a mouse — the copy button beside it is faster, and one of
         // the two works when the other is inconvenient.
         ui.add(
-            egui::Label::new(egui::RichText::new(&full).small().strong().color(GOOD))
+            egui::Label::new(egui::RichText::new(&full).small().strong().color(vizz_design::ink::PRIMARY))
                 .selectable(true),
         )
         .on_hover_text(
@@ -1007,7 +1007,7 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
                 }
             }
             vizz_update::Stage::Installing => {
-                ui.colored_label(GOOD, "restarting…");
+                ui.colored_label(vizz_design::ink::SECONDARY, "restarting…");
             }
             vizz_update::Stage::Failed(why) => {
                 ui.colored_label(vizz_design::state::ARMED, why.as_str());
@@ -1046,7 +1046,7 @@ fn update_banner(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActio
 
 fn tone_colour(tone: vizz_licence::Tone) -> egui::Color32 {
     match tone {
-        vizz_licence::Tone::Good => GOOD,
+        vizz_licence::Tone::Good => vizz_design::ink::SECONDARY,
         vizz_licence::Tone::Note => WARN,
         vizz_licence::Tone::Bad => vizz_design::state::ARMED,
     }
@@ -2538,7 +2538,7 @@ fn health_section(ui: &mut egui::Ui, state: &PanelState) {
     // (the strip watches the recent percentage, this headline compares
     // the running average against the budget).
     let over = h.frame_avg_ms > state.frame_budget_ms;
-    let color = if over { WARN } else { GOOD };
+    let color = if over { WARN } else { vizz_design::ink::PRIMARY };
     ui.horizontal(|ui| {
         ui.heading(egui::RichText::new(format!("{:.0} fps", h.fps)).color(color));
         ui.label(
@@ -2598,7 +2598,7 @@ fn sparkline(ui: &mut egui::Ui, samples: &[f32], budget_ms: f32) {
     let budget_y = rect.bottom() - (budget_ms / peak) * rect.height();
     painter.line_segment(
         [egui::pos2(rect.left(), budget_y), egui::pos2(rect.right(), budget_y)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 90, 110)),
+        egui::Stroke::new(1.0, vizz_design::surface::TICK),
     );
 
     let step = rect.width() / samples.len().max(1) as f32;
@@ -2755,7 +2755,7 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
     }
     for out in &state.outputs {
         ui.horizontal(|ui| {
-            dot(ui, out.live, if out.live { GOOD } else { egui::Color32::from_gray(120) });
+            dot(ui, out.live, if out.live { GOOD } else { vizz_design::ink::FAINT });
             ui.label(&out.name);
         });
     }

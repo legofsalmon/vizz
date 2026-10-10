@@ -508,7 +508,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: &Shot, path: &str) {
     let view = target.create_view(&Default::default());
 
     let ctx = egui::Context::default();
-    ctx.set_visuals(egui::Visuals::dark());
+    vizz_design::look::apply(&ctx);
     let mut renderer = vizz_ui::EguiRendererForPreview::new(device, FORMAT);
     let mut last = None;
     // egui fades new surfaces in; advance its clock or the capture lands
