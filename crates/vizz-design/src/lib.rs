@@ -257,8 +257,9 @@ pub mod accent {
     pub const FILL_BRIGHT: Color32 = rgba(role::accent::DEFAULT);
 
     /// Live signal meters: LFO outputs, audio sparks, the beat pulse. A
-    /// meter is a reading, not a state, so it is neutral.
-    pub const METER: Color32 = rgba(role::ink::SECONDARY);
+    /// meter is a reading, not a state, so it is neutral: the shared
+    /// chart mark (see [`meter`](crate::meter)).
+    pub const METER: Color32 = rgba(role::chart::MARK);
     /// The meter's dim companion (history, the unaccented half).
     pub const METER_DIM: Color32 = rgba(role::line::STRONG);
 
@@ -298,6 +299,50 @@ pub mod accent {
     pub const NODE_SOURCE: Color32 = Color32::from_rgb(70, 120, 175);
     pub const NODE_OPERATOR: Color32 = Color32::from_rgb(150, 120, 60);
     pub const NODE_SINK: Color32 = Color32::from_rgb(70, 140, 100);
+}
+
+/// Level meters: the shared meter (design system 0.5.0, `charts.md`).
+///
+/// A healthy level is a grey bar, and only headroom running out is
+/// coloured: the fill is the chart mark up to the warn mark, `warn` up to
+/// the bad mark and `bad` beyond. The track is set into the panel. Healthy
+/// is quiet, so a band sitting comfortably under its ceiling says nothing
+/// in colour; one pinned at the top, clipping whatever it modulates, is
+/// the one that turns red.
+pub mod meter {
+    use super::{rgba, role};
+    use egui::Color32;
+
+    /// The empty meter: the inset surface, so a silent band still shows
+    /// how long a full one would be.
+    pub const TRACK: Color32 = rgba(role::surface::INSET);
+    /// A level with headroom left.
+    pub const FILL: Color32 = rgba(role::chart::MARK);
+    /// A peak hold's tick, where one is drawn.
+    pub const PEAK: Color32 = rgba(role::ink::PRIMARY);
+
+    /// Where an audio band's fill turns amber: a tenth from pinned, close
+    /// enough to the ceiling that the next hit will reach it.
+    pub const BAND_WARN_AT: f32 = 0.9;
+    /// Where it turns red: pinned at full, so whatever it modulates is
+    /// clipped and the gain wants turning down.
+    pub const BAND_BAD_AT: f32 = 0.999;
+
+    /// The fill colour for a level `v` (0 to 1) against its two marks.
+    pub fn fill(v: f32, warn_at: f32, bad_at: f32) -> Color32 {
+        if v >= bad_at {
+            rgba(role::bad::DEFAULT)
+        } else if v >= warn_at {
+            rgba(role::warn::DEFAULT)
+        } else {
+            FILL
+        }
+    }
+
+    /// An audio band's fill colour.
+    pub fn band(v: f32) -> Color32 {
+        fill(v, BAND_WARN_AT, BAND_BAD_AT)
+    }
 }
 
 /// Feedback chrome: what success, failure and danger sit on.
@@ -447,6 +492,10 @@ pub mod motion {
     /// they are clicked away.
     pub const NOTICE_TTL: Duration = Duration::from_millis(timing::NOTICE as u64);
     pub const NOTICE_ERROR_TTL: Duration = Duration::MAX;
+
+    /// How long work runs before it shows busy. Under a second a spinner
+    /// is noise: the pressed state already said the press landed.
+    pub const WAIT: f64 = timing::WAIT as f64 / 1000.0;
 
     /// How long the pointer rests before a hover hint shows.
     pub const TOOLTIP: f32 = timing::TOOLTIP as f32 / 1000.0;
@@ -633,6 +682,19 @@ mod tests {
         assert_eq!(super::state::ARMED, rgba(role::bad::DEFAULT));
         assert_eq!(super::surface::FOCUS, rgba(role::FOCUS));
         assert_eq!(super::ink::FAINT, rgba(role::ink::DISABLED));
+        assert_eq!(super::meter::FILL, rgba(role::chart::MARK));
+        assert_eq!(super::meter::TRACK, rgba(role::surface::INSET));
+    }
+
+    /// A meter is grey while it has headroom, and only the top of its
+    /// range is coloured.
+    #[test]
+    fn a_meter_is_quiet_until_headroom_runs_out() {
+        use super::meter::{band, FILL};
+        assert_eq!(band(0.0), FILL);
+        assert_eq!(band(0.6), FILL);
+        assert_eq!(band(0.95), super::state::WARN);
+        assert_eq!(band(1.0), super::state::ARMED);
     }
 
     /// A flattened wash is the wash laid on the surface, to the nearest

@@ -33,6 +33,16 @@ state model and its motion:
   where working has to be told from off (an output, a clock source).
   **Healthy is quiet:** a frame rate that is fine, a meter, "saved" —
   none of them is green.
+- **Meters** are the shared meter (0.5.0): `meter::TRACK` set into the
+  panel, a grey `meter::FILL` (the chart mark) while there is headroom,
+  amber from `BAND_WARN_AT` and red once a band is pinned at full and
+  clipping what it modulates. Only headroom running out is coloured.
+- **Busy waits a second.** A spinner shows only after `motion::WAIT`;
+  the controls it guards are disabled at once, so nothing flashes and
+  nothing can be pressed twice.
+- **A mode shows itself twice.** An armed learn is amber and says so
+  in words ("waiting", "MIDI: pick a pad", the learn banner), never by
+  colour alone.
 - **The neutrals.** The surfaces and edges are the shared untinted
   greys. vizz's used to lean blue, and a tinted chrome shifts what the
   eye reads as white in the picture next to it.
@@ -73,8 +83,10 @@ only.
 - **`accent`** — recurring non-state colours with fixed jobs:
   `DRIVEN` (violet: something other than your hand is driving this —
   a modulator, the autopilot), the fader fills (the accent's deep step,
-  capped in the accent), the neutral meters and master, the recording
+  capped in the accent), the neutral master, the recording
   family, the node-editor category hues.
+- **`meter`** — the level meters' track, fill and peak tick, and the
+  band marks where the fill turns amber and red.
 - **`feedback`** — what verdicts sit on. Inline text (`OK_TEXT` is
   neutral, `ERR_TEXT` is the stop ink — errors never share the success
   colour; that is how load failures once went unnoticed) and sheets

@@ -2471,7 +2471,7 @@ fn audio_strip(
                 ui.data_mut(|d| d.insert_temp(gate_crossed_id(i), now));
             }
             let (r, _) = ui.allocate_exact_size(vec2(each, 12.0), Sense::hover());
-            ui.painter().rect_filled(r, 2.0, TRACK);
+            ui.painter().rect_filled(r, 2.0, vizz_design::meter::TRACK);
             // The track was 15 RGB points off the background — invisible,
             // so a silent band vanished entirely and a fill's length had
             // nothing to be judged against. The hairline is the ruler.
@@ -2484,9 +2484,10 @@ fn audio_strip(
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(r.left_top(), vec2(r.width() * v, r.height())),
                 2.0,
-                // Warm at the top of the range: a band pinned at 1.0 is
-                // clipping its modulation and should not look healthy.
-                if v > 0.97 { WARN } else { vizz_design::accent::METER },
+                // Grey with headroom, amber near the top, red pinned at
+                // 1.0: a pinned band is clipping its modulation and should
+                // not look healthy.
+                vizz_design::meter::band(v),
             );
             // The gate line: where Kick and Snare open. A band that never
             // reaches it leaves its shape inert with the fader still

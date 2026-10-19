@@ -769,8 +769,11 @@ fn modes(ui: &mut egui::Ui, view: &GridView, state: &mut GridState, actions: &mu
             return;
         }
         let learning = state.mode == PadMode::Learn;
+        // Armed, a click on a pad binds it instead of firing it, so the
+        // button says so in words as well as amber: a mode shown by colour
+        // alone is one a glance from across the stage misses.
         let midi = egui::Button::new(if learning {
-            egui::RichText::new("MIDI").color(crate::theme::ON_LEARN)
+            egui::RichText::new("MIDI: pick a pad").color(crate::theme::ON_LEARN)
         } else {
             egui::RichText::new("MIDI")
         })
