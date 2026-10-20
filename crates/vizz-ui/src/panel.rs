@@ -1113,11 +1113,33 @@ fn licence_section(ui: &mut egui::Ui, view: &LicenceView, actions: &mut LicenceA
                 .color(vizz_design::ink::SECONDARY),
         );
     }
+    // Busy shows only once the work has run for `WAIT`. Most checks
+    // answer well inside a second, and a spinner that flashes for a frame
+    // is noise; the controls below are disabled from the first frame, so
+    // a second press cannot land in the meantime.
+    let since_id = egui::Id::new("licence-busy-since");
+    let now = ui.input(|i| i.time);
+    let busy_for = match snap.busy {
+        Some(_) => {
+            let since = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(since_id, || now));
+            now - since
+        }
+        None => {
+            ui.data_mut(|d| d.remove::<f64>(since_id));
+            0.0
+        }
+    };
     if let Some(busy) = snap.busy {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.small(busy);
-        });
+        if busy_for >= vizz_design::motion::WAIT {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.small(busy);
+            });
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                vizz_design::motion::WAIT - busy_for,
+            ));
+        }
     } else if let Some(msg) = &snap.message {
         let colour = if msg.error { vizz_design::feedback::ERR_TEXT } else { vizz_design::feedback::OK_TEXT };
         ui.label(egui::RichText::new(&msg.text).color(colour));
@@ -1731,11 +1753,11 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(80.0, 12.0), egui::Sense::hover());
     response.on_hover_text(
-        "top: what modulation gets · bottom: what is arriving · the red mark means this band \
-         is pinned at full",
+        "top: what modulation gets, amber near full · bottom: what is arriving · the red mark \
+         means this band is pinned at full",
     );
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(140));
+    p.rect_filled(rect, 2.0, vizz_design::meter::TRACK);
     let h = rect.height() * 0.5;
     p.rect_filled(
         egui::Rect::from_min_size(
@@ -1743,7 +1765,7 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
             egui::vec2(rect.width() * env.clamp(0.0, 1.0), h),
         ),
         1.0,
-        vizz_design::accent::METER,
+        vizz_design::meter::band(env),
     );
     // The gate line on the envelope half — see the performance strip.
     let gate_x = rect.left() + rect.width() * vizz_mod::shapes::GATE;
@@ -1767,7 +1789,7 @@ fn meter(ui: &mut egui::Ui, raw: f32, env: f32) {
                 egui::vec2(3.0, rect.height()),
             ),
             0.0,
-            WARN,
+            vizz_design::state::ARMED,
         );
     }
 }
@@ -2147,7 +2169,7 @@ fn modulation_section(
             // Live output, so it is obvious which LFO is doing what.
             let v = lfo.value();
             let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 10.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 2.0, egui::Color32::from_black_alpha(120));
+            ui.painter().rect_filled(rect, 2.0, vizz_design::meter::TRACK);
             let x = rect.left() + (v * 0.5 + 0.5) * rect.width();
             ui.painter().circle_filled(
                 egui::pos2(x, rect.center().y),
