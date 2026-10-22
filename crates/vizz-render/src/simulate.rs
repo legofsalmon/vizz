@@ -41,6 +41,11 @@
 //! And **crystal** is grown: Reiter's snowflake on a hexagonal
 //! lattice. **kuramoto** is a crowd of coupled oscillators, which is
 //! none of the above.
+//!
+//! **bars** is drawn rather than simulated: a few thick bars, each
+//! owned by a band, after Joëlle Snaith's visuals for Richie Hawtin. It
+//! is the first to answer the music through [`Rule`], a band rule with
+//! a level that touches the form and a level that breaks it.
 //!//! They cost between half a millisecond and twenty per frame, on a
 //! thread of their own, and a slow one loses frames rather than the
 //! picture: the renderer takes whatever the slot holds.
@@ -101,11 +106,114 @@ pub trait Simulation: Send {
     fn points(&self, out: &mut Vec<Point>);
 }
 
+/// A band rule: it opens when a band rises past `on`, closes again only
+/// once the band falls below `off`, and opens at most once per `hold`
+/// seconds.
+///
+/// Every simulation that answers a kick used to write this by hand, as
+/// `drive.bands[0] > 0.5 && since_kick > 0.3`. Written that way a band
+/// sitting just over the line fires on every frame the hold allows; the
+/// lower `off` level is what makes one hit one event, the hysteresis of
+/// a Schmitt trigger. It is also the rule Joëlle Snaith describes for
+/// her visuals for Richie Hawtin's DJ shows: each frequency band
+/// targeted on its own and allowed to act only within thresholds she
+/// sets, so quiet passages stay quiet.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gate {
+    pub on: f32,
+    pub off: f32,
+    pub hold: f32,
+    open: bool,
+    since: f32,
+}
+
+impl Gate {
+    pub const fn new(on: f32, off: f32, hold: f32) -> Self {
+        Self { on, off, hold, open: false, since: f32::INFINITY }
+    }
+
+    /// Advance by `dt` with the band at `level`; true on the frame the
+    /// gate opens, and on no other.
+    pub fn step(&mut self, level: f32, dt: f32) -> bool {
+        self.since += dt;
+        if self.open {
+            if level < self.off {
+                self.open = false;
+            }
+            return false;
+        }
+        if level > self.on && self.since >= self.hold {
+            self.open = true;
+            self.since = 0.0;
+            return true;
+        }
+        false
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// How far past the closing level `level` is, 0..1: nothing below
+    /// it, all of it at full scale. The continuous half of a rule, for
+    /// what should grow with the band rather than fire on it.
+    pub fn past(&self, level: f32) -> f32 {
+        ((level - self.off) / (1.0 - self.off).max(1e-3)).clamp(0.0, 1.0)
+    }
+}
+
+/// What a [`Rule`] did this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    Nothing,
+    /// The band passed the lower level: move the form a little.
+    Touch,
+    /// The band passed the upper level: break it.
+    Break,
+}
+
+/// A band rule at two levels: one that touches the form and one that
+/// breaks it. With a single level an ordinary groove either does
+/// nothing or breaks the form on every kick; with two, a groove moves
+/// it and only a big hit, a drop, breaks it, which is the restraint
+/// with occasional bursts that Snaith's show frames show.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rule {
+    pub touch: Gate,
+    pub hit: Gate,
+}
+
+impl Rule {
+    /// Touch at `touch`, break at `hit`, each closing at seven tenths
+    /// of its level, and neither firing again within `hold` seconds.
+    pub const fn new(touch: f32, hit: f32, hold: f32) -> Self {
+        Self { touch: Gate::new(touch, touch * 0.7, hold), hit: Gate::new(hit, hit * 0.72, hold) }
+    }
+
+    /// Advance both levels. A band that crosses both in one frame
+    /// breaks; one that climbs over two frames touches and then breaks.
+    pub fn step(&mut self, level: f32, dt: f32) -> Hit {
+        let touched = self.touch.step(level, dt);
+        if self.hit.step(level, dt) {
+            Hit::Break
+        } else if touched {
+            Hit::Touch
+        } else {
+            Hit::Nothing
+        }
+    }
+
+    /// How far past the touch level the band is, 0..1.
+    pub fn past(&self, level: f32) -> f32 {
+        self.touch.past(level)
+    }
+}
+
 /// Every simulation this crate can run, by the id `sim:<id>` names it.
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -145,6 +253,7 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "vortex" => Some(Box::new(Vortex::new())),
         "growth" => Some(Box::new(Growth::new())),
         "scope" => Some(Box::new(Scope::new())),
+        "bars" => Some(Box::new(Bars::new())),
         "polytope" => Some(Box::new(Polytope::new(&text("kind", "tesseract")))),
         _ => None,
     }
@@ -5279,6 +5388,197 @@ impl Simulation for Scope {
     }
 }
 
+// --- Bars -------------------------------------------------------------
+
+/// How many bars, where they sit and which band owns each: the kick the
+/// middle one, the bassline the two either side, the mids and highs the
+/// ones further out. Spaced unevenly, as hers are.
+const BARS: usize = 7;
+const BAR_Y: [f32; BARS] = [0.33, 0.23, 0.16, 0.0, -0.09, -0.22, -0.32];
+const BAR_BAND: [usize; BARS] = [3, 2, 1, 0, 1, 2, 3];
+/// Rows of points across a bar's thickness. Idle they lie on one line;
+/// a flare spreads them into a band, so the bar thickens.
+const BAR_ROWS: usize = 9;
+/// Points at the start of each bar, dark and stacked on its first point,
+/// so a line stroke reaching back from the bar finds zero length instead
+/// of drawing across the screen from the bar before.
+const BAR_LEAD: usize = 512;
+/// How many pieces a bar is cut into when a drop tears it.
+const BAR_SLICES: usize = 9;
+const BAR_REACH: f32 = 0.95;
+
+/// A few thick horizontal bars across the whole width, each owned by a
+/// band, after the bars in Joëlle Snaith's visuals for Richie Hawtin's
+/// DJ shows (Printworks 2022, Sónar 2023 and most nights between).
+///
+/// Idle the bars are dim, thin lines. A band past its touch level
+/// brightens its bars; past its break level they flare and thicken and
+/// a pulse runs out from the centre along them, slow for the kick and
+/// quick for the hats. How far the bassline is past its level spreads
+/// the stack apart. Only a drop, a kick that breaks with a burst of
+/// highs, cuts every bar into offset slices, and that fades in about a
+/// quarter of a second.
+///
+/// Each bar is drawn as rows snaking back and forth, so the line stroke
+/// joins them into solid bars. Brightness rides on each point's colour,
+/// which multiplies the palette; at a flare the graded path's tone curve
+/// carries a saturated hue to white, which is the look her shows have.
+pub struct Bars {
+    rules: [Rule; 4],
+    /// How flared each band's bars are, 1 at a break, decaying.
+    flare: [f32; 4],
+    /// How far past its touch level each band is.
+    past: [f32; 4],
+    /// Pulses running out along the bars: band, and age in seconds.
+    pulses: Vec<(usize, f32)>,
+    breath: f32,
+    tear: f32,
+    cut: [[f32; BAR_SLICES]; BARS],
+    since_kick: f32,
+    /// Seconds of the groove it plays to itself with no input.
+    clock: f32,
+    rng: Rng,
+}
+
+/// How fast each band's flare dies, per second: the kick holds longest.
+const BAR_DECAY: [f32; 4] = [4.0, 5.0, 7.0, 11.0];
+
+impl Bars {
+    pub fn new() -> Self {
+        Self {
+            rules: [
+                Rule::new(0.35, 0.55, 0.2),
+                Rule::new(0.30, 0.40, 0.12),
+                Rule::new(0.25, 0.45, 0.1),
+                Rule::new(0.22, 0.40, 0.06),
+            ],
+            flare: [0.0; 4],
+            past: [0.0; 4],
+            pulses: Vec::new(),
+            breath: 0.0,
+            tear: 0.0,
+            cut: [[0.5; BAR_SLICES]; BARS],
+            since_kick: 10.0,
+            clock: 0.0,
+            rng: Rng::new(0xBA25),
+        }
+    }
+
+    /// With nothing plugged in it plays itself a groove that touches
+    /// but never breaks: a kick on the beat at 120, hats off it.
+    fn own_bands(&self) -> [f32; 4] {
+        let beat = (self.clock * 2.0).fract();
+        let off = (beat + 0.5).fract();
+        [0.45 * (-beat * 8.0).exp(), 0.2, 0.1, 0.3 * (-off * 14.0).exp()]
+    }
+}
+
+impl Default for Bars {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Bars {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.clock += dt;
+        let bands = if drive.audio { drive.bands } else { self.own_bands() };
+        let mut broke_kick = false;
+        for (b, &level) in bands.iter().enumerate() {
+            match self.rules[b].step(level, dt) {
+                Hit::Break => {
+                    self.flare[b] = 1.0;
+                    self.pulses.push((b, 0.0));
+                    broke_kick |= b == 0;
+                }
+                Hit::Touch => self.flare[b] = self.flare[b].max(0.45),
+                Hit::Nothing => {}
+            }
+            self.flare[b] *= (-BAR_DECAY[b] * dt).exp();
+            self.past[b] = self.rules[b].past(level);
+        }
+        for p in &mut self.pulses {
+            p.1 += dt;
+        }
+        self.pulses.retain(|p| p.1 < 1.2);
+        let spread = self.rules[1].hit.past(bands[1]);
+        self.breath += (1.0 - (-4.0 * dt).exp()) * (spread - self.breath);
+        self.since_kick = if broke_kick { 0.0 } else { self.since_kick + dt };
+        // The cut: only a kick that breaks with the highs up beside it.
+        if self.since_kick < 0.25 && bands[3] > 0.65 && self.tear < 0.5 {
+            self.tear = 1.0;
+            for bar in &mut self.cut {
+                for c in bar.iter_mut() {
+                    *c = self.rng.f32();
+                }
+            }
+        }
+        self.tear *= (-4.0 * dt).exp();
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let per_bar = POINTS / BARS;
+        let cols = (per_bar - BAR_LEAD) / BAR_ROWS;
+        let dark = |x: f32, y: f32| Point { pos: [x, y, 0.0], normal: [0.0; 3], color: [0, 0, 0] };
+        for (i, (&y0, &b)) in BAR_Y.iter().zip(&BAR_BAND).enumerate() {
+            let f = self.flare[b];
+            let amt = self.past[b];
+            let y = y0 * (1.0 + 0.18 * self.breath);
+            let half = 1.1 * (0.004 + 0.016 * f + 0.004 * amt + 0.01 * self.tear);
+            let level = 0.08 + 0.3 * amt + 0.9 * f;
+            let start = out.len();
+            let target = start + per_bar;
+            for r in 0..BAR_ROWS {
+                // −1 at one edge of the bar, +1 at the other.
+                let v = r as f32 / (BAR_ROWS - 1) as f32 * 2.0 - 1.0;
+                // Idle, the rows lie on one line and would add up to nine
+                // times its light, so only the middle one is lit; the
+                // others come up as the bar spreads.
+                let spread = if r == BAR_ROWS / 2 { 1.0 } else { (1.5 * f + amt + self.tear).min(1.0) };
+                let row = (1.0 - 0.6 * v.abs()) * spread;
+                for c in 0..cols {
+                    // Rows snake, so the stroke turns at the bar's end
+                    // rather than jumping back across it.
+                    let k = if r % 2 == 0 { c } else { cols - 1 - c };
+                    let u = k as f32 / (cols - 1) as f32;
+                    let x = (u * 2.0 - 1.0) * BAR_REACH;
+                    let mut light = level;
+                    for &(pb, age) in &self.pulses {
+                        if pb == b {
+                            let front = age * (0.9 + 0.4 * pb as f32);
+                            let w = 0.03 + 0.02 * pb as f32;
+                            let d = ((u - 0.5).abs() - front) / w;
+                            light += 0.8 * (-d * d).exp() * (-2.5 * age).exp();
+                        }
+                    }
+                    let mut dy = 0.0;
+                    if self.tear > 0.05 {
+                        let cut = self.cut[i][((u * BAR_SLICES as f32) as usize).min(BAR_SLICES - 1)];
+                        dy = 1.1 * (cut - 0.5) * 0.08 * self.tear;
+                        light = light * if cut > 0.3 { 1.0 } else { 0.6 } + 0.6 * self.tear;
+                    }
+                    let g = (255.0 * (light * row).clamp(0.0, 1.0)) as u8;
+                    let p = Point { pos: [x, y + v * half + dy, 0.0], normal: [0.0; 3], color: [g, g, g] };
+                    if r == 0 && c == 0 {
+                        for _ in 0..BAR_LEAD {
+                            out.push(dark(p.pos[0], p.pos[1]));
+                        }
+                    }
+                    out.push(p);
+                }
+            }
+            // Whatever the rows did not use, dark on the bar's last point.
+            let last = out[out.len() - 1].pos;
+            let end = if i == BARS - 1 { POINTS } else { target };
+            while out.len() < end {
+                out.push(dark(last[0], last[1]));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6142,6 +6442,84 @@ mod tests {
         sim.points(&mut out);
         box_ok(&out);
         assert_eq!(out.len(), POINTS);
+    }
+
+    /// A gate opens once on the way up, not again until the band has
+    /// fallen below its lower level, and not within its hold.
+    #[test]
+    fn a_gate_is_one_event_per_hit() {
+        let mut g = Gate::new(0.5, 0.3, 0.2);
+        assert!(!g.step(0.4, 0.1), "it opened below its level");
+        assert!(g.step(0.6, 0.1));
+        assert!(!g.step(0.7, 0.1), "it fired twice on one hit");
+        assert!(!g.step(0.4, 0.1), "it closed above its lower level");
+        assert!(g.is_open());
+        assert!(!g.step(0.2, 0.1));
+        assert!(!g.is_open());
+        // Closed, but a hit straight after the last is inside the hold.
+        let mut quick = Gate::new(0.5, 0.3, 1.0);
+        assert!(quick.step(0.9, 0.1));
+        quick.step(0.0, 0.1);
+        assert!(!quick.step(0.9, 0.1), "it fired inside its hold");
+        assert_eq!(g.past(0.3), 0.0);
+        assert_eq!(g.past(1.0), 1.0);
+    }
+
+    /// A groove kick touches and a loud one breaks.
+    #[test]
+    fn a_rule_touches_before_it_breaks() {
+        let mut r = Rule::new(0.35, 0.55, 0.2);
+        assert_eq!(r.step(0.45, 1.0 / 60.0), Hit::Touch);
+        r.step(0.0, 0.5);
+        let mut loud = Rule::new(0.35, 0.55, 0.2);
+        assert_eq!(loud.step(0.9, 1.0 / 60.0), Hit::Break);
+    }
+
+    /// Quiet, the bars are dim, thin and level; a groove kick brightens
+    /// the middle bar without cutting anything; only a drop cuts them.
+    #[test]
+    fn bars_hold_still_until_a_drop_cuts_them() {
+        let dt = 1.0 / 60.0;
+        let hush = Drive { audio: true, ..Drive::default() };
+        let groove = Drive { bands: [0.48, 0.2, 0.1, 0.1], audio: true, ..Drive::default() };
+        let drop = Drive { bands: [0.95, 0.7, 0.8, 0.9], audio: true, ..Drive::default() };
+        // Points of bar `i`, past its dark lead-in.
+        let bar = |pts: &[Point], i: usize| pts[i * (POINTS / BARS) + BAR_LEAD..(i + 1) * (POINTS / BARS) - 512].to_vec();
+        let bright = |pts: &[Point]| pts.iter().map(|p| p.color[0] as f32).sum::<f32>() / pts.len() as f32;
+        let height = |pts: &[Point]| {
+            let ys = pts.iter().map(|p| p.pos[1]);
+            ys.clone().fold(f32::MIN, f32::max) - ys.fold(f32::MAX, f32::min)
+        };
+        let mut quiet = Bars::new();
+        let mut pts = Vec::new();
+        for _ in 0..30 {
+            quiet.step(dt, &hush);
+        }
+        quiet.points(&mut pts);
+        box_ok(&pts);
+        let (calm_light, calm_height) = (bright(&bar(&pts, 3)), height(&bar(&pts, 3)));
+        assert!(calm_light < 80.0, "quiet bars are not dim: {calm_light}");
+
+        let mut touched = Bars::new();
+        touched.step(dt, &hush);
+        touched.step(dt, &groove);
+        touched.points(&mut pts);
+        box_ok(&pts);
+        assert!(bright(&bar(&pts, 3)) > calm_light * 1.5, "a groove kick did not brighten the kick's bar");
+        assert!(touched.tear < 0.05, "a groove kick cut the bars");
+        assert!(height(&bar(&pts, 0)) <= calm_height + 1e-4, "a kick moved the highs' bar");
+
+        let mut dropped = Bars::new();
+        dropped.step(dt, &hush);
+        dropped.step(dt, &drop);
+        dropped.points(&mut pts);
+        box_ok(&pts);
+        assert!(dropped.tear > 0.9, "the drop did not cut the bars");
+        assert!(height(&bar(&pts, 3)) > calm_height * 3.0, "the drop did not thicken and cut the kick's bar");
+        for _ in 0..120 {
+            dropped.step(dt, &hush);
+        }
+        assert!(dropped.tear < 0.01, "the cut never healed");
     }
 
     /// Every simulation is reachable by id, and nothing else is.
