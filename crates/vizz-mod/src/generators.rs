@@ -1147,6 +1147,16 @@ pub const SIMULATIONS: &[Generator] = &[
         link: "https://oscilloscopemusic.com/",
     },
     Generator {
+        id: "bars",
+        name: "bars",
+        about: "a few thick bars across the whole width, each owned by a band — idle they are dim lines, a band past its first level brightens its bars, past its second they flare and a pulse runs out from the centre; only a drop, a kick with the highs up, cuts them into offset slices",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[],
+        cite: "Joëlle Snaith’s visuals for Richie Hawtin’s DJ shows (2021–), the bars at Printworks (2022) and Sónar (2023); band-owned rows after Trapcode Form’s audio reactors",
+        link: "https://www.joelle.xyz/visual-art/richie-hawtin-dj-shows",
+    },
+    Generator {
         id: "polytope",
         name: "polytope",
         about: "a regular solid of four dimensions, turning through the fourth and seen in ours — its cells swell towards you, pass through each other and shrink away, so it turns itself inside out; drawn as one unbroken walk along every edge, so lines draw the wireframe; the loudness turns it and the kick throws it",
