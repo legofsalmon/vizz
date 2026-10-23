@@ -80,6 +80,7 @@ fn main() {
         "/fx/shift",
         "/fx/grade",
         "/fx/exposure",
+        "/fx/burn",
         "/punch/flash",
         "/punch/black",
         "/punch/invert",

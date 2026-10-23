@@ -1157,6 +1157,18 @@ pub const SIMULATIONS: &[Generator] = &[
         link: "https://www.joelle.xyz/visual-art/richie-hawtin-dj-shows",
     },
     Generator {
+        id: "fold",
+        name: "fold",
+        about: "one thick glowing outline, a cube or a polytope held nearly face-on, that drifts in a breakdown — a kick past its first level cracks it and the pieces barely part, past its second it shatters into sixty shards that turn and fly and then come back together; the bassline twists it, the mids make the edges shiver, the highs open a tunnel of fainter outlines behind it",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[
+            Param { key: "kind", label: "kind", about: "cube, 5-cell, tesseract, 16-cell, 24-cell, 600-cell or 120-cell", default: "cube", kind: Kind::Text },
+        ],
+        cite: "Joëlle Snaith’s “Limbo”, as described in Sound and Vision #3, and her visuals for Richie Hawtin: the form shattering at Bonusz (2025) and the receding outlines at Málaga (2022); the walk is Hierholzer’s Eulerian circuit (1873)",
+        link: "https://onbd.substack.com/p/sound-and-vision-3",
+    },
+    Generator {
         id: "polytope",
         name: "polytope",
         about: "a regular solid of four dimensions, turning through the fourth and seen in ours — its cells swell towards you, pass through each other and shrink away, so it turns itself inside out; drawn as one unbroken walk along every edge, so lines draw the wireframe; the loudness turns it and the kick throws it",
