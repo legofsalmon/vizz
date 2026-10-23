@@ -1090,7 +1090,7 @@ impl FrameEngine {
                 bg_r: self.snapshot.get(p.bg_r) * dim,
                 bg_g: self.snapshot.get(p.bg_g) * dim,
                 bg_b: self.snapshot.get(p.bg_b) * dim,
-                _pad0: 0.0,
+                burn: self.snapshot.get(p.burn),
                 _pad1: 0.0,
                 _pad2: 0.0,
             },

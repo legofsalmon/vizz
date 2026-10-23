@@ -45,8 +45,11 @@
 //! **bars** is drawn rather than simulated: a few thick bars, each
 //! owned by a band, after Joëlle Snaith's visuals for Richie Hawtin. It
 //! is the first to answer the music through [`Rule`], a band rule with
-//! a level that touches the form and a level that breaks it.
-//!//! They cost between half a millisecond and twenty per frame, on a
+//! a level that touches the form and a level that breaks it. **fold**
+//! is the second: one thick outline that a kick cracks or shatters into
+//! shards, with a tunnel of fainter outlines behind it from the highs.
+//!
+//! They cost between half a millisecond and twenty per frame, on a
 //! thread of their own, and a slow one loses frames rather than the
 //! picture: the renderer takes whatever the slot holds.
 
@@ -213,7 +216,7 @@ impl Rule {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars", "fold"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -254,6 +257,7 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "growth" => Some(Box::new(Growth::new())),
         "scope" => Some(Box::new(Scope::new())),
         "bars" => Some(Box::new(Bars::new())),
+        "fold" => Some(Box::new(Fold::new(&text("kind", "cube")))),
         "polytope" => Some(Box::new(Polytope::new(&text("kind", "tesseract")))),
         _ => None,
     }
@@ -5031,6 +5035,11 @@ fn cell_centres(v: &[[f64; 4]]) -> Vec<[f64; 4]> {
 /// the start when every degree is even, then splice in a tour from any
 /// vertex on the way that still has edges left.
 fn circuit_points(v: &[[f64; 4]], edges: &[(usize, usize)]) -> Vec<[f32; 4]> {
+    circuit_points_n(v, edges, POINTS)
+}
+
+/// As [`circuit_points`], `n` points long.
+fn circuit_points_n(v: &[[f64; 4]], edges: &[(usize, usize)], n: usize) -> Vec<[f32; 4]> {
     let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); v.len()];
     for (e, &(a, b)) in edges.iter().enumerate() {
         adj[a].push((b, e));
@@ -5057,9 +5066,9 @@ fn circuit_points(v: &[[f64; 4]], edges: &[(usize, usize)]) -> Vec<[f32; 4]> {
     // Spread the points over the whole tour by length, not per edge, so
     // the total is exactly POINTS however many edges there are.
     let legs = tour.len().saturating_sub(1).max(1);
-    (0..POINTS)
+    (0..n)
         .map(|i| {
-            let t = i as f64 / POINTS as f64 * legs as f64;
+            let t = i as f64 / n as f64 * legs as f64;
             let leg = (t.floor() as usize).min(legs - 1);
             let f = t - leg as f64;
             let (a, b) = (&v[tour[leg]], &v[tour[(leg + 1).min(tour.len() - 1)]]);
@@ -5575,6 +5584,279 @@ impl Simulation for Bars {
             while out.len() < end {
                 out.push(dark(last[0], last[1]));
             }
+        }
+    }
+}
+
+// --- Fold -------------------------------------------------------------
+
+/// Copies of the walk drawn side by side to make the outline thick.
+const FOLD_LANES: usize = 3;
+/// Copies drawn smaller and further back, for the highs.
+const FOLD_ECHOES: usize = 4;
+/// Points in one copy of the outline's walk, and in one echo.
+const FOLD_WALK: usize = 12_288;
+const FOLD_ECHO_WALK: usize = 6_144;
+/// Pieces the walk is cut into, for a crack and for a shatter.
+const SHARDS: usize = 60;
+/// Points at the start of a piece that go dark once it has moved, so a
+/// line stroke reaching back across the break does not draw a line from
+/// one piece to the last. The stroke reaches back at most 32.
+const SHARD_LEAD: usize = 34;
+
+/// One thick glowing outline, a cube or one of the regular polytopes,
+/// held nearly face-on, after Joëlle Snaith's visuals for Richie Hawtin.
+///
+/// Her *Limbo* is "a rotating, glowing cube outlined against a black
+/// background" that the audio folds in on itself, expands and explodes,
+/// with ambient sound barely moving it and bass hits disrupting it most
+/// (*Sound and Vision* #3); at Bonusz 2025 a form breaks into hundreds
+/// of shards, and at Málaga 2022 outlines recede into depth. So: in a
+/// breakdown it only drifts. A kick past its touch level cracks the
+/// outline, the pieces barely parting and healing in a third of a second.
+/// A kick past its break level shatters it into sixty shards that turn
+/// and fly outward, harder the further past, then come back together as
+/// the hit decays. The bassline twists it about its vertical axis, most
+/// at the top and bottom; the mids set a fine shiver along each edge; the
+/// highs bring up to four fainter outlines receding into a tunnel behind.
+///
+/// The edges are one walk, an Eulerian circuit as `polytope` draws, so the
+/// line stroke draws them; the cube's corners have three edges, an odd
+/// number, so its walk takes every edge twice. Shards are the walk cut
+/// into runs, each moved and turned as a piece.
+pub struct Fold {
+    walk: Vec<[f32; 4]>,
+    echo: Vec<[f32; 4]>,
+    four: bool,
+    rules: [Rule; 4],
+    /// Brightness from the kick, 1 at a break, decaying.
+    flare: f32,
+    /// Seconds since the last crack and the last shatter, and how hard
+    /// the shatter was.
+    since_crack: f32,
+    since_shatter: f32,
+    force: f32,
+    twist: f32,
+    shiver: f32,
+    tunnel: f32,
+    clock: f32,
+    /// Per shard: which way it flies, how far, the axis it turns about
+    /// and how far it turns.
+    fly: Vec<[f32; 3]>,
+    axis: Vec<[f32; 3]>,
+    turn: Vec<f32>,
+    rng: Rng,
+}
+
+impl Fold {
+    pub const KINDS: &'static [&'static str] =
+        &["cube", "5-cell", "tesseract", "16-cell", "24-cell", "600-cell", "120-cell"];
+
+    pub fn new(kind: &str) -> Self {
+        let four = kind != "cube" && Polytope::KINDS.contains(&kind);
+        let (verts, mut edges) = if four {
+            polytope(kind)
+        } else {
+            let v: Vec<[f64; 4]> = (0..8)
+                .map(|i| {
+                    let c = |k: u32| if i >> k & 1 == 1 { 1.0 / 3f64.sqrt() } else { -1.0 / 3f64.sqrt() };
+                    [c(0), c(1), c(2), 0.0]
+                })
+                .collect();
+            let e = (0..8usize)
+                .flat_map(|a| (a + 1..8).map(move |b| (a, b)))
+                .filter(|&(a, b)| (a ^ b).count_ones() == 1)
+                .collect();
+            (v, e)
+        };
+        let mut degree = vec![0; verts.len()];
+        for &(a, b) in &edges {
+            degree[a] += 1;
+            degree[b] += 1;
+        }
+        if degree.iter().any(|d| d % 2 == 1) {
+            edges.extend(edges.clone());
+        }
+        let walk = circuit_points_n(&verts, &edges, FOLD_WALK);
+        let echo = circuit_points_n(&verts, &edges, FOLD_ECHO_WALK);
+        let mut rng = Rng::new(0xF01D);
+        let mut fly = Vec::with_capacity(SHARDS);
+        let mut axis = Vec::with_capacity(SHARDS);
+        let mut turn = Vec::with_capacity(SHARDS);
+        for j in 0..SHARDS {
+            // Outward from where the piece sits, with some scatter.
+            let mid = walk[(j * FOLD_WALK + FOLD_WALK / 2) / SHARDS];
+            let r = rng.on_sphere();
+            let d = [mid[0] + 0.6 * r[0], mid[1] + 0.6 * r[1], mid[2] + 0.6 * r[2]];
+            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-3);
+            let far = 0.2 + 0.25 * rng.f32();
+            fly.push([d[0] / n * far, d[1] / n * far, d[2] / n * far]);
+            axis.push(rng.on_sphere());
+            turn.push((1.5 + 3.0 * rng.f32()) * if rng.f32() < 0.5 { -1.0 } else { 1.0 });
+        }
+        Self {
+            walk,
+            echo,
+            four,
+            rules: [
+                Rule::new(0.35, 0.55, 0.2),
+                Rule::new(0.25, 0.5, 0.1),
+                Rule::new(0.30, 0.5, 0.1),
+                Rule::new(0.25, 0.5, 0.1),
+            ],
+            flare: 0.0,
+            since_crack: 10.0,
+            since_shatter: 10.0,
+            force: 1.0,
+            twist: 0.0,
+            shiver: 0.0,
+            tunnel: 0.0,
+            clock: 0.0,
+            fly,
+            axis,
+            turn,
+            rng,
+        }
+    }
+
+    /// How far the pieces are out, for a crack and for a shatter: up
+    /// quickly, back slowly.
+    fn crack(&self) -> f32 {
+        let t = self.since_crack;
+        (1.0 - (-t * 30.0).exp()) * (-t * 9.0).exp()
+    }
+
+    fn shatter(&self) -> f32 {
+        let t = self.since_shatter;
+        self.force * (1.0 - (-t * 9.0).exp()) * (-t * 1.6).exp()
+    }
+
+    /// A point of the walk at rest: projected out of four dimensions if it
+    /// has them, turned to its drift, twisted by the bassline.
+    fn rest(&self, p: [f32; 4], scale: f32) -> [f32; 3] {
+        let [mut x, mut y, mut z, w] = p;
+        if self.four {
+            let (sa, ca) = (0.07 * self.clock).sin_cos();
+            let (x4, w4) = (x * ca - w * sa, x * sa + w * ca);
+            let k = 0.8 * (EYE_W * EYE_W - 1.0).sqrt() / (EYE_W - w4) / 1.25;
+            (x, y, z) = (x4 * k, y * k, z * k);
+        }
+        let (x, y, z) = (x * 0.62 * scale, y * 0.62 * scale, z * 0.62 * scale);
+        // Nearly face-on, turning a little this way and that.
+        let yaw = 0.32 * (0.17 * self.clock).sin() + self.twist * 1.4 * y;
+        let pitch = 0.14 * (0.11 * self.clock + 1.0).sin();
+        let (sy, cy) = yaw.sin_cos();
+        let (x, z) = (x * cy + z * sy, -x * sy + z * cy);
+        let (sp, cp) = pitch.sin_cos();
+        let (y, z) = (y * cp - z * sp, y * sp + z * cp);
+        [x, y, z]
+    }
+}
+
+impl Default for Fold {
+    fn default() -> Self {
+        Self::new("cube")
+    }
+}
+
+/// `v` turned by `angle` about the unit `axis` (Rodrigues).
+fn turn_about(v: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
+    let (s, c) = angle.sin_cos();
+    let d = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+    let x = [
+        axis[1] * v[2] - axis[2] * v[1],
+        axis[2] * v[0] - axis[0] * v[2],
+        axis[0] * v[1] - axis[1] * v[0],
+    ];
+    std::array::from_fn(|k| v[k] * c + x[k] * s + axis[k] * d * (1.0 - c))
+}
+
+impl Simulation for Fold {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.clock += dt;
+        self.since_crack += dt;
+        self.since_shatter += dt;
+        // With nothing plugged in it only drifts, as in a breakdown.
+        let bands = if drive.audio { drive.bands } else { [0.0; 4] };
+        match self.rules[0].step(bands[0], dt) {
+            Hit::Break => {
+                self.since_shatter = 0.0;
+                self.force = 1.0 + self.rules[0].hit.past(bands[0]);
+                self.flare = 1.0;
+                // A fresh scatter each time, so no two drops look alike.
+                for t in &mut self.turn {
+                    *t *= 0.7 + 0.6 * self.rng.f32();
+                    *t = t.clamp(-6.0, 6.0);
+                }
+            }
+            Hit::Touch => {
+                self.since_crack = 0.0;
+                self.flare = self.flare.max(0.45);
+            }
+            Hit::Nothing => {}
+        }
+        for (rule, &level) in self.rules.iter_mut().zip(&bands).skip(1) {
+            rule.step(level, dt);
+        }
+        self.flare *= (-4.0 * dt).exp();
+        let ease = 1.0 - (-6.0 * dt).exp();
+        self.twist += ease * (self.rules[1].past(bands[1]) - self.twist);
+        self.shiver += ease * (self.rules[2].past(bands[2]) - self.shiver);
+        let ease = 1.0 - (-3.0 * dt).exp();
+        self.tunnel += ease * (self.rules[3].past(bands[3]) - self.tunnel);
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let crack = self.crack();
+        let shatter = self.shatter();
+        let level = 0.3 + 0.7 * self.flare;
+        let thick = 0.007 + 0.02 * self.flare + 0.01 * shatter.min(1.0);
+        let moved = (crack * 3.0 + shatter * 4.0).min(1.0);
+        for lane in 0..FOLD_LANES {
+            let off = lane as f32 - (FOLD_LANES - 1) as f32 / 2.0;
+            let weight = if off == 0.0 { 1.0 } else { 0.55 };
+            for (i, &p) in self.walk.iter().enumerate() {
+                let j = i * SHARDS / FOLD_WALK;
+                let first = (j * FOLD_WALK).div_ceil(SHARDS);
+                let mut q = self.rest(p, 1.0 + off * thick);
+                if self.shiver > 0.01 {
+                    let s = 0.012 * self.shiver * (i as f32 * 0.37 + self.clock * 41.0).sin();
+                    q[2] += s;
+                    q[1] += 0.5 * s;
+                }
+                if moved > 0.0 {
+                    let mid = self.rest(self.walk[(j * FOLD_WALK + FOLD_WALK / 2) / SHARDS], 1.0);
+                    let rel = [q[0] - mid[0], q[1] - mid[1], q[2] - mid[2]];
+                    let rel = turn_about(rel, self.axis[j], self.turn[j] * shatter * 0.6);
+                    let f = &self.fly[j];
+                    let out_by = 0.12 * crack + shatter;
+                    q = std::array::from_fn(|k| mid[k] + rel[k] + f[k] * out_by);
+                }
+                let lead = if i - first < SHARD_LEAD { 1.0 - moved } else { 1.0 };
+                let g = (255.0 * (level * weight * lead).clamp(0.0, 1.0)) as u8;
+                // The hardest drop can throw a piece to the box's wall;
+                // it stops there rather than leaving the slot.
+                let q = q.map(|c| c.clamp(-0.99, 0.99));
+                out.push(Point { pos: q, normal: [0.0; 3], color: [g, g, g] });
+            }
+        }
+        // The tunnel: smaller copies further back, each fainter.
+        for e in 1..=FOLD_ECHOES {
+            let on = (self.tunnel * FOLD_ECHOES as f32 - (e - 1) as f32).clamp(0.0, 1.0);
+            let scale = 0.8f32.powi(e as i32);
+            let light = on * level * 0.6f32.powi(e as i32);
+            for (i, &p) in self.echo.iter().enumerate() {
+                let mut q = self.rest(p, scale);
+                q[2] -= 0.14 * e as f32;
+                let g = if i < SHARD_LEAD { 0 } else { (255.0 * light.clamp(0.0, 1.0)) as u8 };
+                out.push(Point { pos: q, normal: [0.0; 3], color: [g, g, g] });
+            }
+        }
+        let last = out[out.len() - 1].pos;
+        while out.len() < POINTS {
+            out.push(Point { pos: last, normal: [0.0; 3], color: [0, 0, 0] });
         }
     }
 }
@@ -6520,6 +6802,77 @@ mod tests {
             dropped.step(dt, &hush);
         }
         assert!(dropped.tear < 0.01, "the cut never healed");
+    }
+
+    /// fold drifts in a breakdown, a groove kick only cracks it and the
+    /// pieces heal, a drop shatters it and it comes back together, and
+    /// the highs bring up the tunnel behind it.
+    #[test]
+    fn fold_cracks_shatters_and_comes_back() {
+        let dt = 1.0 / 60.0;
+        let hush = Drive { audio: true, ..Drive::default() };
+        let groove = Drive { bands: [0.45, 0.1, 0.1, 0.1], audio: true, ..Drive::default() };
+        let drop = Drive { bands: [0.95, 0.1, 0.1, 0.1], audio: true, ..Drive::default() };
+        let highs = Drive { bands: [0.0, 0.0, 0.0, 0.9], audio: true, ..Drive::default() };
+        let outline = FOLD_LANES * FOLD_WALK;
+        // How far the outline's points are from where they were.
+        let moved = |a: &[Point], b: &[Point]| {
+            a[..outline].iter().zip(&b[..outline])
+                .map(|(p, q)| (0..3).map(|k| (p.pos[k] - q.pos[k]).powi(2)).sum::<f32>().sqrt())
+                .fold(0.0f32, f32::max)
+        };
+        let lit = |pts: &[Point]| pts.iter().filter(|p| p.color[0] > 0).count();
+
+        for kind in Fold::KINDS {
+            let f = Fold::new(kind);
+            let mut pts = Vec::new();
+            f.points(&mut pts);
+            assert_eq!(pts.len(), POINTS, "{kind}");
+            box_ok(&pts);
+            // Each copy of the walk closes on itself, so the line stroke
+            // never jumps across the form at the seam.
+            let seam = (0..3).map(|k| (f.walk[0][k] - f.walk[FOLD_WALK - 1][k]).powi(2)).sum::<f32>().sqrt();
+            assert!(seam < 0.05, "{kind}'s walk does not close: {seam}");
+        }
+
+        let mut f = Fold::new("cube");
+        let (mut rest, mut now) = (Vec::new(), Vec::new());
+        f.step(dt, &hush);
+        f.points(&mut rest);
+        assert_eq!(lit(&rest[outline..]), 0, "a tunnel with no highs");
+
+        f.step(dt, &groove);
+        for _ in 0..6 {
+            f.step(dt, &hush);
+        }
+        f.points(&mut now);
+        let crack = moved(&rest, &now);
+        assert!(crack > 0.005 && crack < 0.15, "a groove kick should crack, not shatter: {crack}");
+        for _ in 0..40 {
+            f.step(dt, &hush);
+        }
+        f.points(&mut rest);
+
+        f.step(dt, &drop);
+        for _ in 0..18 {
+            f.step(dt, &hush);
+        }
+        f.points(&mut now);
+        box_ok(&now);
+        let shatter = moved(&rest, &now);
+        assert!(shatter > 0.25, "the drop did not shatter it: {shatter}");
+        for _ in 0..240 {
+            f.step(dt, &hush);
+        }
+        f.points(&mut now);
+        // Back together, give or take its own drift over those seconds.
+        assert!(f.shatter() < 0.02, "the shards never came back");
+
+        for _ in 0..120 {
+            f.step(dt, &highs);
+        }
+        f.points(&mut now);
+        assert!(lit(&now[outline..]) > 3 * FOLD_ECHO_WALK, "the highs did not bring up the tunnel");
     }
 
     /// Every simulation is reachable by id, and nothing else is.

@@ -29,7 +29,7 @@ struct Post {
     bg_r: f32,        // the background the scene cleared to, linear
     bg_g: f32,
     bg_b: f32,
-    _pad0: f32,
+    burn: f32,        // graded path: how far the hottest light goes to white
     _pad1: f32,
     _pad2: f32,
 };
@@ -200,7 +200,19 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
         // chosen to match a venue comes out nearly black — the curve's toe
         // is doing its job, on something that is not the subject.
         let bg = vec3<f32>(u.bg_r, u.bg_g, u.bg_b);
-        graded = bg + agx(max(hdr - bg, vec3<f32>(0.0)) * exposure[0]);
+        var lit = max(hdr - bg, vec3<f32>(0.0)) * exposure[0];
+        // Burn: the path to white a camera takes on an overexposed light.
+        // AgX desaturates as it compresses, but its inset is mild, so a
+        // pure primary metered onto the shoulder comes out as that primary
+        // however hot it is. Lifting every channel towards the brightest
+        // one, from about a third of the metered highlight up to it, makes
+        // the hottest cores white and leaves the dimmer light, and the
+        // bloom's falloff, the colour it was.
+        if (u.burn > 0.0) {
+            let peak = max(lit.r, max(lit.g, lit.b));
+            lit = mix(lit, vec3<f32>(peak), clamp(u.burn, 0.0, 1.0) * smoothstep(0.5, 1.5, peak));
+        }
+        graded = bg + agx(lit);
         graded_alpha = clamp(mix(alpha, bloom.a, spread), 0.0, 1.0);
     }
 

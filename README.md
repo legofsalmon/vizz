@@ -2165,7 +2165,13 @@ becomes a mip-chain bloom (Jimenez, SIGGRAPH 2014) that falls off from a
 sharp core to a wide haze, still set by `/fx/glow`. And the curve is AgX
 (Sobotka), which rolls a dense core of saturated sprites off to white
 rather than clipping it to a flat disc of colour. At 0, the default, none
-of it runs, so every saved look draws exactly as it did.
+of it runs, so every saved look draws exactly as it did. **Burn**
+(`/fx/burn`) goes further: AgX keeps a pure primary that colour however
+bright it is, so a red flare stays red. Burn lifts every channel of the
+hottest light towards its brightest, the way a camera clips an overexposed
+LED wall, so the cores go white and the dimmer light and the bloom keep the
+hue. It is what makes one saturated colour read like Joëlle Snaith's red
+shows for Richie Hawtin.
 
 Buffers are `Rgba16Float`: trails accumulate past 1.0, and 8-bit would
 band and clip before the tone-map could roll it off.
@@ -2323,6 +2329,7 @@ and the aliases are read on the way in only.
 | `/fx/shift` | 0 – 1 | 0 | radial RGB split (chromatic aberration) |
 | `/fx/grade` | 0 – 1 | 0 | filmic grade: metered exposure, mip bloom and AgX, mixed over the original picture |
 | `/fx/exposure` | -4 – 4 | 0 | graded exposure bias, in stops |
+| `/fx/burn` | 0 – 1 | 0 | graded: how far the hottest light goes to white, as an overexposed LED does on camera |
 | `/punch/flash` | 0 – 1 | 0 | white-out while held — Space, a punch button, or a learned MIDI note |
 | `/punch/black` | 0 – 1 | 0 | blackout while held; rgb only, coverage stays |
 | `/punch/invert` | 0 – 1 | 0 | invert the finished picture while held |
