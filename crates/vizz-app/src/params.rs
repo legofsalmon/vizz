@@ -108,6 +108,7 @@ pub struct AppParams {
     pub shift: ParamId,
     pub grade: ParamId,
     pub exposure: ParamId,
+    pub burn: ParamId,
     pub punch_flash: ParamId,
     pub punch_black: ParamId,
     pub punch_invert: ParamId,
@@ -225,6 +226,7 @@ const HELP: &[(&str, &str)] = &[
     ("/fx/shift", "radial RGB split (chromatic aberration)"),
     ("/fx/grade", "filmic grade: metered exposure, mip bloom and AgX, mixed over the original picture"),
     ("/fx/exposure", "graded exposure bias, in stops"),
+    ("/fx/burn", "graded: how far the hottest light goes to white, as an overexposed LED does on camera"),
     ("/punch/flash", "white-out while held — Space, a punch button, or a learned MIDI note"),
     ("/punch/black", "blackout while held; rgb only, coverage stays"),
     ("/punch/invert", "invert the finished picture while held"),
@@ -538,6 +540,9 @@ impl AppParams {
         // not run at all.
         let grade = b.add(ParamDef::new("/fx/grade", 0.0, 1.0, 0.0).smooth(0.3));
         let exposure = b.add(ParamDef::new("/fx/exposure", -4.0, 4.0, 0.0).smooth(0.2));
+        // Zero by default, like the grade itself: a saturated look stays
+        // saturated until someone asks for its cores to burn.
+        let burn = b.add(ParamDef::new("/fx/burn", 0.0, 1.0, 0.0).smooth(0.2));
         // Punch effects: the things you do on the drop. All gestures —
         // resting at zero, never smoothed (a flash that fades in is not a
         // flash), excluded from presets (recalling a look must not replay
@@ -1021,6 +1026,7 @@ impl AppParams {
             shift,
             grade,
             exposure,
+            burn,
             palette,
             color_spread,
             color_drive,

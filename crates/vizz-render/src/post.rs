@@ -65,7 +65,12 @@ pub struct PostUniforms {
     pub bg_r: f32,
     pub bg_g: f32,
     pub bg_b: f32,
-    pub _pad0: f32,
+    /// How far the brightest light goes to white on the graded path,
+    /// 0..1. At 1 a light metered onto the curve's shoulder has every
+    /// channel lifted to its brightest, the way a camera clips an
+    /// overexposed LED wall, so a saturated red core reads white and only
+    /// its falloff keeps the colour. At 0 nothing changes.
+    pub burn: f32,
     pub _pad1: f32,
     pub _pad2: f32,
 }
@@ -454,6 +459,23 @@ mod tests {
         grade: f32,
         brightness: f32,
     ) -> Vec<u8> {
+        render_chain_look(ctx, background, glow, trail, flash, black, grade, brightness, None)
+    }
+
+    /// As above; with `burn` set, the field is a fully saturated red and
+    /// the graded path burns at that amount.
+    #[allow(clippy::too_many_arguments)]
+    fn render_chain_look(
+        ctx: &GpuContext,
+        background: wgpu::Color,
+        glow: f32,
+        trail: f32,
+        flash: f32,
+        black: f32,
+        grade: f32,
+        brightness: f32,
+        burn: Option<f32>,
+    ) -> Vec<u8> {
         let mut post = PostChain::new(ctx, W, W, crate::output::OUTPUT_FORMAT);
         let scene = ParticleScene::new(ctx, SCENE_FORMAT);
         let master = ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -487,14 +509,14 @@ mod tests {
             aspect: 1.0,
             size: 0.02,
             spread: 1.0,
-            hue: 0.5,
-            saturation: 0.8,
+            hue: if burn.is_some() { 0.0 } else { 0.5 },
+            saturation: if burn.is_some() { 1.0 } else { 0.8 },
             brightness,
             shape: 0.0,
             morph: 0.0,
             twist: 0.0,
             palette: 0.0,
-            color_spread: 0.12,
+            color_spread: if burn.is_some() { 0.0 } else { 0.12 },
             color_drive: 0.0,
             cloud_a: 0.0,
             cloud_b: 1.0,
@@ -535,7 +557,7 @@ mod tests {
             bg_r: background.r as f32,
             bg_g: background.g as f32,
             bg_b: background.b as f32,
-            _pad0: 0.0,
+            burn: burn.unwrap_or(0.0),
             _pad1: 0.0,
             _pad2: 0.0,
         };
@@ -633,6 +655,34 @@ mod tests {
         for c in 0..3 {
             assert!(want[c].abs_diff(got[c]) <= 1, "the background moved: {want:?} -> {got:?}");
         }
+    }
+
+    /// Burn takes a saturated colour's hottest light to white and leaves
+    /// its dimmer light the colour it was. Without it, AgX keeps a pure
+    /// red red however hot it is, which is why Joëlle Snaith's red shows
+    /// could not be drawn before: their flares burn white.
+    #[test]
+    fn burn_whitens_only_the_hottest_light() {
+        let Some(ctx) = gpu() else { return };
+        let bg = crate::particles::SCENE_CLEAR;
+        // Pixels as (r, g, b), from the BGRA master.
+        let rgb = |px: Vec<u8>| -> Vec<[u8; 3]> {
+            px.as_chunks::<4>().0.iter().map(|p| [p[2], p[1], p[0]]).collect()
+        };
+        let whitish = |px: &[[u8; 3]]| px.iter().filter(|p| p[0] > 200 && p[1] > 180 && p[2] > 180).count();
+        let red = |px: &[[u8; 3]]| px.iter().filter(|p| p[0] > 40 && p[1] < p[0] / 3).count();
+
+        let hot = rgb(render_chain_look(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 1.0, 3.0, Some(0.0)));
+        let burnt = rgb(render_chain_look(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 1.0, 3.0, Some(1.0)));
+        assert!(whitish(&hot) * 20 < whitish(&burnt).max(1),
+            "burn made little white: {} without, {} with", whitish(&hot), whitish(&burnt));
+        assert!(red(&burnt) > whitish(&burnt) / 4,
+            "burn whitened the falloff too: {} red pixels left beside {} white", red(&burnt), whitish(&burnt));
+
+        // A dim field never reaches the shoulder, so burn leaves it red.
+        let dim = rgb(render_chain_look(&ctx, bg, 0.25, 0.0, 0.0, 0.0, 1.0, 0.05, Some(1.0)));
+        assert_eq!(whitish(&dim), 0, "burn whitened a field that was nowhere near hot");
+        assert!(red(&dim) > 0, "the dim field should still be red");
     }
 
     /// Half grade is between the two pictures, so the knob fades rather
