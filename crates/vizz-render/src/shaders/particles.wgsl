@@ -39,9 +39,11 @@ struct Uniforms {
     // Reach of each well, and the master amount in .w of the second.
     gravity_radius: vec4<f32>,
     gravity_amount: vec4<f32>,
-    /// How many palette rows hold a real ramp. Rows past this are empty
-    /// and read back black, so the index saturates here rather than
-    /// sweeping the field into one.
+    /// x: how many palette rows hold a real ramp. Rows past this are
+    /// empty and read back black, so the index saturates here rather
+    /// than sweeping the field into one. y and z: 1 where the cloud_a
+    /// and cloud_b slots are drawn sharp, without the scatter; the lanes
+    /// were spare. All filled in by the scene.
     palette_rows: vec4<f32>,
     // x present, y aspect, z depth, w relief mode
     video: vec4<f32>,
@@ -304,7 +306,10 @@ fn attractor_point(which: u32, h: f32, t: f32, jitter: vec3<f32>) -> vec3<f32> {
     // drives it like everything else.
     // Consecutive points are close together, so without a little spread
     // the cloud collapses onto a wire rather than reading as a volume.
-    return cloud_texel(which, h, t).xyz + jitter * 0.02;
+    // A slot drawn as lines wants the wire, and is marked sharp.
+    let sharp = (which == u32(u.cloud_a) && u.palette_rows.y > 0.5)
+        || (which == u32(u.cloud_b) && u.palette_rows.z > 0.5);
+    return cloud_texel(which, h, t).xyz + jitter * select(0.02, 0.0, sharp);
 }
 
 // Point positions for each geometry mode, all derived from the same four

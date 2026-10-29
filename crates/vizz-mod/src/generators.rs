@@ -1181,7 +1181,7 @@ pub const SIMULATIONS: &[Generator] = &[
     Generator {
         id: "ridges",
         name: "ridges",
-        about: "the last two seconds of the spectrum as twenty rows of ridges, newest at the front, each hiding the ones behind it — mirrored, so the kick stands up in the middle and the hats out at the sides; a quiet bin lies flat and a loud one stands up sharply; a kick past its break level flares the row it lands on, and the flare recedes with it",
+        about: "the last two seconds of the spectrum as forty rows of ridges, newest at the front, each hiding the ones behind it — mirrored, so the kick stands up in the middle and the hats out at the sides; a quiet bin lies flat and a loud one stands up sharply; a kick past its break level flares the row it lands on, and the flare recedes with it",
         family: Family::Shape,
         group: Group::Curve,
         params: &[],

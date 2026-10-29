@@ -230,6 +230,19 @@ impl Rule {
 pub const IDS: &[&str] =
     &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars", "fold", "cells", "ridges"];
 
+/// The simulations drawn as lines rather than as a cloud: an outline,
+/// a trace or rows, each one walk the line stroke follows. The renderer
+/// draws their slot sharp (`ParticleScene::set_sharp`), so a line is one
+/// line rather than a bundle of scattered copies.
+pub const SHARP: &[&str] = &["polytope", "scope", "bars", "fold", "cells", "ridges"];
+
+/// Whether the simulation `spec` starts is drawn sharp. Takes the same
+/// spec [`start`] does, settings and all.
+pub fn sharp(spec: &str) -> bool {
+    let id = spec.split_once('?').map_or(spec, |(id, _)| id);
+    SHARP.contains(&id)
+}
+
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
 pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
@@ -6265,19 +6278,19 @@ impl Simulation for Cells {
 
 // --- Ridges -----------------------------------------------------------
 
-/// Rows of history on screen, newest at the front. Fewer than the
-/// eighty on the sleeve: the renderer scatters every point of a cloud
-/// by up to 0.02 so a cloud reads as a volume, and rows much closer
-/// than three times that blur into one another.
-const RIDGE_ROWS: usize = 20;
+/// Rows of history on screen, newest at the front. Half the eighty on
+/// the sleeve, so each still has the points to draw a smooth line.
+/// Drawn sharp (see [`SHARP`]); scattered as a cloud is, rows this
+/// close would blur into one another.
+const RIDGE_ROWS: usize = 40;
 /// Points across one row.
-const RIDGE_COLS: usize = 3200;
+const RIDGE_COLS: usize = 1600;
 /// Points at the start of each row, dark and stacked on its first point,
 /// so the line stroke reaching back from a row does not draw a line from
 /// the end of the row in front of it.
 const RIDGE_LEAD: usize = 34;
-/// Seconds between rows: twenty of them is two seconds of history.
-const RIDGE_EVERY: f32 = 0.1;
+/// Seconds between rows: forty of them is two seconds of history.
+const RIDGE_EVERY: f32 = 0.05;
 /// Where the front and back rows' baselines sit, and how far the
 /// tallest peak rises.
 const RIDGE_FRONT: f32 = -0.72;
@@ -6291,7 +6304,7 @@ const RIDGE_REACH: f32 = 0.9;
 /// plot of successive pulses from the pulsar CP 1919 (1970), and after
 /// the spectrum terrains in Joëlle Snaith's visuals for Richie Hawtin.
 ///
-/// Each row is a tenth of a second of [`Drive::spectrum`], the loudest
+/// Each row is a twentieth of a second of [`Drive::spectrum`], the loudest
 /// each band was in it, so a kick shorter than a row still stands up.
 /// It is mirrored about the
 /// middle so the kick sits in the centre and the hats out at both
@@ -7634,6 +7647,17 @@ mod tests {
             box_ok(&out);
         }
         assert!(start("weather").is_none());
+    }
+
+    /// Every simulation drawn sharp is one that exists, and the check
+    /// reads past a spec's settings.
+    #[test]
+    fn the_sharp_simulations_are_real_ones() {
+        for id in SHARP {
+            assert!(IDS.contains(id), "{id} is drawn sharp but is not a simulation");
+        }
+        assert!(sharp("fold?kind=tesseract"));
+        assert!(!sharp("fluid"));
     }
 
     /// Each polytope has the vertices and edges Coxeter counts, and the

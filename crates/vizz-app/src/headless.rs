@@ -199,6 +199,10 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
                             points,
                             "live",
                         );
+                        scene.set_sharp(
+                            vizz_render::particles::ParticleScene::LIVE_SLOT,
+                            live.simulation().is_some_and(vizz_render::simulate::sharp),
+                        );
                     })
                     .is_some()
             {
