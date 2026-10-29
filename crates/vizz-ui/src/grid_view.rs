@@ -806,7 +806,7 @@ fn controls(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("blend").size(13.0).color(LABEL));
         let mut duration = view.duration;
-        let slider = egui::Slider::new(&mut duration, 0.0..=30.0)
+        let slider = vizz_design::controls::Slider::new(&mut duration, 0.0..=30.0)
             .suffix(" s")
             .clamping(egui::SliderClamping::Always);
         if ui
@@ -835,7 +835,7 @@ fn controls(ui: &mut egui::Ui, view: &GridView, actions: &mut GridActions) {
     ui.horizontal(|ui| {
         autopilot_toggle(ui, view, actions);
         let mut bars = view.bars;
-        let slider = egui::Slider::new(&mut bars, 0.25..=16.0)
+        let slider = vizz_design::controls::Slider::new(&mut bars, 0.25..=16.0)
             .suffix(" bars")
             .clamping(egui::SliderClamping::Always);
         if ui

@@ -95,7 +95,7 @@ fn draw_matrix(ctx: &egui::Context, _w: f32, _h: f32) {
 fn route_row(ui: &mut egui::Ui, src: &str, dst: &str, depth: &str, op: Option<&str>) {
     ui.horizontal(|ui| {
         let mut on = true;
-        ui.checkbox(&mut on, "");
+        ui.add(vizz_design::controls::Switch::new(&mut on, ""));
         ui.add_sized([46.0, 16.0], egui::Label::new(egui::RichText::new(src).small()));
         ui.small("->");
         ui.add_sized([94.0, 16.0], egui::Label::new(egui::RichText::new(dst).small()));
@@ -256,7 +256,7 @@ fn draw_flat(ctx: &egui::Context, _w: f32, _h: f32) {
         ] {
             ui.horizontal(|ui| {
                 let mut on = true;
-                ui.checkbox(&mut on, "");
+                ui.add(vizz_design::controls::Switch::new(&mut on, ""));
                 ui.add_sized([46.0, 16.0], egui::Label::new(egui::RichText::new(src).small()));
                 ui.small("->");
                 ui.add_sized([92.0, 16.0], egui::Label::new(egui::RichText::new(dst).small()));

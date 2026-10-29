@@ -137,7 +137,7 @@ pub(crate) fn section(ui: &mut egui::Ui, view: &HelpView, actions: &mut HelpActi
     // Crash reports: the setting, and anything waiting on it.
     let mut auto = view.auto_crash;
     if ui
-        .checkbox(&mut auto, "Send crash reports automatically")
+        .add(vizz_design::controls::Switch::new(&mut auto, "Send crash reports automatically"))
         .on_hover_text(
             "the version, the OS and the error's backtrace with your user name taken out — \
              never your shows, presets, sources, licence or email",
@@ -204,14 +204,14 @@ fn feedback_form(ui: &mut egui::Ui, view: &HelpView, actions: &mut HelpActions) 
             .desired_width(f32::INFINITY),
     );
     if view.has_licence {
-        ui.checkbox(&mut draft.include_licence, "Include my licence so you know who I am");
+        ui.add(vizz_design::controls::Check::new(&mut draft.include_licence, "Include my licence so you know who I am"));
     } else {
         draft.include_licence = false;
     }
-    ui.checkbox(
+    ui.add(vizz_design::controls::Check::new(
         &mut draft.public,
         "OK to post this publicly on the issue tracker, without my name or email",
-    );
+    ));
     let ok = sendable(&draft);
     ui.horizontal(|ui| {
         if ui.add_enabled(ok, egui::Button::new("send")).clicked() {
@@ -271,7 +271,7 @@ pub(crate) fn crash_prompt(ctx: &egui::Context, count: usize) -> Option<CrashAns
                     .desired_width(f32::INFINITY)
                     .hint_text("what were you doing? (optional)"),
             );
-            ui.checkbox(&mut always, "Always send crash reports");
+            ui.add(vizz_design::controls::Check::new(&mut always, "Always send crash reports"));
             ui.horizontal(|ui| {
                 if ui.button("Send").clicked() {
                     answer = Some(CrashAnswer { send: true, always, note: note.trim().to_string() });

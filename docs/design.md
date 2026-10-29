@@ -50,6 +50,10 @@ state model and its motion:
   hover, pressed, focus, selected and disabled the shared way
   (`look::apply`), so the hand-painted deck and egui's widgets are one
   language rather than two.
+- **The controls.** The checkbox, switch and slider are the system's
+  Material shapes (`controls`): a filled box with the tick in it, a
+  switch whose handle grows and carries a tick when on, and a thick
+  track filled up to an upright bar.
 - **Motion.** The shared durations and curves, and its reduced mode
   (`VIZZ_MOTION=reduced`, or macOS's Reduce motion), which keeps fades
   and drops travel.
@@ -105,6 +109,13 @@ only.
   for the mode this machine asked for.
 - **`look`** — egui's `Visuals` from the shared roles. Call
   `look::apply` once on the context.
+- **`controls`** — `Check`, `Switch` and `Slider`, in place of egui's
+  `checkbox` and `Slider`, which its visuals cannot reshape. Something
+  that takes effect at once is a `Switch`; a `Check` is for a form you
+  then send. `Slider` keeps egui's slider underneath, unpainted, for
+  the drag, the keys and the screen reader. Its handle stands the
+  row's height rather than the system's 24px target, so the parameter
+  list keeps its density.
 - **`widgets`** — idioms as code. `armed_button` is the app's one way
   to destroy something (first press relabels red in place and asks;
   the window lapsing or the pointer leaving disarms; arming one key in

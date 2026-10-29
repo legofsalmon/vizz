@@ -56,6 +56,7 @@ use egui::Color32;
 pub mod tokens;
 
 pub mod look;
+pub mod controls;
 pub mod widgets;
 
 use tokens::color::dark as role;

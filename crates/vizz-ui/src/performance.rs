@@ -1206,7 +1206,7 @@ fn deck_menu(
         let top = ((vizz_mod::deck::MAX_DECKS - 1) * crate::grid_view::SLOTS + 1) as f32;
         let slider = ui
             .add(
-                egui::Slider::new(&mut origin, 1.0..=top)
+                vizz_design::controls::Slider::new(&mut origin, 1.0..=top)
                     .step_by(1.0)
                     .clamping(egui::SliderClamping::Always),
             )
