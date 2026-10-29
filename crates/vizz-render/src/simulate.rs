@@ -50,6 +50,8 @@
 //! shards, with a tunnel of fainter outlines behind it from the highs.
 //! **cells** is the third: a Voronoi field that kicks split into smaller
 //! cells and quiet lets merge back, filled into flat facets on a drop.
+//! **ridges** is the last: the spectrum's history as rows of ridges,
+//! each hiding the ones behind it.
 //!
 //! They cost between half a millisecond and twenty per frame, on a
 //! thread of their own, and a slow one loses frames rather than the
@@ -226,7 +228,7 @@ impl Rule {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars", "fold", "cells"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars", "fold", "cells", "ridges"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -269,6 +271,7 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "bars" => Some(Box::new(Bars::new())),
         "fold" => Some(Box::new(Fold::new(&text("kind", "cube")))),
         "cells" => Some(Box::new(Cells::new())),
+        "ridges" => Some(Box::new(Ridges::new())),
         "polytope" => Some(Box::new(Polytope::new(&text("kind", "tesseract")))),
         _ => None,
     }
@@ -6260,6 +6263,209 @@ impl Simulation for Cells {
     }
 }
 
+// --- Ridges -----------------------------------------------------------
+
+/// Rows of history on screen, newest at the front. Fewer than the
+/// eighty on the sleeve: the renderer scatters every point of a cloud
+/// by up to 0.02 so a cloud reads as a volume, and rows much closer
+/// than three times that blur into one another.
+const RIDGE_ROWS: usize = 20;
+/// Points across one row.
+const RIDGE_COLS: usize = 3200;
+/// Points at the start of each row, dark and stacked on its first point,
+/// so the line stroke reaching back from a row does not draw a line from
+/// the end of the row in front of it.
+const RIDGE_LEAD: usize = 34;
+/// Seconds between rows: twenty of them is two seconds of history.
+const RIDGE_EVERY: f32 = 0.1;
+/// Where the front and back rows' baselines sit, and how far the
+/// tallest peak rises.
+const RIDGE_FRONT: f32 = -0.72;
+const RIDGE_BACK: f32 = 0.5;
+const RIDGE_RISE: f32 = 0.42;
+const RIDGE_REACH: f32 = 0.9;
+
+/// The spectrum's recent history as rows of ridges, one behind another,
+/// each hiding what is behind it, after Peter Saville's sleeve for Joy
+/// Division's *Unknown Pleasures* (1979), which reprinted Harold Craft's
+/// plot of successive pulses from the pulsar CP 1919 (1970), and after
+/// the spectrum terrains in Joëlle Snaith's visuals for Richie Hawtin.
+///
+/// Each row is a tenth of a second of [`Drive::spectrum`], the loudest
+/// each band was in it, so a kick shorter than a row still stands up.
+/// It is mirrored about the
+/// middle so the kick sits in the centre and the hats out at both
+/// sides, as `bars` lays them out. Rows scroll back and up as new ones
+/// arrive at the front. Only what rises past a floor moves, and then
+/// sharply, so a quiet bin lies flat and a loud one stands up as a
+/// peak. The kick goes through a [`Rule`]: past its touch level the
+/// newest row is brighter, past its break level it flares, and the
+/// flare stays with the row as it recedes. The bassline lifts every
+/// peak a little.
+///
+/// The hiding is the floating horizon (Wright, "A Two-Space Solution to
+/// the Hidden Line Problem for Plotting Functions of Two Variables",
+/// *IEEE Transactions on Computers* C-22(1), 1973): rows are drawn
+/// front to back, and a point shows only where it rises above every
+/// row drawn before it. Hidden points stay in the walk, dark, so the
+/// stroke breaks where a ridge goes behind another. It is worked out
+/// for a camera looking straight on.
+pub struct Ridges {
+    /// Spectrum per row, newest first.
+    rows: Vec<[f32; SPECTRUM]>,
+    /// How bright each row was when it was laid down, newest first.
+    flash: Vec<f32>,
+    /// Seconds into the current row, which moves the rows back smoothly
+    /// rather than a whole row at a time.
+    since: f32,
+    rule: Rule,
+    flare: f32,
+    lift: f32,
+    clock: f32,
+}
+
+impl Ridges {
+    pub fn new() -> Self {
+        Self {
+            rows: vec![[0.0; SPECTRUM]; RIDGE_ROWS + 1],
+            flash: vec![0.0; RIDGE_ROWS + 1],
+            since: 0.0,
+            rule: Rule::new(0.35, 0.55, 0.2),
+            flare: 0.0,
+            lift: 0.0,
+            clock: 0.0,
+        }
+    }
+
+    /// With nothing plugged in it plays itself a mix: a kick on the beat
+    /// at 120 at the bottom, a bassline that wanders, a slow swell in the
+    /// mids, and hats off the beat.
+    fn own_spectrum(&self) -> ([f32; SPECTRUM], f32) {
+        let t = self.clock;
+        let beat = (t * 2.0).fract();
+        let off = (beat + 0.5).fract();
+        let kick = 0.42 * (-beat * 7.0).exp();
+        let bass = 13.0 + 4.0 * (t * 0.31).sin();
+        let swell = 0.35 + 0.15 * (t * 0.23).sin();
+        let hats = 0.45 * (-off * 12.0).exp();
+        let bump = |j: f32, at: f32, w: f32| (-((j - at) / w).powi(2)).exp();
+        let s = std::array::from_fn(|j| {
+            let j = j as f32;
+            (kick * 2.0 * bump(j, 3.0, 4.0)
+                + 0.55 * bump(j, bass, 3.0)
+                + swell * bump(j, 34.0 + 3.0 * (t * 0.7).sin(), 6.0)
+                + 0.25 * bump(j, 42.0, 2.0) * (0.5 + 0.5 * (t * 1.3).sin())
+                + hats * bump(j, 56.0, 5.0))
+            .min(1.0)
+        });
+        (s, kick * 1.9)
+    }
+
+    /// How tall a bin stands, 0..1: nothing below the floor, then
+    /// sharply.
+    fn stand(v: f32) -> f32 {
+        ((v - 0.15) / 0.85).clamp(0.0, 1.0).powf(1.5)
+    }
+}
+
+impl Default for Ridges {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Simulation for Ridges {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.clock += dt;
+        let (spectrum, kick, bass) = if drive.audio {
+            (drive.spectrum, drive.bands[0], drive.bands[1])
+        } else {
+            let (s, k) = self.own_spectrum();
+            (s, k, 0.2)
+        };
+        match self.rule.step(kick, dt) {
+            Hit::Break => self.flare = 1.0,
+            Hit::Touch => self.flare = self.flare.max(0.45),
+            Hit::Nothing => {}
+        }
+        self.flare *= (-5.0 * dt).exp();
+        let lift = self.rule.past(kick).max(bass);
+        self.lift += (1.0 - (-4.0 * dt).exp()) * (lift - self.lift);
+        self.since += dt;
+        if self.since >= RIDGE_EVERY {
+            self.since %= RIDGE_EVERY;
+            self.rows.rotate_right(1);
+            self.flash.rotate_right(1);
+            self.rows[0] = [0.0; SPECTRUM];
+            self.flash[0] = 0.0;
+        }
+        // The front row is the one being laid down: it keeps the loudest
+        // each bin was and the brightest flare while it is, so a kick
+        // shorter than a row still stands up in one.
+        for (r, &v) in self.rows[0].iter_mut().zip(&spectrum) {
+            *r = r.max(v);
+        }
+        self.flash[0] = self.flash[0].max(self.flare);
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let gap = (RIDGE_BACK - RIDGE_FRONT) / (RIDGE_ROWS - 1) as f32;
+        // How far the rows have moved back towards the next slot.
+        let moved = self.since / RIDGE_EVERY;
+        let rise = RIDGE_RISE * (1.0 + 0.4 * self.lift);
+        let mut horizon = vec![f32::MIN; RIDGE_COLS];
+        let dark = |x: f32, y: f32| Point { pos: [x, y, 0.0], normal: [0.0; 3], color: [0, 0, 0] };
+        for r in 0..RIDGE_ROWS {
+            let row = &self.rows[r];
+            let depth = (r as f32 + moved) / RIDGE_ROWS as f32;
+            let base = RIDGE_FRONT + (r as f32 + moved) * gap;
+            // Further back is dimmer, and a row fades in as it arrives.
+            let fade = (1.0 - 0.65 * depth) * if r == 0 { moved.max(0.15) } else { 1.0 };
+            let flash = self.flash[r];
+            let flip = r % 2 == 1;
+            for c in 0..RIDGE_COLS {
+                // Rows snake, so the stroke turns at a row's end rather
+                // than jumping back across the screen.
+                let k = if flip { RIDGE_COLS - 1 - c } else { c };
+                let u = k as f32 / (RIDGE_COLS - 1) as f32;
+                // 0 in the middle, 1 at either side: the kick in the
+                // centre, the hats out at the edges.
+                let d = (u * 2.0 - 1.0).abs();
+                let at = d * (SPECTRUM - 1) as f32;
+                let (j, f) = (at as usize, at.fract());
+                let v = row[j] * (1.0 - f) + row[(j + 1).min(SPECTRUM - 1)] * f;
+                // Lie flat at the very edges, so a row ends on its
+                // baseline rather than mid-peak.
+                let taper = 1.0 - smoothstep(0.75, 1.0, d);
+                let h = Self::stand(v) * taper;
+                let x = (u * 2.0 - 1.0) * RIDGE_REACH;
+                let y = (base + h * rise).min(0.99);
+                let shown = y > horizon[k] + 0.002;
+                horizon[k] = horizon[k].max(y);
+                let light = if shown { fade * (0.15 + 0.6 * h + 0.7 * flash) } else { 0.0 };
+                let g = (255.0 * light.clamp(0.0, 1.0)) as u8;
+                if c == 0 {
+                    for _ in 0..RIDGE_LEAD {
+                        out.push(dark(x, y));
+                    }
+                }
+                out.push(Point { pos: [x, y, 0.0], normal: [0.0; 3], color: [g, g, g] });
+            }
+        }
+        let last = out.last().map_or([0.0; 3], |p| p.pos);
+        while out.len() < POINTS {
+            out.push(dark(last[0], last[1]));
+        }
+    }
+}
+
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7321,6 +7527,88 @@ mod tests {
         }
         assert!(c.facets < 0.01, "the facets never faded");
         assert!(c.seeds.len() < busy / 2, "quiet did not let the cells merge back: {}", c.seeds.len());
+    }
+
+    /// ridges lies flat in silence, stands a peak up where the spectrum
+    /// is loud, carries it back as rows arrive, hides what is behind a
+    /// peak, and flares the row a kick breaks on.
+    #[test]
+    fn ridges_carry_the_spectrum_back_and_hide_what_is_behind() {
+        let dt = 1.0 / 60.0;
+        let hush = Drive { audio: true, ..Drive::default() };
+        let mut r = Ridges::new();
+        let mut pts = Vec::new();
+        for _ in 0..180 {
+            r.step(dt, &hush);
+        }
+        r.points(&mut pts);
+        box_ok(&pts);
+        // Silence: every row is a flat line on its baseline.
+        let row = |pts: &[Point], i: usize| {
+            let at = i * (RIDGE_LEAD + RIDGE_COLS) + RIDGE_LEAD;
+            pts[at..at + RIDGE_COLS].to_vec()
+        };
+        for i in 0..RIDGE_ROWS {
+            let ys: Vec<f32> = row(&pts, i).iter().map(|p| p.pos[1]).collect();
+            let spread = ys.iter().fold(f32::MIN, |a, &b| a.max(b)) - ys.iter().fold(f32::MAX, |a, &b| a.min(b));
+            assert!(spread < 1e-5, "row {i} is not flat in silence: {spread}");
+        }
+
+        // The bassline's stretch of the spectrum loud: the front row
+        // stands up a peak either side of the middle.
+        let mut spectrum = [0.0; SPECTRUM];
+        for v in &mut spectrum[10..16] {
+            *v = 0.9;
+        }
+        let loud = Drive { spectrum, audio: true, ..Drive::default() };
+        for _ in 0..3 {
+            r.step(dt, &loud);
+        }
+        r.points(&mut pts);
+        let front = row(&pts, 0);
+        let base = front[0].pos[1];
+        let top = front.iter().map(|p| p.pos[1]).fold(f32::MIN, f32::max);
+        assert!(top > base + 0.2, "the front row did not stand up: {base} -> {top}");
+        // What is behind the peak is hidden, and so dark.
+        let peak = front.iter().position(|p| p.pos[1] == top).unwrap();
+        let x = front[peak].pos[0];
+        let mut hidden = 0;
+        for i in 1..RIDGE_ROWS {
+            let p = row(&pts, i).into_iter().find(|p| (p.pos[0] - x).abs() < 1e-4).unwrap();
+            if p.pos[1] < top {
+                assert_eq!(p.color[0], 0, "row {i} shows through the peak: {p:?}");
+                hidden += 1;
+            }
+        }
+        assert!(hidden > 3, "the peak hid nothing behind it");
+        // The middle, the kick's place, stays flat.
+        let mid = front[RIDGE_COLS / 2].pos[1];
+        assert!((mid - base).abs() < 1e-3, "the kick's place rose with only the bass loud");
+
+        // Back to silence: the peak moves back a row every RIDGE_EVERY.
+        let mut since = 0.0;
+        while since < 0.5 {
+            r.step(dt, &hush);
+            since += dt;
+        }
+        r.points(&mut pts);
+        let tallest = (0..RIDGE_ROWS)
+            .max_by(|&a, &b| {
+                let rise = |i| { let rw = row(&pts, i); rw.iter().map(|p| p.pos[1] - rw[0].pos[1]).fold(0.0f32, f32::max) };
+                rise(a).total_cmp(&rise(b))
+            })
+            .unwrap();
+        let expect = (0.5 / RIDGE_EVERY) as usize;
+        assert!(tallest.abs_diff(expect) <= 1, "the peak should be about {expect} rows back by now, is at {tallest}");
+
+        // A kick past its break level flares the newest row.
+        let quiet_light = row(&pts, 0).iter().map(|p| p.color[0]).max().unwrap();
+        let kick = Drive { bands: [0.9, 0.0, 0.0, 0.0], audio: true, ..Drive::default() };
+        r.step(dt, &kick);
+        r.step(RIDGE_EVERY, &hush);
+        r.points(&mut pts);
+        let flared = row(&pts, 0).iter().chain(row(&pts, 1).iter()).map(|p| p.color[0]).max().unwrap();
+        assert!(flared > quiet_light + 100, "the kick did not flare the row: {quiet_light} -> {flared}");
     }
 
     /// Every simulation is reachable by id, and nothing else is.

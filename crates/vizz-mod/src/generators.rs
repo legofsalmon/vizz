@@ -1179,6 +1179,16 @@ pub const SIMULATIONS: &[Generator] = &[
         link: "https://www.joelle.xyz/visual-art/richie-hawtin-dj-shows",
     },
     Generator {
+        id: "ridges",
+        name: "ridges",
+        about: "the last two seconds of the spectrum as twenty rows of ridges, newest at the front, each hiding the ones behind it — mirrored, so the kick stands up in the middle and the hats out at the sides; a quiet bin lies flat and a loud one stands up sharply; a kick past its break level flares the row it lands on, and the flare recedes with it",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[],
+        cite: "Harold Craft’s plot of successive pulses from the pulsar CP 1919 (1970), on Peter Saville’s sleeve for Joy Division’s Unknown Pleasures (1979); hidden lines by the floating horizon, Wright, IEEE Trans. Computers C-22 (1973); the spectrum terrains in Joëlle Snaith’s visuals for Richie Hawtin",
+        link: "https://en.wikipedia.org/wiki/Unknown_Pleasures",
+    },
+    Generator {
         id: "polytope",
         name: "polytope",
         about: "a regular solid of four dimensions, turning through the fourth and seen in ours — its cells swell towards you, pass through each other and shrink away, so it turns itself inside out; drawn as one unbroken walk along every edge, so lines draw the wireframe; the loudness turns it and the kick throws it",
