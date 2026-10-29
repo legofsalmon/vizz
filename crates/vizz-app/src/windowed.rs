@@ -933,12 +933,16 @@ impl App {
                 self.video_revision = 0;
                 // The stream's last frame, so the slot is not empty until
                 // the next one arrives.
-                if self.live.is_some() && !self.live_points.is_empty() {
+                if let Some(live) = self.live.as_ref().filter(|_| !self.live_points.is_empty()) {
                     state.scene.set_cloud_streaming(
                         &state.ctx,
                         ParticleScene::LIVE_SLOT,
                         &self.live_points,
                         "live",
+                    );
+                    state.scene.set_sharp(
+                        ParticleScene::LIVE_SLOT,
+                        live.simulation().is_some_and(vizz_render::simulate::sharp),
                     );
                 }
                 for (name, why) in state.outputs.failures() {
@@ -1584,6 +1588,10 @@ impl App {
                         ParticleScene::LIVE_SLOT,
                         &self.live_points,
                         "live",
+                    );
+                    state.scene.set_sharp(
+                        ParticleScene::LIVE_SLOT,
+                        live.simulation().is_some_and(vizz_render::simulate::sharp),
                     );
                 }
                 let uploaded = uploaded.then_some(());

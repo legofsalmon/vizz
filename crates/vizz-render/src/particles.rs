@@ -83,7 +83,10 @@ pub struct Uniforms {
     /// Master amount in `.x`; the rest is padding the alignment demands.
     pub gravity_amount: [f32; 4],
     /// Highest written palette row in `.x`, so the colour index saturates
-    /// on a real ramp instead of sweeping into empty rows.
+    /// on a real ramp instead of sweeping into empty rows. `.y` and `.z`
+    /// are 1 where the `cloud_a` and `cloud_b` slots are drawn sharp (see
+    /// [`ParticleScene::set_sharp`]), carried here because the lanes were
+    /// spare. The scene fills in all three.
     pub palette_rows: [f32; 4],
     /// The live video input, packed as one vec4 because the alignment
     /// would spend the space on padding anyway:
@@ -270,6 +273,10 @@ pub struct ParticleScene {
     /// The cloud bank. Kept for the bind group's texture view, and
     /// mutated when a cloud is loaded.
     attractors: Attractors,
+    /// Slots whose points are drawn exactly where they were put, without
+    /// the scatter that makes a cloud read as a volume. See
+    /// [`Self::set_sharp`].
+    sharp: [bool; crate::attractor::SLOTS],
     /// The colour ramps, likewise.
     pub palettes: crate::palette::Palettes,
     /// How many palettes have been loaded, for choosing the next row.
@@ -440,6 +447,7 @@ impl ParticleScene {
             attractors,
             palettes,
             loaded_palettes: 0,
+            sharp: [false; crate::attractor::SLOTS],
             surface: std::sync::Mutex::new(None),
             plexus: std::sync::Mutex::new(None),
             haze: std::sync::Mutex::new(None),
@@ -661,6 +669,23 @@ impl ParticleScene {
         crate::pointcloud::normalize(&mut owned);
         self.attractors
             .load_slot(ctx, slot, &owned, name, crate::attractor::Normals::Estimate);
+        // A file is a cloud, whatever was in the slot before.
+        self.set_sharp(slot, false);
+    }
+
+    /// Draw `slot`'s points exactly where they were put, or scatter them
+    /// a little as every cloud is by default.
+    ///
+    /// The scatter, up to 0.02 on each axis, is what keeps a trajectory
+    /// from collapsing onto a wire when it is drawn as dots. A drawing
+    /// made of lines wants the wire: scattered, every line comes out as
+    /// a bundle of slightly offset copies, rough at the edges, and two
+    /// lines closer than about 0.06 blur into one. A live simulation
+    /// that draws lines (see `simulate::sharp`) sets this for its slot.
+    pub fn set_sharp(&mut self, slot: usize, sharp: bool) {
+        if let Some(s) = self.sharp.get_mut(slot) {
+            *s = sharp;
+        }
     }
 
     /// Upload a frame of a live stream.
@@ -782,6 +807,14 @@ impl ParticleScene {
         // it is read per frame rather than captured once.
         let mut uniforms = *uniforms;
         uniforms.palette_rows[0] = self.palettes.occupied() as f32;
+        // Whether the pair's slots are drawn sharp: a fact about what
+        // was loaded into them, which only this scene holds.
+        let sharp = |slot: f32| {
+            let on = self.sharp.get(slot.max(0.0) as usize).copied().unwrap_or(false);
+            if on { 1.0 } else { 0.0 }
+        };
+        uniforms.palette_rows[1] = sharp(uniforms.cloud_a);
+        uniforms.palette_rows[2] = sharp(uniforms.cloud_b);
         // Same reasoning for the video input: whether a frame has ever
         // arrived and what shape it is are facts about the texture this
         // owns, not settings the parameter table could hold.
@@ -1513,6 +1546,31 @@ mod tests {
         };
         let (d, l) = (lit(&dots, 150), lit(&lines, 150 * Stroke::SEGMENTS));
         assert!(l > d * 2, "lines lit {l} pixels against {d} for dots");
+    }
+
+    /// A slot drawn sharp puts every point exactly where it was put: a
+    /// straight line of points stays one line rather than spreading
+    /// into a band, and loading a file into the slot scatters it again.
+    #[test]
+    fn a_sharp_slot_draws_its_points_where_they_were_put() {
+        let Some(ctx) = gpu() else { return };
+        let mut scene = ParticleScene::new(&ctx, crate::post::SCENE_FORMAT);
+        let line: Vec<_> =
+            (0..4000).map(|i| crate::pointcloud::Point::new(i as f32 / 3999.0 * 2.0 - 1.0, 0.0, 0.0)).collect();
+        scene.set_cloud(&ctx, 2, &line, "line");
+        let u = Uniforms { shape: 7.0, cloud_a: 2.0, cloud_b: 2.0, ..small_sprites(0.003, 0.0) };
+        // How many rows of the frame the line lights.
+        let rows = |scene: &ParticleScene| {
+            let px = frame_f16_count(&ctx, scene, &u, 20_000);
+            (0..W as usize).filter(|&y| px[y * W as usize..(y + 1) * W as usize].iter().any(|&v| v > 1e-3)).count()
+        };
+        let scattered = rows(&scene);
+        scene.set_sharp(2, true);
+        let sharp = rows(&scene);
+        assert!(sharp >= 1, "the sharp line drew nothing");
+        assert!(sharp <= 2 && sharp < scattered, "sharp lit {sharp} rows, scattered {scattered}");
+        scene.set_cloud(&ctx, 2, &line, "line");
+        assert_eq!(rows(&scene), scattered, "a file loaded into a sharp slot stayed sharp");
     }
 
     fn small_sprites(size: f32, time: f32) -> Uniforms {
