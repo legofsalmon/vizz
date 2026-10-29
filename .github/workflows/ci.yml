@@ -32,7 +32,7 @@ jobs:
       # design system's tokens.rs. The repository it comes from is private,
       # so CI checks the copy against its own stamp: a hand edit fails here.
       - name: The design system's copy is as it was vendored
-        run: python3 scripts/design-system.py --check
+        run: python3 scripts/ds/ds_check.py crates/vizz-design/src/tokens.rs scripts/ds
       - name: Build
         run: cargo build --workspace
       - name: Test

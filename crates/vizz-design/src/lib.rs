@@ -49,7 +49,8 @@
 use egui::Color32;
 
 /// The shared design system's tokens, vendored. Regenerate with
-/// `python3 scripts/design-system.py --sync`; never edit by hand.
+/// `python3 scripts/ds/ds_check.py crates/vizz-design/src/tokens.rs scripts/ds --sync`;
+/// never edit by hand.
 #[rustfmt::skip]
 #[allow(clippy::all)]
 pub mod tokens;
