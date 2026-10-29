@@ -1169,6 +1169,16 @@ pub const SIMULATIONS: &[Generator] = &[
         link: "https://onbd.substack.com/p/sound-and-vision-3",
     },
     Generator {
+        id: "cells",
+        name: "cells",
+        about: "a Voronoi field — in a breakdown a dozen large cells drawn as fine lines, a small ring at each centre, drifting; each kick splits cells, a few for a groove kick and a burst for a hard one, so loud passages fill with small cells and quiet lets them merge back; a drop, the kick breaking with the highs up, fills every cell as a flat facet in its own shade, fading back to lines",
+        family: Family::Shape,
+        group: Group::Curve,
+        params: &[],
+        cite: "Georgy Voronoi, “Nouvelles applications des paramètres continus à la théorie des formes quadratiques” (1908); the cell networks in Richie Hawtin’s 2025 set streams and Joëlle Snaith’s visuals at Baum (2023)",
+        link: "https://www.joelle.xyz/visual-art/richie-hawtin-dj-shows",
+    },
+    Generator {
         id: "polytope",
         name: "polytope",
         about: "a regular solid of four dimensions, turning through the fourth and seen in ours — its cells swell towards you, pass through each other and shrink away, so it turns itself inside out; drawn as one unbroken walk along every edge, so lines draw the wireframe; the loudness turns it and the kick throws it",

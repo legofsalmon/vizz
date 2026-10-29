@@ -48,6 +48,8 @@
 //! a level that touches the form and a level that breaks it. **fold**
 //! is the second: one thick outline that a kick cracks or shatters into
 //! shards, with a tunnel of fainter outlines behind it from the highs.
+//! **cells** is the third: a Voronoi field that kicks split into smaller
+//! cells and quiet lets merge back, filled into flat facets on a drop.
 //!
 //! They cost between half a millisecond and twenty per frame, on a
 //! thread of their own, and a slow one loses frames rather than the
@@ -216,7 +218,7 @@ impl Rule {
 /// The catalogue the panel lists is vizz-mod's; a test in vizz-app holds
 /// the two to each other.
 pub const IDS: &[&str] =
-    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars", "fold"];
+    &["fluid", "reaction", "flock", "wind", "kuramoto", "life", "orbits", "pendulum", "smoke", "liquid", "slime", "swarm", "cloth", "sand", "spiral", "cyclic", "tangle", "crystal", "vortex", "polytope", "growth", "scope", "bars", "fold", "cells"];
 
 /// Start the simulation `id` names, or `None` for one this crate does
 /// not know.
@@ -258,6 +260,7 @@ pub fn start(spec: &str) -> Option<Box<dyn Simulation>> {
         "scope" => Some(Box::new(Scope::new())),
         "bars" => Some(Box::new(Bars::new())),
         "fold" => Some(Box::new(Fold::new(&text("kind", "cube")))),
+        "cells" => Some(Box::new(Cells::new())),
         "polytope" => Some(Box::new(Polytope::new(&text("kind", "tesseract")))),
         _ => None,
     }
@@ -5861,6 +5864,394 @@ impl Simulation for Fold {
     }
 }
 
+// --- Cells ------------------------------------------------------------
+
+/// The field's half-width and half-height: a wide screen's shape.
+const CELL_W: f32 = 0.95;
+const CELL_H: f32 = 0.54;
+/// How few cells a quiet field relaxes to, and how many a loud one can hold.
+const CELLS_MIN: usize = 12;
+const CELLS_MAX: usize = 260;
+/// Dark points stacked at the start of every walk, so a line stroke
+/// reaching back from it finds zero length rather than drawing across
+/// the field from the walk before. The stroke reaches back at most 32.
+const CELL_LEAD: usize = 34;
+/// Shares of the slot: the edges, the rings at the centres, the facets.
+const CELL_EDGE_POINTS: usize = 26_000;
+const CELL_RING_POINTS: usize = 11_000;
+
+/// A Voronoi field, after the cell networks in Richie Hawtin's 2025 set
+/// streams and Joëlle Snaith's visuals at Baum (2023).
+///
+/// In a breakdown it is a dozen large cells drawn as fine lines, with a
+/// small ring at each centre, drifting. A kick past its touch level
+/// splits four cells; past its break level it splits from four to thirty,
+/// more the louder everything has been. The loudness, averaged over
+/// seconds, sets how many cells the field relaxes towards, from a dozen
+/// to a few hundred, so loud passages fill with small cells and quiet
+/// lets them merge back. A kick that breaks with the highs up beside it
+/// fills every cell as a flat facet, each its own shade, at a brightness
+/// the bassline sets, and the facets fade back to lines over about three
+/// seconds.
+///
+/// Each cell is the box clipped by the half-plane on its side of the
+/// perpendicular bisector to every other seed (Voronoi, 1908), which at a
+/// few hundred seeds is cheaper than keeping a Delaunay triangulation and
+/// gives the facet's polygon as well as its edges. Facets are drawn as
+/// rows of points snaking across the cell, so the line stroke hatches
+/// them in as scanlines.
+pub struct Cells {
+    seeds: Vec<[f32; 2]>,
+    vel: Vec<[f32; 2]>,
+    /// A shade per seed, for its facet.
+    shade: Vec<f32>,
+    rules: [Rule; 4],
+    /// The loudness, averaged over a few seconds.
+    slow: f32,
+    flare: f32,
+    facets: f32,
+    bass: f32,
+    since_break: f32,
+    /// Seconds until the next seed may go while the field is too full.
+    merge_in: f32,
+    /// Every cell's polygon as of the last step.
+    polys: Vec<Vec<[f32; 2]>>,
+    rng: Rng,
+}
+
+impl Cells {
+    pub fn new() -> Self {
+        let mut c = Self {
+            seeds: Vec::new(),
+            vel: Vec::new(),
+            shade: Vec::new(),
+            rules: [
+                Rule::new(0.35, 0.55, 0.15),
+                Rule::new(0.3, 0.5, 0.1),
+                Rule::new(0.3, 0.5, 0.1),
+                Rule::new(0.3, 0.5, 0.1),
+            ],
+            slow: 0.0,
+            flare: 0.0,
+            facets: 0.0,
+            bass: 0.0,
+            since_break: 10.0,
+            merge_in: 0.0,
+            polys: Vec::new(),
+            rng: Rng::new(0xCE11),
+        };
+        for _ in 0..CELLS_MIN {
+            let p = [(c.rng.f32() * 2.0 - 1.0) * CELL_W * 0.9, (c.rng.f32() * 2.0 - 1.0) * CELL_H * 0.9];
+            c.add(p);
+        }
+        c.polys = c.polygons();
+        c
+    }
+
+    fn add(&mut self, p: [f32; 2]) {
+        self.seeds.push(p);
+        self.vel.push([0.0; 2]);
+        let s = 0.15 + 0.85 * self.rng.f32();
+        self.shade.push(s);
+    }
+
+    /// Split `n` cells: each gains a seed just beside its own, and the two
+    /// are pushed apart.
+    fn split(&mut self, n: usize) {
+        for _ in 0..n {
+            if self.seeds.len() >= CELLS_MAX {
+                return;
+            }
+            let i = (self.rng.f32() * self.seeds.len() as f32) as usize % self.seeds.len();
+            let a = self.rng.f32() * std::f32::consts::TAU;
+            let (sa, ca) = a.sin_cos();
+            let [x, y] = self.seeds[i];
+            self.add([(x + 0.01 * ca).clamp(-CELL_W, CELL_W), (y + 0.01 * sa).clamp(-CELL_H, CELL_H)]);
+            let j = self.seeds.len() - 1;
+            self.vel[j] = [0.35 * ca, 0.35 * sa];
+            self.vel[i] = [-0.35 * ca, -0.35 * sa];
+        }
+    }
+
+    /// How many cells the field relaxes towards at the slow loudness.
+    fn target(&self) -> usize {
+        CELLS_MIN + ((CELLS_MAX - CELLS_MIN) as f32 * self.slow.clamp(0.0, 1.0).powf(1.5)) as usize
+    }
+
+    /// Every cell's polygon, counter-clockwise, in the seeds' order.
+    fn polygons(&self) -> Vec<Vec<[f32; 2]>> {
+        let boxed = vec![[-CELL_W, -CELL_H], [CELL_W, -CELL_H], [CELL_W, CELL_H], [-CELL_W, CELL_H]];
+        self.seeds
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                let mut poly = boxed.clone();
+                for (j, &b) in self.seeds.iter().enumerate() {
+                    if i == j || poly.is_empty() {
+                        continue;
+                    }
+                    let n = [b[0] - a[0], b[1] - a[1]];
+                    let m = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+                    poly = clip_half(&poly, n, m);
+                }
+                poly
+            })
+            .collect()
+    }
+}
+
+impl Default for Cells {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Sutherland–Hodgman: the part of the convex `poly` on `m`'s side of the
+/// line through `m` across `n`, that is where `(p − m) · n ≤ 0`.
+fn clip_half(poly: &[[f32; 2]], n: [f32; 2], m: [f32; 2]) -> Vec<[f32; 2]> {
+    let side = |p: &[f32; 2]| (p[0] - m[0]) * n[0] + (p[1] - m[1]) * n[1];
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for k in 0..poly.len() {
+        let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+        let (sp, sq) = (side(&p), side(&q));
+        if sp <= 0.0 {
+            out.push(p);
+        }
+        if (sp <= 0.0) != (sq <= 0.0) {
+            let t = sp / (sp - sq);
+            out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+        }
+    }
+    out
+}
+
+/// The centre of mass of a polygon, if it has any area.
+fn centroid(p: &[[f32; 2]]) -> Option<[f32; 2]> {
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for k in 0..p.len() {
+        let (u, v) = (p[k], p[(k + 1) % p.len()]);
+        let cross = u[0] * v[1] - v[0] * u[1];
+        a += cross;
+        cx += (u[0] + v[0]) * cross;
+        cy += (u[1] + v[1]) * cross;
+    }
+    (a.abs() > 1e-9).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
+}
+
+/// Whether the edge from `p` to `q` lies along the field's border.
+fn on_border(p: [f32; 2], q: [f32; 2]) -> bool {
+    let e = 1e-4;
+    ((p[0] - q[0]).abs() < e && (p[0].abs() - CELL_W).abs() < e)
+        || ((p[1] - q[1]).abs() < e && (p[1].abs() - CELL_H).abs() < e)
+}
+
+impl Simulation for Cells {
+    fn step(&mut self, dt: f32, drive: &Drive) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.since_break += dt;
+        // With nothing plugged in it only drifts, as in a breakdown.
+        let (bands, level) = if drive.audio { (drive.bands, drive.level) } else { ([0.0; 4], 0.0) };
+        self.slow += (1.0 - (-dt / 4.0).exp()) * (level - self.slow);
+        match self.rules[0].step(bands[0], dt) {
+            Hit::Break => {
+                self.split(4 + (26.0 * self.slow.clamp(0.0, 1.0)) as usize);
+                self.flare = 1.0;
+                self.since_break = 0.0;
+            }
+            Hit::Touch => {
+                self.split(4);
+                self.flare = self.flare.max(0.45);
+            }
+            Hit::Nothing => {}
+        }
+        let highs = self.rules[3].step(bands[3], dt);
+        for (rule, &l) in self.rules[1..3].iter_mut().zip(&bands[1..3]) {
+            rule.step(l, dt);
+        }
+        // The drop: the kick breaking with the highs up within a fifth of a
+        // second of it.
+        if self.since_break < 0.2 && (self.rules[3].hit.is_open() || matches!(highs, Hit::Break)) {
+            self.facets = 1.0;
+        }
+        self.facets *= (-dt / 1.0).exp();
+        self.flare *= (-4.0 * dt).exp();
+        self.bass += (1.0 - (-6.0 * dt).exp()) * (self.rules[1].past(bands[1]) - self.bass);
+
+        // Too many for the loudness: let one go every so often, so the
+        // cells merge back one at a time rather than all at once.
+        self.merge_in -= dt;
+        if self.seeds.len() > self.target() && self.merge_in <= 0.0 {
+            let i = (self.rng.f32() * self.seeds.len() as f32) as usize % self.seeds.len();
+            self.seeds.swap_remove(i);
+            self.vel.swap_remove(i);
+            self.shade.swap_remove(i);
+            self.merge_in = 0.12;
+        }
+
+        // Drift, a push apart, a pull towards the middle of its own cell,
+        // and the walls. The pull is Lloyd's relaxation (1982) taken a
+        // little each frame: it is what evens a field of split cells out
+        // instead of leaving the splits in clumps.
+        let n = self.seeds.len();
+        let polys = self.polygons();
+        let reach = 1.6 / (n as f32).sqrt();
+        let mut force = vec![[0.0f32; 2]; n];
+        for i in 0..n {
+            for j in i + 1..n {
+                let d = [self.seeds[i][0] - self.seeds[j][0], self.seeds[i][1] - self.seeds[j][1]];
+                let r2 = d[0] * d[0] + d[1] * d[1];
+                if r2 < reach * reach {
+                    let r = r2.sqrt().max(1e-3);
+                    let k = 0.25 * (1.0 - r / reach) / r;
+                    force[i][0] += d[0] * k;
+                    force[i][1] += d[1] * k;
+                    force[j][0] -= d[0] * k;
+                    force[j][1] -= d[1] * k;
+                }
+            }
+        }
+        for (i, poly) in polys.iter().enumerate() {
+            if let Some(c) = centroid(poly) {
+                force[i][0] += 2.0 * (c[0] - self.seeds[i][0]);
+                force[i][1] += 2.0 * (c[1] - self.seeds[i][1]);
+            }
+        }
+        let lim = [CELL_W * 0.97, CELL_H * 0.97];
+        for ((seed, vel), push) in self.seeds.iter_mut().zip(&mut self.vel).zip(&force) {
+            for ((x, v), (&f, &l)) in seed.iter_mut().zip(vel.iter_mut()).zip(push.iter().zip(&lim)) {
+                let wobble = (self.rng.f32() - 0.5) * 0.06;
+                *v = ((*v + (f + wobble) * dt) * (-1.5 * dt).exp()).clamp(-0.6, 0.6);
+                *x += *v * dt;
+                if x.abs() > l {
+                    *x = x.clamp(-l, l);
+                    *v = -*v * 0.5;
+                }
+            }
+        }
+        self.polys = self.polygons();
+    }
+
+    fn points(&self, out: &mut Vec<Point>) {
+        out.clear();
+        let polys = &self.polys;
+        let n = polys.len().max(1);
+        let level = 0.3 + 0.7 * self.flare;
+        let grey = |l: f32| {
+            let g = (255.0 * l.clamp(0.0, 1.0)) as u8;
+            [g, g, g]
+        };
+        // One walk: dark points stacked on its start, then the walk.
+        let walk = |out: &mut Vec<Point>, pts: &[[f32; 2]], light: f32, room: usize| {
+            if pts.is_empty() || room <= CELL_LEAD {
+                return;
+            }
+            let at = |p: [f32; 2], c| Point { pos: [p[0], p[1], 0.0], normal: [0.0; 3], color: c };
+            for _ in 0..CELL_LEAD {
+                out.push(at(pts[0], [0; 3]));
+            }
+            for &p in pts.iter().take(room - CELL_LEAD) {
+                out.push(at(p, grey(light)));
+            }
+        };
+        // Points spaced along a run of segments.
+        let along = |segs: &[([f32; 2], [f32; 2])], count: usize| -> Vec<[f32; 2]> {
+            let total: f32 = segs.iter().map(|(a, b)| ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()).sum();
+            if total <= 0.0 || count == 0 {
+                return Vec::new();
+            }
+            let mut pts = Vec::with_capacity(count);
+            for (a, b) in segs {
+                let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+                let k = ((len / total) * count as f32).round() as usize;
+                for t in 0..k {
+                    let f = t as f32 / k as f32;
+                    pts.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+                }
+            }
+            pts
+        };
+
+        // The edges: each cell's outline, without the field's own border.
+        let edge_each = CELL_EDGE_POINTS / n;
+        for poly in polys {
+            // Start just after the border, so what is left of the outline
+            // is one unbroken run and the stroke never draws the border in.
+            let m = poly.len();
+            let start = (0..m).find(|&k| on_border(poly[k], poly[(k + 1) % m])).map_or(0, |k| k + 1);
+            let segs: Vec<_> = (start..start + m)
+                .map(|k| (poly[k % m], poly[(k + 1) % m]))
+                .filter(|&(a, b)| !on_border(a, b))
+                .collect();
+            walk(out, &along(&segs, edge_each.saturating_sub(CELL_LEAD)), level, edge_each);
+        }
+
+        // A small ring at every centre.
+        let ring_each = CELL_RING_POINTS / n;
+        let r = 0.012;
+        for &[x, y] in &self.seeds {
+            let k = ring_each.saturating_sub(CELL_LEAD).max(1);
+            let ring: Vec<_> = (0..k)
+                .map(|t| {
+                    let a = t as f32 / k as f32 * std::f32::consts::TAU;
+                    [x + r * a.cos(), y + r * a.sin()]
+                })
+                .collect();
+            walk(out, &ring, 0.6 * level, ring_each);
+        }
+
+        // The facets, while a drop lasts: each cell hatched in rows.
+        if self.facets > 0.01 {
+            let budget = POINTS - out.len();
+            let area = |p: &Vec<[f32; 2]>| {
+                (0..p.len()).map(|k| {
+                    let (a, b) = (p[k], p[(k + 1) % p.len()]);
+                    a[0] * b[1] - b[0] * a[1]
+                }).sum::<f32>().abs() * 0.5
+            };
+            let whole = 4.0 * CELL_W * CELL_H;
+            for (poly, &shade) in polys.iter().zip(&self.shade) {
+                let a = area(poly);
+                let room = ((a / whole) * budget as f32) as usize;
+                if room <= CELL_LEAD + 4 || poly.len() < 3 {
+                    continue;
+                }
+                let want = (room - CELL_LEAD) as f32;
+                let h = (2.0 * a / want).sqrt();
+                let (lo, hi) = poly.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+                let mut rows = Vec::new();
+                let mut y = lo + h * 0.5;
+                let mut flip = false;
+                while y < hi {
+                    // Where the row crosses the cell: a convex cell is one span.
+                    let mut xs = (f32::MAX, f32::MIN);
+                    for k in 0..poly.len() {
+                        let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+                        if (p[1] - y) * (q[1] - y) <= 0.0 && (p[1] - q[1]).abs() > 1e-6 {
+                            let x = p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1]);
+                            xs = (xs.0.min(x), xs.1.max(x));
+                        }
+                    }
+                    if xs.0 < xs.1 {
+                        rows.push(if flip { ([xs.1, y], [xs.0, y]) } else { ([xs.0, y], [xs.1, y]) });
+                        flip = !flip;
+                    }
+                    y += h;
+                }
+                // Squared, so neighbouring facets differ plainly rather
+                // than all reading as one wash of the hue.
+                let light = self.facets * shade * shade * (0.6 + 0.4 * self.bass);
+                walk(out, &along(&rows, room - CELL_LEAD), light, room);
+            }
+        }
+
+        let last = out.last().map_or([0.0; 3], |p| p.pos);
+        out.truncate(POINTS);
+        while out.len() < POINTS {
+            out.push(Point { pos: last, normal: [0.0; 3], color: [0, 0, 0] });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6873,6 +7264,55 @@ mod tests {
         }
         f.points(&mut now);
         assert!(lit(&now[outline..]) > 3 * FOLD_ECHO_WALK, "the highs did not bring up the tunnel");
+    }
+
+    /// cells drifts as a dozen in the quiet, kicks split it, quiet lets
+    /// it merge back, and a drop fills the cells as facets that fade.
+    #[test]
+    fn cells_split_on_kicks_and_merge_back_in_the_quiet() {
+        let dt = 1.0 / 60.0;
+        let hush = Drive { audio: true, ..Drive::default() };
+        let kick = Drive { bands: [0.45, 0.2, 0.1, 0.1], level: 0.6, audio: true, ..Drive::default() };
+        let drop = Drive { bands: [0.95, 0.8, 0.5, 0.9], level: 0.9, audio: true, ..Drive::default() };
+        let mut c = Cells::new();
+        let mut pts = Vec::new();
+        for _ in 0..120 {
+            c.step(dt, &Drive::default());
+        }
+        assert_eq!(c.seeds.len(), CELLS_MIN, "with nothing plugged in it only drifts");
+        c.points(&mut pts);
+        box_ok(&pts);
+
+        // Every cell is a real polygon inside the field, and together they
+        // cover it.
+        let polys = c.polygons();
+        let area: f32 = polys.iter().map(|p| {
+            (0..p.len()).map(|k| p[k][0] * p[(k + 1) % p.len()][1] - p[(k + 1) % p.len()][0] * p[k][1]).sum::<f32>() * 0.5
+        }).sum();
+        assert!((area - 4.0 * CELL_W * CELL_H).abs() < 1e-3, "the cells do not tile the field: {area}");
+
+        // A groove: a kick on every beat for eight seconds, the music
+        // loud between them.
+        let between = Drive { bands: [0.1, 0.2, 0.1, 0.1], level: 0.6, audio: true, ..Drive::default() };
+        for f in 0..480 {
+            c.step(dt, if f % 30 < 4 { &kick } else { &between });
+        }
+        let busy = c.seeds.len();
+        assert!(busy > 3 * CELLS_MIN, "a groove did not split the cells: {busy}");
+        assert!(c.facets < 0.01, "a groove kick filled the facets");
+
+        c.step(dt, &drop);
+        assert!(c.facets > 0.9, "the drop did not fill the facets");
+        c.points(&mut pts);
+        box_ok(&pts);
+        let lit = pts.iter().filter(|p| p.color[0] > 0).count();
+        assert!(lit > POINTS / 2, "the facets are not filled in: {lit} lit");
+
+        for _ in 0..60 * 30 {
+            c.step(dt, &hush);
+        }
+        assert!(c.facets < 0.01, "the facets never faded");
+        assert!(c.seeds.len() < busy / 2, "quiet did not let the cells merge back: {}", c.seeds.len());
     }
 
     /// Every simulation is reachable by id, and nothing else is.
