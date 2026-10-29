@@ -1557,6 +1557,7 @@ impl App {
                 level: st.level(),
                 bar: self.engine.modulation.clock.bar_phase(4.0),
                 audio: st.connected(),
+                spectrum: st.spectrum(),
                 ..Default::default()
             };
             if live.simulation().is_some_and(|s| s.starts_with("scope")) {
