@@ -82,7 +82,14 @@ pub struct Drive {
     pub signal_at: u64,
     /// Whether `signal` has two channels, or the one copied to both.
     pub stereo: bool,
+    /// The fine spectrum, [`SPECTRUM`] log-spaced bands from 30 Hz to
+    /// 16 kHz, lowest first, post-gain, 0..1.
+    pub spectrum: [f32; SPECTRUM],
 }
+
+/// Bands in [`Drive::spectrum`]. vizz-audio's analyser makes the same
+/// number; the app holds the two to each other.
+pub const SPECTRUM: usize = 64;
 
 /// Stereo pairs a [`Drive`] carries. vizz-audio's scope is the same
 /// length; the app holds the two to each other.
@@ -98,6 +105,7 @@ impl Default for Drive {
             signal: [[0.0; 2]; SIGNAL],
             signal_at: 0,
             stereo: false,
+            spectrum: [0.0; SPECTRUM],
         }
     }
 }

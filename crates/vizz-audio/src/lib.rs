@@ -21,7 +21,7 @@ use std::time::Instant;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 pub use analysis::{
-    BAND_COUNT, Band, MAX_GAIN_DB, MIN_GAIN_DB, TARGET_PEAK, db_to_linear, default_bands,
+    BAND_COUNT, Band, MAX_GAIN_DB, MIN_GAIN_DB, SPECTRUM, TARGET_PEAK, db_to_linear, default_bands,
     fit_gain_db, linear_to_db,
 };
 pub use beat::{MAX_BPM, MIN_BPM, TapTempo};
@@ -49,6 +49,23 @@ pub struct AudioState {
     connected: AtomicBool,
     /// The signal itself, both channels, for drawing as a trace.
     pub scope: Scope,
+    spectrum: Spectrum,
+}
+
+/// The fine spectrum, as bits in atomics like every other reading here.
+/// Its own type only because `Default` stops at arrays of 32.
+struct Spectrum([AtomicU32; SPECTRUM]);
+
+impl Default for Spectrum {
+    fn default() -> Self {
+        Self(std::array::from_fn(|_| AtomicU32::new(0)))
+    }
+}
+
+impl std::fmt::Debug for Spectrum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Spectrum")
+    }
 }
 
 /// Stereo pairs [`Scope`] keeps: the latest few frames' worth at any
@@ -185,6 +202,9 @@ impl AudioState {
         }
         Self::store(&self.level, 0.0);
         Self::store(&self.confidence, 0.0);
+        for slot in &self.spectrum.0 {
+            Self::store(slot, 0.0);
+        }
     }
 
     /// Samples are arriving again.
@@ -199,6 +219,10 @@ impl AudioState {
     }
     pub fn level(&self) -> f32 {
         Self::load(&self.level)
+    }
+    /// The fine spectrum, lowest band first, 0..1.
+    pub fn spectrum(&self) -> [f32; SPECTRUM] {
+        std::array::from_fn(|j| Self::load(&self.spectrum.0[j]))
     }
     pub fn bpm(&self) -> f32 {
         Self::load(&self.bpm)
@@ -559,6 +583,9 @@ fn analysis_loop(
             state.observe_peak(i, frame.raw[i], dt);
         }
         AudioState::store(&state.level, frame.level);
+        for (slot, &v) in state.spectrum.0.iter().zip(&frame.spectrum) {
+            AudioState::store(slot, v);
+        }
         AudioState::store(&state.bpm, detector.bpm());
         AudioState::store(&state.confidence, detector.confidence());
         state.frames.fetch_add(1, Ordering::Relaxed);
@@ -679,6 +706,19 @@ mod tests {
 
         stop.store(true, Ordering::Relaxed);
         handle.join().unwrap();
+    }
+
+    /// A spectrum left painted after the cable comes out insists audio
+    /// is still arriving, the same as a meter would.
+    #[test]
+    fn a_disconnect_clears_the_spectrum() {
+        let state = AudioState::default();
+        for slot in &state.spectrum.0 {
+            AudioState::store(slot, 0.7);
+        }
+        assert_eq!(state.spectrum()[10], 0.7);
+        state.disconnect();
+        assert!(state.spectrum().iter().all(|&v| v == 0.0));
     }
 
     /// A missing device is a normal condition, not an error path.

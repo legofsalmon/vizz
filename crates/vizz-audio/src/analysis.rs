@@ -132,8 +132,16 @@ pub fn fit_gain_db(peak: f32) -> Option<f32> {
 
 pub const BAND_COUNT: usize = 4;
 
+/// Bands in the fine spectrum: log-spaced, so each covers the same
+/// fraction of an octave — about a ninth — from [`SPECTRUM_LO_HZ`] to
+/// [`SPECTRUM_HI_HZ`]. Enough for a picture of the mix's shape, which the
+/// four modulation bands are too coarse to give.
+pub const SPECTRUM: usize = 64;
+pub const SPECTRUM_LO_HZ: f32 = 30.0;
+pub const SPECTRUM_HI_HZ: f32 = 16_000.0;
+
 /// What one analysis frame produced.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Frame {
     /// Post-gain, post-envelope band levels, 0..1 — the modulation sources.
     pub bands: [f32; BAND_COUNT],
@@ -145,6 +153,42 @@ pub struct Frame {
     /// Positive spectral flux: how much energy *appeared* since the last
     /// frame. The onset signal beat detection runs on.
     pub flux: f32,
+    /// The fine spectrum, post-gain and post-envelope, 0..1, lowest first.
+    ///
+    /// No gain control of its own: each band takes the gain and timing of
+    /// the modulation band its centre falls in, scaled up for how much
+    /// narrower it is, so `fit` and the sensitivity controls set it too
+    /// and a flat mix reads about the same here as in the four meters.
+    pub spectrum: [f32; SPECTRUM],
+}
+
+// Written out because `Default` stops at arrays of 32.
+impl Default for Frame {
+    fn default() -> Self {
+        Self { bands: [0.0; BAND_COUNT], raw: [0.0; BAND_COUNT], level: 0.0, flux: 0.0, spectrum: [0.0; SPECTRUM] }
+    }
+}
+
+/// Where each fine band's edges fall, `SPECTRUM + 1` of them.
+fn spectrum_edges() -> [f32; SPECTRUM + 1] {
+    let ratio = SPECTRUM_HI_HZ / SPECTRUM_LO_HZ;
+    std::array::from_fn(|j| SPECTRUM_LO_HZ * ratio.powf(j as f32 / SPECTRUM as f32))
+}
+
+/// Which modulation band governs the fine band centred at `hz`: the one
+/// containing it, or the nearest if it lies outside them all.
+fn governing_band(hz: f32, bands: &[Band; BAND_COUNT]) -> usize {
+    if let Some(i) = bands.iter().position(|b| hz >= b.lo_hz && hz < b.hi_hz) {
+        return i;
+    }
+    // Nearest by octaves, which is how far apart frequencies sound.
+    let off = |b: &Band| {
+        let d = if hz < b.lo_hz { b.lo_hz / hz } else { hz / b.hi_hz.max(1.0) };
+        d.max(1.0).log2()
+    };
+    (0..BAND_COUNT)
+        .min_by(|&a, &b| off(&bands[a]).total_cmp(&off(&bands[b])))
+        .unwrap_or(0)
 }
 
 pub struct Analyzer {
@@ -156,6 +200,13 @@ pub struct Analyzer {
     mags: Vec<f32>,
     prev_mags: Vec<f32>,
     env: [f32; BAND_COUNT],
+    /// Each fine band's share of the FFT bins: `(bin, weight)` runs,
+    /// indexed by `spec_at`.
+    spec_bins: Vec<(usize, f32)>,
+    spec_at: [usize; SPECTRUM + 1],
+    /// Each fine band's centre frequency.
+    spec_hz: [f32; SPECTRUM],
+    spec_env: [f32; SPECTRUM],
     sample_rate: f32,
     have_prev: bool,
 }
@@ -171,6 +222,29 @@ impl Analyzer {
                 0.5 - 0.5 * x.cos()
             })
             .collect();
+        // A fine band takes each FFT bin in proportion to how much of the
+        // bin's width it covers. At the bottom a band is narrower than a
+        // bin — 3 Hz against 23 — so neighbouring bands share one, and the
+        // lowest octave or so is smooth rather than resolved; at 2048
+        // points that is all the window can tell apart.
+        let sample_rate = sample_rate.max(1.0);
+        let hz_per_bin = sample_rate / FFT_SIZE as f32;
+        let edges = spectrum_edges();
+        let mut spec_bins = Vec::new();
+        let mut spec_at = [0; SPECTRUM + 1];
+        for j in 0..SPECTRUM {
+            spec_at[j] = spec_bins.len();
+            let (lo, hi) = (edges[j] / hz_per_bin, edges[j + 1] / hz_per_bin);
+            let first = (lo + 0.5).floor().max(1.0) as usize;
+            let last = ((hi + 0.5).floor() as usize).min(FFT_SIZE / 2 - 1);
+            for k in first..=last {
+                let cover = (hi.min(k as f32 + 0.5) - lo.max(k as f32 - 0.5)).max(0.0);
+                if cover > 0.0 {
+                    spec_bins.push((k, cover));
+                }
+            }
+        }
+        spec_at[SPECTRUM] = spec_bins.len();
         Self {
             fft,
             window,
@@ -185,7 +259,11 @@ impl Analyzer {
             mags: vec![0.0; FFT_SIZE / 2],
             prev_mags: vec![0.0; FFT_SIZE / 2],
             env: [0.0; BAND_COUNT],
-            sample_rate: sample_rate.max(1.0),
+            spec_bins,
+            spec_at,
+            spec_hz: std::array::from_fn(|j| (edges[j] * edges[j + 1]).sqrt()),
+            spec_env: [0.0; SPECTRUM],
+            sample_rate,
             have_prev: false,
         }
     }
@@ -258,6 +336,26 @@ impl Analyzer {
             self.env[i] += (target - self.env[i]) * k;
             out.bands[i] = self.env[i];
         }
+
+        // How many fine bands each modulation band covers. A fine band
+        // holds about 1/n of its band's energy on a mix that is flat per
+        // octave, so its reading is scaled by √n to come out level with
+        // the band's own.
+        let governs: [usize; SPECTRUM] = std::array::from_fn(|j| governing_band(self.spec_hz[j], bands));
+        let mut count = [0usize; BAND_COUNT];
+        for &g in &governs {
+            count[g] += 1;
+        }
+        for (j, &g) in governs.iter().enumerate() {
+            let energy: f32 =
+                self.spec_bins[self.spec_at[j]..self.spec_at[j + 1]].iter().map(|&(k, w)| w * self.mags[k] * self.mags[k]).sum();
+            let band = &bands[g];
+            let target = (energy.sqrt() * (count[g] as f32).sqrt() * band.gain).clamp(0.0, 1.0);
+            let tau = if target > self.spec_env[j] { band.attack } else { band.release };
+            let k = if tau <= f32::EPSILON { 1.0 } else { 1.0 - (-dt / tau).exp() };
+            self.spec_env[j] += (target - self.spec_env[j]) * k;
+        }
+        out.spectrum = self.spec_env;
         out
     }
 }
@@ -331,6 +429,57 @@ mod tests {
         );
     }
 
+    /// The fine spectrum's whole job is to say where in the mix the sound
+    /// is: a tone has to light the band it falls in, and anything an
+    /// octave or more away has to stay dark.
+    #[test]
+    fn a_tone_lights_its_place_in_the_spectrum() {
+        let bands = [Band::new(20.0, 20_000.0); BAND_COUNT];
+        let edges = spectrum_edges();
+        for freq in [80.0, 250.0, 1000.0, 4000.0, 12_000.0] {
+            let mut a = Analyzer::new(SR);
+            // Quiet, because all 64 fine bands fall in the one wide band
+            // here and each is scaled up eightfold for it.
+            let f = settle(&mut a, &sine(freq, 0.03), &bands);
+            let at = (0..SPECTRUM).find(|&j| freq >= edges[j] && freq < edges[j + 1]).unwrap();
+            let peak = (0..SPECTRUM).max_by(|&a, &b| f.spectrum[a].total_cmp(&f.spectrum[b])).unwrap();
+            assert!(peak.abs_diff(at) <= 1, "{freq} Hz peaked in band {peak}, not {at}: {:?}", f.spectrum);
+            // Lower at the bottom, where one FFT bin is shared by several
+            // fine bands and a tone's light is split between them.
+            assert!(f.spectrum[peak] > 0.04, "{freq} Hz barely registered: {}", f.spectrum[peak]);
+            assert!(f.spectrum[peak] < 1.0, "{freq} Hz clipped, which hides the leakage being tested");
+            for (j, &v) in f.spectrum.iter().enumerate() {
+                // An octave away, or outside the window's main lobe of
+                // two bins either side, whichever is further: at 80 Hz
+                // two bins is more than an octave, and no FFT this long
+                // can keep a tone out of its own main lobe.
+                let centre = (edges[j] * edges[j + 1]).sqrt();
+                let far = (centre / freq).log2().abs() > 1.0 && (centre - freq).abs() > 3.0 * SR / FFT_SIZE as f32;
+                if far {
+                    assert!(v < 0.1 * f.spectrum[peak], "{freq} Hz leaked into band {j} ({v})");
+                }
+            }
+        }
+    }
+
+    /// The spectrum has no sensitivity of its own: it follows the bands',
+    /// so turning a band up turns its stretch of the spectrum up, and
+    /// leaves the rest alone.
+    #[test]
+    fn the_spectrum_takes_its_gain_from_the_bands() {
+        let sig: Vec<f32> = sine(200.0, 0.05).iter().zip(sine(6000.0, 0.05)).map(|(a, b)| a + b).collect();
+        let flat = default_bands().map(|b| Band { gain: 1.0, ..b });
+        let mut loud = flat;
+        loud[1].gain = 4.0;
+        let before = settle(&mut Analyzer::new(SR), &sig, &flat).spectrum;
+        let after = settle(&mut Analyzer::new(SR), &sig, &loud).spectrum;
+        let edges = spectrum_edges();
+        let at = |hz: f32| (0..SPECTRUM).find(|&j| hz >= edges[j] && hz < edges[j + 1]).unwrap();
+        let (bass, hats) = (at(200.0), at(6000.0));
+        assert!((after[bass] / before[bass] - 4.0).abs() < 0.05, "{} -> {}", before[bass], after[bass]);
+        assert!((after[hats] - before[hats]).abs() < 1e-4, "the hats moved: {} -> {}", before[hats], after[hats]);
+    }
+
     #[test]
     fn silence_produces_nothing() {
         let mut a = Analyzer::new(SR);
@@ -339,6 +488,7 @@ mod tests {
         assert!(f.level < 1e-6, "level {}", f.level);
         assert!(f.bands.iter().all(|&b| b < 1e-6), "{:?}", f.bands);
         assert!(f.flux < 1e-6, "flux {}", f.flux);
+        assert!(f.spectrum.iter().all(|&b| b < 1e-6), "{:?}", f.spectrum);
     }
 
     /// Gain is the user's sensitivity control, so it has to actually scale
