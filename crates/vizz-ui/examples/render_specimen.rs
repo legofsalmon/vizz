@@ -10,10 +10,11 @@
 //! a sister app checking that it still speaks the same language.
 
 use vizz_design::{accent, feedback, ink, motion, radius, space, state, surface, text, widgets};
+use vizz_design::controls::{Check, Slider, Switch};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const W: u32 = 960;
-const H: u32 = 860;
+const H: u32 = 960;
 
 fn main() {
     let path = std::env::args()
@@ -326,6 +327,23 @@ fn right(ui: &mut egui::Ui) {
                 .color(ink::SECONDARY),
         );
     });
+
+    section(ui, "CONTROLS — Material's shapes, the system's sizes");
+    let (mut off, mut on) = (false, true);
+    ui.horizontal(|ui| {
+        ui.add(Check::new(&mut off, "check"));
+        ui.add(Check::new(&mut on, "ticked"));
+        ui.add_enabled(false, Check::new(&mut on.clone(), "off limits"));
+    });
+    ui.horizontal(|ui| {
+        ui.add(Switch::new(&mut off, "sync"));
+        ui.add(Switch::new(&mut on, "bypass"));
+        ui.add_enabled(false, Switch::new(&mut on.clone(), "locked"));
+    });
+    let mut level = 0.62f32;
+    ui.add(Slider::new(&mut level, 0.0..=1.0).text("opacity"));
+    let mut blend = 4.0f32;
+    ui.add_enabled(false, Slider::new(&mut blend, 0.0..=30.0).suffix(" s"));
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {

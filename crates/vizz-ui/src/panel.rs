@@ -1601,7 +1601,7 @@ fn background_section(ui: &mut egui::Ui, registry: &ParamRegistry) {
         let mut alpha = registry.target(a);
         if ui
             .add(
-                egui::Slider::new(&mut alpha, 0.0..=1.0)
+                vizz_design::controls::Slider::new(&mut alpha, 0.0..=1.0)
                     .text("opacity")
                     .clamping(egui::SliderClamping::Always),
             )
@@ -1909,7 +1909,7 @@ fn tempo_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) 
         }
         let mut auto = state.audio_auto_bpm;
         if ui
-            .checkbox(&mut auto, "auto")
+            .add(vizz_design::controls::Switch::new(&mut auto, "auto"))
             .on_hover_text("let detected tempo drive the beat clock")
             .changed()
         {
@@ -1917,7 +1917,7 @@ fn tempo_row(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelActions) 
         }
         let mut follow = a.clock_midi;
         if ui
-            .checkbox(&mut follow, "midi clock")
+            .add(vizz_design::controls::Switch::new(&mut follow, "midi clock"))
             .on_hover_text(
                 "follow MIDI clock from the controller — tapping or auto \
                  switches back to the internal clock",
@@ -2120,7 +2120,7 @@ fn modulation_section(
                 .range(20.0..=300.0)
                 .suffix(" bpm"),
         );
-        ui.checkbox(&mut m.clock.running, "run");
+        ui.add(vizz_design::controls::Switch::new(&mut m.clock.running, "run"));
         if ui.small_button("reset").on_hover_text("restart on the downbeat").clicked() {
             m.clock.reset();
         }
@@ -2150,7 +2150,7 @@ fn modulation_section(
             // Beat-synced or free-running, switchable in place: the same
             // LFO is useful both locked to the track and drifting against it.
             let mut synced = matches!(lfo.rate, Rate::Beats(_));
-            if ui.checkbox(&mut synced, "sync").changed() {
+            if ui.add(vizz_design::controls::Switch::new(&mut synced, "sync")).changed() {
                 lfo.rate = if synced { Rate::Beats(4.0) } else { Rate::Hz(1.0) };
             }
             match &mut lfo.rate {
@@ -2182,7 +2182,7 @@ fn modulation_section(
     let mut remove = None;
     for (i, route) in m.routes.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut route.enabled, "");
+            ui.add(vizz_design::controls::Switch::new(&mut route.enabled, ""));
             ui.label(format!("{} ->", route.source.label()));
             ui.label(route.param.trim_start_matches('/'));
             ui.add(
@@ -2489,7 +2489,7 @@ fn recording_section(
     ui.horizontal(|ui| {
         ui.label("stop after");
         let mut limited = next.max_secs.is_some();
-        if ui.checkbox(&mut limited, "").changed() {
+        if ui.add(vizz_design::controls::Switch::new(&mut limited, "")).changed() {
             next.max_secs = limited.then_some(30.0);
         }
         match &mut next.max_secs {
@@ -2731,7 +2731,7 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
         ui.label("render");
         let r = ui
             .add(
-                egui::Slider::new(&mut next.scale, 0.25..=2.0)
+                vizz_design::controls::Slider::new(&mut next.scale, 0.25..=2.0)
                     .suffix("x")
                     .clamping(egui::SliderClamping::Always),
             )
@@ -2746,7 +2746,7 @@ fn output_setup_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut Pan
     ui.small(format!("drawing {rw} x {rh}"));
 
     let wide = ui
-        .checkbox(&mut next.wide, "16-bit float master")
+        .add(vizz_design::controls::Switch::new(&mut next.wide, "16-bit float master"))
         .on_hover_text("smoother gradients, at double the master's bandwidth");
     commit |= wide.changed();
     if next.wide {
@@ -2785,7 +2785,7 @@ fn outputs_section(ui: &mut egui::Ui, state: &PanelState, actions: &mut PanelAct
     // never disagree with the dot above it.
     let was = state.outputs.iter().any(|o| o.name.starts_with("ndi:"));
     let mut on = was;
-    ui.checkbox(&mut on, "send over NDI")
+    ui.add(vizz_design::controls::Switch::new(&mut on, "send over NDI"))
         .on_hover_text("publish the output as an NDI source on the network; needs the NDI runtime from ndi.video");
     if on != was {
         actions.ndi_output = Some(on);
@@ -3956,7 +3956,7 @@ fn param_row(
             format!("{}  —  {}", def.addr, def.help)
         });
         let mut slider =
-            egui::Slider::new(&mut value, lo..=hi).clamping(egui::SliderClamping::Always);
+            vizz_design::controls::Slider::new(&mut value, lo..=hi).clamping(egui::SliderClamping::Always);
         if def.labels.is_some() {
             let labels = def.labels;
             slider = slider.custom_formatter(move |v, _| {
@@ -4261,7 +4261,7 @@ fn modulator_editor(ui: &mut egui::Ui, modulation: &mut ModEngine, def: &vizz_pa
                     ui.horizontal(|ui| {
                         ui.small("depth");
                         ui.add(
-                            egui::Slider::new(&mut route.depth, -1.0..=1.0)
+                            vizz_design::controls::Slider::new(&mut route.depth, -1.0..=1.0)
                                 .fixed_decimals(2)
                                 .show_value(true),
                         )

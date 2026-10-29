@@ -329,7 +329,7 @@ impl GraphView {
                 self.patch_name.clear();
                 changed = true;
             }
-            ui.checkbox(&mut self.show_palette, "palette");
+            ui.add(vizz_design::controls::Switch::new(&mut self.show_palette, "palette"));
 
             if let Some((msg, at, error)) = &self.status {
                 // Fade after a few seconds: stale feedback next to a
@@ -827,7 +827,7 @@ impl GraphView {
                 let node = &mut graph.nodes[id.0];
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(node.kind.title()).strong());
-                    if ui.checkbox(&mut node.bypass, "bypass").changed() {
+                    if ui.add(vizz_design::controls::Switch::new(&mut node.bypass, "bypass")).changed() {
                         *changed = true;
                     }
                     if ui.small_button("delete").clicked() {
@@ -871,7 +871,7 @@ fn node_editor(
                 };
                 let synced = matches!(lfo.rate, vizz_mod::Rate::Beats(_));
                 let mut sync = synced;
-                ui.checkbox(&mut sync, "sync");
+                ui.add(vizz_design::controls::Switch::new(&mut sync, "sync"));
                 ui.add(egui::DragValue::new(&mut beats).speed(0.05).range(0.01..=64.0));
                 lfo.rate = if sync {
                     vizz_mod::Rate::Beats(beats)
@@ -895,7 +895,7 @@ fn node_editor(
             ui.add(egui::DragValue::new(beats).speed(0.05).range(0.25..=64.0).suffix(" beats"));
         }
         NodeKind::Gate { threshold } => {
-            ui.add(egui::Slider::new(threshold, 0.0..=1.0).text("threshold"));
+            ui.add(vizz_design::controls::Slider::new(threshold, 0.0..=1.0).text("threshold"));
         }
         NodeKind::Envelope { attack, decay } => {
             ui.horizontal(|ui| {
@@ -904,7 +904,7 @@ fn node_editor(
             });
         }
         NodeKind::Constant(c) => {
-            ui.add(egui::Slider::new(c, -1.0..=1.0).text("value"));
+            ui.add(vizz_design::controls::Slider::new(c, -1.0..=1.0).text("value"));
         }
         NodeKind::Curve { shape, amount } => {
             ui.horizontal(|ui| {
@@ -915,7 +915,7 @@ fn node_editor(
                             ui.selectable_value(shape, s, s.label());
                         }
                     });
-                ui.add(egui::Slider::new(amount, 0.0..=1.0).text("amount"));
+                ui.add(vizz_design::controls::Slider::new(amount, 0.0..=1.0).text("amount"));
             });
         }
         NodeKind::Math { op } => {
@@ -940,7 +940,7 @@ fn node_editor(
             });
         }
         NodeKind::Quantise { steps } => {
-            ui.add(egui::Slider::new(steps, 1.0..=32.0).text("steps"));
+            ui.add(vizz_design::controls::Slider::new(steps, 1.0..=32.0).text("steps"));
         }
         NodeKind::Param { addr, depth } => {
             ui.horizontal(|ui| {
@@ -958,7 +958,7 @@ fn node_editor(
                             }
                         }
                     });
-                ui.add(egui::Slider::new(depth, -1.0..=1.0).text("depth"));
+                ui.add(vizz_design::controls::Slider::new(depth, -1.0..=1.0).text("depth"));
             });
         }
         NodeKind::Level | NodeKind::SampleHold => {
