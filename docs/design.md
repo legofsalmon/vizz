@@ -151,10 +151,11 @@ rather than a shared token, unless it is one of vizz's own meanings
 with its reason written down.
 
 CI checks the vendored `tokens.rs` against its stamp
-(`python3 scripts/design-system.py --check`), so a hand edit fails; the
-fix belongs in the design-system repository. To take a new version of
-the system, check it out beside this repository and run
-`python3 scripts/design-system.py --sync`.
+(`python3 scripts/ds/ds_check.py crates/vizz-design/src/tokens.rs scripts/ds`,
+the design system's own checker), so a hand edit fails and a copy behind
+the published version is flagged; the fix belongs in the design-system
+repository. To take a new version of the system, check it out beside this
+repository and run the same command with `--sync`.
 
 ## Changing it
 

@@ -30,8 +30,8 @@ against), `navigation.md`, `states.md`, `components.md` and `motion.md`.
 
 vizz takes the colours, the state model and motion: `crates/vizz-design`
 reads every value from the vendored `tokens.rs`
-(`python3 scripts/design-system.py --sync` to update it, `--check` runs in
-CI), `look::apply` draws egui's widgets in the shared states, and
+(the design system's checker in `scripts/ds/` runs in CI; add `--sync` to its
+command to update it), `look::apply` draws egui's widgets in the shared states, and
 `docs/design.md` says which names are vizz's own. Dark only. Fonts and the
 density sizes for egui's controls come later. Its own meanings (violet
 `DRIVEN` for modulation and the autopilot, the recording red, the slot and
