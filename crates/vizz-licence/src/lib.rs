@@ -322,7 +322,7 @@ impl Licence {
     }
 
     pub fn activate_now(&self, key: &str, label: &str) -> Result<String, String> {
-        let key = key.trim();
+        let key = &key::for_service(key);
         if key.is_empty() {
             return Err("type or paste a licence key first".into());
         }

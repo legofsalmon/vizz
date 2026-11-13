@@ -1083,6 +1083,9 @@ fn licence_banner(ui: &mut egui::Ui, state: &PanelState) {
 /// Every button hands a request to the app and returns; the work happens
 /// on a licence thread and the answer comes back in the next snapshot.
 /// Nothing here waits on the network, so nothing here can hitch a frame.
+/// The key field's id: stable, so a test can put the cursor in it.
+const LICENCE_KEY_FIELD: &str = "licence-key-field";
+
 fn licence_section(ui: &mut egui::Ui, view: &LicenceView, actions: &mut LicenceActions) {
     let snap = &view.snapshot;
     ui.label(
@@ -1154,6 +1157,7 @@ fn licence_section(ui: &mut egui::Ui, view: &LicenceView, actions: &mut LicenceA
         ui.horizontal(|ui| {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut draft)
+                    .id(LICENCE_KEY_FIELD.into())
                     .hint_text("LT-XXXX-XXXX-XXXX-XXXX")
                     .desired_width(190.0),
             );
@@ -4896,5 +4900,84 @@ mod knob_tests {
         assert_eq!(trim_number(-0.8), "-0.8");
         assert_eq!(trim_number(2.5), "2.5");
         assert_eq!(trim_number(0.0), "0");
+    }
+}
+
+#[cfg(test)]
+mod licence_key_tests {
+    use super::*;
+
+    fn view() -> LicenceView {
+        LicenceView {
+            snapshot: vizz_licence::Snapshot {
+                status: vizz_licence::Status::Invalid,
+                headline: vizz_licence::Headline { text: "Unlicensed".into(), tone: vizz_licence::Tone::Bad },
+                details: Vec::new(),
+                has_key: false,
+                key: None,
+                busy: None,
+                message: None,
+                request_code: None,
+                machine: "7d5ef5a4".into(),
+                key_configured: true,
+            },
+            marked: false,
+            locked: true,
+        }
+    }
+
+    fn pass(ctx: &egui::Context, events: Vec<egui::Event>) -> LicenceActions {
+        let mut actions = LicenceActions::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(600.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        egui::Area::new(egui::Id::new("licence-test")).show(ctx, |ui| licence_section(ui, &view(), &mut actions));
+        let _ = ctx.end_pass();
+        actions
+    }
+
+    /// The other half of the paste fix is the `clipboard` feature on
+    /// egui-winit, which turns Cmd+V into this event; this is what the
+    /// field does with it. A key copied out of an email comes with a
+    /// newline and sometimes in lower case, and activates as the key.
+    #[test]
+    fn a_pasted_key_lands_in_the_field_and_activates() {
+        let ctx = egui::Context::default();
+        pass(&ctx, vec![]);
+        ctx.memory_mut(|m| m.request_focus(LICENCE_KEY_FIELD.into()));
+        pass(&ctx, vec![]);
+        pass(&ctx, vec![egui::Event::Paste("lt-v1zz-k7m2-9pqr-4xtc\n".into())]);
+        let draft: String = ctx.data_mut(|d| d.get_temp(egui::Id::new("licence-key-draft")).unwrap_or_default());
+        assert_eq!(draft.trim(), "lt-v1zz-k7m2-9pqr-4xtc", "the paste did not reach the field");
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let actions = pass(&ctx, vec![enter]);
+        let sent = actions.activate.expect("Enter in the field did not activate");
+        assert_eq!(vizz_licence::key::for_service(&sent), "LT-V1ZZ-K7M2-9PQR-4XTC");
+    }
+
+    /// The feature that connects Cmd+V to the system clipboard. Without
+    /// it egui-winit quietly keeps a clipboard of its own inside the app,
+    /// everything compiles, and nothing pasted from anywhere else arrives.
+    #[test]
+    fn egui_winit_is_built_with_the_os_clipboard() {
+        let manifest = include_str!("../../../Cargo.toml");
+        let line = manifest
+            .lines()
+            .find(|l| l.starts_with("egui-winit"))
+            .expect("egui-winit is not in the workspace manifest");
+        let default_on = !line.contains("default-features = false");
+        assert!(
+            default_on || line.contains("\"clipboard\""),
+            "egui-winit without its clipboard feature: Cmd+V pastes nothing from outside the app ({line})"
+        );
     }
 }
