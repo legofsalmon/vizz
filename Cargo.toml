@@ -47,7 +47,10 @@ wgpu = "30"
 naga = { version = "30", features = ["wgsl-in"] }
 winit = "0.30"
 egui = "0.35"
-egui-winit = { version = "0.35", default-features = false, features = ["links", "wayland", "x11"] }
+# "clipboard" is the OS clipboard (arboard; smithay on Wayland). Without it
+# egui-winit keeps a clipboard of its own inside the app, so Cmd+V pasted
+# nothing from anywhere else — a licence key out of an email included.
+egui-winit = { version = "0.35", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }
 pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }
 rosc = "0.11"

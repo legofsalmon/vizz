@@ -45,6 +45,17 @@ pub fn normalise(input: &str) -> Option<String> {
     shaped.then(|| format!("LT-{}", groups.join("-")))
 }
 
+/// The key to send, from whatever was typed or pasted.
+///
+/// A key's shape goes in its canonical form, so one pasted with a
+/// trailing newline, spaces between the groups or in lower case reaches
+/// the service as the key it is — the folding is the service's own, so
+/// nothing it would accept is turned away. Anything else goes as typed,
+/// trimmed, and the service names what is wrong with it.
+pub fn for_service(input: &str) -> String {
+    normalise(input).unwrap_or_else(|| input.trim().to_string())
+}
+
 fn fold(group: &str) -> String {
     group
         .chars()
@@ -97,6 +108,21 @@ mod tests {
         assert_eq!(normalise("LT-V1ZZ-K7M2-9PQR-4XT!"), None);
         assert_eq!(normalise(""), None);
         assert_eq!(normalise("LT-O0OO-0000-0000-0000").as_deref(), Some("LT-0000-0000-0000-0000"));
+    }
+
+    #[test]
+    fn a_pasted_key_is_sent_the_way_the_service_reads_it() {
+        let want = "LT-V1ZZ-K7M2-9PQR-4XTC";
+        assert_eq!(for_service("LT-V1ZZ-K7M2-9PQR-4XTC"), want);
+        // Copied out of an email: a trailing newline, a tab, lower case,
+        // spaces where the dashes were.
+        assert_eq!(for_service("lt-v1zz-k7m2-9pqr-4xtc\n"), want);
+        assert_eq!(for_service("\tLT-V1ZZ-K7M2-9PQR-4XTC \r\n"), want);
+        assert_eq!(for_service("LT-V1ZZ - K7M2 - 9PQR - 4XTC"), want);
+        assert_eq!(for_service("V1ZZ K7M2 9PQR 4XTC"), want);
+        // Not a key's shape: as typed, trimmed, for the service to name.
+        assert_eq!(for_service("  not a key \n"), "not a key");
+        assert_eq!(for_service("LT-V1ZZ-K7M2"), "LT-V1ZZ-K7M2");
     }
 
     #[test]
