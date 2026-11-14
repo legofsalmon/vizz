@@ -1268,6 +1268,32 @@ mod tests {
         );
     }
 
+    /// A built-in on a simulation shows the live slot and runs something
+    /// that exists. Both halves live in other crates — the slot number in
+    /// vizz-render, the presets in vizz-mod — so a slot renumbered there
+    /// would leave the look pointing at an empty slot, or at the video,
+    /// with nothing failing but the picture.
+    #[test]
+    fn a_built_in_on_a_simulation_shows_the_live_slot() {
+        let live = vizz_render::particles::ParticleScene::LIVE_SLOT as f32;
+        let mut any = false;
+        for b in vizz_mod::preset::BUILTINS {
+            let Some(sim) = b.sim else { continue };
+            any = true;
+            let p = b.preset();
+            assert_eq!(p.values.get("/cloud/a"), Some(&live), "{} is not on the live slot", b.name);
+            assert_eq!(p.values.get("/cloud/morph"), Some(&0.0), "{} leaves a morph in", b.name);
+            assert_eq!(
+                p.values.get("/shape/mode"),
+                Some(&SHAPE_CLOUD_PAIR),
+                "{} does not show the cloud pair",
+                b.name
+            );
+            assert!(vizz_render::simulate::start(sim).is_some(), "{}: nothing runs {sim}", b.name);
+        }
+        assert!(any, "no built-in runs a simulation");
+    }
+
     /// Every default fader assignment must name a real parameter.
     ///
     /// The shipped macro list lives in another crate, which cannot see this

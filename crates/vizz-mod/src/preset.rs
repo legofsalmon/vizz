@@ -105,6 +105,22 @@ pub struct Preset {
     /// source and groups under "other" until it is saved again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The simulation this look runs in the live slot, as the spec
+    /// `sim:` takes: `bars`, `fold?kind=24-cell`.
+    ///
+    /// Stored for the same reason as [`Preset::source`]: a look on a
+    /// simulation keeps `/cloud/a` pointed at the live slot, and what is
+    /// running there is runtime state no parameter records. Without it a
+    /// look built on `bars` recalled onto whatever the slot happened to
+    /// be running — or onto an empty slot, which is nothing at all.
+    ///
+    /// Recalling a look that names one starts it, unless it is already
+    /// running, so a look recalled twice keeps its state rather than
+    /// starting the simulation over. A look without one leaves the live
+    /// slot alone. Optional and defaulted, so every file written before
+    /// this existed loads unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<String>,
 }
 
 /// Which layer a preset belongs to.
@@ -179,7 +195,7 @@ impl Preset {
             .filter(|(_, def)| kind.owns_def(def))
             .map(|(id, def)| (def.addr.clone(), reg.target(id)))
             .collect();
-        Self { values, source: None }
+        Self { values, source: None, sim: None }
     }
 
     /// A look with every parameter it owns at the bottom of its range.
@@ -200,12 +216,19 @@ impl Preset {
         Self {
             values,
             source: Some("blank".to_string()),
+            sim: None,
         }
     }
 
     /// Note what this look was built on. See [`Preset::source`].
     pub fn with_source(mut self, source: Option<String>) -> Self {
         self.source = source;
+        self
+    }
+
+    /// Note the simulation this look runs. See [`Preset::sim`].
+    pub fn with_sim(mut self, sim: Option<String>) -> Self {
+        self.sim = sim;
         self
     }
 
@@ -614,6 +637,9 @@ pub struct Builtin {
     /// One line on what it is for, shown as a tooltip.
     pub about: &'static str,
     pub values: &'static [(&'static str, f32)],
+    /// The simulation it runs in the live slot, if it is built on one.
+    /// See [`Preset::sim`].
+    pub sim: Option<&'static str>,
 }
 
 impl Builtin {
@@ -627,6 +653,7 @@ impl Builtin {
             // The built-ins ship with the app and are built on its own
             // shapes, not on anything you loaded.
             source: Some("built in".to_string()),
+            sim: self.sim.map(str::to_string),
         }
     }
 }
@@ -669,6 +696,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/camera/defocus", 0.12),
             ("/room/brightness", 0.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Butterfly",
@@ -695,6 +723,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/camera/defocus", 0.0),
             ("/room/brightness", 0.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Tunnel",
@@ -721,6 +750,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/camera/fov", 1.15),
             ("/room/brightness", 0.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Stage",
@@ -751,6 +781,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/room/anchor", 0.45),
             ("/room/embed", 1.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Confetti",
@@ -776,6 +807,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/camera/fov", 1.0),
             ("/room/brightness", 0.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Ribbon",
@@ -802,6 +834,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/camera/fov", 0.9),
             ("/room/brightness", 0.0),
         ],
+        sim: None,
     },
     // --- Vector looks: the print-side counterparts to the six above.
     // Each turns the particle field off and states every layer it uses in
@@ -867,6 +900,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/fx/shift", 0.0),
             ("/vec/place", 0.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Poster",
@@ -928,6 +962,7 @@ pub const BUILTINS: &[Builtin] = &[
             ("/fx/shift", 0.0),
             ("/vec/place", 0.0),
         ],
+        sim: None,
     },
     Builtin {
         name: "Signal",
@@ -1003,6 +1038,333 @@ pub const BUILTINS: &[Builtin] = &[
             ("/fx/shift", 0.0),
             ("/vec/place", 0.0),
         ],
+        sim: None,
+    },
+    // --- Looks after Joëlle Snaith's visuals for Richie Hawtin: one
+    // simulation each from the band-rule family, one saturated hue at a
+    // time, red or amber, with the graded finish's burn on so the hottest
+    // light goes white. Each states every layer it uses, as the vector
+    // looks do, so it arrives whole from any prior state; and each names
+    // its simulation, which recalling it starts in the live slot.
+    Builtin {
+        name: "Red bars",
+        about: "Thick bars across the width, one band each, red burning white on the drop. After Joëlle Snaith's Hawtin shows.",
+        values: &[
+            ("/shape/mode", 7.0),
+            ("/cloud/a", 7.0),
+            ("/cloud/morph", 0.0),
+            ("/shape/morph", 0.0),
+            ("/shape/twist", 0.0),
+            ("/shape/wind", 0.0),
+            ("/particles/count", 65_536.0),
+            ("/particles/speed", 0.6),
+            ("/particles/spread", 1.0),
+            ("/particles/surface", 0.0),
+            ("/particles/glyph", 0.0),
+            ("/particles/solid", 0.0),
+            ("/particles/ink", 0.0),
+            ("/particles/liquid", 0.0),
+            ("/particles/splat", 0.0),
+            ("/particles/plexus", 0.0),
+            ("/color/palette", 0.0),
+            ("/color/spread", 0.0),
+            ("/color/drive", 0.0),
+            ("/fx/grade", 1.0),
+            ("/fx/exposure", 0.0),
+            ("/fx/burn", 1.0),
+            ("/fx/zoom", 1.0),
+            ("/fx/spin", 0.0),
+            ("/fx/mirror", 0.0),
+            ("/fx/shift", 0.0),
+            ("/camera/orbit", 0.0),
+            ("/camera/elevation", 0.0),
+            ("/camera/fov", 0.9),
+            ("/camera/defocus", 0.0),
+            ("/camera/pan_x", 0.0),
+            ("/camera/pan_y", 0.0),
+            ("/camera/at_x", 0.0),
+            ("/camera/at_y", 0.0),
+            ("/camera/at_z", 0.0),
+            ("/room/brightness", 0.0),
+            ("/room/embed", 0.0),
+            ("/light/haze", 0.0),
+            ("/light/torch", 0.0),
+            ("/sun/level", 0.0),
+            ("/bg/red", 0.0),
+            ("/bg/green", 0.0),
+            ("/bg/blue", 0.0),
+            ("/vec/place", 0.0),
+            ("/l1/kind", 0.0),
+            ("/l2/kind", 0.0),
+            ("/l3/kind", 0.0),
+            ("/l4/kind", 0.0),
+            ("/particles/hue", 0.0),
+            ("/particles/saturation", 0.92),
+            ("/particles/brightness", 1.6),
+            ("/particles/size", 0.02),
+            ("/particles/stroke", 0.0),
+            ("/particles/stroke_len", 0.3),
+            ("/fx/glow", 0.55),
+            ("/fx/trail", 0.15),
+            ("/camera/distance", 1.05),
+        ],
+        sim: Some("bars"),
+    },
+    Builtin {
+        name: "Amber fold",
+        about: "One glowing amber outline that cracks on a kick and shatters on the drop. After Joëlle Snaith's Hawtin shows.",
+        values: &[
+            ("/shape/mode", 7.0),
+            ("/cloud/a", 7.0),
+            ("/cloud/morph", 0.0),
+            ("/shape/morph", 0.0),
+            ("/shape/twist", 0.0),
+            ("/shape/wind", 0.0),
+            ("/particles/count", 65_536.0),
+            ("/particles/speed", 0.6),
+            ("/particles/spread", 1.0),
+            ("/particles/surface", 0.0),
+            ("/particles/glyph", 0.0),
+            ("/particles/solid", 0.0),
+            ("/particles/ink", 0.0),
+            ("/particles/liquid", 0.0),
+            ("/particles/splat", 0.0),
+            ("/particles/plexus", 0.0),
+            ("/color/palette", 0.0),
+            ("/color/spread", 0.0),
+            ("/color/drive", 0.0),
+            ("/fx/grade", 1.0),
+            ("/fx/exposure", 0.0),
+            ("/fx/burn", 1.0),
+            ("/fx/zoom", 1.0),
+            ("/fx/spin", 0.0),
+            ("/fx/mirror", 0.0),
+            ("/fx/shift", 0.0),
+            ("/camera/orbit", 0.0),
+            ("/camera/elevation", 0.0),
+            ("/camera/fov", 0.5),
+            ("/camera/defocus", 0.0),
+            ("/camera/pan_x", 0.0),
+            ("/camera/pan_y", 0.0),
+            ("/camera/at_x", 0.0),
+            ("/camera/at_y", 0.0),
+            ("/camera/at_z", 0.0),
+            ("/room/brightness", 0.0),
+            ("/room/embed", 0.0),
+            ("/light/haze", 0.0),
+            ("/light/torch", 0.0),
+            ("/sun/level", 0.0),
+            ("/bg/red", 0.0),
+            ("/bg/green", 0.0),
+            ("/bg/blue", 0.0),
+            ("/vec/place", 0.0),
+            ("/l1/kind", 0.0),
+            ("/l2/kind", 0.0),
+            ("/l3/kind", 0.0),
+            ("/l4/kind", 0.0),
+            ("/particles/hue", 0.075),
+            ("/particles/saturation", 0.9),
+            ("/particles/brightness", 1.8),
+            ("/particles/size", 0.012),
+            ("/particles/stroke", 1.0),
+            ("/particles/stroke_len", 0.3),
+            ("/fx/glow", 0.6),
+            ("/fx/trail", 0.3),
+            ("/camera/distance", 3.4),
+        ],
+        sim: Some("fold?kind=cube"),
+    },
+    Builtin {
+        name: "Red tunnel",
+        about: "A red tesseract outline with receding echoes from the highs, shattering on the drop. After Joëlle Snaith's Hawtin shows.",
+        values: &[
+            ("/shape/mode", 7.0),
+            ("/cloud/a", 7.0),
+            ("/cloud/morph", 0.0),
+            ("/shape/morph", 0.0),
+            ("/shape/twist", 0.0),
+            ("/shape/wind", 0.0),
+            ("/particles/count", 65_536.0),
+            ("/particles/speed", 0.6),
+            ("/particles/spread", 1.0),
+            ("/particles/surface", 0.0),
+            ("/particles/glyph", 0.0),
+            ("/particles/solid", 0.0),
+            ("/particles/ink", 0.0),
+            ("/particles/liquid", 0.0),
+            ("/particles/splat", 0.0),
+            ("/particles/plexus", 0.0),
+            ("/color/palette", 0.0),
+            ("/color/spread", 0.0),
+            ("/color/drive", 0.0),
+            ("/fx/grade", 1.0),
+            ("/fx/exposure", 0.0),
+            ("/fx/burn", 1.0),
+            ("/fx/zoom", 1.01),
+            ("/fx/spin", 0.0),
+            ("/fx/mirror", 0.0),
+            ("/fx/shift", 0.0),
+            ("/camera/orbit", 0.0),
+            ("/camera/elevation", 0.0),
+            ("/camera/fov", 0.5),
+            ("/camera/defocus", 0.0),
+            ("/camera/pan_x", 0.0),
+            ("/camera/pan_y", 0.0),
+            ("/camera/at_x", 0.0),
+            ("/camera/at_y", 0.0),
+            ("/camera/at_z", 0.0),
+            ("/room/brightness", 0.0),
+            ("/room/embed", 0.0),
+            ("/light/haze", 0.0),
+            ("/light/torch", 0.0),
+            ("/sun/level", 0.0),
+            ("/bg/red", 0.0),
+            ("/bg/green", 0.0),
+            ("/bg/blue", 0.0),
+            ("/vec/place", 0.0),
+            ("/l1/kind", 0.0),
+            ("/l2/kind", 0.0),
+            ("/l3/kind", 0.0),
+            ("/l4/kind", 0.0),
+            ("/particles/hue", 0.0),
+            ("/particles/saturation", 0.95),
+            ("/particles/brightness", 1.8),
+            ("/particles/size", 0.012),
+            ("/particles/stroke", 1.0),
+            ("/particles/stroke_len", 0.3),
+            ("/fx/glow", 0.6),
+            ("/fx/trail", 0.55),
+            ("/camera/distance", 3.4),
+        ],
+        sim: Some("fold?kind=tesseract"),
+    },
+    Builtin {
+        name: "Red cells",
+        about: "A red Voronoi field that kicks split and quiet merges, filled into facets on the drop. After Joëlle Snaith's Hawtin shows.",
+        values: &[
+            ("/shape/mode", 7.0),
+            ("/cloud/a", 7.0),
+            ("/cloud/morph", 0.0),
+            ("/shape/morph", 0.0),
+            ("/shape/twist", 0.0),
+            ("/shape/wind", 0.0),
+            ("/particles/count", 65_536.0),
+            ("/particles/speed", 0.6),
+            ("/particles/spread", 1.0),
+            ("/particles/surface", 0.0),
+            ("/particles/glyph", 0.0),
+            ("/particles/solid", 0.0),
+            ("/particles/ink", 0.0),
+            ("/particles/liquid", 0.0),
+            ("/particles/splat", 0.0),
+            ("/particles/plexus", 0.0),
+            ("/color/palette", 0.0),
+            ("/color/spread", 0.0),
+            ("/color/drive", 0.0),
+            ("/fx/grade", 1.0),
+            ("/fx/exposure", 0.0),
+            ("/fx/burn", 1.0),
+            ("/fx/zoom", 1.0),
+            ("/fx/spin", 0.0),
+            ("/fx/mirror", 0.0),
+            ("/fx/shift", 0.0),
+            ("/camera/orbit", 0.0),
+            ("/camera/elevation", 0.0),
+            ("/camera/fov", 0.9),
+            ("/camera/defocus", 0.0),
+            ("/camera/pan_x", 0.0),
+            ("/camera/pan_y", 0.0),
+            ("/camera/at_x", 0.0),
+            ("/camera/at_y", 0.0),
+            ("/camera/at_z", 0.0),
+            ("/room/brightness", 0.0),
+            ("/room/embed", 0.0),
+            ("/light/haze", 0.0),
+            ("/light/torch", 0.0),
+            ("/sun/level", 0.0),
+            ("/bg/red", 0.0),
+            ("/bg/green", 0.0),
+            ("/bg/blue", 0.0),
+            ("/vec/place", 0.0),
+            ("/l1/kind", 0.0),
+            ("/l2/kind", 0.0),
+            ("/l3/kind", 0.0),
+            ("/l4/kind", 0.0),
+            ("/particles/hue", 0.0),
+            ("/particles/saturation", 0.9),
+            ("/particles/brightness", 1.5),
+            ("/particles/size", 0.012),
+            ("/particles/stroke", 1.0),
+            ("/particles/stroke_len", 0.3),
+            ("/fx/glow", 0.45),
+            ("/fx/trail", 0.1),
+            ("/camera/distance", 1.9),
+        ],
+        sim: Some("cells"),
+    },
+    Builtin {
+        name: "Amber ridges",
+        about: "The spectrum's last two seconds as amber ridges, the kick standing up in the middle. After Joëlle Snaith's Hawtin shows.",
+        values: &[
+            ("/shape/mode", 7.0),
+            ("/cloud/a", 7.0),
+            ("/cloud/morph", 0.0),
+            ("/shape/morph", 0.0),
+            ("/shape/twist", 0.0),
+            ("/shape/wind", 0.0),
+            ("/particles/count", 65_536.0),
+            ("/particles/speed", 0.6),
+            ("/particles/spread", 1.0),
+            ("/particles/surface", 0.0),
+            ("/particles/glyph", 0.0),
+            ("/particles/solid", 0.0),
+            ("/particles/ink", 0.0),
+            ("/particles/liquid", 0.0),
+            ("/particles/splat", 0.0),
+            ("/particles/plexus", 0.0),
+            ("/color/palette", 0.0),
+            ("/color/spread", 0.0),
+            ("/color/drive", 0.0),
+            ("/fx/grade", 1.0),
+            ("/fx/exposure", 0.0),
+            ("/fx/burn", 1.0),
+            ("/fx/zoom", 1.0),
+            ("/fx/spin", 0.0),
+            ("/fx/mirror", 0.0),
+            ("/fx/shift", 0.0),
+            ("/camera/orbit", 0.0),
+            ("/camera/elevation", 0.25),
+            ("/camera/fov", 0.9),
+            ("/camera/defocus", 0.0),
+            ("/camera/pan_x", 0.0),
+            ("/camera/pan_y", 0.0),
+            ("/camera/at_x", 0.0),
+            ("/camera/at_y", 0.0),
+            ("/camera/at_z", 0.0),
+            ("/room/brightness", 0.0),
+            ("/room/embed", 0.0),
+            ("/light/haze", 0.0),
+            ("/light/torch", 0.0),
+            ("/sun/level", 0.0),
+            ("/bg/red", 0.0),
+            ("/bg/green", 0.0),
+            ("/bg/blue", 0.0),
+            ("/vec/place", 0.0),
+            ("/l1/kind", 0.0),
+            ("/l2/kind", 0.0),
+            ("/l3/kind", 0.0),
+            ("/l4/kind", 0.0),
+            ("/particles/hue", 0.08),
+            ("/particles/saturation", 0.88),
+            ("/particles/brightness", 1.5),
+            ("/particles/size", 0.012),
+            ("/particles/stroke", 1.0),
+            ("/particles/stroke_len", 0.3),
+            ("/fx/glow", 0.45),
+            ("/fx/trail", 0.0),
+            ("/camera/distance", 1.6),
+        ],
+        sim: Some("ridges"),
     },
 ];
 
@@ -1057,7 +1419,7 @@ mod tests {
     fn a_source_survives_a_round_trip() {
         let mut values = BTreeMap::new();
         values.insert("/particles/count".to_string(), 0.5);
-        let saved = Preset { values, source: Some("torso-scan.ply".into()) };
+        let saved = Preset { values, source: Some("torso-scan.ply".into()), sim: None };
         let json = serde_json::to_string(&saved).unwrap();
         let back: Preset = serde_json::from_str(&json).unwrap();
         assert_eq!(back.source.as_deref(), Some("torso-scan.ply"));
@@ -1110,7 +1472,7 @@ mod tests {
         // And the stepped-aside name really resolves to the capture.
         let mut values = BTreeMap::new();
         values.insert("/fx/glow".to_string(), 0.123);
-        save(&name, &Preset { values: values.clone(), source: None }).unwrap();
+        save(&name, &Preset { values: values.clone(), source: None, sim: None }).unwrap();
         assert_eq!(
             by_name(&name).expect("saved capture must resolve").values,
             values,
@@ -1127,7 +1489,7 @@ mod tests {
     fn a_preset_whose_name_needed_sanitising_is_still_found() {
         let (_guard, _tmp) = crate::test_env::scoped("library-sanitise");
         let name = "Warehouse: 2am";
-        let saved = save(name, &Preset { values: Default::default(), source: None }).unwrap();
+        let saved = save(name, &Preset { values: Default::default(), source: None, sim: None }).unwrap();
         assert_ne!(saved, name, "this test needs a name that gets rewritten");
 
         let lib = Library::new();
@@ -1160,7 +1522,7 @@ mod tests {
         let mut lib = Library::new();
         assert!(!lib.has(Kind::Look, "later"));
 
-        save("later", &Preset { values: Default::default(), source: None }).unwrap();
+        save("later", &Preset { values: Default::default(), source: None, sim: None }).unwrap();
         // Deliberately stale until told: this is what makes it a cache.
         assert!(!lib.has(Kind::Look, "later"));
         lib.refresh();
@@ -1184,13 +1546,13 @@ mod tests {
         save_kind(
             Kind::Look,
             "a sphere look",
-            &Preset { values: Default::default(), source: Some("sphere".into()) },
+            &Preset { values: Default::default(), source: Some("sphere".into()), sim: None },
         )
         .unwrap();
         save_kind(
             Kind::Look,
             "an old look",
-            &Preset { values: Default::default(), source: None },
+            &Preset { values: Default::default(), source: None, sim: None },
         )
         .unwrap();
 
@@ -1208,7 +1570,7 @@ mod tests {
         save_kind(
             Kind::Look,
             "a sphere look",
-            &Preset { values: Default::default(), source: Some("text".into()) },
+            &Preset { values: Default::default(), source: Some("text".into()), sim: None },
         )
         .unwrap();
         lib.refresh();
@@ -1224,8 +1586,8 @@ mod tests {
     #[test]
     fn the_cache_keeps_the_two_layers_apart() {
         let (_guard, _tmp) = crate::test_env::scoped("library-layers");
-        save_kind(Kind::Look, "a look", &Preset { values: Default::default(), source: None }).unwrap();
-        save_kind(Kind::Gravity, "a well", &Preset { values: Default::default(), source: None }).unwrap();
+        save_kind(Kind::Look, "a look", &Preset { values: Default::default(), source: None, sim: None }).unwrap();
+        save_kind(Kind::Gravity, "a well", &Preset { values: Default::default(), source: None, sim: None }).unwrap();
         let lib = Library::new();
 
         assert!(lib.has(Kind::Look, "a look"));
@@ -1425,6 +1787,40 @@ mod tests {
         }
     }
 
+    /// A built-in's simulation is one the catalogue lists, settings and
+    /// all — `fold?kind=tesseract` is the fold. The app checks the other
+    /// half, that something runs it.
+    #[test]
+    fn builtin_simulations_are_catalogued() {
+        for b in BUILTINS {
+            if let Some(sim) = b.sim {
+                assert!(
+                    crate::generators::simulation_by_id(sim).is_some(),
+                    "{} runs {sim}, which the catalogue does not list",
+                    b.name
+                );
+                assert_eq!(b.preset().sim.as_deref(), Some(sim), "{} lost its simulation", b.name);
+            }
+        }
+    }
+
+    /// The simulation survives a save and a load, and a look without one
+    /// writes exactly the file it did before the field existed.
+    #[test]
+    fn a_simulation_survives_a_round_trip_and_is_absent_when_unset() {
+        let mut values = BTreeMap::new();
+        values.insert("/particles/count".to_string(), 0.5);
+        let on_sim = Preset { values: values.clone(), source: None, sim: Some("fold?kind=cube".into()) };
+        let back: Preset = serde_json::from_str(&serde_json::to_string(&on_sim).unwrap()).unwrap();
+        assert_eq!(back, on_sim);
+
+        let plain = Preset { values, source: None, sim: None };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("sim"), "an unset simulation was written: {json}");
+        let old: Preset = serde_json::from_str(r#"{"values":{"/fx/glow":0.5}}"#).unwrap();
+        assert_eq!(old.sim, None);
+    }
+
     /// Names must be distinct: the UI lists them and `/preset/recall`
     /// indexes them, so a duplicate makes one unreachable.
     #[test]
@@ -1596,7 +1992,7 @@ mod thumb_lifecycle_tests {
     fn deleting_a_look_forgets_its_picture() {
         let (_guard, _tmp) = crate::test_env::scoped("preset-delete-thumb");
         let name = "night bus";
-        save(name, &Preset { values: Default::default(), source: None }).unwrap();
+        save(name, &Preset { values: Default::default(), source: None, sim: None }).unwrap();
         crate::thumb::save(
             name,
             &crate::thumb::Thumb { width: 2, height: 2, rgba: vec![255; 16] },
@@ -1614,7 +2010,7 @@ mod thumb_lifecycle_tests {
     #[test]
     fn a_rename_moves_the_look_and_its_picture_and_refuses_to_replace() {
         let (_guard, _tmp) = crate::test_env::scoped("preset-rename");
-        let empty = Preset { values: Default::default(), source: None };
+        let empty = Preset { values: Default::default(), source: None, sim: None };
         save("night bus", &empty).unwrap();
         save("taken", &empty).unwrap();
         crate::thumb::save(

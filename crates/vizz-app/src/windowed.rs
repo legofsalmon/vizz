@@ -1633,6 +1633,21 @@ impl App {
         if let Some(name) = self.engine.take_recalled() {
             self.thumbs.if_missing(&name);
         }
+        // A look built on a simulation brings it: the look points the
+        // shape at the live slot, and this puts the right thing there.
+        // Left running when it already is, so recalling the same look
+        // twice, or two looks on the same simulation, keeps its state —
+        // a Voronoi field that has split into small cells stays split.
+        if let Some(spec) = self.engine.take_wanted_sim()
+            && self.live.as_ref().and_then(|l| l.simulation()) != Some(spec.as_str())
+        {
+            start_live(
+                &mut self.live,
+                &mut self.live_shown,
+                state,
+                vizz_render::plystream::Source::Simulate(spec),
+            );
+        }
         // And said. A key, a tile, a note, an OSC message: every path
         // ended in a log line and a stroke on a tile that may be off the
         // screen or stood down, and an empty slot did nothing at all,
@@ -2242,37 +2257,7 @@ impl App {
                 // thing to retry rather than a thing to be stopped by.
                 match actions.live_cloud.clone() {
                     Some(Some(addr)) => match addr.parse::<vizz_render::plystream::Source>() {
-                        Ok(source) => {
-                            // Let the old receiver go before the new one
-                            // starts. Assigning over it would build the
-                            // replacement first, and a listening source
-                            // cannot bind a port its predecessor is still
-                            // holding — which is every rescan, since a
-                            // rescan is the same address twice.
-                            self.live = None;
-                            let simulation = match &source {
-                                vizz_render::plystream::Source::Simulate(id) => Some(id.clone()),
-                                _ => None,
-                            };
-                            match vizz_render::plystream::LiveCloud::start(source) {
-                                Ok(live) => {
-                                    state.gui.notify_info(match &simulation {
-                                        Some(id) => format!("simulating {id} — the bands drive it"),
-                                        None => format!("receiving from {}", live.label()),
-                                    });
-                                    state.scene.reset_stream_fit();
-                                    self.live_shown = false;
-                                    self.live = Some(live);
-                                    // Remembered, so a set built on it comes back alive.
-                                    if let Err(e) = crate::settings::save_simulation(simulation.as_deref()) {
-                                        log::warn!("could not remember the simulation: {e:#}");
-                                    }
-                                }
-                                Err(e) => {
-                                    state.gui.notify_error(format!("live cloud: {e:#}"))
-                                }
-                            }
-                        }
+                        Ok(source) => start_live(&mut self.live, &mut self.live_shown, state, source),
                         Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),
                     },
                     Some(None) => {
@@ -2381,10 +2366,20 @@ impl App {
                     let beats = self.engine.modulation.clock.beats;
                     let reg = &self.params.registry;
                     let lib = &self.library;
-                    let look = |n: &str| vizz_mod::preset::by_name(n).filter(|_| lib.has(vizz_mod::preset::Kind::Look, n));
+                    // A look on a simulation asks for it here as it does
+                    // when its pad fires; see `FrameEngine::tick_grid`.
+                    let wanted = std::cell::Cell::new(None);
+                    let look = |n: &str| {
+                        let p = vizz_mod::preset::by_name(n).filter(|_| lib.has(vizz_mod::preset::Kind::Look, n));
+                        if let Some(sim) = p.as_ref().and_then(|p| p.sim.clone()) {
+                            wanted.set(Some(sim));
+                        }
+                        p
+                    };
                     let well = |n: &str| vizz_mod::preset::by_name(n).filter(|_| lib.has(vizz_mod::preset::Kind::Gravity, n));
                     let a = self.engine.grid.resync(beats, reg, &look);
                     let b = self.engine.gravity_grid.resync(beats, reg, &well);
+                    self.engine.want_sim(wanted.take());
                     notes.push(match (a, b) {
                         (false, false) => (true, "nothing on either sequencer to resync".into()),
                         // Said rather than silently half-done: a grid
@@ -2411,14 +2406,16 @@ impl App {
                     || actions.preset_delete.is_some()
                     || actions.preset_rename.is_some();
                 let looks_before = reorders.then(|| look_names(&self.library));
-                apply_preset_actions(
+                let wanted_sim = apply_preset_actions(
                     &actions,
                     &self.params.registry,
                     &mut self.library,
                     &mut notes,
                     &self.clouds,
                     &mut self.thumbs,
+                    self.live.as_ref().and_then(|l| l.simulation()),
                 );
+                self.engine.want_sim(wanted_sim);
                 let renamed = actions.preset_rename.as_ref().and_then(|(from, to)| {
                     apply_preset_rename(from, to, &mut self.engine, &mut self.library, &mut notes)
                         .map(|saved| (from.clone(), saved))
@@ -4085,6 +4082,47 @@ fn apply_grid_actions(
 /// is mutably borrowed elsewhere while these run.
 type Notes = Vec<(bool, String)>;
 
+/// Start receiving a live cloud — a stream, or a simulation run here —
+/// in place of whatever the live slot was receiving.
+///
+/// One function for the two ways one starts: picked from the clouds
+/// section, and asked for by a look built on a simulation. Failing to
+/// connect is a notice, not a crash: the usual cause is the sending app
+/// not being switched on yet, which is a thing to retry rather than a
+/// thing to be stopped by.
+fn start_live(
+    live: &mut Option<vizz_render::plystream::LiveCloud>,
+    live_shown: &mut bool,
+    state: &mut RenderState,
+    source: vizz_render::plystream::Source,
+) {
+    // Let the old receiver go before the new one starts. Assigning over
+    // it would build the replacement first, and a listening source
+    // cannot bind a port its predecessor is still holding — which is
+    // every rescan, since a rescan is the same address twice.
+    *live = None;
+    let simulation = match &source {
+        vizz_render::plystream::Source::Simulate(id) => Some(id.clone()),
+        _ => None,
+    };
+    match vizz_render::plystream::LiveCloud::start(source) {
+        Ok(started) => {
+            state.gui.notify_info(match &simulation {
+                Some(id) => format!("simulating {id} — the bands drive it"),
+                None => format!("receiving from {}", started.label()),
+            });
+            state.scene.reset_stream_fit();
+            *live_shown = false;
+            *live = Some(started);
+            // Remembered, so a set built on it comes back alive.
+            if let Err(e) = crate::settings::save_simulation(simulation.as_deref()) {
+                log::warn!("could not remember the simulation: {e:#}");
+            }
+        }
+        Err(e) => state.gui.notify_error(format!("live cloud: {e:#}")),
+    }
+}
+
 
 /// What the look on screen is built on, as a name a person would use.
 ///
@@ -4117,6 +4155,14 @@ fn source_now(registry: &vizz_params::ParamRegistry, clouds: &[String]) -> Optio
     )
 }
 
+/// The simulation a look being saved is built on: the one running in the
+/// live slot, when the look shows that slot. A look on any other cloud
+/// is not built on it, and recalling it must not restart the live slot.
+fn sim_now(registry: &vizz_params::ParamRegistry, live_sim: Option<&str>) -> Option<String> {
+    let slot = registry.id("/cloud/a").map(|id| registry.target(id))?.round();
+    (slot == ParticleScene::LIVE_SLOT as f32).then(|| live_sim.map(str::to_string))?
+}
+
 fn apply_preset_actions(
     actions: &vizz_ui::PanelActions,
     registry: &vizz_params::ParamRegistry,
@@ -4127,11 +4173,20 @@ fn apply_preset_actions(
     clouds: &[String],
     // Takes the picture that goes on the look's tile.
     thumbs: &mut crate::thumbshot::Shutter,
-) {
+    // The simulation running in the live slot, so a look saved on it
+    // brings it back. See [`vizz_mod::preset::Preset::sim`].
+    live_sim: Option<&str>,
+) -> Option<String> {
     use vizz_mod::preset;
+    // The simulation a recalled look asks for, handed back for the caller
+    // to start: this runs while the live slot is borrowed elsewhere.
+    let mut wanted_sim = None;
     if let Some(name) = &actions.preset_load {
         match preset::by_name(name) {
-            Some(p) => log::info!("recalled preset {name} ({} parameters)", p.apply(registry)),
+            Some(p) => {
+                log::info!("recalled preset {name} ({} parameters)", p.apply(registry));
+                wanted_sim = p.sim;
+            }
             None => {
                 log::error!("preset {name} could not be read");
                 notes.push((true, format!("preset '{name}' could not be read")));
@@ -4142,7 +4197,9 @@ fn apply_preset_actions(
     // refreshed rather than left to the interval — a preset you just saved
     // has to be on the assign menu now, not in up to two seconds.
     if let Some(name) = &actions.preset_save {
-        let snapshot = preset::Preset::capture(registry).with_source(source_now(registry, clouds));
+        let snapshot = preset::Preset::capture(registry)
+            .with_source(source_now(registry, clouds))
+            .with_sim(sim_now(registry, live_sim));
         match preset::save(name, &snapshot) {
             Ok(saved) => {
                 log::info!("saved preset {saved} ({} parameters)", snapshot.values.len());
@@ -4195,6 +4252,7 @@ fn apply_preset_actions(
             }
         }
     }
+    wanted_sim
 }
 
 /// A look renamed from either list. The file moves, every pad on every

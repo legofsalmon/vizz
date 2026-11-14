@@ -22,7 +22,7 @@ parameter sinks on a pannable canvas, with saved patches. Modulation
 sources include LFOs, a beat clock, and **audio** analysis: four
 configurable spectral bands plus tempo detection.
 
-**Presets** capture every knob: six ship with the app, your own save
+**Presets** capture every knob: fourteen ship with the app, your own save
 alongside them, and any of the first ten fires from a number key, from
 OSC, or from a MIDI button. The control panel groups and filters its
 parameters and marks the ones being modulated; the stripped-back
@@ -1145,6 +1145,18 @@ opener), **Butterfly** (the Lorenz attractor), **Tunnel** (grid plane driven
 into feedback, the high-energy one), **Stage** (cloud sitting inside the
 room with forced perspective on), **Confetti** (dense, fast, per-particle
 colour) and **Ribbon** (torus sheared by twist, mirrored).
+
+Five more follow the vector looks, after Joëlle Snaith's visuals for
+Richie Hawtin: one saturated hue, red or amber, on black, with the graded
+finish's burn on so the hottest light goes white. **Red bars**, **Amber
+fold**, **Red tunnel** (the fold as a tesseract, with its echoes left to
+trail), **Red cells** and **Amber ridges**. Each is built on one of the
+band-rule simulations, and recalling it starts that simulation in the
+live slot — unless it is already running, so recalling the same look
+again keeps the simulation where it had got to. A look you save while
+the shape shows the live slot remembers its simulation the same way.
+Headless renders take a look by name: `vizz --headless --preset "Red
+bars" --dump bars.png`.
 
 They are compiled into the binary rather than written to disk on first run,
 so they are always present, cannot be half-installed, and cannot be lost by

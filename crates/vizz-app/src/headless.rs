@@ -49,6 +49,8 @@ pub struct HeadlessOpts {
     /// Live video input spec — the same one the windowed app takes, so a
     /// video look can be dumped to a PNG and checked without a display.
     pub video_source: Option<String>,
+    /// A look to recall before the first frame, by name.
+    pub preset: Option<String>,
     pub licence: vizz_licence::Licence,
 }
 
@@ -87,6 +89,18 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
         && let Some(slot) = ParticleScene::loadable_slot(last)
     {
         params.show_cloud_slot(slot);
+    }
+    // The look, recalled before the engine starts so the run begins on
+    // it rather than gliding there. A look on a simulation brings it,
+    // as it does in the windowed app, unless a source was named.
+    let mut live_source = opts.live_cloud.clone();
+    if let Some(name) = &opts.preset {
+        let preset = vizz_mod::preset::by_name(name)
+            .with_context(|| format!("no look called {name:?}"))?;
+        log::info!("recalled {name} ({} parameters)", preset.apply(&params.registry));
+        if live_source.is_none() {
+            live_source = preset.sim.map(vizz_render::plystream::Source::Simulate);
+        }
     }
     let params_for_video = Arc::clone(&params);
     let mut engine = FrameEngine::new(params, vizz_audio::AudioEngine::start(opts.audio_device.as_deref()));
@@ -133,7 +147,7 @@ pub fn run(params: Arc<AppParams>, opts: HeadlessOpts) -> Result<()> {
     // Headless takes the stream too: it is how a live source gets tested
     // without a display, and how vizz runs as a windowless NDI/Syphon
     // relay for someone else's scanner.
-    let live = opts.live_cloud.clone().and_then(|source| {
+    let live = live_source.and_then(|source| {
         match vizz_render::plystream::LiveCloud::start(source) {
             Ok(live) => {
                 log::info!("live cloud: {}", live.label());
