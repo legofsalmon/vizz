@@ -254,7 +254,7 @@ fn derive(song: &Song, section: &Section, slot: usize) -> Preset {
             (get("opacity", 1.0) * section.opacity * tilt).clamp(0.0, 1.0),
         );
     }
-    Preset { values, source: Some("electronic set".into()) }
+    Preset { values, source: Some("electronic set".into()), sim: None }
 }
 
 /// How far a song of this energy is allowed to open up.

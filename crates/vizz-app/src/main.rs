@@ -134,6 +134,12 @@ struct Args {
     #[arg(long)]
     live_cloud: Option<String>,
 
+    /// Recall a look by name before the first frame (headless only):
+    /// a built-in such as "Red bars", or one you saved. A look built on
+    /// a simulation starts it, unless --live-cloud names a source.
+    #[arg(long)]
+    preset: Option<String>,
+
     /// Live video input: `test` for the built-in pattern, or an NDI
     /// source name matched as a substring (`--list-ndi` shows names).
     /// The picture arrives as a cloud in its own slot — select it with
@@ -373,6 +379,7 @@ fn main() -> Result<()> {
                 clouds: args.cloud.clone(),
                 live_cloud: live_cloud.clone(),
                 video_source: args.video_source.clone(),
+                preset: args.preset.clone(),
                 report: args.report,
                 outputs: output_opts,
                 licence,

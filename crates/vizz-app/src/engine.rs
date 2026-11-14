@@ -65,6 +65,12 @@ pub struct FrameEngine {
     /// The look recalled on the last tick, waiting to be collected. See
     /// [`Engine::take_recalled`].
     recalled: Option<String>,
+    /// The simulation the last look recalled or fired runs, waiting for
+    /// the app to start it. See [`FrameEngine::take_wanted_sim`].
+    ///
+    /// A `Cell` so the closure the grids resolve presets through can
+    /// note it while the grid itself is borrowed mutably.
+    wanted_sim: std::cell::Cell<Option<String>>,
     /// The last recall edge, for saying so on screen: the slot, and the
     /// look's name — or `None` for a slot with nothing in it, which used
     /// to be a debug line and nothing else. See
@@ -197,6 +203,7 @@ impl FrameEngine {
             last_log: Instant::now(),
             last_preset: None,
             recalled: None,
+            wanted_sim: Default::default(),
             announce: None,
             grid: vizz_mod::scene::Grid::new(),
             last_scene: None,
@@ -559,7 +566,18 @@ impl FrameEngine {
         // resolves through the library here. Built-ins and saved presets
         // are equally addressable, which is what lets a set be prepared
         // from either.
-        let presets = |name: &str| vizz_mod::preset::by_name(name);
+        //
+        // A look that runs a simulation asks for it as it is resolved,
+        // which happens only when a pad fires — by hand or by the
+        // autopilot — so the simulation changes when the look does.
+        let wanted = &self.wanted_sim;
+        let presets = |name: &str| {
+            let preset = vizz_mod::preset::by_name(name);
+            if let Some(sim) = preset.as_ref().and_then(|p| p.sim.clone()) {
+                wanted.set(Some(sim));
+            }
+            preset
+        };
         let slot = reg.target(p.scene_fire).round().max(0.0) as usize;
         if self.last_scene != Some(slot) {
             self.last_scene = Some(slot);
@@ -649,6 +667,9 @@ impl FrameEngine {
         match vizz_mod::preset::by_index(index) {
             Some((name, preset)) => {
                 let applied = preset.apply(reg);
+                if let Some(sim) = preset.sim {
+                    self.wanted_sim.set(Some(sim));
+                }
                 // A look transition in flight would rewrite these same
                 // parameters on its very next frame, silently eating the
                 // recall — the number key would appear to do nothing.
@@ -675,6 +696,21 @@ impl FrameEngine {
     /// picture sixty times a second.
     pub fn take_recalled(&mut self) -> Option<String> {
         self.recalled.take()
+    }
+
+    /// The simulation a look just recalled or fired asks for, if any, as
+    /// the spec `sim:` takes. A one-shot like [`Self::take_recalled`]:
+    /// the app starts it once, unless it is already running.
+    pub fn take_wanted_sim(&mut self) -> Option<String> {
+        self.wanted_sim.take()
+    }
+
+    /// Ask for a look's simulation from outside the engine's own recall
+    /// paths — the panel's list recalls a look directly.
+    pub fn want_sim(&self, sim: Option<String>) {
+        if sim.is_some() {
+            self.wanted_sim.set(sim);
+        }
     }
 
     /// The last recall edge since this was last asked — slot and name,
@@ -1425,6 +1461,43 @@ mod tests {
             "the in-flight transition overwrote the recall: glow {} vs {expected}",
             reg.target(glow)
         );
+    }
+
+    /// A look built on a simulation asks for it however it arrives:
+    /// recalled by number, or fired from a pad. And only then — a look
+    /// on anything else leaves the live slot alone, so recalling it
+    /// cannot stop or restart whatever the slot is running.
+    #[test]
+    fn a_look_on_a_simulation_asks_for_it_by_recall_and_by_pad() {
+        use vizz_mod::preset::BUILTINS;
+        let dt = Some(Duration::from_millis(16));
+        let (i, on_sim) = BUILTINS
+            .iter()
+            .enumerate()
+            .find(|(_, b)| b.sim.is_some())
+            .expect("a built-in on a simulation");
+        let plain = BUILTINS.iter().position(|b| b.sim.is_none()).expect("a plain built-in");
+
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        reg.set_by_addr("/preset/recall", plain as f32 + 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.take_wanted_sim(), None, "a look on a shape asked for a simulation");
+
+        reg.set_by_addr("/preset/recall", i as f32 + 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.take_wanted_sim().as_deref(), on_sim.sim, "recall did not ask");
+        assert_eq!(e.take_wanted_sim(), None, "asked twice for one recall");
+
+        let mut e = engine();
+        let reg = Arc::clone(&e.params.registry);
+        e.grid.assign(0, on_sim.name);
+        reg.set_by_addr("/scene/fire", 1.0);
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.take_wanted_sim().as_deref(), on_sim.sim, "the pad did not ask");
+        // The blend running on does not keep asking.
+        e.begin_frame(16.0 / 9.0, dt);
+        assert_eq!(e.take_wanted_sim(), None, "asked again mid-blend");
     }
 
     /// Pressing the number key for the preset already showing must
